@@ -116,6 +116,23 @@ pub struct EditorHighlight {
     line_hashes: BTreeMap<usize, u64>,
     /// The revision the scan was made against.
     scanned_revision: u64,
+    /// The first line an accepted edit could have touched, pending the next
+    /// prefix check.
+    ///
+    /// The check's job is to find the **first** line whose content differs
+    /// from the scan the cache holds. Starting at line 0 answers that
+    /// question by re-reading every scanned line, which is the whole file on
+    /// every keystroke. An edit knows where it landed: nothing above it
+    /// changed, so the check can start there and stop at the first
+    /// difference.
+    ///
+    /// `None` is the honest fallback — a change the presentation did not
+    /// make (a daemon-side edit, a reload) is not placed by anything here,
+    /// and a check seeded above a real change would colour rows from a
+    /// context that no longer exists. A missed change is a wrong colour,
+    /// which is a correctness defect: this cache is the only source of a
+    /// row's spans.
+    pending_edit_from: Option<usize>,
     /// Set once the document exceeds [`MAX_HIGHLIGHT_SCAN_LINES`].
     disabled: bool,
 }
@@ -149,6 +166,36 @@ impl EditorHighlight {
         self.disabled
     }
 
+    /// Note that an accepted edit landed on `line`.
+    ///
+    /// The caller is the edit funnel: the transaction's edits are sorted, so
+    /// its **first** edit's line is a line above which nothing in that
+    /// transaction changed. Several edits between two frames combine by
+    /// `min`, because the earliest of them is the first line the next check
+    /// has to verify.
+    ///
+    /// `line` must be resolved against the **post-edit** snapshot. That is
+    /// not a detail: an edit that inserts or deletes lines above itself
+    /// moves every later line index, and a seed recorded from the pre-edit
+    /// numbering would name a line the change is no longer on.
+    pub fn note_edit_from(&mut self, line: usize) {
+        self.pending_edit_from = Some(match self.pending_edit_from {
+            Some(existing) => existing.min(line),
+            None => line,
+        });
+    }
+
+    /// The line the next prefix check will start from, or `None` when it
+    /// will fall back to the top.
+    ///
+    /// Read by the tests that prove an edit reaches the cache, and by
+    /// nothing on the render path — hence the `cfg`: a shipped build has no
+    /// use for it, and an unused accessor is dead code.
+    #[cfg(test)]
+    pub(crate) fn pending_edit_from(&self) -> Option<usize> {
+        self.pending_edit_from
+    }
+
     /// Coloured runs for `line`, or an empty slice when this line cannot be
     /// highlighted.
     ///
@@ -161,13 +208,19 @@ impl EditorHighlight {
         code_theme: &str,
         line: usize,
     ) -> &[HighlightSpan] {
-        let key = ScanKey {
-            path: path.to_string(),
-            code_theme: code_theme.to_string(),
-        };
-        if self.key.as_ref() != Some(&key) {
+        // Compare before allocating. `spans_for_line` runs once per visible
+        // row per frame, so building the key first meant two `String`s per
+        // row to re-derive an identity that had not changed.
+        let same_document = self
+            .key
+            .as_ref()
+            .is_some_and(|key| key.path == path && key.code_theme == code_theme);
+        if !same_document {
             self.reset();
-            self.key = Some(key);
+            self.key = Some(ScanKey {
+                path: path.to_string(),
+                code_theme: code_theme.to_string(),
+            });
         }
         if self.disabled || line >= MAX_HIGHLIGHT_SCAN_LINES {
             self.disabled = true;
@@ -200,7 +253,13 @@ impl EditorHighlight {
     /// coloured from the context they would have been coloured from.
     fn rebase(&mut self, snapshot: &DocumentSnapshot, path: &str, code_theme: &str, revision: u64) {
         self.scanned_revision = revision;
-        let Some(changed) = self.first_changed_line(snapshot) else {
+        // Where the check starts. An edit the presentation placed says
+        // nothing above it changed, so verifying from there is complete; an
+        // edit it did not place (a daemon-side change, a reload) has to be
+        // found from the top, because assuming "nothing above" is exactly
+        // how a row ends up with the previous content's colours.
+        let from = self.pending_edit_from.take().unwrap_or(0);
+        let Some(changed) = self.first_changed_line(snapshot, from) else {
             // The scanned lines are unchanged: the edit is below them, and
             // the machine's state is still the state of those lines.
             return;
@@ -210,26 +269,48 @@ impl EditorHighlight {
         self.replay_to(snapshot, path, code_theme, changed);
     }
 
-    /// The first line whose content differs from the scan the cache holds.
-    fn first_changed_line(&self, snapshot: &DocumentSnapshot) -> Option<usize> {
-        for index in 0..self.scanned_to {
+    /// The first line at or after `from` whose content differs from the scan
+    /// the cache holds.
+    ///
+    /// `from` is a **lower bound on the answer**, not a hint to be
+    /// second-guessed: the caller only passes a line it knows nothing above
+    /// changed. The walk stops at the first difference, so an edit on line
+    /// 4,900 of a 5,000-line document costs one line rather than 4,900.
+    fn first_changed_line(&self, snapshot: &DocumentSnapshot, from: usize) -> Option<usize> {
+        let mut examined = 0u64;
+        let mut changed = None;
+        for index in from..self.scanned_to {
+            examined += 1;
             let Some(cached) = self.line_hashes.get(&index) else {
                 // The line's bytes are not known, so nothing above it can be
                 // trusted either.
-                return Some(index);
+                changed = Some(index);
+                break;
             };
             if self.line_hash(snapshot, index) != Some(*cached) {
-                return Some(index);
+                changed = Some(index);
+                break;
             }
         }
-        None
+        render_cost::count_highlight_prefix_lines(examined);
+        changed
     }
 
     /// The hash of a line's bytes.
+    ///
+    /// Hashed from the rope's borrowed chunks, so a line is never
+    /// materialized as a `String` to be measured. The hasher is fed the
+    /// line's byte stream in pieces; SipHash (which `DefaultHasher` is) is a
+    /// streaming hash, so the value depends on the bytes and not on where the
+    /// rope happens to keep its chunk boundaries — a line whose text is
+    /// unchanged hashes the same in two documents built from the same text.
     fn line_hash(&self, snapshot: &DocumentSnapshot, index: usize) -> Option<u64> {
         let range = snapshot.line_range(index).ok()?;
-        let raw = snapshot.read_bytes(range.start, range.end).ok()?;
-        Some(hash_bytes(raw.as_bytes()))
+        let mut hasher = DefaultHasher::new();
+        for chunk in snapshot.byte_chunks(range.start, range.end).ok()? {
+            hasher.write(chunk);
+        }
+        Some(hasher.finish())
     }
 
     /// Replay the machine up to `line` without keeping the spans.
@@ -426,10 +507,150 @@ fn syntax_for(path: &str) -> Option<&'static SyntaxReference> {
         .or_else(|| SYNTAX_SET.find_syntax_by_name(extension))
 }
 
+/// The comment tokens a buffer's grammar declares.
+///
+/// Read from the grammar's own `TM_COMMENT_START`/`TM_COMMENT_END` shell
+/// variables, through [`syntax_for`]: one selector, so the highlighter and the
+/// comment toggle cannot disagree. The strings are the grammar's, trailing
+/// spaces included — `"// "`, not `"//"` — which is what makes the toggle its
+/// own inverse instead of a normalisation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommentTokens {
+    /// `TM_COMMENT_START` with no matching end — what prefixes a line.
+    pub line: Option<String>,
+    /// The first start/end pair — what wraps a range.
+    pub block: Option<(String, String)>,
+}
+
+/// One comment token set, already chosen for a gesture.
+///
+/// Borrowed from a [`CommentTokens`]: the geometry inserts and removes these
+/// strings and nothing retains them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentStyle<'a> {
+    /// Prefix every covered line with this token, after its indentation.
+    Line(&'a str),
+    /// Wrap the covered range with this pair.
+    Block {
+        /// Placed before the range's first non-whitespace byte.
+        start: &'a str,
+        /// Placed after the range's last non-whitespace byte.
+        end: &'a str,
+    },
+}
+
+impl CommentTokens {
+    /// The style one toggle uses: the pair for `space C`, and for `space c` the
+    /// line token with the pair as its fallback.
+    ///
+    /// `None` when the grammar has no token of the requested kind — a refusal
+    /// at the call site, never a guess.
+    pub fn style(&self, block: bool) -> Option<CommentStyle<'_>> {
+        if block {
+            return self
+                .block
+                .as_ref()
+                .map(|(start, end)| CommentStyle::Block { start, end });
+        }
+        match &self.line {
+            Some(line) => Some(CommentStyle::Line(line)),
+            None => self
+                .block
+                .as_ref()
+                .map(|(start, end)| CommentStyle::Block { start, end }),
+        }
+    }
+}
+
+/// The comment tokens for `path`'s grammar, or `None` when it declares none.
+///
+/// `None` is one answer for three cases — no grammar for the extension, a
+/// grammar that declares no token (plain text), an empty metadata set — because
+/// the outcome is the same: the toggle refuses and names the extension.
+pub fn comment_tokens_for(path: &str) -> Option<CommentTokens> {
+    let syntax = syntax_for(path)?;
+    let metadata = SYNTAX_SET.metadata().metadata_for_scope(&[syntax.scope]);
+    let tokens = CommentTokens {
+        line: metadata.line_comment().map(str::to_string),
+        block: metadata
+            .block_comment()
+            .map(|(start, end)| (start.to_string(), end.to_string())),
+    };
+    if tokens.line.is_none() && tokens.block.is_none() {
+        return None;
+    }
+    Some(tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codegg_document::DocumentBuffer;
+    use crate::tui::render_cost;
+    use codegg_document::{DocumentBuffer, DocumentLimits, TextEdit, TextTransaction};
+
+    const PATH: &str = "src/main.rs";
+    const THEME: &str = "base16-ocean.dark";
+
+    /// Forty lines of ordinary Rust, so a scan is cheap and every line is
+    /// distinguishable by its own content.
+    fn source_lines() -> String {
+        (0..40)
+            .map(|index| format!("let value_{index} = {index};\n"))
+            .collect()
+    }
+
+    /// The byte offset where `line` starts in `text`.
+    fn offset_of(text: &str, line: usize) -> usize {
+        text.split_inclusive('\n')
+            .take(line)
+            .map(str::len)
+            .sum::<usize>()
+    }
+
+    /// Apply one zero-line-count edit that changes `line`'s first word.
+    ///
+    /// `let` becomes `var`, which is not a Rust keyword: the row's colours
+    /// genuinely change, so a cache that served the old spans would be
+    /// visibly wrong rather than merely stale.
+    fn edit_first_word(buffer: &mut DocumentBuffer, text: &str, line: usize) -> DocumentSnapshot {
+        let start = offset_of(text, line);
+        buffer
+            .apply(
+                &TextTransaction::new(vec![TextEdit::new(start..start + 3, "var")]),
+                DocumentLimits::default(),
+            )
+            .expect("the fixture's edit applies")
+            .snapshot
+    }
+
+    /// Every line's spans from one highlighter, requested in document order.
+    fn all_spans(
+        highlight: &mut EditorHighlight,
+        snapshot: &DocumentSnapshot,
+        lines: usize,
+    ) -> Vec<Vec<HighlightSpan>> {
+        (0..lines)
+            .map(|line| {
+                highlight
+                    .spans_for_line(snapshot, PATH, THEME, line)
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    /// Every line's spans from a highlighter that has seen nothing.
+    fn fresh_spans(snapshot: &DocumentSnapshot, lines: usize) -> Vec<Vec<HighlightSpan>> {
+        all_spans(&mut EditorHighlight::default(), snapshot, lines)
+    }
+
+    /// The lines the prefix check re-read, for one piece of work.
+    fn prefix_lines(work: impl FnOnce()) -> u64 {
+        let before = render_cost::snapshot();
+        work();
+        render_cost::snapshot()
+            .since(&before)
+            .highlight_prefix_lines
+    }
 
     fn spans_for(text: &str, path: &str, line: usize) -> Vec<HighlightSpan> {
         let snapshot = DocumentBuffer::new(text).snapshot();
@@ -534,6 +755,200 @@ mod tests {
         );
     }
 
+    // ── M005: the prefix check's seed ─────────────────────────────────
+
+    /// An edit **above** the cached scan is detected.
+    ///
+    /// This is the direction that must never be optimised away: if the seed
+    /// let the check skip lines above the edit, the rows above would keep the
+    /// previous content's colours, and the cache is the only source of a
+    /// row's spans — a wrong colour here is a correctness defect, not a stale
+    /// pixel.
+    #[test]
+    fn an_edit_above_the_cached_scan_is_still_detected() {
+        let text = source_lines();
+        let mut buffer = DocumentBuffer::new(&text);
+        let mut highlight = EditorHighlight::default();
+        // The cache has scanned through line 20.
+        let _ = highlight.spans_for_line(&buffer.snapshot(), PATH, THEME, 20);
+
+        let edited = edit_first_word(&mut buffer, &text, 3);
+        highlight.note_edit_from(3);
+        let cached = all_spans(&mut highlight, &edited, 21);
+
+        assert_eq!(
+            cached,
+            fresh_spans(&edited, 21),
+            "the rows after an edit above the scan must equal a fresh scan"
+        );
+        assert_ne!(
+            cached[3], cached[4],
+            "the edited row's colours must have changed, or this test proves nothing"
+        );
+    }
+
+    /// An edit **below** the cached scan is detected and costs no prefix
+    /// read at all.
+    #[test]
+    fn an_edit_below_the_cached_scan_reads_no_prefix() {
+        let text = source_lines();
+        let mut buffer = DocumentBuffer::new(&text);
+        let mut highlight = EditorHighlight::default();
+        let _ = highlight.spans_for_line(&buffer.snapshot(), PATH, THEME, 20);
+        let before = all_spans(&mut highlight, &buffer.snapshot(), 21);
+
+        let edited = edit_first_word(&mut buffer, &text, 30);
+        highlight.note_edit_from(30);
+        let cost = prefix_lines(|| {
+            let _ = highlight.spans_for_line(&edited, PATH, THEME, 20);
+        });
+
+        assert_eq!(
+            cost, 0,
+            "an edit below the scan leaves the scanned prefix unchanged: {cost} lines checked"
+        );
+        assert_eq!(
+            all_spans(&mut highlight, &edited, 21),
+            before,
+            "no scanned row changed, so no scanned row is recoloured"
+        );
+    }
+
+    /// An edit **near the end** starts the check at the edit.
+    ///
+    /// The check's job is to find the first row whose content differs. From
+    /// line 0 that answer costs every scanned line; from the edit it costs
+    /// one.
+    #[test]
+    fn an_edit_near_the_end_starts_the_check_at_the_edit() {
+        let text = source_lines();
+        let mut buffer = DocumentBuffer::new(&text);
+        let mut highlight = EditorHighlight::default();
+        let _ = highlight.spans_for_line(&buffer.snapshot(), PATH, THEME, 39);
+
+        let edited = edit_first_word(&mut buffer, &text, 38);
+        highlight.note_edit_from(38);
+        let cost = prefix_lines(|| {
+            let _ = highlight.spans_for_line(&edited, PATH, THEME, 39);
+        });
+
+        assert_eq!(
+            cost, 1,
+            "the check starts at the edit and stops at the first difference: {cost} lines"
+        );
+        assert_eq!(
+            highlight.spans_for_line(&edited, PATH, THEME, 38).to_vec(),
+            fresh_spans(&edited, 39)[38],
+            "the edited row is coloured from the context it would have had"
+        );
+    }
+
+    /// An edit the presentation cannot place still scans from the top.
+    ///
+    /// The count is the distance from line 0 to the change — four lines for
+    /// an edit on line 3 — where a seeded check would have examined one. That
+    /// is the price of a change nothing placed, and it is the price that must
+    /// be paid: assuming "nothing above the scan changed" without an edit to
+    /// place is how a row keeps the previous content's colours.
+    #[test]
+    fn an_unplaced_edit_still_scans_from_the_top() {
+        let text = source_lines();
+        let mut buffer = DocumentBuffer::new(&text);
+        let mut highlight = EditorHighlight::default();
+        let _ = highlight.spans_for_line(&buffer.snapshot(), PATH, THEME, 20);
+
+        let edited = edit_first_word(&mut buffer, &text, 3);
+        let cost = prefix_lines(|| {
+            let _ = highlight.spans_for_line(&edited, PATH, THEME, 20);
+        });
+
+        assert_eq!(
+            cost, 4,
+            "a change nothing placed is found by walking from line 0: {cost} lines"
+        );
+        assert_eq!(
+            all_spans(&mut highlight, &edited, 21),
+            fresh_spans(&edited, 21),
+            "an unplaced edit is still detected"
+        );
+    }
+
+    /// Two edits between frames start the check at the **first** of them.
+    #[test]
+    fn the_seed_keeps_the_earliest_edit() {
+        let text = source_lines();
+        let mut buffer = DocumentBuffer::new(&text);
+        let mut highlight = EditorHighlight::default();
+        let _ = highlight.spans_for_line(&buffer.snapshot(), PATH, THEME, 20);
+
+        let once = edit_first_word(&mut buffer, &text, 7);
+        highlight.note_edit_from(7);
+        let edited = edit_first_word(&mut buffer, &once.to_string(), 12);
+        highlight.note_edit_from(12);
+
+        assert_eq!(
+            highlight.pending_edit_from(),
+            Some(7),
+            "the earliest unverified edit is the one the check must start from"
+        );
+        assert_eq!(
+            all_spans(&mut highlight, &edited, 21),
+            fresh_spans(&edited, 21),
+            "both edits are detected"
+        );
+    }
+
+    /// A hit does not rebuild the scan key.
+    ///
+    /// The key is compared before it is built, so asking for a row of the
+    /// document already keyed costs no allocation and — the observable half —
+    /// does not reset the cache.
+    #[test]
+    fn a_hit_does_not_reset_the_cache() {
+        let snapshot = DocumentBuffer::new(source_lines()).snapshot();
+        let mut highlight = EditorHighlight::default();
+        let first = highlight.spans_for_line(&snapshot, PATH, THEME, 4).to_vec();
+        assert!(!first.is_empty(), "the fixture row must be coloured");
+        let scanned = highlight.scanned_to;
+
+        let again = highlight.spans_for_line(&snapshot, PATH, THEME, 4).to_vec();
+
+        assert_eq!(again, first, "the same row is served from the cache");
+        assert_eq!(
+            highlight.scanned_to, scanned,
+            "a hit must not throw the scan away and rebuild it"
+        );
+        // A different path *is* a different grammar, so it does reset.
+        highlight.spans_for_line(&snapshot, "notes.notagrammar", THEME, 4);
+        assert_eq!(
+            highlight.scanned_to, 0,
+            "a different key must reset the scan"
+        );
+    }
+
+    /// The keyed hash depends on the bytes, not on where the rope keeps its
+    /// leaves.
+    ///
+    /// `consume` hashes the line it already holds as one slice and
+    /// `line_hash` feeds the same hasher the rope's chunks, so the two values
+    /// are compared against each other on every frame. If the hasher were
+    /// sensitive to how the bytes were split, an unchanged line would look
+    /// changed whenever the rope's structure did.
+    #[test]
+    fn the_keyed_hash_is_a_stream_and_not_a_slice() {
+        let mut whole = DefaultHasher::new();
+        whole.write(b"let value = 1;\n");
+        let mut split = DefaultHasher::new();
+        for piece in [b"let ".as_slice(), b"value", b" = 1;", b"\n".as_slice()] {
+            split.write(piece);
+        }
+        assert_eq!(
+            whole.finish(),
+            split.finish(),
+            "the keyed hash must depend on the line's bytes, not on the chunking"
+        );
+    }
+
     #[test]
     fn a_document_past_the_scan_bound_disables_highlighting_visibly() {
         let lines = (0..MAX_HIGHLIGHT_SCAN_LINES + 10)
@@ -561,5 +976,53 @@ mod tests {
                 MAX_HIGHLIGHT_SCAN_LINES + 6,
             )
             .is_empty());
+    }
+
+    #[test]
+    fn rust_declares_a_line_token_and_a_block_pair() {
+        let tokens = comment_tokens_for("src/main.rs").expect("Rust declares both");
+        assert_eq!(tokens.line.as_deref(), Some("// "));
+        assert_eq!(
+            tokens.block,
+            Some(("/*".to_string(), "*/".to_string())),
+            "the pair is the grammar's own, not a guess"
+        );
+    }
+
+    #[test]
+    fn python_declares_its_own_line_token_and_no_block_pair() {
+        // The token comes from the grammar, not from a table keyed by the
+        // extension: `#` is Python's and `//` is Rust's.
+        let tokens = comment_tokens_for("tools/run.py").expect("Python declares a line token");
+        assert_eq!(tokens.line.as_deref(), Some("# "));
+        assert_eq!(tokens.block, None);
+        assert_eq!(
+            tokens.style(true),
+            None,
+            "a grammar with no pair cannot honour `space C`"
+        );
+    }
+
+    #[test]
+    fn a_grammar_with_no_comment_token_answers_none() {
+        // Plain Text has a grammar — it highlights — and declares no comment
+        // token at all, so the refusal is about the syntax rather than about
+        // the file being unknown.
+        assert_eq!(comment_tokens_for("notes.txt"), None);
+        assert_eq!(comment_tokens_for("src/scratch.zzz"), None, "no grammar");
+        assert_eq!(comment_tokens_for(""), None, "no extension");
+    }
+
+    #[test]
+    fn the_line_style_is_preferred_and_the_block_style_is_forced() {
+        let rust = comment_tokens_for("src/main.rs").expect("Rust declares both");
+        assert_eq!(rust.style(false), Some(CommentStyle::Line("// ")));
+        assert_eq!(
+            rust.style(true),
+            Some(CommentStyle::Block {
+                start: "/*",
+                end: "*/"
+            })
+        );
     }
 }

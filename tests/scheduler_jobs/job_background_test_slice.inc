@@ -368,7 +368,7 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
         .await
         .unwrap();
     assert!(status.success);
-    // Second principal gets the same denied message as not-found (no leak).
+    // Foreign status is the same not-found observation as absence, with no stored fields.
     let attacker_ctx = ctx_for("attacker-s", None, "inv-y");
     let denied = tool
         .execute_structured(
@@ -376,10 +376,31 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
             Some(attacker_ctx.clone()),
         )
         .await
-        .unwrap_err();
-    assert!(
-        denied.to_string().contains("not found"),
-        "must not leak, got {denied}"
+        .expect("foreign status is a structured not-found observation");
+    assert!(!denied.success, "foreign status must fail the call");
+    assert_eq!(denied.output, format!("job not found\njob_id: {job_id}"));
+    let denied_value = denied.value.expect("bounded failure value");
+    assert_eq!(
+        denied_value,
+        serde_json::json!({"job_id": job_id, "error_class": "job_not_found"}),
+        "foreign status must not carry stored job fields"
+    );
+    let missing_id = uuid::Uuid::new_v4().to_string();
+    let missing = tool
+        .execute_structured(
+            serde_json::json!({"action": "status", "job_id": missing_id}),
+            Some(attacker_ctx),
+        )
+        .await
+        .expect("missing status is the comparison observation");
+    assert!(!missing.success);
+    assert_eq!(
+        missing
+            .value
+            .as_ref()
+            .and_then(|value| value.get("error_class")),
+        Some(&serde_json::json!("job_not_found")),
+        "foreign ownership must use the same class as absence"
     );
     // Wait with a tiny timeout reports still-running, never kills the job.
     let owner_wait_ctx = ctx_for("owner-s", None, "inv-w");
@@ -431,6 +452,105 @@ async fn job_tool_enforces_exact_owner_and_wait_timeout_is_observation() {
         Some(job_id)
     );
     let _ = scheduler;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_job_status_is_a_successful_observation() {
+    use codegg_core::jobs::{AttemptCompletion, AttemptState};
+
+    let (submission, _scheduler, _notifications, store) = harness().await;
+    let workspace = tempfile::tempdir().expect("workspace fixture");
+    let workspace_id = submission
+        .workspace_id_for_root(workspace.path())
+        .await
+        .expect("workspace id");
+    let submitted = submission
+        .submit(
+            Some(codegg::scheduler::SubmissionKey::new("status-query-failed-job").unwrap()),
+            codegg_core::jobs::NewJob {
+                workspace_id,
+                session_id: Some("status-owner".into()),
+                turn_id: None,
+                kind: codegg_core::jobs::JobKind::Test,
+                source: codegg_core::jobs::JobSource::Interactive,
+                priority: codegg_core::jobs::JobPriority::Interactive,
+                payload: codegg_core::jobs::JobPayload::Test {
+                    command: "cargo test".into(),
+                    argv: vec!["cargo".into(), "test".into()],
+                    cwd: None,
+                    scope: None,
+                    parent_run_id: None,
+                    sandbox_profile: None,
+                    network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+                },
+                resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                    codegg_core::jobs::JobKind::Test,
+                ),
+                timeout: None,
+                retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                not_before: None,
+                deadline: None,
+                schedule_id: None,
+                depends_on: vec![],
+                parent_job_id: None,
+                parent_attempt_id: None,
+                parent_call_id: None,
+                parent_program_id: None,
+                parent_instruction_sequence: None,
+                relation_kind: None,
+                target: Default::default(),
+            },
+        )
+        .await
+        .expect("submit job");
+    let attempt = store
+        .begin_attempt(
+            &submitted.job_id,
+            &DaemonGeneration::new_unchecked("status-query-test-generation"),
+        )
+        .await
+        .expect("begin attempt");
+    store
+        .finish_attempt(AttemptCompletion {
+            attempt_id: attempt.attempt_id,
+            state: AttemptState::Failed,
+            error: None,
+            run_id: None,
+        })
+        .await
+        .expect("finish failed attempt");
+
+    let tool = codegg::tool::job::JobTool::new().with_submission(submission);
+    let observed = tool
+        .execute_structured(
+            serde_json::json!({
+                "action": "status",
+                "job_id": submitted.job_id.as_str(),
+            }),
+            Some(ctx_for("status-owner", None, "status-query")),
+        )
+        .await
+        .expect("status lookup succeeds");
+    assert!(observed.success, "the status query itself succeeded");
+    assert_eq!(observed.value.as_ref().unwrap()["status"], "failed");
+    assert!(observed.output.starts_with("job failed\njob_id: "));
+
+    let missing = tool
+        .execute_structured(
+            serde_json::json!({
+                "action": "status",
+                "job_id": uuid::Uuid::new_v4().to_string(),
+            }),
+            Some(ctx_for("status-owner", None, "status-query-missing")),
+        )
+        .await
+        .expect("missing-job errors use the structured failure result");
+    assert!(!missing.success, "a failed lookup is still a failed call");
+    assert_eq!(
+        missing.value.as_ref().unwrap()["error_class"],
+        "job_not_found"
+    );
 }
 
 #[test]

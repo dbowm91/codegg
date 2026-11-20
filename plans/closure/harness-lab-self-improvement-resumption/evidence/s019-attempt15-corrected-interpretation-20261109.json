@@ -1,0 +1,194 @@
+{
+  "active_work_span_ms": 3268217,
+  "activity_stall_triggered": false,
+  "agent_terminal": "timeout",
+  "artifact_contents_retained": false,
+  "attempt": 15,
+  "billed_usd": "unknown",
+  "binary_sha256": "ac6687258c7dbb20f3059a836280f9629fa020e69378a18d748182f3406aa204",
+  "causal_events": 767,
+  "causal_events_dropped": 0,
+  "completed_contract_phases": 5,
+  "completed_h007_stages": 7,
+  "continuation_document_valid": false,
+  "continuation_stop_reason": "turn_timeout",
+  "diagnosis": "The run achieved a 54.5-minute measured active-work span and passed the duration, event-pairing, event-loss, activity-gap, disk-floor, exact generic job lifecycle, productive-overlap, and repair-cycle gates. It did not complete the task: the agent timed out, the unchanged verifier ran five tests (three passed, two failed), the release_scale_overlap gate remained incomplete, PUBLIC_ACCEPTANCE_AUDIT.md failed the public artifact check, and the reviewer lifecycle was invalidated by a duplicate Task get after an otherwise successful exact Run status and first completed Task get. No provider, daemon, scheduler, ACP event-loss, activity-stall, or disk-floor failure was observed. The two verifier failure identities are deliberately not retained here; the hidden verifier source and output were not inspected. The next corrective is a narrow agent-facing sequence/persistence change, not a runtime architecture expansion.",
+  "disk_floor_triggered": false,
+  "duration_ms": 3299842,
+  "duration_qualified": true,
+  "event_gap_count": 0,
+  "exact_job_running_and_terminal": true,
+  "hidden_verifier_inspected": false,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "task_not_passed",
+  "incomplete_gates": [
+    "release_scale_overlap"
+  ],
+  "incomplete_stages": [],
+  "lowest_free_disk_bytes": 31830704128,
+  "manifest_sha256": "6162368e05a2e8648b706b70a1c8559c4a23c6442f46279fbf51f80ab629f6b1",
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 115742,
+  "minimum_free_disk_bytes": 10737418240,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "native_tool_call_limit": 1600,
+  "native_tool_calls": 337,
+  "native_tool_terminals": 337,
+  "parent_manifest_sha256": "ecc1c65d4a9bcc4e6d62963b92ed000ceff7d28b449d199387008514d23cc70b",
+  "productive_work_during_job": true,
+  "provider_allowance_usd": 0.180138,
+  "provider_attempt_diagnostic": {
+    "attempt_ids_retained": false,
+    "first_response_event_timeout_count": 0,
+    "input_truncated": false,
+    "last_failure": null,
+    "later_stream_timeout_count": 0,
+    "log_bytes": 2324321,
+    "log_present": true,
+    "provider_attempts_failed": 0,
+    "provider_attempts_started": 276,
+    "provider_attempts_succeeded": 275,
+    "raw_log_in_receipt": false,
+    "raw_provider_text_in_receipt": false,
+    "recognized_events": 2178,
+    "retry_chain_deadline_count": 0,
+    "retry_scheduled_count": 0,
+    "schema": "h007_provider_attempt_diagnostic_v1",
+    "setup_timeout_count": 0,
+    "state": "observed",
+    "stream_idle_timeout_count": 0
+  },
+  "provider_request_counting_rule": "Only JSONL rows with kind=request count; companion allowance_observed rows are not provider requests.",
+  "provider_request_limit": 1200,
+  "provider_request_log_physical_rows": 551,
+  "provider_requests": 276,
+  "public_artifact_status": {
+    "HARNESS_PROBE_REPORT.json": true,
+    "PUBLIC_ACCEPTANCE_AUDIT.md": false,
+    "tools/catalog_probe.py": true
+  },
+  "raw_receipt_path": "/private/tmp/s019-muse-runs/attempt15.json",
+  "raw_receipt_preserved": true,
+  "raw_receipt_sha256": "f499c3d524da487c224b846678276abece102ee6a85754991832e15842112716",
+  "raw_transcript_inspected": false,
+  "release_scale_overlap_confirmed": false,
+  "repair_cycles": 6,
+  "required_review_observed": false,
+  "reviewer": {
+    "completed_get_result_observed_count": 2,
+    "completed_review_result_observed": true,
+    "compliant_status_then_get_lifecycle": false,
+    "duplicate_get_count": 1,
+    "exact_identity_matched_call_count": 4,
+    "explicit_terminal_observation_count": 1,
+    "final_failure_class": null,
+    "final_status": "completed",
+    "get_after_terminal_status_count": 2,
+    "get_count": 2,
+    "get_nonterminal_count": 0,
+    "get_run_status_counts": {
+      "completed": 2
+    },
+    "ordered_completed_get_result_count": 2,
+    "ordered_events": [
+      {
+        "action": "spawn",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1150895,
+        "index": 208,
+        "run_status": "queued",
+        "started_elapsed_ms": 1150874
+      },
+      {
+        "action": "status",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1166236,
+        "index": 215,
+        "run_status": "completed",
+        "started_elapsed_ms": 1166200
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 1174296,
+        "index": 216,
+        "run_status": "completed",
+        "started_elapsed_ms": 1174274
+      },
+      {
+        "action": "get",
+        "call_status": "completed",
+        "failure_class": null,
+        "finished_elapsed_ms": 3100721,
+        "index": 329,
+        "run_status": "completed",
+        "started_elapsed_ms": 3100111
+      }
+    ],
+    "raw_task_arguments_retained": false,
+    "reviewer_event_count": 4,
+    "reviewer_events_truncated": false,
+    "reviewer_spawn_count": 1,
+    "schema": "h007_reviewer_lifecycle_diagnostic_v1",
+    "status_sequence": [
+      {
+        "failure_class": null,
+        "index": 215,
+        "run_status": "completed"
+      }
+    ],
+    "task_action_counts": {
+      "get": 2,
+      "spawn": 1,
+      "status": 1
+    },
+    "task_result_body_retained": false,
+    "task_transcript_retained": false
+  },
+  "reviewer_schedule": {
+    "due_prompt_count": 1,
+    "due_prompt_marker": "The 15-minute independent-review start threshold has been reached.",
+    "first_due_active_work_span_ms": 1129130,
+    "first_due_followup_number": 2,
+    "reviewer_spawn_count": 1,
+    "start_threshold_active_ms": 900000,
+    "task_tool_call_count": 4,
+    "task_tool_requested_by_case": true
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019_attempt_corrected_interpretation_v1",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "stop_reason": "end_turn",
+  "submitted_test_jobs": {
+    "all_terminal_observed": true,
+    "raw_job_arguments_retained": false,
+    "raw_job_ids_retained": false,
+    "submission_count": 20,
+    "terminal_observed_count": 20,
+    "terminal_status_counts": {
+      "completed": 14,
+      "failed": 6
+    },
+    "unique_submitted_job_count": 20,
+    "unobserved_count": 0,
+    "unobserved_status_counts": {}
+  },
+  "task_outcome": "failed",
+  "verifier": {
+    "assertion_text_retained": false,
+    "exit_code": 1,
+    "failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "state": "assertion_failures",
+    "tests_run": 5,
+    "timed_out": false,
+    "traceback_retained": false
+  }
+}

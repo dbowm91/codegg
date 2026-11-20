@@ -22,6 +22,7 @@
 //! `ToolValue` so callers can consume typed results uniformly.
 
 use sha2::Digest;
+use std::future::Future;
 use std::path::PathBuf;
 
 /// Head start the broker's watchdog gets over the tool's own deadline.
@@ -35,6 +36,37 @@ use std::path::PathBuf;
 /// The window also lets the tool's own watchdog return typed timeout details
 /// and partial output before the broker's watchdog fires.
 pub(crate) const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
+const BROKER_CANCELLATION_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+
+async fn execute_with_cancellation_cleanup<F>(
+    future: F,
+    cancellation: Option<tokio_util::sync::CancellationToken>,
+    watchdog_timeout: std::time::Duration,
+) -> Result<StructuredToolResult, ToolError>
+where
+    F: Future<Output = Result<StructuredToolResult, ToolError>>,
+{
+    let mut future = Box::pin(future);
+    if let Some(cancellation) = cancellation {
+        tokio::select! {
+            result = tokio::time::timeout(watchdog_timeout, &mut future) => result.unwrap_or_else(|_| {
+                Err(ToolError::Timeout("broker invocation timed out".into()))
+            }),
+            _ = cancellation.cancelled() => {
+                match tokio::time::timeout(BROKER_CANCELLATION_CLEANUP_GRACE, &mut future).await {
+                    Ok(_) => Err(ToolError::Execution("broker invocation cancelled".into())),
+                    Err(_) => Err(ToolError::Timeout(
+                        "broker invocation cancellation cleanup timed out".into(),
+                    )),
+                }
+            }
+        }
+    } else {
+        tokio::time::timeout(watchdog_timeout, &mut future)
+            .await
+            .unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into())))
+    }
+}
 
 use crate::error::ToolError;
 
@@ -981,23 +1013,12 @@ impl ToolBroker {
             let mut exec_ctx = execution_context_for_attempt(&ctx, effective_timeout);
             exec_ctx.program_contract_snapshot = program_contract_snapshot.clone();
             let attempt_input = input.clone();
-            let result = match ctx.cancellation.clone() {
-                Some(token) => {
-                    tokio::select! {
-                        _ = token.cancelled() => Err(ToolError::Timeout("broker invocation cancelled".into())),
-                        result = tokio::time::timeout(
-                            std::time::Duration::from_millis(broker_watchdog_timeout),
-                            tool.execute_structured(attempt_input, Some(exec_ctx)),
-                        ) => result.unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
-                    }
-                }
-                None => tokio::time::timeout(
-                    std::time::Duration::from_millis(broker_watchdog_timeout),
-                    tool.execute_structured(attempt_input, Some(exec_ctx)),
-                )
-                .await
-                .unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
-            };
+            let result = execute_with_cancellation_cleanup(
+                tool.execute_structured(attempt_input, Some(exec_ctx)),
+                ctx.cancellation.clone(),
+                std::time::Duration::from_millis(broker_watchdog_timeout),
+            )
+            .await;
             let elapsed_ms = start.elapsed().as_millis() as u64;
 
             match result {
@@ -1049,30 +1070,7 @@ impl ToolBroker {
                     // Legacy single-attempt path: map directly, no chain
                     // accounting, identical to the pre-M002 behavior.
                     let Some(chain_ref) = chain.as_mut() else {
-                        let value = match &e {
-                            ToolError::NotFound(name) => {
-                                // H14: extension misses already carry the
-                                // domain label; do not re-prefix them as tools.
-                                if name.starts_with("Extension not found in catalog:") {
-                                    ToolValue::infrastructure_error(name.clone())
-                                } else {
-                                    ToolValue::infrastructure_error(format!(
-                                        "Tool not found: {name}"
-                                    ))
-                                }
-                            }
-                            ToolError::Timeout(message) => self.timeout_value(message),
-                            ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
-                            ToolError::Disabled(msg) => {
-                                ToolValue::infrastructure_error(format!("Tool is disabled: {msg}"))
-                            }
-                            ToolError::BackendUnavailable(msg) => ToolValue::infrastructure_error(
-                                format!("Execution backend unavailable: {msg}"),
-                            ),
-                            other => {
-                                ToolValue::infrastructure_error(format!("Tool error: {other}"))
-                            }
-                        };
+                        let value = self.terminal_error_value(&e);
                         return Ok(BrokerResult {
                             value,
                             contract: contract.clone(),
@@ -1156,30 +1154,7 @@ impl ToolBroker {
                                 reason = %reason,
                                 "tool attempt failed terminally; not retried"
                             );
-                            let value = match &e {
-                                ToolError::NotFound(name) => {
-                                    if name.starts_with("Extension not found in catalog:") {
-                                        ToolValue::infrastructure_error(name.clone())
-                                    } else {
-                                        ToolValue::infrastructure_error(format!(
-                                            "Tool not found: {name}"
-                                        ))
-                                    }
-                                }
-                                ToolError::Timeout(message) => self.timeout_value(message),
-                                ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
-                                ToolError::Disabled(msg) => ToolValue::infrastructure_error(
-                                    format!("Tool is disabled: {msg}"),
-                                ),
-                                ToolError::BackendUnavailable(msg) => {
-                                    ToolValue::infrastructure_error(format!(
-                                        "Execution backend unavailable: {msg}"
-                                    ))
-                                }
-                                other => {
-                                    ToolValue::infrastructure_error(format!("Tool error: {other}"))
-                                }
-                            };
+                            let value = self.terminal_error_value(&e);
                             return Ok(BrokerResult {
                                 value,
                                 contract: contract.clone(),
@@ -1311,7 +1286,7 @@ impl ToolBroker {
         }
         let display_len = value.display.len();
         if display_len > self.config.max_output_bytes {
-            value.display.truncate(self.config.max_output_bytes);
+            truncate_to_utf8_boundary(&mut value.display, self.config.max_output_bytes);
             value.truncated = true;
         }
         Ok(value)
@@ -1332,6 +1307,30 @@ impl ToolBroker {
             format!("{}{}", &message[..boundary], suffix)
         };
         ToolValue::timed_out_with_details(display)
+    }
+
+    fn terminal_error_value(&self, error: &ToolError) -> ToolValue {
+        match error {
+            ToolError::NotFound(name) => {
+                // Extension misses already carry the domain label; avoid adding
+                // a misleading tool-not-found prefix.
+                if name.starts_with("Extension not found in catalog:") {
+                    ToolValue::infrastructure_error(name.clone())
+                } else {
+                    ToolValue::infrastructure_error(format!("Tool not found: {name}"))
+                }
+            }
+            ToolError::Timeout(message) => self.timeout_value(message),
+            ToolError::Permission(message) => ToolValue::denied(message.clone()),
+            ToolError::Disabled(message) => {
+                ToolValue::infrastructure_error(format!("Tool is disabled: {message}"))
+            }
+            ToolError::BackendUnavailable(message) => {
+                ToolValue::infrastructure_error(format!("Execution backend unavailable: {message}"))
+            }
+            ToolError::Execution(_) => ToolValue::execution_error(format!("Tool error: {error}")),
+            other => ToolValue::infrastructure_error(format!("Tool error: {other}")),
+        }
     }
 
     // ── Step 9: Artifact registration ─────────────────────────
@@ -1381,7 +1380,7 @@ impl ToolBroker {
                     .await
                     .map_err(|error| BrokerError::Execution(error.to_string()))?;
             }
-            value.display.truncate(self.config.max_output_display_bytes);
+            truncate_to_utf8_boundary(&mut value.display, self.config.max_output_display_bytes);
             let artifact = super::contract::ToolArtifactHandle {
                 artifact_id: handle,
                 tool_name: tool_name.to_string(),
@@ -1397,6 +1396,17 @@ impl ToolBroker {
         }
         Ok(value)
     }
+}
+
+fn truncate_to_utf8_boundary(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
 }
 
 /// Whether a value matches one JSON type name.
@@ -1740,6 +1750,78 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn artifact_display_truncation_preserves_utf8_boundaries() {
+        let registry = make_registry_with_test_tool();
+        let broker = ToolBroker::with_config(
+            &registry,
+            ToolBrokerConfig {
+                max_output_display_bytes: 4,
+                ..ToolBrokerConfig::default()
+            },
+        );
+
+        let result = broker
+            .register_artifacts(
+                "read",
+                ToolValue::success("abcé".into()),
+                &make_ctx(),
+                "utf8-truncation",
+            )
+            .await
+            .expect("artifact registration should handle a byte limit inside a character");
+
+        assert_eq!(result.display, "abc");
+        assert!(result.truncated);
+        assert_eq!(result.artifacts.len(), 1);
+        assert_eq!(result.artifacts[0].byte_length, 5);
+    }
+
+    #[test]
+    fn output_limit_truncation_preserves_utf8_boundaries() {
+        let registry = make_registry_with_test_tool();
+        let broker = ToolBroker::with_config(
+            &registry,
+            ToolBrokerConfig {
+                max_output_bytes: 4,
+                max_output_display_bytes: usize::MAX,
+                ..ToolBrokerConfig::default()
+            },
+        );
+        let contract = broker.catalog().get("read").expect("read contract");
+
+        let result = broker
+            .validate_output(contract, ToolValue::success("abcé".into()))
+            .expect("output validation should truncate at a character boundary");
+
+        assert_eq!(result.display, "abc");
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn terminal_error_mapping_preserves_execution_and_backend_classes() {
+        let registry = make_registry_with_test_tool();
+        let broker = ToolBroker::with_config(&registry, ToolBrokerConfig::default());
+
+        let execution = broker.terminal_error_value(&ToolError::Execution("bad input".into()));
+        assert_eq!(execution.terminal_status, ToolTerminalStatus::Error);
+        assert!(execution.display.contains("bad input"));
+
+        let backend = broker
+            .terminal_error_value(&ToolError::BackendUnavailable("sandbox unavailable".into()));
+        assert_eq!(
+            backend.terminal_status,
+            ToolTerminalStatus::InfrastructureError
+        );
+        assert!(backend.display.contains("Execution backend unavailable"));
+
+        let timeout = broker.terminal_error_value(&ToolError::Timeout("deadline".into()));
+        assert_eq!(timeout.terminal_status, ToolTerminalStatus::TimedOut);
+
+        let denied = broker.terminal_error_value(&ToolError::Permission("denied".into()));
+        assert_eq!(denied.terminal_status, ToolTerminalStatus::Denied);
+    }
+
     #[test]
     fn retry_attempt_contexts_preserve_one_authorization_snapshot_and_receipt() {
         let mut invocation = make_ctx();
@@ -1842,6 +1924,37 @@ mod tests {
             contract.effect_class,
             super::super::contract::ToolEffectClass::NonIdempotent
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_waits_for_tool_owned_cleanup() {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let tool_cancellation = cancellation.clone();
+        let cleaned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tool_cleaned = cleaned.clone();
+        let tool = async move {
+            tool_cancellation.cancelled().await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tool_cleaned.store(true, std::sync::atomic::Ordering::Release);
+            Ok(StructuredToolResult::legacy("probe", "stopped".into()))
+        };
+        let trigger = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            trigger.cancel();
+        });
+
+        let result = super::execute_with_cancellation_cleanup(
+            tool,
+            Some(cancellation),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ToolError::Execution(message)) if message.contains("cancelled"))
+        );
+        assert!(cleaned.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]

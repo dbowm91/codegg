@@ -17,7 +17,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 use std::sync::Arc;
@@ -25,6 +25,8 @@ use std::sync::Arc;
 use crate::tui::app::state::{prompt_preview, TaskScheduleDraft, TaskSheetField};
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 /// Bounded seed data snapshotted when the sheet opens. Display only;
@@ -590,12 +592,9 @@ fn render_sheet(
         return;
     }
     let width = area.width as usize;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .title(" Schedule Task ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = Section::new("Schedule Task", theme)
+        .focused(true)
+        .draw(area, frame.buffer_mut());
     if inner.height == 0 || inner.width < 10 {
         return;
     }
@@ -711,6 +710,15 @@ fn render_sheet(
             Style::default().fg(theme.error),
         )));
     }
+    // The confirm row's annotation is an advertisement inside a form row: the
+    // label stays, the keys are items, and the default is a value. `Esc` leads
+    // the annotation because the row is truncated to the sheet's width.
+    let confirm_hint = HintLine::from_items(&[
+        ("Esc", "cancel"),
+        ("Enter", "confirm"),
+        ("default is immediate/zero delay", ""),
+    ])
+    .render(0);
     lines.push(Line::from(vec![
         marker(TaskSheetField::Confirm),
         Span::styled(
@@ -719,7 +727,7 @@ fn render_sheet(
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  (Enter confirms · Esc cancels · default is immediate/zero delay)"),
+        Span::raw(format!(" ({confirm_hint})")),
     ]));
     let paragraph = Paragraph::new(lines).style(Style::default().fg(theme.foreground));
     frame.render_widget(paragraph, inner);

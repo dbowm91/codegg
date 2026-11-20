@@ -11,17 +11,21 @@
 //! in sync, so `/help` and the panel cannot drift apart the way the previous
 //! chat pair did.
 //!
-//! The title is the only thing the panel supplies, because "is this region
-//! focused" is a host fact the dialog cannot know about itself.
+//! The only thing the panel adds is its **edge** — the border, the name and
+//! the focus marker — because "is this region focused" is a host fact the
+//! dialog cannot know about itself. That edge comes from `PanelChrome`, so it
+//! matches every other panel's.
 
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::tui::components::component::Component;
 use crate::tui::components::dialogs::help::HelpDialog;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::input::{InputAction, InputMode};
 use crate::tui::theme::Theme;
 
+use super::chrome::PanelChrome;
 use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
 
 /// The docked form of `/help`.
@@ -79,8 +83,12 @@ impl SidePanel for HelpPanel {
                 InputMode::Normal,
             );
         }
-        let title = if ctx.focused { " Help ● " } else { " Help " };
-        self.dialog.render_into(buf, area, &ctx.theme, title);
+        // The panel's edge is the shared chrome's: the border, the name and
+        // the focus marker all sit on the panel, and the dialog paints its
+        // four sections inside the area left for them.
+        let inner =
+            PanelChrome::new(SidePanelId::Help.label(), ctx.focused, &ctx.theme).draw(area, buf);
+        self.dialog.render_into(buf, inner, &ctx.theme);
     }
 
     fn handle_key(
@@ -106,10 +114,16 @@ impl SidePanel for HelpPanel {
         // Mode-aware because the two modes genuinely have different verbs:
         // naming "type to filter" to a user who is in Normal is how they end
         // up pressing `j` and concluding the panel is broken.
-        Some(if self.dialog.input_mode() == InputMode::Normal {
-            "HELP · NOR · j/k scroll · i filter · Shift+← back".to_string()
+        let normal = self.dialog.input_mode() == InputMode::Normal;
+        let mut hint = HintLine::new();
+        hint.push("HELP", "")
+            .push(if normal { "NOR" } else { "INS" }, "");
+        if normal {
+            hint.push("j/k", "scroll").push("i", "filter");
         } else {
-            "HELP · INS · type to filter · Esc normal · Shift+← back".to_string()
-        })
+            hint.push("type", "to filter").push("Esc", "normal");
+        }
+        hint.push("Shift+←", "back");
+        Some(hint.render(0))
     }
 }

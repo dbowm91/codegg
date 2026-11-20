@@ -6,20 +6,21 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
-use super::super::scroll::CenteredScroll;
+use super::super::scroll::ListCursor;
+use super::super::section::{Section, SectionFrame};
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 
 pub struct AgentDialog {
     pub theme: Arc<Theme>,
     pub agents: Vec<Agent>,
     pub current: String,
-    pub selected: usize,
-    pub scroll: CenteredScroll,
+    pub cursor: ListCursor,
     pub filter: String,
     visible_height: usize,
     filtered_cache: RefCell<Option<(String, Vec<usize>)>>,
@@ -31,8 +32,7 @@ impl Clone for AgentDialog {
             theme: Arc::clone(&self.theme),
             agents: self.agents.clone(),
             current: self.current.clone(),
-            selected: self.selected,
-            scroll: self.scroll.clone(),
+            cursor: self.cursor.clone(),
             filter: self.filter.clone(),
             visible_height: self.visible_height,
             filtered_cache: RefCell::new(self.filtered_cache.borrow().clone()),
@@ -46,8 +46,7 @@ impl AgentDialog {
             theme,
             agents: Vec::new(),
             current: String::new(),
-            selected: 0,
-            scroll: CenteredScroll::new(),
+            cursor: ListCursor::new(),
             filter: String::new(),
             visible_height: 10,
             filtered_cache: RefCell::new(None),
@@ -71,45 +70,31 @@ impl AgentDialog {
     }
 
     pub fn selected(&self) -> Option<String> {
-        self.filtered().get(self.selected).map(|a| a.name.clone())
+        let filtered = self.filtered();
+        filtered
+            .get(self.cursor.index(filtered.len()))
+            .map(|a| a.name.clone())
     }
 
     pub fn select_up(&mut self) {
-        let filtered_len = self.filtered().len();
-        if self.selected > 0 {
-            self.selected -= 1;
-        }
-        let scroll = self.scroll.get();
-        if self.selected < scroll || self.selected >= scroll + self.visible_height {
-            self.scroll
-                .clamp(self.selected, filtered_len, self.visible_height);
-        }
+        let len = self.filtered().len();
+        self.cursor.up(len, self.visible_height);
     }
 
     pub fn select_down(&mut self) {
-        let filtered_len = self.filtered().len();
-        let max = filtered_len.saturating_sub(1);
-        if self.selected < max {
-            self.selected += 1;
-        }
-        let scroll = self.scroll.get();
-        if self.selected < scroll || self.selected >= scroll + self.visible_height {
-            self.scroll
-                .clamp(self.selected, filtered_len, self.visible_height);
-        }
+        let len = self.filtered().len();
+        self.cursor.down(len, self.visible_height);
     }
 
     pub fn set_filter(&mut self, c: char) {
         self.filter.push(c);
-        self.selected = 0;
-        self.scroll.reset();
+        self.cursor.reset();
         self.update_cache();
     }
 
     pub fn backspace_filter(&mut self) {
         self.filter.pop();
-        self.selected = 0;
-        self.scroll.reset();
+        self.cursor.reset();
         self.update_cache();
     }
 
@@ -131,16 +116,13 @@ impl AgentDialog {
     }
 
     pub fn initialize_selection(&mut self, current: &str) {
-        if let Some(idx) = self.agents.iter().position(|a| a.name == current) {
-            self.selected = idx;
-        }
-        let filtered_len = self.filtered().len();
-        if self.selected < self.scroll.get()
-            || self.selected >= self.scroll.get() + self.visible_height
-        {
-            self.scroll
-                .clamp(self.selected, filtered_len, self.visible_height);
-        }
+        let len = self.filtered().len();
+        let index = self
+            .agents
+            .iter()
+            .position(|a| a.name == current)
+            .unwrap_or_else(|| self.cursor.index(len));
+        self.cursor.place(index, len, self.visible_height);
     }
 
     fn filtered(&self) -> Vec<&Agent> {
@@ -157,6 +139,91 @@ impl AgentDialog {
                 .filter(|a| a.name.to_lowercase().contains(&self.filter.to_lowercase()))
                 .collect()
         }
+    }
+
+    /// The section's edge is styled as the focused surface when this dialog
+    /// owns it. A modal is what the user is interacting with, so it gets the
+    /// primary edge and title; it does **not** get a `●`, because that marker
+    /// names the panel column holding the keyboard and belongs to the host
+    /// that framed a docked dialog. The hosted arm paints no cell at all, so
+    /// its focus flag cannot matter.
+    fn render_body(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Arc<Theme>,
+        edge: SectionFrame,
+    ) {
+        self.set_theme(theme);
+        let mut lines: Vec<Line> = Vec::new();
+
+        lines.push(Line::from(Span::styled(
+            " Select Agent ",
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        if !self.filter.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("filter: ", Style::default().fg(theme.muted)),
+                Span::raw(&self.filter),
+            ]));
+            lines.push(Line::from(""));
+        }
+
+        let filtered = self.filtered();
+        let scroll = self.cursor.offset();
+        let selected = self.cursor.index(filtered.len());
+        for (i, agent) in filtered.iter().enumerate() {
+            if i < scroll {
+                continue;
+            }
+            let is_current = agent.name == self.current;
+            let is_selected = i == selected;
+            let style = if is_selected {
+                Style::default()
+                    .fg(theme.primary)
+                    .bg(theme.selection)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_current {
+                Style::default().fg(theme.success)
+            } else {
+                Style::default().fg(theme.foreground)
+            };
+            let marker = if is_current { "✓ " } else { "  " };
+            lines.push(Line::from(vec![
+                Span::styled(marker.to_string(), Style::default().fg(theme.muted)),
+                Span::styled(&agent.name, style),
+                Span::styled(
+                    format!(" — {}", agent.description),
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+        }
+
+        if filtered.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "no agents match filter",
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            HintLine::from_items(&[("Esc", "close"), ("↑/↓", "navigate"), ("Enter", "select")])
+                .render(0),
+            Style::default().fg(theme.muted),
+        )));
+
+        let section = Section::new("Agents", theme)
+            .frame(edge)
+            .focused(matches!(edge, SectionFrame::Owned));
+        let body = section.draw(area, frame.buffer_mut());
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(body, frame.buffer_mut());
     }
 }
 
@@ -219,75 +286,19 @@ impl Component for AgentDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.set_theme(theme);
-        let mut lines: Vec<Line> = Vec::new();
+        self.render_body(frame, area, theme, SectionFrame::Owned);
+    }
 
-        lines.push(Line::from(Span::styled(
-            " Select Agent ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
-
-        if !self.filter.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("filter: ", Style::default().fg(theme.muted)),
-                Span::raw(&self.filter),
-            ]));
-            lines.push(Line::from(""));
-        }
-
-        let filtered = self.filtered();
-        let scroll = self.scroll.get();
-        for (i, agent) in filtered.iter().enumerate() {
-            if i < scroll {
-                continue;
-            }
-            let is_current = agent.name == self.current;
-            let is_selected = i == self.selected;
-            let style = if is_selected {
-                Style::default()
-                    .fg(theme.primary)
-                    .bg(theme.selection)
-                    .add_modifier(Modifier::BOLD)
-            } else if is_current {
-                Style::default().fg(theme.success)
-            } else {
-                Style::default().fg(theme.foreground)
-            };
-            let marker = if is_current { "✓ " } else { "  " };
-            lines.push(Line::from(vec![
-                Span::styled(marker.to_string(), Style::default().fg(theme.muted)),
-                Span::styled(&agent.name, style),
-                Span::styled(
-                    format!(" — {}", agent.description),
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-        }
-
-        if filtered.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "no agents match filter",
-                Style::default().fg(theme.muted),
-            )));
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  |  Enter select  |  Esc close",
-            Style::default().fg(theme.muted),
-        )));
-
-        let block = Block::default()
-            .title(" Agents ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
-
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
-        paragraph.render(area, frame.buffer_mut());
+    /// The body alone, inside the frame the host already drew.
+    ///
+    /// `SectionFrame::Hosted` is the structural half of this seam: the section
+    /// writes no cell at all and answers the full column rect, so the host's
+    /// border, its title and the `●` survive by construction rather than by
+    /// this method remembering not to paint them. The file previously had no
+    /// override at all while `docks_as_viewer` returned `true`, so docking the
+    /// editor painted its border and title over the host's three.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render_body(frame, area, theme, SectionFrame::Hosted);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -329,5 +340,215 @@ mod vim_key_tests {
         d.handle_key(key('j'));
         d.handle_key(key('k'));
         assert_eq!(d.filter, "", "j/k must not open the filter");
+    }
+}
+
+#[cfg(test)]
+mod panel_chrome_tests {
+    use super::*;
+    use crate::tui::panels::render_hosted;
+    use ratatui::buffer::Buffer;
+
+    /// A label that is deliberately *not* the dialog's own title, so a
+    /// surviving host title is evidence rather than coincidence.
+    const HOST_LABEL: &str = "Roster";
+
+    fn theme() -> Arc<Theme> {
+        Arc::new(Theme::dark())
+    }
+
+    fn hosted_rows(dialog: &mut dyn Component, area: Rect, theme: &Arc<Theme>) -> Vec<String> {
+        let mut buf = Buffer::empty(area);
+        render_hosted(dialog, &mut buf, area, theme, HOST_LABEL, true);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| {
+                        buf.cell((x, y))
+                            .map(|cell| cell.symbol().to_string())
+                            .unwrap_or_else(|| " ".to_string())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Whether `rows` still carries the host's border, title and `●`.
+    ///
+    /// Returns the first violation rather than a count: one named defect
+    /// localises the regression, a count does not.
+    fn host_chrome_intact(rows: &[String]) -> Result<(), String> {
+        let height = rows.len();
+        let top = &rows[0];
+        if !(top.starts_with('┌') && top.ends_with('┐')) {
+            return Err(format!("the host top border is gone — row 0 is {top:?}"));
+        }
+        let bottom = &rows[height - 1];
+        if !(bottom.starts_with('└') && bottom.ends_with('┘')) {
+            return Err(format!(
+                "the host bottom border is gone — row {} is {bottom:?}",
+                height - 1
+            ));
+        }
+        for (y, row) in rows.iter().enumerate().skip(1).take(height - 2) {
+            let first = row.chars().next().unwrap_or(' ');
+            let last = row.chars().last().unwrap_or(' ');
+            if first != '│' || last != '│' {
+                return Err(format!("the host side border is broken at row {y}"));
+            }
+        }
+        if !top.contains(HOST_LABEL) {
+            return Err(format!(
+                "the host's own title `{HOST_LABEL}` is not on screen — row 0 is {top:?}"
+            ));
+        }
+        if !top.contains('●') {
+            return Err(format!("the `●` focus marker is gone — row 0 is {top:?}"));
+        }
+        Ok(())
+    }
+
+    /// The pre-fix shape: a dockable box that never overrode
+    /// `render_in_panel`, so the default delegated to the modal render and its
+    /// own border overwrote the host's.
+    struct NoPanelSeam(AgentDialog);
+
+    impl Component for NoPanelSeam {
+        fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
+            self.0.handle_key(key)
+        }
+
+        fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg> {
+            self.0.update(msg)
+        }
+
+        fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+            self.0.render(frame, area, theme);
+        }
+
+        fn docks_as_viewer(&self) -> bool {
+            true
+        }
+
+        fn dialog_type(&self) -> DialogType {
+            DialogType::Agent
+        }
+    }
+
+    #[test]
+    fn a_docked_agent_dialog_leaves_the_hosts_border_title_and_focus_dot_alone() {
+        let theme = theme();
+        let area = Rect::new(0, 0, 44, 16);
+        let mut dialog = AgentDialog::new(Arc::clone(&theme));
+        let rows = hosted_rows(&mut dialog, area, &theme);
+
+        assert_eq!(host_chrome_intact(&rows), Ok(()), "{rows:#?}");
+        let text = rows.concat();
+        assert!(
+            !text.contains(" Agents "),
+            "the dialog's own title is on screen, so it overwrote the host's: {rows:#?}"
+        );
+        assert!(
+            text.contains("Select Agent"),
+            "the body must survive the chrome change: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn the_docked_chrome_assertion_detects_a_box_that_paints_its_own_border() {
+        // The assertion's non-vacuity proof, and the exact defect this
+        // milestone repairs: a `docks_as_viewer` box with no `render_in_panel`
+        // override. If this passed, the test above would prove nothing.
+        let theme = theme();
+        let area = Rect::new(0, 0, 44, 16);
+        let mut unfixed = NoPanelSeam(AgentDialog::new(Arc::clone(&theme)));
+        let rows = hosted_rows(&mut unfixed, area, &theme);
+
+        let verdict = host_chrome_intact(&rows);
+        assert!(
+            verdict.is_err(),
+            "a box that paints its own border must fail the hosted-chrome check: {rows:#?}"
+        );
+        let message = verdict.unwrap_err();
+        assert!(
+            message.contains("Agents"),
+            "the report must name the overwritten title, got: {message}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cursor_policy_tests {
+    use super::*;
+    use crate::tui::components::scroll::ScrollPolicy;
+
+    fn dialog_with(names: &[&str], visible_height: usize) -> AgentDialog {
+        let agents: Vec<Agent> = names
+            .iter()
+            .map(|name| Agent {
+                name: (*name).to_string(),
+                ..Default::default()
+            })
+            .collect();
+        let mut dialog = AgentDialog::new(Arc::new(Theme::default()));
+        dialog.set_agents(agents.iter().collect());
+        dialog.set_visible_height(visible_height);
+        dialog
+    }
+
+    #[test]
+    fn agent_cursor_clamps_at_both_ends_and_never_wraps() {
+        let mut dialog = dialog_with(&["alpha", "beta", "gamma"], 2);
+
+        dialog.select_up();
+        assert_eq!(
+            dialog.cursor.index(3),
+            0,
+            "ScrollPolicy::Clamp must stop on the first agent, not wrap to the last"
+        );
+
+        dialog.select_down();
+        dialog.select_down();
+        dialog.select_down();
+        assert_eq!(
+            dialog.cursor.index(3),
+            2,
+            "ScrollPolicy::Clamp must stop on the last agent, not wrap to the first"
+        );
+        assert_eq!(dialog.cursor.policy(), ScrollPolicy::Clamp);
+    }
+
+    #[test]
+    fn agent_window_follows_only_when_the_cursor_leaves_it() {
+        let mut dialog = dialog_with(&["alpha", "beta", "gamma"], 2);
+
+        dialog.select_down();
+        assert_eq!(
+            dialog.cursor.offset(),
+            0,
+            "a step inside the window is free"
+        );
+        dialog.select_down();
+        assert_eq!(
+            dialog.cursor.offset(),
+            1,
+            "the window must follow once the cursor passes its last visible row"
+        );
+        dialog.select_up();
+        assert_eq!(
+            dialog.cursor.offset(),
+            1,
+            "stepping back inside the window must not scroll again"
+        );
+        dialog.select_up();
+        assert_eq!(dialog.cursor.offset(), 0);
+    }
+
+    #[test]
+    fn agent_filter_that_matches_nothing_leaves_no_selection() {
+        let mut dialog = dialog_with(&["alpha"], 4);
+        dialog.set_filter('z');
+        assert_eq!(dialog.cursor.index(0), 0);
+        assert!(dialog.selected().is_none());
     }
 }

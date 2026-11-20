@@ -1,12 +1,14 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 #[derive(Clone)]
@@ -42,7 +44,22 @@ impl ConfirmDialog {
     }
 }
 
+/// The content rows of each of the dialog's three boxes. `Section` adds the
+/// border, so counting it here as well would shrink the box by two rows.
+const TITLE_ROWS: u16 = 2;
+const MESSAGE_ROWS: u16 = 2;
+const OPTIONS_ROWS: u16 = 3;
+
 impl Component for ConfirmDialog {
+    fn preferred_area(&self, available: Rect) -> Rect {
+        crate::tui::components::dialog_size::preferred_rows(
+            available,
+            Section::owned_height(TITLE_ROWS)
+                + Section::owned_height(MESSAGE_ROWS)
+                + Section::owned_height(OPTIONS_ROWS),
+        )
+    }
+
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
         match key.code {
             crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
@@ -76,36 +93,33 @@ impl Component for ConfirmDialog {
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let chunks = Layout::vertical([
-            Constraint::Length(4),
-            Constraint::Min(4),
-            Constraint::Length(5),
+            Constraint::Length(Section::owned_height(TITLE_ROWS)),
+            Constraint::Min(Section::owned_height(MESSAGE_ROWS)),
+            Constraint::Length(Section::owned_height(OPTIONS_ROWS)),
         ])
         .split(area);
 
-        let title = Paragraph::new(Line::from(Span::styled(
-            &self.title,
-            Style::default().fg(theme.warning),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Confirm ")
-                .border_style(Style::default().fg(theme.warning)),
+        let title_inner = Section::new("Confirm", theme)
+            .focused(true)
+            .draw(chunks[0], frame.buffer_mut());
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                &self.title,
+                Style::default().fg(theme.warning),
+            ))),
+            title_inner,
         );
-        frame.render_widget(title, chunks[0]);
 
-        let message = Paragraph::new(Line::from(Span::styled(
-            &self.message,
-            Style::default().fg(theme.foreground),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
+        let message_inner = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                &self.message,
+                Style::default().fg(theme.foreground),
+            ))),
+            message_inner,
         );
-        frame.render_widget(message, chunks[1]);
 
-        let options: Vec<Line> = ["Yes", "No"]
+        let mut options: Vec<Line> = ["Yes", "No"]
             .iter()
             .enumerate()
             .map(|(i, opt)| {
@@ -126,13 +140,20 @@ impl Component for ConfirmDialog {
             })
             .collect();
 
-        let options_para = Paragraph::new(options).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" ↑↓ select  |  Enter confirm  |  Esc cancel ")
-                .border_style(Style::default().fg(theme.border)),
-        );
-        frame.render_widget(options_para, chunks[2]);
+        // The keymap stays inside the box rather than on its bottom edge.
+        // A border hint is painted in the section's title style — muted when
+        // the section is unfocused — and this dialog paints no other muted
+        // text, so moving the keymap onto the edge would add six
+        // `muted`-on-background contrast pairs across the bundled themes for a
+        // string that was previously foreground-coloured. The primitive's
+        // hint arm is used where the surface already paints muted text.
+        options.push(Line::from(Span::styled(
+            HintLine::from_items(&[("Esc", "cancel"), ("↑↓", "select"), ("Enter", "confirm")])
+                .render(0),
+            Style::default().fg(theme.foreground),
+        )));
+        let options_inner = Section::plain(theme).draw(chunks[2], frame.buffer_mut());
+        frame.render_widget(Paragraph::new(options), options_inner);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -155,5 +176,42 @@ impl Component for ConfirmDialog {
 impl Default for ConfirmDialog {
     fn default() -> Self {
         Self::new("Confirm".to_string(), "Are you sure?".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn both_options_and_the_keymap_fit_the_stated_preference_at_24_rows() {
+        let theme = Arc::new(Theme::dark());
+        let mut dialog = ConfirmDialog::new("Delete".to_string(), "Are you sure?".to_string());
+        let screen = Rect::new(0, 0, 80, 24);
+        let rect =
+            crate::tui::components::dialog_size::clamp_area(dialog.preferred_area(screen), screen);
+        let mut terminal =
+            Terminal::new(TestBackend::new(screen.width, screen.height)).expect("test terminal");
+        terminal
+            .draw(|frame| dialog.render(frame, rect, &theme))
+            .expect("draw");
+
+        let mut drawn = String::new();
+        for y in rect.y..rect.y + rect.height {
+            for x in rect.x..rect.x + rect.width {
+                if let Some(cell) = terminal.backend().buffer().cell((x, y)) {
+                    drawn.push_str(cell.symbol());
+                }
+            }
+            drawn.push('\n');
+        }
+        for row in ["Yes", "No", "Enter confirm"] {
+            assert!(
+                drawn.contains(row),
+                "a 24-row Confirm must show {row:?} without scrolling; it drew:\n{drawn}"
+            );
+        }
     }
 }

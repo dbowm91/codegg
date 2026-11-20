@@ -26,6 +26,7 @@ use crate::protocol::core::{
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 fn epoch_of(app: &App) -> u64 {
@@ -723,6 +724,18 @@ fn short_principal(principal: &str) -> String {
         cut -= 1;
     }
     format!("{}…", &principal[..cut])
+}
+
+pub(crate) fn dispatch_control(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    // M004: shared-session controller lease. Bare `/control`
+    // shows the current lease plus inert requests for the
+    // active session; subcommands request/transfer/release/
+    // take over explicit control. Observer mode stays
+    // hard-blocked via the central `blocks_command` gate
+    // (this arm is unreachable while observing).
+    let args = argument;
+    crate::tui::commands::control::dispatch_control_command(app, args);
 }
 
 #[cfg(test)]

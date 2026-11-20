@@ -1,44 +1,45 @@
-# Repository initialization drafts
+# Repository initialization
 
-Repository initialization analyzes the explicitly selected project and
-proposes a concise `AGENTS.md` section from local evidence. The analyzer is
-read-only: it does not run build or test commands, contact a provider, access
-global personal instructions, or write project files.
+`/init` previews an evidence-based draft for the selected project's root
+`AGENTS.md`. The analyzer is read-only: it does not run discovered commands,
+contact a provider, read global personal instructions, or write project files.
 
-Evidence is limited to allowlisted README, language manifest, task, workflow,
-and existing instruction files. Scans have entry-count, depth, per-file,
-total-byte, and elapsed-time limits. Common dependency, generated, cache, and version-control
-directories and symlinked evidence are skipped. Reports name the source file
-and classify facts as observed, inferred, or unknown. A manifest or declared
-script is evidence that a command exists, not that it succeeds.
+The scan reads only allowlisted project metadata and is bounded by file-count,
+depth, file-size, total-size, and time limits. It skips symlinked evidence and
+common generated, cache, dependency, and version-control directories. The
+preview identifies each source and labels its facts observed, inferred, or
+unknown. A declared script is evidence that a command exists, not that it
+works.
 
-For an existing root `AGENTS.md`, the candidate replaces only the section
-between `<!-- codegg:init:start -->` and `<!-- codegg:init:end -->`. Human text
-outside those markers is preserved. If the markers are absent, the proposal
-is appended; unchanged evidence produces an idempotent no-op. The candidate
-includes the digest of the exact existing file, or records that the file was
-absent, so a later publishing surface can reject stale previews.
+For an existing root `AGENTS.md`, the draft replaces only the section between
+`<!-- codegg:init:start -->` and `<!-- codegg:init:end -->`, preserving text
+outside those markers. If the markers are absent, it appends the managed
+section. Repeated evidence that would make no change produces a no-op. The
+daemon binds publication to the selected project and workspace, and refuses a
+stale preview if the target changes or the editor has unsaved changes.
 
-Run `/init` in the TUI to inspect the complete candidate and diff. Press `a`
-to publish the root `AGENTS.md`; Esc cancels without writing. Publication is
-bound to the selected project/workspace, requires a fresh one-use daemon token,
-and fails if the original target changed or has unsaved editor changes. A
-successful write refreshes project instructions for future turns; active turns
-keep their existing snapshot. No provider connection is required. See
-[`architecture/agent.md`](../architecture/agent.md#repository-initialization-drafts)
+In the TUI, run `/init` to inspect the candidate and diff. Press `a` to publish
+the root `AGENTS.md`; press `Esc` to cancel. Publication uses a fresh, one-use
+daemon token. After a successful write, project instructions are refreshed for
+future turns; active turns keep the instruction snapshot they already loaded.
+No provider connection is required. See `architecture/agent.md#repository-initialization-drafts`
 for the implementation contract.
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
+Previously checked 2026-10-23 against the source tree. Rechecked 2026-11-15
+against `src/agent/bootstrap.rs`, `src/tui/commands/project_init.rs`,
+`src/tui/components/dialogs/info.rs`, `src/tui/app/input.rs`,
+`src/core/daemon_project_init.rs`, and `src/core/project_init.rs`.
 
-- The `/init` slash command exists and maps to the project-init action:
-  `src/tui/command.rs` (`BuiltinSlashAction::ProjectInit`).
-- The `<!-- codegg:init:start -->` / `<!-- codegg:init:end -->` markers and
-  the human-text-preserving rewrite: `src/agent/bootstrap.rs`.
-- Draft, publish, and refresh flows, and the one-use daemon token:
-  `src/tui/commands/project_init.rs`.
-- `a` publishes the root `AGENTS.md` and `Esc` cancels without writing:
-  `src/tui/components/dialogs/info.rs` (`ProjectInitApprove`) and
+- The analyzer's allowlist, bounded read-only scan, evidence labels, marker
+  behavior, and target digest are in `src/agent/bootstrap.rs`.
+- `/init`, the `a` publish action, and `Esc` cancellation are implemented in
+  `src/tui/command.rs`, `src/tui/components/dialogs/info.rs`, and
   `src/tui/app/input.rs`.
-- The related `/init` slash command: `src/tui/command.rs`.
+- Publication consumes a client-, project-, and workspace-bound one-use token;
+  it checks the target digest, selected workspace root, and unsaved editor state
+  before writing in `src/core/daemon_project_init.rs` and
+  `src/core/project_init.rs`.
+- Successful publication triggers project-scoped instruction refresh through
+  `src/tui/commands/project_init.rs`.

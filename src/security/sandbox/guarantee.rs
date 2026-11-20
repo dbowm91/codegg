@@ -10,6 +10,22 @@
 //! (broad-read compatibility profile) is NOT authorization: this module
 //! never invents a broad-read public profile and never reinterprets
 //! strict `ReadOnly`/`WorkspaceWrite` as broad-read.
+//!
+//! ## Disposition: a specification, not a launch gate
+//!
+//! Nothing here gates a launch. [`negotiate()`] has no production caller, and
+//! neither does [`verify_helper_backend()`]: its first parameter is a
+//! [`SatisfiedContract`], and only [`negotiate()`] produces one. Wiring either
+//! would change refusal semantics — a request could be refused for a guarantee
+//! the mechanism never claimed — which needs its own ADR. What the launch path
+//! does verify is the reported backend, in `linux_launch::observe_legacy_outcome`.
+//! This module is deliberately **not deleted**: a recorded closure delivered
+//! it (`plans/closure/windows-native-sandbox/042-status.md`) and a Windows
+//! dossier depends on its types.
+//!
+//! Read it as requirements a future backend must meet. What a launch is
+//! actually held to is the status decoder and the platform backends in the
+//! parent module; never read this module as an enforcement claim.
 
 use codegg_core::approval::{child_sandbox_allowed, SandboxProfile};
 
@@ -143,9 +159,8 @@ impl AttestedCapabilities {
     }
 }
 
-/// Satisfied contract: the exact backend/tier/provenance that met every
-/// requirement. Returned to the caller for audit; it grants nothing by
-/// itself — the launcher must still verify private launch status.
+/// Satisfied contract: the backend/tier/provenance that met every requirement.
+/// It grants nothing by itself; the launcher must still verify launch status.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SatisfiedContract {
     pub backend: String,

@@ -1143,6 +1143,27 @@ idle session, which is the first thing a user tries. The same trap applies to
 any "draw an empty-state message" affordance: **reserve the row, then draw the
 message into it.**
 
+**Turn-tail deliverable card** (`app/present_card.rs`). A bounded block
+directly above the input box, beneath the tasks overlay, listing the files the
+newest `present` tool call verified. It is a *reader* of the transcript, not a
+store: `latest_declaration` walks the session's messages backwards to the most
+recent `present` call and parses its tool-result text with the tool's own
+`parse_present_display`, so the card cannot drift from the record it describes
+and no component keeps a second list of what was delivered. A refusal does not
+parse, so a refused declaration draws **no** card: the failed call stays at its
+own position with its reason one disclosure away, exactly as every other
+failing tool's reason is.
+
+Three properties bound it. It claims rows only *after* the on-demand `Ctrl+T`
+overlay has, so a user who asked for the overlay gets its rows — `card_height`
+is capped at `MAX_PRESENT_CARD_ROWS` including the header row. It renders only
+on the session route, where the transcript it summarises is the surface on
+screen; on the home, workspace and editor routes there is no turn tail to draw
+it under. And every row is ellipsized rather than wrapped, so the height the
+layout reserved is the height it paints and a long path cannot reflow the
+transcript below it. When the row bound hides files the header says so — the
+total is the truth, not the number of rows that fit.
+
 **Subagent tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
 `state/subagent_tabs.rs`). Three properties are load-bearing and each closes a
 hole the obvious implementation leaves:
@@ -1743,6 +1764,11 @@ it. Its contract:
 A `width` of zero returns the source as one unwrapped row, and an empty source
 returns one empty row, so the row count is never zero for a non-empty buffer.
 
+The contract above is **unchanged by M006**, which changed only the wrap's
+internal cost: the rows, the byte offsets, the styles and the escape handling
+are the same, and an OSC-8 opener and closer still travel whole. What became
+linear is recorded under "The render path's caches (C006)".
+
 **Which paths use it.** The model-authored text — the assistant prose, the
 reasoning body and the streaming tail — reaches the renderer through the
 markdown path (`wrap_markdown_spans` → `wrap_styled_spans_by_word`), and every
@@ -1883,12 +1909,19 @@ from the tree — the row's remaining width is the only ceiling.
 **The hidden-output count moves into the header.** A collapsed call shows
 ` (+N lines)` between the summary and the affordance, and the **expanded**
 header drops it: with the content visible, the count of hidden lines is noise.
-The count comes from the **drawn body** — the same `output_line_count` the
-rows are built from — so it describes the content that *would* be drawn rather
-than the raw output. (`read` is the one exception: it renders its own
-numbered code, so its count comes from the raw output.) While the call is
-collapsed the daemon-side summary's own `output_lines` entry is suppressed, so
-a row never shows two line counts.
+The count describes the body that *would* be drawn rather than the raw output,
+which is what makes it a count of what there is to expand. (`read` is the one
+exception: it renders its own numbered code, so its count comes from the raw
+output.) While the call is collapsed the daemon-side summary's own
+`output_lines` entry is suppressed, so a row never shows two line counts.
+
+**The collapsed case is the cheap one.** The body is built only under the
+`expanded` test, so a collapsed call — the default — builds no body: no payload
+parse for a body, no formatted rows, no wrapped preview. Its count comes from a
+count-only read of the payload that produces neither a formatted row nor a
+pretty-printed string, which is what keeps the number identical without building
+what is not drawn. An expanded call parses once and draws the body it built, and
+that body's own length is the count.
 
 **Reasoning blocks default to collapsed.** Every construction site of a
 reasoning part sets `collapsed: true` — four in
@@ -3240,8 +3273,8 @@ spawn-and-complete or fire-and-forget instead.
 
 A slash command's argument is extracted **once**, where the typed line is
 resolved to a registry entry: `Command::argument_from_typed_line`
-(`src/tui/command.rs:421`), called from `App::execute_command`
-(`src/tui/app/mod.rs:5489`) on the built-in action.
+(`src/tui/command.rs:418`), called from `App::execute_command`
+(`src/tui/app/mod.rs:5609`) on the built-in action.
 
 The extraction removes the spelling the **user typed** — the entry's
 canonical name *or one of its aliases*. An alias is a spelling of the same
@@ -3251,14 +3284,31 @@ defect one step later.
 
 After the extraction the argument is the only thing a handler receives. An
 arm of the built-in dispatcher (`App::dispatch_builtin_command`,
-`src/tui/app/mod.rs:5653`) never sees the typed line and never reads
+`src/tui/app/mod.rs:5779`) never sees the typed line and never reads
 `command_palette.query`: the palette's query is the *whole* typed line, and
 a handler that read it re-derived the argument by hand — which is how
 `/search` searched for the literal `"/search foo"` and `/task-del` deleted
-the task `"/task-del 5"`. `scripts/check_command_argument_contract.py`
-fails when an arm reads the palette's query, and when a `Dialog` variant is
-missing from `Dialog::is_open` (`src/tui/app/types.rs:100`), which answers
-"is a dialog on screen?" and must cover every variant that can be.
+the task `"/task-del 5"`. The same rule holds for the arm's handler, which
+since M010 lives in one of the dispatcher's family modules under
+`src/tui/commands/`: the dispatcher routes to it and passes the extracted
+argument, so a handler that read the query would be re-deriving what it was
+just given. `scripts/check_command_argument_contract.py` fails on a read of
+the query in either half of that surface — assignment and the `String`
+mutators are writes and are accepted, because the palette is typed into —
+and it also fails when a `Dialog` variant is missing from `Dialog::is_open`
+(`src/tui/app/types.rs:100`), which answers "is a dialog on screen?" and
+must cover every variant that can be.
+
+The guard checks that its own surface is present, and that is not
+belt-and-braces. When M010 moved the 161 arms out of the dispatcher into the
+family modules, the guard kept scanning only the dispatcher's one function:
+it went **vacuous** — reporting clean while the arms it was written for were
+somewhere else — and only its `--self-test` noticed, because the anchor it
+injected at (`B::Help => {`) no longer existed and the injection silently
+fell back to a synthetic fixture that names a different arm. So a missing
+`dispatch_builtin_command`, an absent `src/tui/commands/` directory, and a
+directory below the module floor are findings in their own right. A scan that
+can lose its subject without saying so is worse than no scan.
 
 Both entry points into the dispatcher resolve the line to a registry entry
 first — the command palette (`App::handle_command_key`) and direct typed
@@ -3284,7 +3334,66 @@ something finer keeps work it must not.
 | The composer's wrapped layout | the buffer's revision and the wrap width | a change to the text or to the width |
 | A message part's Markdown | the message, the part, the part's length and the width | a transcript change that is not an append |
 | The streaming tail's Markdown | the tail's blocks, the text's epoch and the width | a replacement of the text, a width change, a theme change |
+| The streaming tail's **assembled rows** (M004) | there is no second key: the blocks are the assembly's whole input, and every mutation of the block set ends in one re-assembly from the first block it could have changed | a block change — one re-assembly of the suffix, so a token does not re-fold the whole response — served by borrow until the next one; a text replacement, a width change and a palette change move the epoch and drop the cache |
 | The editor's syntax highlight | the path, the theme and the **content** of each scanned line | a change to the content, the language or the palette |
+| The editor's horizontal clamp (M005) | the document's **revision**, the first visible line, the visible line count and the drawn width | a difference in any of those: a scroll is a different first line, a resize is a different width, and a document change moves the revision. It holds an **integer** — the widest visible line, in columns — and no text, and it is dropped with the presentation, so opening a document drops it |
+| The Session panel's populated projection (M001) | the projection stream and its `event_seq`, the active project and session, and every session-derived value the population copies | a difference in any of those, compared against the rows the sidebar already holds; a session teardown |
+| The tasks overlay's rows (M001) | the frame's todo list and the active projection snapshot | the end of the frame |
+| The file tree's rows — the `Ctrl+T` pane's and the `/files` box's (M002) | the listing's revision and that surface's own filter | a change to either; the listing that replaces the previous one, and the project reset that drops the tree |
+| The project chat's rows — the docked panel's and the `/chat` box's (M003) | the reducer's `sequence` (the applied-snapshot revision, for `/chat`), the unread count the divider and badge are drawn from, the active channel, the wrap width, the cursor and the theme | a difference in any of those, compared against the rows already held; a channel switch, a project rebind and a session teardown, each of which drops the model outright |
+| The change review's parsed hunks (M003) | there is no key: the review state already owns the patch | nothing is cached. The render borrows `&patch.hunks` through `DiffViewer::render_hunks_in`, so a frame copies no hunks and there is no state to invalidate |
+
+The chat cache holds **message bodies**, including redacted ones, so its key is
+also a security boundary. The reducer's `sequence` moves when a redaction or an
+edit is applied and the count it renders moves the unread divider; a key
+missing either would serve a body the daemon withdrew, which is the milestone's
+stop condition rather than a stale pixel. Dropping `sequence` from the key is
+the perturbation the redaction test is demonstrated against.
+
+Two M004 entries are about **how** a cached value is handed back rather than
+what is memoized, and both are keys on the same argument:
+
+- The streaming tail keeps its **assembled rows** beside its blocks. The branch
+  that says the rows are already rendered now serves them, where it used to
+  re-assemble the block set — a deep copy of every block's every row, on every
+  rebuild of the streaming message, including the rebuilds a token did not
+  cause. The assembly has no key of its own: the block set is its whole input,
+  so the only correct invalidation is the one that replaces the blocks, and the
+  cache has one place that does it. A cached tail whose blocks changed but
+  whose rows did not is a tail that draws text the response no longer contains.
+  The assembly is also **incremental in the same way the parse is**: the rule
+  is a fold over the line list, so a change re-folds from the first block it
+  could have touched, and the rows of the blocks before it are the rows they
+  were. A token therefore copies the block it grew, not the whole response.
+- A message part's rows are handed back as a **borrow** the caller extends
+  from, so a hit is one copy into the row index rather than two — the cache's
+  clone and the caller's own — and three under a search match, which rebuilt
+  the whole row list to recolour one row. A search now rebuilds that one row and
+  appends the rest from the borrow.
+
+`scripts/check_tui_render_cost.py` pins both shapes: the fast path may not call
+the assembler, and the tool-call body build — the payload parse included — must
+sit behind an `expanded` test.
+
+M005 adds two entries, one a cache and one an invalidation:
+
+- The **horizontal clamp** is memoized on `(revision, first_line,
+  visible_lines, width)`. The width is in the key although the measured value
+  does not depend on it: a resize re-resolves the viewport wholesale, and a
+  clamp left over from another pane's width is a view that can no longer reach
+  the end of its own lines. The cost of that coarser key is one measurement
+  after a resize, and the cost of dropping it is a stale edge.
+- The highlight cache's **prefix check is seeded from the edit**. The check's
+  question is "which is the first row whose content differs from the scan?",
+  and a seed says nothing above the edit changed — so the check starts at the
+  edit's line and stops at the first difference. Every accepted edit places
+  one, on the *post-edit* snapshot (an edit that inserts lines above itself
+  moves every later index), and several edits between two frames combine by
+  `min`. A change **nothing** placed — a daemon-side edit, a reload — has no
+  seed, and the check falls back to line 0. That fallback is the direction the
+  cache's correctness rests on: a missed change above the scan colours rows
+  from a context that no longer exists, and the cache is the only source of a
+  row's spans.
 
 Three things the caches must not change:
 
@@ -3300,6 +3409,20 @@ Three things the caches must not change:
   conditionally-closed conditions stand: C006 changes what is *cached*, not
   how anything is wrapped, and the recorded search defects and the
   escape-atomicity invariant are untouched.
+
+M006 made the wrap's **internal** work linear without touching that
+contract. The item builder resolves a word's span parts, and a separator's
+style, through one cursor that advances with `tokenize`'s segments — which
+`tokenize` emits in source order — so a wrap examines the span list
+`O(spans + words)` times instead of rescanning it from the front for every
+word and every separator. `chunk_word` accumulates each fragment's width from
+the character walk it already performs instead of measuring it again, and the
+plain engine chunks a word by byte range instead of allocating a `Vec` and a
+`String` per word. `wrap_span_rescans` and `wrap_width_measures` count the
+first two. The wrap's own **input copy remains**: the styled primitive takes
+`&[Span<'static>]`, so the text is still copied once per wrap, and removing
+that copy would change the primitive's signature — C006's partly-met criterion
+is therefore unchanged by this milestone.
 - **The row count.** The transcript's rows come from one producer — the
   layout cache — and the scrollbar's row count and the drawn rows are the
   same rows. A cache that changed which rows exist would move the scroll
@@ -3308,8 +3431,55 @@ Three things the caches must not change:
 
 The counters that make the cost measurable live in
 `src/tui/render_cost.rs`: they count the wraps, the Markdown parses, the
-highlight scans and the task rows the overlay copies, so a test can assert
-on *how many* of them a frame did rather than on how long it took.
+highlight scans, the task rows the overlay copies, and — from M001 — the
+frame-buffer retentions, sidebar populations and line builds, subagent-tab
+clones, composer-hint builds, status summaries, full task-list builds and
+watermark scans, so a test can assert on *how many* of them a frame did
+rather than on how long it took. M005 adds the editor's row reads and the
+bytes they examined, the steps its semantic-token scan took, and the lines the
+highlight cache's prefix check re-read; a frame that measures the window and
+then draws it reads each row twice, which is what the first two separate.
+
+M002 adds two more, and they are a pair on purpose. `file_tree_row_builds`
+counts one **flatten** of a listing into its row list; `file_tree_filter_passes`
+counts one application of a surface's filter to a row list. A surface can
+filter rows it did not flatten — the `/files` box filters the structure the
+authority handed it — so neither count implies the other, and a frame that
+changed nothing must show neither.
+
+M003 adds four. `chat_row_builds` counts one miss of a chat surface's row
+cache, which is one full re-wrap of the channel; `chat_wrap_passes` counts one
+**body** a build wraps, so a build of `n` messages is `1` row build and `n`
+wrap passes (a redacted body is not wrapped); `chat_unread_scans` counts one
+derivation of the unread count by scanning the window, which the memo makes a
+per-window-change event rather than a per-draw one; and `review_hunk_copies`
+counts one copied `DiffHunk`. That last producer is attached to the type's
+`Clone` rather than to a call site, so a render path that reintroduces
+`patch.hunks.clone()` is measured without a second place to forget it.
+
+M004 adds four. `tail_row_copies` counts one assembly of the streaming tail's
+rows: its producer sits in the cache's **assembly**, not at the call site that
+materializes the rows into the row index, so an unchanged tail reads zero and a
+block change reads one — one fold of the suffix the change could have touched,
+not one per row of the response. `part_row_copies` counts one copy per
+part a message rebuild appends, which is the floor — the cache owns its rows and
+the transcript owns its own — so the counter catches the *second* copy coming
+back. `tool_body_builds` counts one tool-call **body** built for the transcript,
+which a collapsed call performs none of; the collapsed header's count-only read
+is deliberately not this counter, because it builds no formatted rows — for a
+structured payload that read *is* a parse, so the collapsed path is body-free
+rather than parse-free, and the counter is named for what it measures.
+`code_block_spans` counts the spans the code-block
+wrapper emitted — one per style run per row where it was one per character.
+
+The M001 caches are the frame composition's rather than any one surface's:
+the Session panel's population is skipped when neither the projection
+revision nor any session-derived input moved, and the overlay's row list is
+derived once and read by both the height reservation and the painter. The
+footer's summary is deliberately **not** in this table: its value reads
+across the whole `App` (including a time predicate for the undo prompt), so
+a key that named every field would be as wide as the derivation. M001 leaves
+that derivation in place and records it as deferred.
 
 #### The transcript's retention
 
@@ -3328,6 +3498,50 @@ of the row count and of the scroll range — so they cannot be dropped without
 introducing a second producer of the row count. A bound that removed a
 message the user could previously reach would be a user-visible change, and
 a user-visible change is a different milestone than a cost one.
+
+### The frame plan: one owner of frame geometry (M008)
+
+A frame's regions are planned once, by `TuiLayout::plan_frame`
+(`src/tui/layout.rs`), into a `FramePlan`: the pane, the header, the
+transcript, the tab bar, the composer's whole allocation, the input box, the
+hint line, the todo strip, the tasks overlay, the deliverable card, the
+footer, the two border strips and the panel edges. `App::render` stores that
+plan and paints from it, and mouse hit-testing reads the same value, so a
+click cannot resolve against a rect the frame did not paint. Three regions
+are recorded by their painter instead of derived — the transcript's
+`scrollbar` gutter, the `completion` popup the filtered rows size, and a
+dialog's rect, which stays `App::dialog_rect`'s single derivation so the
+painted box and the clickable box are one value.
+
+**The carve-order rule is a property of `plan_frame`, and it is stated
+once.** A claim is carved where it is drawn, in the order it is drawn. The
+pane divides into header, transcript, composer and footer. Off the composer's
+top, in this order: the hint line, the todo strip, the tasks overlay, the
+deliverable card — and the input box takes what is left, so the strips'
+vertical order *is* the order of the claims and a claim can never be honoured
+above a row that is drawn below it. The subagent tab bar is carved off the
+**transcript's** top, because that is where it is drawn: charging it to the
+composer would charge one row twice. A claim that does not fit yields rather
+than taking its neighbour's last row, and the overlay and the bar share one
+budget of rows left after every other claim, the bar first — a tab the user
+opened going invisible is worse than a shorter overlay.
+
+Four layout bugs are why the rule is enforced rather than described, and each
+is a case the ordering test reaches: the outer bottom border painted over the
+status line because the footer's own last row was used as the anchor; the
+working strip that owned the exit confirmation's expiry; the retired command
+palette whose hint the completion popup inherited; and a bar charged twice
+for one row.
+
+`plan_frame` is **pure**. Its inputs are the frame, resolved with its panels
+into a `FrameOuter` (the pane, the border strips and the panel edges), the
+row claims (`FrameClaims`: the todo strip, the hint line, the tab bar, the
+overlay, the card and the composer's own height), and the layout's
+configuration. It takes no `&App`, paints nothing and performs no I/O, so
+equal inputs return equal plans. The composer's claim is the one input that
+is a function of width — its height is its wrapped row count — and the caller
+measures it at the pane's width, which `FrameOuter` publishes; the width is
+the plan's own output and cannot be read back out of the plan it feeds.
 
 ## Key Types & APIs
 
@@ -3508,6 +3722,16 @@ intent — `FilesDescend`, `FilesAscend`, `FilesSelect` — resolved against the
 authority by `commands::file_tree`. `h` resolves "the parent of this row"
 against the **unfiltered** row set, because that is a structural question and
 the surface's own filtered view cannot answer it.
+
+The structure is **already flattened**: `FileTreeState` owns the one row
+vocabulary — the flatten of the listing and the pane's own filter over it —
+and rebuilds it when its revision moves, so `structure()` hands each surface
+the *unfiltered* rows and no surface re-derives the tree. The `/files` box
+narrows that copy with its own filter and **does not re-flatten**: it caches
+its filtered rows against `(view revision, filter)` and the render path reads
+the cached slice. A box that flattened the tree itself would be a second
+producer of the rows, and the two surfaces' filters would drift apart by
+construction.
 
 The structure reaches every mounted surface through one refresh, in
 `App::render`, ahead of the tree pane, the side panel and the modal dialog.
@@ -3888,6 +4112,112 @@ because when they were two separate `matches!` literals they drifted the moment
 a fifth bespoke panel was added, and the test agreed with the bug by comparing
 against the same stale literal.
 
+#### One panel chrome
+
+Every panel edge — the five bespoke panels and the hosted fan-out — is painted
+by `PanelChrome` (`src/tui/panels/chrome.rs`). It is the one producer of four
+decisions: **whether** chrome is drawn, the border style, the title string and
+the title style. The policy is fixed here, not by each panel:
+
+| | focused | unfocused |
+|---|---|---|
+| border | `theme.primary` | `theme.border` |
+| title | `theme.primary` | `theme.muted` |
+| marker | trailing `●` inside the title | absent |
+
+`Modifier::BOLD` is deliberately not part of the signal: the Agents panel
+applied it unconditionally, and a style that is always on cannot mark a
+difference. The title is `SidePanelId::label()`, padded and marked — a panel
+does not spell its own name, and a caller of `render_hosted` passes the label
+and the focus flag rather than a finished string, so it cannot re-encode the
+focus decision.
+
+Chrome is drawn when the column is at least 12×4 (`has_chrome`). Below that a
+panel paints borderless into the whole area: a border plus a title in a
+three-row column consumes the content it frames. `PanelChrome::draw` returns
+the inner rect, so no caller re-derives the inset.
+
+`ChromeStyles::resolve` is public because the dialog frame (`Section`, M003)
+reuses this resolution rather than restating it; `tests/tui_render/invariants/`
+asserts I3b (a focused surface differs from an unfocused one in border or title
+**style**) for every panel at 20×6, 40×12, 80×24 and 120×40.
+
+#### One dialog frame
+
+Every dialog's outer frame comes from `Section`
+(`src/tui/components/section.rs`), the dialog's counterpart to `PanelChrome`.
+It resolves its border and title styles through the **same** policy —
+`ChromeStyles::resolve(theme, focused)` — rather than spelling a second pair
+out, so a dialog edge and a panel edge cannot drift apart. That is the
+interface M002 and M003 were ordered on.
+
+`Section` also owns the title string. A caller passes `"Files"`; the primitive
+trims it, drops a caller-supplied `●` (leading or trailing), applies Title
+Case, and then pads the result through `chrome_title`. The three drifts the
+milestone exists to remove — an unpadded `" Job detail"`, a sentence-case
+title, and a dot the caller placed itself — therefore cannot come back through
+a new caller. `Section::draw(area, buf)` answers the inner rect and
+`Section::inner(area)` answers the same rect without painting, so no dialog
+re-derives its own inset. The hint sits on the bottom edge, padded and never
+marked: it names verbs, and the marker names the focused surface.
+
+**A `Section` never paints the `●`, and `focused` does not ask it to.** The
+marker names the **column** that holds the keyboard, which is a fact about a
+panel host that has just framed a docked dialog — so it is the host's job.
+`focused` selects the border and title **colour** only: a modal passes `true`
+because it is the surface holding the interaction, and gets a primary edge and
+primary title. The two decisions were once conflated: a modal that passed
+`focused: false` merely to avoid painting a dot it did not own also got a muted
+title it had not asked for, which is why the muted reading cost contrast
+whereas the primary reading removed it. No modal renders a `●` on its own
+frame; `tests/tui_render/invariants/docked.rs` renders every fixture through
+the modal path and asserts the outer ring carries none.
+
+**A title that is data rather than a label uses `Section::verbatim`.** A file
+breadcrumb (`"Files · src/tui (3 shown)"`) and a caller-supplied node title are
+not labels; re-casing them would corrupt the path or the name. The verbatim
+arm still owns the padding and still strips a caller-supplied marker — only
+the casing is the caller's. `Section::new` is for labels and cases them.
+
+**A docked dialog draws no outer border.** The panel host has already painted
+the border, the panel's name and the `●` into the same rect — and that rect
+*includes the border cells* — so a dialog that paints its own edge over it does
+not layer, it overwrites all three, and a focused column then renders
+identically to an unfocused one. `SectionFrame::Hosted` is that rule as a
+variant: it writes **no cell at all** and answers the rect the host's edge
+leaves — not a background fill either, because the host's border cells are
+inside that area. `Component::render_in_panel` is the seam that selects it — a
+dialog's `render` builds the `Owned` section and its `render_in_panel` builds
+the `Hosted` one, so the docked path cannot paint an edge it does not own. The
+trait default stays "delegate to `render`", which is right for a widget with no
+chrome of its own; a dialog that draws a frame overrides the seam, and the
+variant makes the reason visible at the override instead of in a comment.
+`AgentDialog` was the live instance: `docks_as_viewer` was `true`, its `render`
+painted a border, and the file had no `render_in_panel` at all.
+
+The sweep is **39 of the 40 dialog files** — the files under
+`components/dialogs/` that implement `Component`. `panel_list.rs` is list state
+with no `Component` impl and `mod.rs` only declares the modules, so neither is
+a surface and neither is counted. Every one of the 39 builds its outer frame
+and title through `Section`, and every dockable one selects
+`SectionFrame::Hosted` from `render_in_panel`. A box that groups content keeps
+its own edge, and a footer drawn as a rule plus a row of text (`command.rs`'s
+hint bar) keeps that shape because the separator is M005's.
+
+The single exception is `permission.rs`, and the gap is on its title row rather
+than its frame. That row carries a second, right-aligned badge — the request's
+tool icon and risk class, painted in the risk's own colour. `Section` owns one
+title, styled from the focus policy alone, so the badge is not expressible:
+folding it into the title loses the right alignment (the badge then clips
+before the tool name at narrow widths) and drops the only paint of
+`ToolRisk`'s colour, while moving it into the body would add a content row. The
+file keeps its hand-built frame until the primitive grows a title adjunct.
+
+`tests/tui_render/invariants/docked.rs` is the harness-wide assertion: every
+fixture with `docks_as_viewer` true is rendered through `render_hosted` and must
+leave the host's border, title and `●` intact, and a wrapper that recreates the
+pre-fix shape (dockable, no seam override) must fail it.
+
 **A box and its panel open in different modes.** `HelpDialog::new_with_mode`
 takes the starting mode from its caller, and the two callers disagree on
 purpose. `/help` arrives in **Insert** — it is opened to type a query. The
@@ -4062,6 +4392,196 @@ counted by grepping `src/` for the method names and excluding
 `components/component.rs` where the seam is declared. `GENERIC_KEYS` remains as
 the fallback for the bespoke panels, where the host owns the whole surface, and
 it is now correct for no dockable box at all.
+
+**One hint vocabulary.** `src/tui/components/hint_line.rs` is the single
+producer of a **hint row** — a painted row of `<key> <verb>` items. No hint row
+is composed from a hand-formatted string, a `format!`, an opaque row fragment,
+or a caller-supplied footer string; a caller with items hands the box the
+items, and the box renders them at its own width. A surface spells `(key,
+verb)` items and the builder decides the rest:
+
+- the item form is `<Key> <verb>`, and the separator is ` · ` (space, U+00B7,
+  space) — the dialect the panel row has used all along;
+- the builder never touches the key half of an item: `Esc`, `Enter`, `Tab`,
+  `PgUp`, `PgDn`, `Home/End`, `⌫` and the arrows are proper names, so
+  `push("Enter", "Select")` renders `Enter select` — the verb is the only half
+  the builder owns. A surface still spelling an advertised key lowercase is a
+  content defect, not a formatting one: the I4 baseline is keyed by **spelling**,
+  so re-spelling an advertised key re-banks that ratchet rather than fixing a
+  layout;
+- an empty verb renders the key alone, which is how a row carries a *value*
+  (`30s/5min/2h/1d`, `1-10 of 40`) rather than a verb.
+
+`Component::keymap_hint()` keeps its signature. What changed is what an
+implementation returns: `hint().render(0)`, a built `HintLine`, instead of a
+hand-formatted string.
+
+**What the criterion excludes, and why.** Four kinds of surface name a key and
+are not hint rows. Converting them would satisfy the words and lose what the
+surface is for:
+
+- **tooltips** — a prose line attached to a cell (the sidebar's
+  `tooltip_text`), with no item list and no exit key;
+- **status rows** — the composer's situational layer, the terminal's status
+  header, and the composer's composite row, whose priority order (situational
+  first) the builder's required-first ordering cannot express;
+- **value rows** — `focus: … (Esc leaves focus …)` in a diagnostics dump;
+- **dead strings** — a footer a box discards by its own rule
+  (`InfoDialog::renders_caller_footer`), which is not rendered at all.
+
+**A hint row is painted in a reserved row or chunk, never as the tail of a body
+that clips.** A declared row that no frame contains is a failure, and the
+painted-frame scan counts *rows*, so it never sees one. Two layout traps are
+worth naming because both were live in shipped builds:
+
+- a chunk that reserves `Constraint::Length(1)` and hands it to a bordered
+  `Section` spends the row on the border: `Block::inner` answers height 0 and
+  the paragraph is written into nothing. `Section::owned_height` exists for
+  this arithmetic — `owned_height(1)` is 3;
+- a footer appended to the `Paragraph` that carries the body is not painted at
+  all once the body is taller than its rect. `/keybind`'s row was line 59 of a
+  57-entry list drawn into 28 rows, 31 rows below the last visible line, so no
+  frame contained it. The footer gets its own chunk, and the body keeps its
+  own minimum.
+
+**The declaration and the painted row are both scanned.** A surface advertises
+twice: it *declares* a keymap through `Component::keymap_hint()`, which the
+panel host paints and I4 measures, and it *paints* footers that are the box's
+own — a mode-specific row, a parenthesised border title, a `Paragraph` line
+appended after the body. The two are different advertisements, and a scan that
+read only the declaration could not see a footer written by hand. So
+`tests/tui_render/invariants/vocabulary.rs` reads both:
+
+- the declared rows, from `keymap_hint()`, and the side panels' rows, from
+  `composer_hints()`; and
+- the painted rows, out of the **rendered frame**. A frame row is split at the
+  column rules first (`│`), because a screen row is not a widget row — a
+  split-diff body row is two columns joined by a rule, and reading it whole made
+  `-  1  │ let x = 1;` look like two one-character hint items. Each column is
+  then split at every separator a hint has ever been written with (` · `, `|`,
+  two or more spaces) and a column is an advertisement only when at least **two
+  of its items are `<key> <verb>`**. That floor is what separates a hint from a
+  help body's `j/k    Move up/down` table row (one item) and from a row of
+  labelled values (`Policy: ask · workspace: main`, none).
+
+There is deliberately **no** source-regex guard over Rust strings: regex
+scanning of Rust misreads it, which is why `scripts/rust_test_scan.py` exists.
+
+Both reads reject a second separator, a colon that joins a key to its verb
+(`Enter: cancel` — a colon inside a value is the value's punctuation), a Title
+Case verb, a hand-spaced row, and an exit key that is not first. The exit rule
+is applied to a row that is **bounded** — one the frame can clip — and it is
+applied to the row's *items*, not its first byte: a row may legitimately open
+with a label (`Confirm …`) or a value (`Question 1/1 …`), and the rule begins at
+the first item that names a key and a verb.
+
+**A footer is the declaration plus the key that leaves.** Where a surface both
+declares a keymap and paints a modal footer, the footer's items are the declared
+ones — same key alias, same verb — plus the modal exit, which the declaration
+must not carry because a docked box is popped off the stack by the host's
+gesture rather than by `Esc`. That is the one *contextual* difference the
+unification preserves: a modal footer names the key that leaves it, a panel row
+names the gesture that docks and undocks it. Everything else about the two rows
+is one vocabulary, and `/session`'s bulk-mode block and `/job-detail`'s four
+state rows are the same rule applied to state: the items change with the state,
+the form does not.
+
+**Three items, one row, and which one leads.** A few rows carry a status value
+next to their verbs — `/info`'s `Showing 1-22 of 60`, `/plugin`'s line range,
+`/source-preview`'s line count. Those are built as items with an **empty verb**,
+and `/info` renders its footer with the footer's own width as the budget rather
+than unbounded: the row is one line at 44 columns, `fit_parts` drops whole items
+from the end, so the order is the priority. The exit leads because the key that
+leaves must survive; the position follows because the surface documents it as
+the only signal that there is more below; the verbs come last because they are
+the one part a reader can recover from the help. A row rendered unbounded there
+would be clipped mid-item by the frame instead, and the position would vanish
+below ~50 columns with nothing failing.
+
+**The required part, and the empty row.** `fit_parts` joins whole parts and
+drops the ones that do not fit; it never cuts one, because a row that ends
+mid-key names a key that does not exist. `HintLine::push_required` marks the
+item that must survive and `render` orders it first, so truncation from the end
+cannot remove it. When the required item alone does not fit, the row renders
+**empty** — the deliberate resolution of the conflict between "never drop the
+exit key" and "never render a partial key". A blank row costs a reader nothing
+they cannot recover: the key is still documented one keypress away, and the
+surface stays exitable. A half-key costs them a keypress that does nothing.
+
+A hint describes a key; it never decides which stage claims the chord. That is
+ADR-0042's, and the two key-authority guards are its arbiter. The vocabulary is
+a rendering concern: the line says what the configuration bound, not what the
+binding is.
+
+**I4: an advertised key is handled, and the measurement means something.** The
+invariant is "pressing the key a surface advertises changes that surface", and
+`tests/tui_render/invariants/baseline.rs` is its only measurement. Two things
+about it are load-bearing.
+
+*The declaration is the subject; the painted row is the cross-check.* A surface
+declares its keymap in `Component::keymap_hint_line()`, or in
+`Component::advertised_hints()` when it advertises in a footer instead of a panel
+keymap. I4 presses the keys of those `HintLine` items: they are the structured
+`(key, verb)` pairs the producer holds, so the measurement no longer has to parse
+them back out of a string. The rendered rows are read as well, and every key they
+name that the declaration does not is reported as `painted_outside` — a surface
+that advertises outside its own declaration is a finding, and a surface that
+declares nothing is still measured from its row. The two layers are not
+interchangeable: without the declaration the measurement is a parser over pixels,
+and without the row a surface could stop declaring and quietly measure less than
+the screen shows.
+
+*Both advertisement sources are authoritative.* A surface advertises in a
+`keymap_hint` **and** in a painted footer, and when they disagree that
+disagreement is itself a finding rather than a tie to break. `diff` and
+`security_review` were the recorded case: their hints said `^d/^u page` while no
+`CONTROL` arm existed and their own footers, a few rows below, already named the
+keys `handle_key` answers. Correcting the hint to `PgUp/PgDn` fixed a
+contradiction inside one surface, not a missing binding.
+
+*The measurement must be able to press the key.* A key recorded as inert because
+the probe mounted an empty list, or started at a scroll boundary, or pressed it
+after an earlier key had changed the mode, is a statement about the probe. So
+the harness mounts a **fresh fixture per advertised key**, uses a
+content-bearing fixture table for the list surfaces it measures, and prints a
+per-key report — `cargo test --test tui_render -- invariants::baseline
+--nocapture` names every surface, every announced spelling and every verdict, so
+the recorded set can be read back out of the run rather than guessed at.
+
+The recorded residue is **four rows**, each carrying a `reason` the guard
+requires and rejects the absence of:
+
+- `Model`/`Tab` and `WorkspaceDashboard`/`Tab` — `FocusManager::handle_key`
+  intercepts `Tab` before any dialog sees it (ADR-0042), so the dialog's own arm
+  is unreachable through production dispatch. A focus-ring rotation would not
+  deliver either advertised verb, so this is the ownership contract, not a
+  missing widget feature.
+- `SecurityReview`/`H` — the verb copies a hunk to the **system clipboard**. A
+  render measurement must not mutate the operator's pasteboard, and it has no
+  injection point, so the key cannot be exercised.
+- `SecurityReview`/`h` — arming a hunk also arms `H` for the same press set, so
+  `h` cannot be measured without that write.
+
+Those four are the honest limit of what a render harness can prove. Everything
+else the surfaces announce repaints, and a fifth row appearing means a surface
+started advertising something it does not do.
+
+**Seven advertised spellings are outside the parser.** `Home`, `End`, `PageUp`/
+`PgUp`, `PageDown`/`PgDn`, `Backspace`/`⌫`, `[` and `]` appear in hints and
+footers, and `baseline.rs::key_of` cannot turn them into a key.
+`UNREADABLE_SPELLINGS` names them and a test holds that list, so the blind spot
+is enumerated rather than silent. Widening the parser is not a parser change:
+every newly readable key becomes a pressed key, and most of them cannot act on
+the fixture that advertises them — `Diff`/`Home` and `Diff`/`PgUp` start at the
+top, `ProjectChat`/`[ ]` needs a second channel, `SecurityReview`/`]` needs hunk
+context, `WorkspaceDashboard`/`Ctrl+R` needs a daemon — so the recorded set
+moves.
+
+Reading a **painted** row rather than a declaration also invents keys a surface
+never advertised. `Permission`'s footer truncated at 100 columns reads as
+`Esc c`: the `l` of `cancel` is gone, and `c` is a key nothing advertises. That
+is the fragility the structured read removes, and it is why the declaration, not
+the row, is the subject.
 
 **A box's colours come from the theme it is handed, never from one it cached.**
 `Component::render` and `render_in_panel` receive the live `&Arc<Theme>` on every
@@ -4297,6 +4817,20 @@ on the newest message and keeps following arrivals. `k` unpins (history stops
 moving under the user), `j` past the newest re-pins, `G` re-pins. `sync` runs
 on every render and every snapshot, not just on navigation, so a message
 arriving while the user is pinned moves them with it.
+
+**One producer of the rows.** `ChatBrowser::rows` is the only producer of
+`ChatRow`s. It caches the whole model against `(sequence, unread, channel,
+width, cursor, theme)` — `sequence` is the reducer's own counter on the panel
+and the applied-snapshot revision in the window — and hands both surfaces a
+borrow of it plus the viewport anchor it derived when the model was built.
+Both surfaces draw through `window_lines`, which **borrows** the cached text:
+`Paragraph` needs an owned `Vec<Line>`, so a draw materializes the visible
+window once, but it allocates no `String`. A frame that changed nothing
+therefore wraps nothing, rebuilds nothing and reverse-scans nothing, while a
+redaction or an edit — which moves the sequence without changing the window's
+length, the marker, the width or the cursor — is re-rendered on the next
+frame. The two surfaces keep **separate** caches because each browser owns its
+own cursor; a shared cache would serve one surface's selection to the other.
 
 **Contextual keys above the input.** `SidePanel::composer_hints` returns the
 verbs the active panel owns; `App::composer_hint_text` prefers an armed seed
@@ -4995,6 +5529,9 @@ pub trait Component: Send + Any + AsAny {
         self.render(frame, area, theme);
     }
     fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> { None }
+    fn preferred_area(&self, available: Rect) -> Rect {
+        centered_rect(60, 50, available)
+    }
     fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg>;
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>);
     fn dialog_type(&self) -> DialogType;
@@ -5027,7 +5564,88 @@ Three of these defaults are load-bearing:
 `centered_rect(percent_x, percent_y, area)` lives in the same module and is
 the single definition of the centred-popup shape; it was duplicated in
 `app/mod.rs` and `components/dialogs/run_detail.rs` before it was lifted
-here.
+here. It is also the default `preferred_area`, so the percentage shape is
+still one function.
+
+### List state and scroll-follow (M009)
+
+A list surface owns its cursor through `ListCursor`
+(`src/tui/components/scroll.rs`): a clamped index plus the `CenteredScroll`
+offset it follows, with `ScrollPolicy` naming the rule at the call site.
+`Clamp` is the default; `Wrap` exists only for a surface that means it.
+
+Clamped-index and scroll-follow are **one** rule, not two. `index(len)` clamps
+on read, so a list that shrinks under a cursor cannot leave it out of range,
+and `follow` moves the window only when the index leaves it — composing
+`CenteredScroll`, not reimplementing its centring rule. A converted surface
+therefore has one arithmetic, one window, and a policy test that names it:
+`keybind`, `completion_overlay`, `agent`, `template` and `tree`.
+
+A surface whose rule is genuinely different keeps its own and says why; the
+non-adoption list, with a concrete difference per entry, lives in
+`plans/closure/tui-modularity-and-render-invariants/009-status.md`. The one
+this document names is `McpDialog`: it dispatches over `browse_mode` and
+`action_mode` to separate selection fields, which is two lists sharing a box,
+not one list with a scroll rule. The plan's third control case,
+`ProjectPickerDialog`, is a non-adopter for a different reason: it derives its
+window per render instead of storing and following an offset, so the type's
+offset would have no reader and adopting that offset would move painted rows.
+The worked arithmetic is in the same record.
+
+### Dialog sizing (`src/tui/components/dialog_size.rs`)
+
+A dialog states a **preference**; the host clamps it. Two verbs, two places,
+and neither is optional:
+
+- `Component::preferred_area(&self, available: Rect) -> Rect` is the dialog's
+  statement. The default is `centered_rect(60, 50, available)` — the legacy
+  popup — so a dialog that does not override it renders exactly as before and
+  adoption is a deliberate edit. A preference is a function of `available` and
+  the dialog's own state only; it must never read the rect it was last given,
+  or a dialog resizes between frames on a live terminal.
+- `App::dialog_rect` is the one caller. It asks the mounted dialog for its
+  preference and runs it through `dialog_size::clamp_area` once, before
+  anything is painted. The rect that is drawn into and the rect the hit test
+  reads are the same value because both come from that call, which is what
+  lets `ProjectPicker` stop being a special case: it states its bounded
+  geometry through the seam like every other dialog.
+
+`clamp_area` is the only code that applies the bounds:
+
+| bound | value | why |
+|---|---|---|
+| minimum | 20×6 | the I2 size; below it a dialog's own layout declines |
+| maximum | 90% of `available`, per axis | a dialog may not take the frame it sits in |
+| placement | centred in `available` | the dialog states a size, not a position |
+
+The bounds can cross on a frame narrower than the minimum. The floor wins and
+is itself capped by the frame, so the answer is always inside `available`: at
+10×3 it is 10×3, and at 20×6 the dialog gets the whole 20×6 frame.
+
+A dialog that adopts the seam states a content height and keeps the legacy
+60% width (`dialog_size::preferred_rows`), so adoption never costs a column:
+
+| dialog | preference |
+|---|---|
+| `ConfirmDialog` | three boxes of 2 + 2 + 3 content rows |
+| `QuestionDialog` | title 1 + `max(3, body rows)` + hint 1 |
+| `GotoDialog` | 3 rows: input, status, help |
+| `ImportDialog` | 10 rows, the busiest state, so the box does not resize as it moves input → preview → done |
+| `InfoDialog` | `max(legacy height, 8 + line count)`; a viewer keeps the legacy height as a floor because its content changes while it is open |
+| `ProjectPickerDialog` | its existing bounded 64×18 geometry, now reached through the seam |
+
+`Section::owned_height(content_rows)` is where a box's border is counted.
+`Section::draw` spends exactly those two rows, so a dialog that sums one
+height per box and splits the same rows into layout chunks cannot subtract
+the border twice — the failure that silently disabled list scrolling when an
+inner rect was passed to something that inset again.
+
+`PermissionDialog` does **not** adopt the seam, and the reason is stated
+rather than implied: its detail box holds wrapped text whose row count is a
+function of the width it is given, and measuring that during sizing would be
+a second measure of the dialog's content per frame. A fixed budget would lose
+detail rows at large frames on the approval surface. It declares no
+preference and gets the legacy popup.
 
 ### FocusManager (`src/tui/components/component/focus.rs`)
 
@@ -5200,19 +5818,32 @@ passes for a scoped `&DocumentSnapshot` borrow and for the bounded
 **Presentation record.** `TuiDocumentPresentation` owns cursor byte,
 selection range, viewport line and column, buffer mode, a two-byte pending
 command prefix, the open insert session, and the **edit history**. The
-history is **one ordered list with a cursor in it** — `history`,
-`history_bytes` and `history_cursor` — not two stacks. `history_cursor` is
-the number of *applied* entries: `0` is the beginning of the history
-(everything is redoable) and `history.len()` is the tip (nothing is
-redoable). An entry never moves between containers, so "undo" and "redo" are
-the same movement in opposite directions, and an entry cannot lose the
-direction it is not currently using.
+history is a **tree**, not a list and not two stacks. `EditorUndoEntry`
+carries a stable identity (`created`), the `parent` it was created from, and
+the child it was last walked to (`last_child`); `history` is the arena
+holding every retained node in creation order, `history_cursor` is the
+**identity** of the node whose text is on screen, and `history_next` is the
+monotonic source of new identities, so a pruned node's identity is never
+reused. `0` is the root state — the text before the oldest retained entry.
+A node never moves and cannot lose the direction it is not currently using,
+and an edit made after an undo becomes a **sibling** of the branch it
+interrupted instead of destroying it: the abandoned branch stays reachable.
 
 Undo entries are capped at **256 entries and 4 MiB in total** — one cap over
-the history, not one per direction — and retain *both* the forward and
+the whole tree, not one per direction — and retain *both* the forward and
 inverse transactions, so a traversal in either direction is exact. The
 two-stack model enforced the bounds twice, so its worst case was twice this;
 the single history is what makes the code match the documented bound.
+
+Pruning takes the **oldest leaf** first; a leaf has no child, so a child a
+retained node still needs can never be dropped. A history that is one
+unbranched chain has only one leaf — the node the cursor is on — so pruning
+drops the chain's oldest node and re-parents its single child to the root,
+which is "drop the oldest entry" in structure-preserving form. If even that
+cannot fit the budget the history is **cleared and disclosed**: the banner
+says so, because a history that silently shortened is one the reader cannot
+reason about. The same rule is what makes the byte budget a bound on the
+tree rather than a bound per branch.
 
 **One history and a time cursor.** `u` and `U` move the cursor back and
 forward one entry. `Alt+u` and `Alt+U` — Helix's `earlier` and `later` — do
@@ -5265,9 +5896,11 @@ run.
 A reconciliation **discards** an open session rather than committing it. The
 text the session described is the pre-reload text, and committing it would
 record a step that restores a document the reader is no longer looking at.
-The redo tail is cleared when the session **opens** and only then: a reader
-who undoes and then types must not have the redo tail resurrected by the
-next keystroke of the new burst.
+Opening a session does **not** discard the branch the reader abandoned: a
+reader who undoes and then types gets a new sibling branch, and the branch
+they left stays reachable by creation order. A history that deleted the tail
+on the next keystroke would destroy work the reader could still have
+returned to — which is the parity gap the tree exists to close.
 
 **Reconciliation clears history.** Open, reload, resync, reconnect, and
 close all clear undo and redo. Save does not: it writes the same local text,
@@ -6842,7 +7475,7 @@ tui/
 │   ├── plugin_renderer.rs  # Compat alias for UiNodeRenderer
 │   ├── ui_node_renderer.rs # UiNodeRenderer (UiNode → ratatui/line)
 │   ├── prompt.rs           # PromptWidget
-│   ├── scroll.rs           # CenteredScroll
+│   ├── scroll.rs           # CenteredScroll, ListCursor (index + follow)
 │   ├── sidebar.rs          # SidebarWidget
 │   ├── spinner.rs          # SpinnerWidget
 │   ├── status_bar.rs       # StatusBarWidget
@@ -7167,14 +7800,15 @@ action.
   Selection is deliberately scoped to the viewport so the sidebar,
   scrollbar, dialogs, completion popup, and prompt keep their click
   behaviour.
-- **`bottom_border_area` gets its own row, carved off before layout**:
-  `render` splits the last row of the main pane out of `main_area_inner`
-  *before* `session_layout` runs and records it as `bottom_border_area`;
-  `finish_render` paints a `Borders::BOTTOM` block into it. Anchoring the
-  edge on the footer's last row instead — as `render_outer_borders`
-  originally did — painted over the only row the status bar ever had,
-  because `footer_height` is 1 and `StatusBar` takes a border-less early
-  path at that height. The status line disappeared entirely.
+- **The bottom border gets its own row, carved off before layout**:
+  `TuiLayout::frame_outer` splits the last row of the main pane out of the
+  bordered main area *before* `session_layout` runs and records it as
+  `FramePlan::bottom_border`; `finish_render` paints a `Borders::BOTTOM`
+  block into it. Anchoring the edge on the footer's last row instead — as
+  `render_outer_borders` originally did — painted over the only row the
+  status bar ever had, because `footer_height` is 1 and `StatusBar` takes a
+  border-less early path at that height. The status line disappeared
+  entirely.
 - **One completion popup, not two**: `CommandPalette::render` used to paint
   a second, narrower slash popup over the prompt whenever `command_mode`
   was set, while `update_completions` deliberately left `show_completions`
@@ -7456,7 +8090,7 @@ pending slot now live in `src/tui/editor_effect.rs`.)
 | `space b` | **unavailable**: one document is attached at a time |
 | `space j` | **unavailable**: no visited-position history |
 | `space D` | **unavailable**: no server capability backs a separate workspace-diagnostics request |
-| `space c` / `space C` | **unavailable**: no comment syntax is known for the edited buffer |
+| `space c` / `space C` | toggle the line comment / wrap the range in the block pair, using the edited buffer's own grammar tokens; refused, with the extension named, when the syntax declares no token |
 | `space '` | **unavailable**: the pickers are not fuzzy, so there is no query to recall |
 | `space a` | the **code-action read** — the actions the server would offer at the cursor, each with the diff of its own edit; the panel is the picker |
 | `=` | the **format preview** — what the formatter would change, and the change review when it can be applied |
@@ -7717,6 +8351,14 @@ line; `line_slice`/`line_spans` read at most the 32 KiB prefix window;
 instead of scanning a multi-megabyte line. `measure_frame_cost` mirrors the
 render loop exactly so tests assert deterministic budgets rather than
 wall-clock time.
+
+M005 leaves that bound in place and tightens it. `measure_frame_cost`'s
+accounting is unchanged — a row is still charged its `MAX_RENDER_LINE_BYTES`
+prefix against the frame budget — while the bytes actually read fall: the
+horizontal clamp is measured once per `(revision, first line, height, width)`
+rather than once per frame, and a row's read is its column window's bytes
+rather than its line's. A cursor at the far end of a multi-megabyte line still
+costs a bounded prefix; it is now a smaller one, and it is read once.
 
 A line past the per-line budget renders its prefix as plain text (no
 per-token spans, which would cost the whole line) with a warning-styled

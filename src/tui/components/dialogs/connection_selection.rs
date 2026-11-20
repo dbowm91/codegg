@@ -12,6 +12,7 @@ use crate::protocol::provider::{
     ProviderConnectionSummaryDto, SelectedModelDto, SessionSelectionDto,
 };
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -377,17 +378,12 @@ impl Component for ConnectionSelectionDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(vec![
-                Span::raw("Select Connection & Model — "),
-                Span::styled(
-                    self.session_id.as_str(),
-                    ratatui::style::Style::default().fg(theme.primary),
-                ),
-            ]));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // The session id makes this title data, not a label, so it keeps its
+        // own spelling; the section still owns the padding and the edge.
+        let title = format!("Select Connection & Model — {}", self.session_id);
+        let inner = Section::verbatim(&title, theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
 
         if self.loading {
             frame.render_widget(Paragraph::new("Loading connections and models…"), inner);

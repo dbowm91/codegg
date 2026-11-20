@@ -1,188 +1,55 @@
 # Dependency maintenance
 
-CodeGG dependency maintenance is a manual, bounded maintainer activity. It is
-not a scheduled CI job and does not imply a fixed release cadence.
+Dependency changes are deliberate maintainer work, not an automatic update
+cadence or a release schedule. When an update is useful or a release is being
+prepared:
 
-When maintenance is useful or a release is being prepared:
+1. Inspect dependency versions and duplicates with `cargo tree -d`; use
+   `cargo outdated` when installed. For a specific package, inspect its
+   dependency and feature paths with `cargo tree -i <package>` and
+   `cargo tree -e features -i <package>`.
+2. Check advisories with `cargo audit` when available. Review direct dependency
+   changes for MSRV, licensing, maintenance status, API compatibility, and
+   feature changes.
+3. Update one bounded dependency group at a time. Review both manifest and
+   lockfile changes, then run focused consumer tests and
+   `scripts/verify.sh quick`.
+4. Run package and release checks as part of an actual release. Record material
+   compatibility or ownership decisions in an ADR or the owning subsystem plan.
 
-1. Inspect direct and outdated dependencies locally with `cargo outdated` (or
-   an equivalent current Cargo dependency inspection command).
-2. Inspect RustSec/advisory status with the repository's chosen local advisory
-   command, such as `cargo audit` when it is available.
-3. Review direct dependencies for deprecation, archival, MSRV, licensing, and
-   feature-graph changes.
-4. Update one bounded dependency group at a time.
-5. Run focused consumer tests and `scripts/verify.sh quick`.
-6. Run package/release checks only as part of an actual release.
-7. Record material compatibility or ownership decisions in an ADR or the
-   owning subsystem plan, not in generated CI artifacts.
+## Workspace policy
+
+The root `Cargo.toml` owns shared package metadata and the version and default
+feature policy for dependencies used by multiple workspace members. Members
+refer to those dependencies with `workspace = true` and add only the features
+they need. Keep single-consumer dependencies in their owning crate rather than
+hoisting them for consistency. Inspect the resolved feature graph before
+widening a shared dependency's defaults.
+
+Some external Git dependencies are pinned to revisions. Moving a pin requires
+review of the resulting API, feature graph, platform support, and security
+posture; do not replace a reviewed revision with a floating branch as routine
+cleanup.
 
 ## YAML compatibility
 
-YAML is a read-only compatibility format for markdown frontmatter in agents,
-commands, and skills. New configuration and generated assets use the
-subsystem's canonical TOML or JSON/JSON5 format. YAML parsing is centralized
-in `codegg-config`'s document codec (`crates/codegg-config/src/document.rs`)
-and uses `serde_norway` 0.9.42, a maintained Serde-compatible fork. Existing
-YAML files are not rewritten automatically.
-
-## Feature ownership checkpoints
-
-The accepted dependency baseline keeps feature ownership explicit:
-
-- `eggfetch-core` consumers disable defaults and select only `http1`,
-  `tls-rustls`, and (where needed) `json`; its packaged WebPKI trust set is
-  preferred over native roots. The supported floor is `0.2.0`; generic
-  decoded-body limiting is Eggfetch-owned via request-scoped
-  `max_decoded_body_size()` and CodeGG owns only SSRF policy, static
-  resolved routing, and secret-safe error projection;
-- `sqlx` consumers disable defaults and select Tokio, SQLite, `derive`
-  (`sqlx::FromRow` is the only macro facility used; handwritten migrations
-  replace `migrate`), and only the serialization/time features their source
-  uses. `sqlx-mysql`/`sqlx-postgres`/`rsa` remain in the lockfile union but
-  are unreachable in every supported feature resolution (`cargo tree -i`
-  empty); the `rsa` audit exception in `.cargo/audit.toml` documents that
-  upstream-only path;
-- `arboard` disables defaults so the default clipboard surface remains
-  text-capable without enabling image clipboard support;
-- `futures-util`, `futures-executor`, `grep-regex`, and `grep-searcher` are
-  used directly rather than through an umbrella crate (no `grep` package
-  exists in the lockfile);
-- the legacy MD5 dependency remains only for compatibility reads/migration;
-  new durable memory namespaces use domain-separated SHA-256.
-- the optional `image` stack disables defaults: `image` is
-  `default-features = false` with only `png`, `jpeg`, `gif`, `webp`
-  plus `bmp` (the `bmp` decoder is built-in with no extra dependency
-  family and is retained because `is_supported_image_format` already
-  accepts `image/bmp`); `ratatui-image` enables only the `crossterm`
-  backend and no longer enables `image-defaults` (`image/default`,
-  which pulled `rayon` + all 15 `default-formats`). The TUI decoding
-  contract is PNG/JPEG/GIF/WebP (+BMP retained); no broader format
-  support is advertised.
-
-These are review checkpoints for bounded maintenance, not a continuously
-enforced binary-size or dependency-update gate.
-
-## Workspace ownership (M002)
-
-The root `Cargo.toml` is the authoritative owner of shared versions and
-default-feature policy:
-
-- `[workspace.package]` owns `version`, `edition`, `rust-version`,
-  `license`, `repository`, and `homepage`. Descriptions and `authors`
-  stay local because packages intentionally differ.
-- `[workspace.dependencies]` owns versions/default policy for
-  dependencies repeated across multiple members (tokio, serde,
-  serde_json, thiserror, anyhow, tracing, chrono, sqlx, dashmap, dirs,
-  regex, url, uuid, async-trait, futures-util/executor, tokio-util,
-  tempfile, toml, sha2, base64, rand, aes-gcm, argon2, hmac, hex,
-  similar, libc, once_cell, subtle, flate2, tar, walkdir, eggfetch-core,
-  http, tokio-stream, parking_lot, proptest, and the internal
-  `codegg-*`/`egg*` path+version pairs). The baseline keeps minimal
-  features; member manifests add only the features they use
-  (for example `sqlx` baseline is version/default policy only, root/core
-  add `runtime-tokio,sqlite,derive,chrono,json` while providers adds
-  only `runtime-tokio,sqlite`; `uuid` baseline is `v4` with no `serde`,
-  root and core add `serde`; `url` baseline has no `serde`, egglsp adds
-  it).
-- Single-consumer dependencies (clap, ratatui, crossterm, comrak,
-  syntect, image stack, server/plugin optionals, lsp-types/zip/xz2,
-  rustpython-parser, notify, and similar) stay local to their owning
-  crate and must not be hoisted for uniformity.
-- `[workspace.lints.rust] unsafe_code = "deny"` is inherited by three
-  crates — `codegg-core`, `codegg-client`, and `codegg-document` — via
-  `[lints] workspace = true`. Where deliberate, reviewed `unsafe` is
-  required, it is carved out with narrow local `#[allow(unsafe_code)]`:
-  `codegg-core` on its `libc::flock` memory-lock helpers
-  (`crates/codegg-core/src/memory/mod.rs`,
-  `crates/codegg-core/src/memory/habit.rs`) and `codegg-client` on its
-  Windows pipe/process modules; `codegg-document` has no `unsafe` at all.
-  The root package stays outside package-wide
-  inheritance because `src/bin/codegg-sandbox-helper.rs` contains
-  deliberate, reviewed `unsafe` (fd ownership + fcntl); its library
-  keeps `#![deny(unsafe_code)]` in `src/lib.rs`.
-- Remaining duplicate majors in `cargo tree -d` are not all third-party
-  owned. `base64` 0.22 (the workspace pin, used by root/axum/sqlx and
-  friends) coexists with 0.23 pulled by `eggfetch-core` and `eggsact`;
-  `md5` 0.8 is `codegg-core`'s own legacy compatibility dependency while
-  0.7 comes from `eggsact`; and `strum` 0.26 is the root crate's direct
-  pin while 0.28 arrives through Ratatui (`ratatui-core`,
-  `ratatui-widgets`). Each is retained with evidence, not patched.
-
-## External Egg-stack dependency status
-
-Checked against crates.io / the upstream repositories on 2026-10-23.
-
-| Dependency | Pinned | Latest | Status |
-|---|---|---|---|
-| `eggfetch-core` | `0.2.2` | `0.2.2` | current |
-| `eggserve-core` | `0.2.0` | `0.5.0` | **cannot adopt** (see below) |
-| `egggress` | not used | — | no dependency anywhere in the workspace |
-| `eggup-core` / `eggup-acquisition` | git `66813b3b` | git `648b1db2` | behind; immutable-pin policy owned by `codegg upgrade` |
-| `eggpool-wire` / `eggpool-provider-profile` | git `9ac6a131` | git `e6822d8f` | behind; M001 closure revision, pinned deliberately |
-| `eggpool-model-routing` | git `d70b5963` | git `e6822d8f` | behind; a separate pin from the provider-profile pair above |
-| `eggplan-*` | git `0dd33b76` | git `37ad290c` | behind |
-| `eggwork-client` / `eggwork-core` | git `81f34e08` | git `81f34e08` | current — upstream `main` head, carrying Workspace M004, Security M004 Landlock hardening, the M004b sandbox-helper staging correction, and the closed optional Gregg host telemetry M001+M002 (Eggwork M002) |
-
-**Why `eggserve-core` stays at 0.2.0.** The macOS blocker is not the
-`eggserve-core` line: the published `eggserve-core` 0.4.0 and 0.5.0 dependency
-metadata on crates.io lists no `landlock` dependency anywhere in the
-`eggserve-core` / `eggserve-server` / `eggserve-static` / `eggserve-h3` tree.
-The `landlock` dependency that cannot compile on macOS comes from
-`eggwork-runner` at the pinned Eggwork revision `81f34e08` — it is a normal
-(unconditional) dependency there, and it is what makes the test node
-Linux-only.
-
-That affects only `crates/eggwork-test-node`, which is **excluded** from the
-workspace (`exclude = [...]`, own lockfile) and is therefore already
-unbuildable on macOS at its pinned version. CodeGG's own workspace declares
-`landlock` under `[target.'cfg(target_os = "linux")'.dependencies]`, so the
-root package is unaffected. Bumping `eggserve-core` inside the test node would
-not change the macOS outcome; moving the `landlock` dependency behind a
-Linux-only target in Eggwork is an upstream change, not a CodeGG-side one.
-Adopting a newer eggserve line remains a deliberate dependency-review step.
-
-The remaining git pins are behind their upstreams. They are reviewed closure
-revisions rather than floating branches, and moving them is a deliberate
-dependency-review step, not a maintenance patch.
+YAML remains a read-only compatibility format for frontmatter in Markdown-based
+agents, commands, and skills. Parsing is centralized in the
+`codegg-config` document codec at `crates/codegg-config/src/document.rs`.
+Use the subsystem's canonical TOML or JSON/JSON5 format for new configuration
+and generated assets. Existing YAML assets are not rewritten automatically.
 
 ## Source verification
 
-Checked 2026-10-23 against the manifests, the lockfiles, and the upstream
-registries.
+Checked 2026-11-15 against `Cargo.toml`, workspace member manifests under
+`crates/`, `Cargo.lock`, `.cargo/audit.toml`, and
+`crates/codegg-config/src/document.rs`.
 
-- Workspace pins read from `Cargo.toml` and `crates/*/Cargo.toml`:
-  `eggfetch-core` 0.2.2 (default features off; root selects `http1`,
-  `tls-rustls`, `json`), `eggup-core` / `eggup-acquisition` git `66813b3b`,
-  `eggplan-*` git `0dd33b76`, `eggwork-client` / `eggwork-core` git
-  `81f34e08`, `eggpool-wire` / `eggpool-provider-profile` git `9ac6a131`
-  (`crates/codegg-providers/Cargo.toml`), `eggpool-model-routing` git
-  `d70b5963` (`crates/codegg-core/Cargo.toml`), `eggserve-core` 0.2.0
-  (`crates/eggwork-test-node/Cargo.toml`).
-- Upstream `main` heads re-checked with `git ls-remote` on 2026-10-23:
-  eggup `648b1db2`, eggplan `37ad290c`, eggpool `e6822d8f`, eggwork
-  `81f34e08`. The `Latest` column was updated from these.
-- crates.io latest versions re-checked on 2026-10-23: `eggfetch-core` 0.2.2,
-  `eggserve-core` 0.5.0 (was 0.4.0 in the table).
-- The `landlock` attribution was corrected. The published dependency metadata
-  for `eggserve-core` 0.4.0 and 0.5.0 (and `eggserve-server`,
-  `eggserve-static`, `eggserve-h3`) lists no `landlock` dependency.
-  `crates/eggwork-test-node/Cargo.lock` shows `landlock` as an unconditional
-  dependency of `eggwork-runner` at the pinned Eggwork revision. CodeGG's own
-  workspace declares `landlock` under
-  `[target.'cfg(target_os = "linux")'.dependencies]` in `Cargo.toml`, so the
-  root package is unaffected on macOS.
-- `[workspace.lints.rust] unsafe_code = "deny"` is inherited by exactly three
-  crates — `codegg-core`, `codegg-client`, `codegg-document` — via
-  `[lints] workspace = true` in each member manifest.
-- `exclude = ["crates/eggwork-test-node", "apps/desktop/src-tauri"]`:
-  `Cargo.toml`.
-- `serde_norway` 0.9.42 (`crates/codegg-config/Cargo.toml`);
-  `arboard` with `default-features = false`; `image` 0.25 with
-  `png`/`jpeg`/`gif`/`webp`/`bmp`; `ratatui-image` 10 with only the
-  `crossterm` backend; `md5` 0.8 in `codegg-core`; `strum` 0.26; `base64`
-  0.22 (`Cargo.toml`, `crates/codegg-core/Cargo.toml`).
-- The `rsa` / `sqlx-mysql` audit exception: `.cargo/audit.toml`.
-- Workspace YAML parsing in `codegg-config`'s document codec:
-  `crates/codegg-config/src/document.rs`, `serde_norway` pin in
-  `crates/codegg-config/Cargo.toml`.
+- Shared dependency versions and baseline features are owned in the root
+  workspace manifest; member manifests opt into needed features. Single-use
+  dependencies remain local.
+- YAML parsing is routed through the `codegg-config` document codec and is
+  labeled a compatibility format in `crates/codegg-config/src/document.rs`.
+- Removed the point-in-time upstream version and branch-head table previously
+  checked on 2026-10-23. Those values change independently of the local
+  dependency policy and should be checked when reviewing a specific update.

@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Any, Optional
 import uuid
@@ -31,6 +32,7 @@ FAILURE_CATEGORIES = (
     "provider_rate_limit",
     "provider_timeout",
     "provider_api",
+    "provider_request_budget",
     "cancelled",
     "daemon_restarted",
     "agent_internal",
@@ -236,7 +238,9 @@ class SubjectSpec:
             "TMP": str(self.root / "scratch"),
             "TEMP": str(self.root / "scratch"),
             "RUST_LOG": (
-                "error,codegg_providers::request_budget=info"
+                "error,codegg_providers::request_budget=info,"
+                "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug,"
+                "codegg::agent::context_runtime=debug,codegg::agent::loop=debug"
                 if has_request_limit else "error"
             ),
         })
@@ -248,12 +252,23 @@ class SubjectSpec:
 class AcpClient:
     """Small bounded JSON-RPC v2 client for lifecycle-only ACP smoke tests."""
 
-    def __init__(self, binary: Path, env: dict[str, str], cwd: Path, timeout: float, unattended_profile: str | None = None) -> None:
+    def __init__(self, binary: Path, env: dict[str, str], cwd: Path, timeout: float,
+                 unattended_profile: str | None = None, *, strace_path: Path | None = None,
+                 syscall_trace_path: Path | None = None,
+                 syscall_target_root: Path | None = None) -> None:
         self.timeout = timeout
         self._started_monotonic = time.monotonic()
         command = [str(binary), "acp"]
         if unattended_profile is not None:
             command.extend(["--approval-mode", "yolo", "--sandbox", unattended_profile])
+        if (strace_path is None) != (syscall_trace_path is None):
+            raise ValueError("strace executable and trace path must be supplied together")
+        if strace_path is not None and syscall_trace_path is not None:
+            command = [
+                str(strace_path), "-f", "-qq", "-s", "4096", "-e",
+                "trace=rename,renameat,renameat2,link,linkat,copy_file_range", "-o",
+                str(syscall_trace_path), *command,
+            ]
         self.process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, cwd=cwd, env=env,
@@ -261,6 +276,13 @@ class AcpClient:
                                and env.get("CODEGG_HARNESS_INHERIT_PROCESS_GROUP") != "1"),
         )
         assert self.process.stdin and self.process.stdout
+        self._syscall_mount_probe = (
+            _H006SyscallMountProbe(syscall_trace_path, syscall_target_root)
+            if syscall_trace_path is not None and syscall_target_root is not None
+            else None
+        )
+        if self._syscall_mount_probe is not None:
+            self._syscall_mount_probe.start()
         self._selector = selectors.DefaultSelector()
         self._selector.register(self.process.stdout, selectors.EVENT_READ)
         self._stdout_buffer = bytearray()
@@ -417,6 +439,8 @@ class AcpClient:
                 except subprocess.TimeoutExpired:
                     _signal_owned_group(self.process, signal.SIGKILL)
                     self.process.wait(timeout=2)
+        if self._syscall_mount_probe is not None:
+            self._syscall_mount_probe.close()
         self._selector.close()
         self._stderr_thread.join(timeout=1)
         # The child's pipes are file objects of this process: leaving them open
@@ -427,6 +451,72 @@ class AcpClient:
                     stream.close()
             except OSError:
                 pass
+
+    @property
+    def syscall_path_mount_relationships(self) -> list[str]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.relationships()
+
+    @property
+    def syscall_path_mount_filesystem_pairs(self) -> list[tuple[str, str]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.filesystem_pairs()
+
+    @property
+    def syscall_path_resolved_mount_relationships(self) -> list[str]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.resolved_relationships()
+
+    @property
+    def syscall_path_resolved_mount_path_states(self) -> list[tuple[str, str]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.resolution_states()
+
+    @property
+    def syscall_path_mount_id_pairs(self) -> list[tuple[str, str]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.mount_id_pairs()
+
+    @property
+    def syscall_path_mount_device_pairs(self) -> list[tuple[str, str]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.mount_device_pairs()
+
+    @property
+    def syscall_path_mount_root_component_pairs(self) -> list[tuple[int, int]]:
+        if self._syscall_mount_probe is None:
+            return []
+        return self._syscall_mount_probe.mount_root_component_pairs()
+
+    @property
+    def syscall_mount_table_state(self) -> str:
+        if self._syscall_mount_probe is None:
+            return "not_observed"
+        return self._syscall_mount_probe.mount_table_state()
+
+    @property
+    def syscall_mount_table_entry_count(self) -> int:
+        if self._syscall_mount_probe is None:
+            return 0
+        return self._syscall_mount_probe.mount_table_entry_count()
+
+    @property
+    def syscall_mount_table_root_filesystem(self) -> str:
+        if self._syscall_mount_probe is None:
+            return "absent"
+        return self._syscall_mount_probe.mount_table_root_filesystem()
+
+    @property
+    def syscall_mount_table_temp_filesystem(self) -> str:
+        if self._syscall_mount_probe is None:
+            return "absent"
+        return self._syscall_mount_probe.mount_table_temp_filesystem()
 
 
 def _signal_owned_group(process: subprocess.Popen[bytes], sig: int) -> None:
@@ -730,29 +820,77 @@ def run_smoke(binary: Path, subjects: int = 2, timeout: float = 20.0, output_dir
             owned_temp.cleanup()
 
 
+def _snapshot_is_bookkeeping(relative_path: Path) -> bool:
+    """Product and build artifacts are not candidate source state."""
+    parts = relative_path.parts
+    # `.codegg` is product-owned wherever the job workdir is. H006 writes run
+    # manifests under `job-check/.codegg`, not only at the workspace root.
+    if ".codegg" in parts or (parts and parts[0] in {".cargo-target", "target"}):
+        return True
+    if parts[:2] in {("job-check", ".cargo-home"), ("job-check", ".cargo-target")}:
+        return True
+    return relative_path.as_posix() == "codegg_debug.log"
+
+
+def _snapshot_paths(workspace: Path) -> list[Path]:
+    """List files and symlinks, skipping directories removed during the walk."""
+    found: list[Path] = []
+
+    def walk(directory: Path) -> None:
+        try:
+            children = list(directory.iterdir())
+        except FileNotFoundError:
+            return
+        for child in children:
+            try:
+                if child.is_symlink():
+                    found.append(child)
+                    continue
+                if child.is_dir():
+                    walk(child)
+                    continue
+            except FileNotFoundError:
+                continue
+            found.append(child)
+
+    walk(workspace)
+    found.sort()
+    return found
+
+
 def _workspace_snapshot_digest(workspace: Path) -> tuple[str, dict[str, str]]:
-    """Hash a bounded private fixture tree without following symlinks."""
+    """Hash a bounded private fixture tree without following symlinks.
+
+    A path removed between the walk and the read is omitted. Live trials
+    snapshot a tree a background job is still writing, including an atomic
+    manifest replace.
+    """
     entries: dict[str, str] = {}
     files = 0
     total_bytes = 0
-    for path in sorted(workspace.rglob("*")):
-        if path.is_symlink():
+    for path in _snapshot_paths(workspace):
+        try:
+            symlink = path.is_symlink()
+            is_file = path.is_file()
+        except FileNotFoundError:
+            continue
+        if symlink:
             raise HarnessError("fixture workspace contains an unexpected symlink")
-        if not path.is_file():
+        if not is_file:
             continue
         relative_path = path.relative_to(workspace)
-        # Product-owned context artifacts, the private Cargo target directory,
-        # and the debug log are observer/build bookkeeping, not candidate
-        # source state. Cargo output can exceed the snapshot cap without
-        # changing any file the trial is measuring.
-        if (relative_path.parts[0] in {".codegg", ".cargo-target", "target"}
-                or relative_path.as_posix() == "codegg_debug.log"):
+        # Cargo output can exceed the snapshot cap without changing any file
+        # the trial is measuring.
+        if _snapshot_is_bookkeeping(relative_path):
+            continue
+        try:
+            payload = path.read_bytes()
+        except FileNotFoundError:
             continue
         files += 1
         if files > 10000:
             raise HarnessError("fixture workspace exceeds the revision file bound")
         relative = relative_path.as_posix()
-        payload = path.read_bytes()
         total_bytes += len(payload)
         if total_bytes > 64 * 1024 * 1024:
             raise HarnessError("fixture workspace exceeds the revision byte bound")
@@ -789,10 +927,46 @@ def _drain_tool_notifications(client: "AcpClient", provider: Any, timeout: float
         client.drain(timeout=min(0.25, remaining))
 
 
+# A failed job's executor summary can carry command output, so the projection
+# never keeps its text. What an observation-only assertion cannot do without
+# is *which kind* of failure it was: "no running samples" is the same evidence
+# for a refusal, an unresolvable helper, and a launch that failed, and those
+# three have different owners. The classification below is a closed set, so
+# nothing from the summary reaches the projection except one of these labels.
+_JOB_FAILURE_CLASSES = (
+    ("process-class job refused", "process_admission"),
+    ("could not be resolved", "helper_unresolved"),
+    ("sandbox failed", "sandbox_launch"),
+    ("execution authorization", "authorization"),
+    ("test runner error:", "test_runner_error"),
+)
+_TEST_REPORT_FAILURE_CLASSES = frozenset({
+    "rust_test_failure", "rust_panic", "rust_compile_error", "rust_doctest_failure",
+    "pytest_failure", "pytest_error", "pytest_collection_error", "nonzero_exit",
+    "timeout_wall_clock", "timeout_no_output", "spawn_error", "unknown_failure",
+})
+
+
+def _job_failure_class(summary: Any) -> str | None:
+    if not isinstance(summary, str):
+        return None
+    for marker, label in _JOB_FAILURE_CLASSES:
+        if marker in summary:
+            return label
+    # Test reports carry a closed FailureClass vocabulary. Preserve only a
+    # canonical label, never the executor summary or its command output.
+    match = re.search(r"(?m)^Failure class:[ \t]*\r?\n([a-z_]+)[ \t]*$", summary)
+    if match and match.group(1) in _TEST_REPORT_FAILURE_CLASSES:
+        return f"test_{match.group(1)}"
+    return None
+
+
 def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[str, Any] | None:
     """Project only bounded identity and lifecycle fields from native job output."""
     if tool not in {"test", "job"} or not isinstance(raw_output, str):
         return None
+    machine_code = None
+    failure_class = None
     if tool == "test":
         action = "submit"
         job_id_match = re.search(r"background test submitted as job ([A-Za-z0-9_-]+)", raw_output)
@@ -801,6 +975,7 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
     else:
         job_id = None
         status = None
+        machine_code = None
         try:
             payload = json.loads(raw_output)
         except (TypeError, json.JSONDecodeError):
@@ -812,6 +987,14 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
             candidate_status = payload.get("status")
             if isinstance(candidate_status, str):
                 status = candidate_status.lower()
+            # The typed terminal envelope is a closed vocabulary, so it is
+            # lifecycle rather than free text. The executor's summary is not:
+            # it can carry command output, so it stays out of the projection.
+            candidate_code = payload.get("machine_code")
+            if isinstance(candidate_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", candidate_code):
+                machine_code = candidate_code
+            if status == "failed":
+                failure_class = _job_failure_class(payload.get("summary"))
         # The provider adapter can render structured tool results as text.
         # Accept its bounded JSON-like fields, but never preserve the raw text.
         if job_id is None:
@@ -828,15 +1011,25 @@ def _project_job_observation(tool: str, action: Any, raw_output: Any) -> dict[st
                     r"\bjob\s+(queued|running|completed|failed|cancelled|canceled|timed_out|expired|blocked)\b",
                     raw_output, re.IGNORECASE)
             status = status_match.group(1).lower() if status_match else None
+    # The provider adapter can render a structured result as text, in which
+    # case the JSON path above never ran. The failure class is derived from
+    # whatever this observation actually carried, so it is set here for both.
+    if status == "failed" and failure_class is None:
+        failure_class = _job_failure_class(raw_output)
     allowed_statuses = {
         "queued", "running", "completed", "failed", "cancelled", "canceled",
         "timed_out", "expired", "blocked",
     }
-    return {
+    observation = {
         "action": action if action in {"submit", "status", "wait", "output", "cancel"} else "unknown",
         "job_id": job_id,
         "status": status if status in allowed_statuses else None,
     }
+    if machine_code is not None:
+        observation["machine_code"] = machine_code
+    if failure_class is not None:
+        observation["failure_class"] = failure_class
+    return observation
 
 
 def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace: Path) -> str:
@@ -865,6 +1058,1231 @@ def _bounded_managed_test_log_tail(tool_updates: list[dict[str, Any]], workspace
     return ""
 
 
+_H006_FAILURE_MARKERS = (
+    ("no matching package named", "offline_dependency_unavailable"),
+    ("failed to download", "offline_dependency_unavailable"),
+    ("could not execute process", "toolchain_launch_failure"),
+    ("no such file or directory", "missing_runtime_path"),
+    ("permission denied", "filesystem_permission"),
+    ("operation not permitted", "filesystem_permission"),
+    ("read-only file system", "filesystem_permission"),
+    ("failed to parse manifest", "manifest_invalid"),
+    ("could not find `cargo.toml`", "manifest_missing"),
+    ("could not compile", "compilation_failure"),
+    ("error[e", "compilation_failure"),
+    ("test result: failed", "test_failure"),
+)
+_H006_FAILURE_CLASSES = {
+    "Passed": "passed",
+    "RustTestFailure": "rust_test_failure",
+    "RustPanic": "rust_panic",
+    "RustCompileError": "rust_compile_error",
+    "RustDoctestFailure": "rust_doctest_failure",
+    "PytestFailure": "pytest_failure",
+    "PytestError": "pytest_error",
+    "PytestCollectionError": "pytest_collection_error",
+    "NonzeroExit": "nonzero_exit",
+    "TimeoutWallClock": "timeout_wall_clock",
+    "TimeoutNoOutput": "timeout_no_output",
+    "SpawnError": "spawn_error",
+    "UnknownFailure": "unknown_failure",
+}
+
+
+def _h006_failure_log_category(text: str) -> str:
+    bounded = text[-16 * 1024:].lower()
+    for marker, category in _H006_FAILURE_MARKERS:
+        if marker in bounded:
+            return category
+    return "unclassified"
+
+
+_H006_CARGO_FIXTURE_PACKAGES = {
+    "job-core": "core",
+    "job-index": "index",
+    "job-store": "store",
+    "job-cli": "cli",
+}
+_H006_CARGO_TARGET_KINDS = {"lib", "bin", "test", "example", "bench", "custom-build"}
+_H006_COMPILER_MESSAGE_KINDS = (
+    ("invalid_compiler_argument", (
+        "unknown option", "unrecognized option", "unknown codegen option",
+        "unknown print request", "multiple input filenames", "unexpected argument",
+    )),
+    ("target_configuration", (
+        "unknown target", "target specification", "unsupported target",
+        "can't find crate for `std`", "can't find crate for `core`",
+    )),
+    ("toolchain_invocation", (
+        "failed to run `rustc`", "could not execute process", "failed to spawn",
+        "failed to execute",
+    )),
+    ("compiler_internal_failure", (
+        "internal compiler error", "compiler unexpectedly panicked", "thread 'rustc' panicked",
+    )),
+    ("profile_configuration", (
+        "panic=abort", "panic strategy", "test profile",
+    )),
+    ("filesystem_permission_denied", ("permission denied", "operation not permitted")),
+    ("filesystem_missing_path", ("no such file or directory", "file not found")),
+    ("filesystem_read_only", ("read-only file system",)),
+    ("filesystem_open_failure", ("failed to open", "could not open")),
+    ("filesystem_read_failure", ("failed to read", "could not read")),
+    ("filesystem_write_failure", ("failed to write", "could not write")),
+    ("filesystem_create_failure", ("failed to create", "could not create")),
+    ("environment_configuration", (
+        "environment variable", "not set", "not defined", "invalid environment",
+    )),
+    ("cargo_configuration", (
+        "failed to load config", "failed to parse config", "could not find cargo.toml",
+        "failed to find a package",
+    )),
+    ("resource_exhaustion", (
+        "too many open files", "resource temporarily unavailable", "file name too long",
+        "no space left on device", "out of memory", "cannot allocate memory",
+    )),
+)
+
+
+_H006_OS_ERROR_KINDS = {
+    1: "operation_not_permitted",
+    2: "missing_path",
+    5: "io_error",
+    13: "permission_denied",
+    20: "not_directory",
+    24: "resource_exhausted",
+    28: "no_space",
+    30: "read_only_filesystem",
+}
+_H006_PATH_TOKEN = re.compile(
+    r"(?<![\w.-])(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|[\w.-]+[\\/])"
+    r"[^ \t\r\n:'\"`<>]+"
+)
+
+
+def _h006_write_error_context(message: str) -> str | None:
+    lowered = message.lower()
+    marker = next((marker for marker in ("failed to write", "could not write")
+                   if marker in lowered), None)
+    if marker is None:
+        return None
+    marker_end = lowered.index(marker) + len(marker)
+    lines = message[marker_end:].splitlines()
+    return lines[0] if lines else ""
+
+
+#: Artifact kinds a Cargo write can land on, in match order. Cargo 1.100
+#: compiles every target under `<target-dir>/debug/build/<pkg>/<META>/out/`,
+#: so the `build` component of a path is that layout rather than a build
+#: script. The kind says which artifact the write actually targeted.
+_H006_WRITE_ERROR_ARTIFACT_KINDS = (
+    (".rmeta", "rmeta"),
+    (".rlib", "rlib"),
+    (".timestamp", "timestamp"),
+    (".json", "metadata_json"),
+    (".o", "object"),
+    (".d", "dep_info"),
+)
+
+
+def _h006_write_error_os_numbers(message: str) -> list[int]:
+    """Return write-error `os error N` values outside the named vocabulary.
+
+    [`_H006_OS_ERROR_KINDS`] is a closed map, so an errno outside it was
+    previously dropped and left "a write failed" as the entire finding. The
+    syscall number is structural — never file content — so an unrecognised
+    value stays visible instead of being silently discarded.
+    """
+    if _h006_write_error_context(message) is None:
+        return []
+    numbers = {
+        int(raw) for raw in re.findall(r"\bos error\s+(\d{1,3})\b", message, re.IGNORECASE)
+    }
+    return sorted(numbers - set(_H006_OS_ERROR_KINDS))[:4]
+
+
+def _h006_write_error_artifact_kind(message: str, workspace: Path) -> str | None:
+    """Classify the artifact a failed write targeted, by extension alone.
+
+    Only the final path component's extension reaches the projection, so a
+    random rustc suffix, a hash, or a user path never does.
+    """
+    path_context = _h006_write_error_context(message)
+    if path_context is None:
+        return None
+    root = workspace.resolve()
+    normalized_context = path_context.replace("\\", "/").lower()
+    target_roots = (
+        str(root / "job-check" / ".cargo-target").replace("\\", "/").lower(),
+        "job-check/.cargo-target",
+    )
+    for target_root in target_roots:
+        match = re.search(re.escape(target_root) + r"(?=$|[/\s:'\"`,])",
+                          normalized_context)
+        if match is None:
+            continue
+        # Cut the written path at the first delimiter so the trailing error
+        # text ("... .rlib: invalid argument (os error 22)") is excluded.
+        written = re.split(r"[:\s'\"`,()]", normalized_context[match.end():], maxsplit=1)[0]
+        component = written.rstrip("/").rsplit("/", 1)[-1]
+        for extension, kind in _H006_WRITE_ERROR_ARTIFACT_KINDS:
+            if component.endswith(extension):
+                return kind
+        return "unclassified"
+    return None
+
+
+def _h006_write_error_path_role(message: str, workspace: Path) -> str | None:
+    path_context = _h006_write_error_context(message)
+    if path_context is None:
+        return None
+    root = workspace.resolve()
+    role_roots = (
+        ("cargo_home", root / "job-check" / ".cargo-home", "job-check/.cargo-home"),
+        ("cargo_target_or_temp", root / "job-check" / ".cargo-target",
+         "job-check/.cargo-target"),
+        ("job_check", root / "job-check", "job-check"),
+        ("workspace", root, None),
+    )
+    normalized_context = path_context.replace("\\", "/").lower()
+    for role, path, relative in role_roots:
+        candidates = [str(path).replace("\\", "/").lower()]
+        if relative is not None:
+            candidates.append(relative)
+        if any(re.search(re.escape(candidate) + r"(?=$|[/\s:'\"`,])",
+                         normalized_context) for candidate in candidates):
+            return role
+    return "unmapped_path" if _H006_PATH_TOKEN.search(path_context) else "path_not_reported"
+
+
+def _h006_write_error_path_subrole(message: str, workspace: Path) -> str | None:
+    path_context = _h006_write_error_context(message)
+    if path_context is None:
+        return None
+    root = workspace.resolve()
+    normalized_context = path_context.replace("\\", "/").lower()
+    target_roots = (
+        str(root / "job-check" / ".cargo-target").replace("\\", "/").lower(),
+        "job-check/.cargo-target",
+    )
+    for target_root in target_roots:
+        match = re.search(re.escape(target_root) + r"(?=$|[/\s:'\"`,])",
+                          normalized_context)
+        if match is None:
+            continue
+        suffix = normalized_context[match.end():]
+        components = set(re.split(r"[/\\\s:'\"`,()]+", suffix))
+        if "incremental" in components:
+            return "cargo_incremental_state"
+        if ".fingerprint" in components:
+            return "cargo_fingerprint_state"
+        if "deps" in components:
+            return "cargo_dependency_artifact"
+        if "build" in components:
+            return "cargo_build_script_artifact"
+        if components.intersection({"tmp", "temp", "temporary"}):
+            return "cargo_temporary_file"
+        if components.intersection({"debug", "release"}):
+            return "cargo_target_output"
+        return "cargo_target_other"
+    return "unmapped_path" if _H006_PATH_TOKEN.search(path_context) else "path_not_reported"
+
+
+_H006_COMPILER_ERROR_FAMILIES = (
+    ("unresolved_name", ("cannot find", "not found in this scope")),
+    ("unresolved_import", ("unresolved import", "unresolved module", "can't find crate")),
+    ("type_mismatch", ("mismatched types",)),
+    ("trait_bound", ("trait bound", "is not satisfied")),
+    ("borrow_check", ("borrowed value", "cannot borrow", "does not live long enough")),
+    ("linker_failure", ("linking with", "linker", "undefined reference", "ld: ")),
+    ("cargo_compile_summary", ("could not compile", "failed to compile", "couldn't compile")),
+    ("build_script_failure", ("failed to run custom build command", "custom build command failed")),
+    ("dependency_resolution", ("failed to select a version", "no matching package named", "failed to download")),
+    ("manifest_error", ("failed to parse manifest", "no targets specified in the manifest")),
+    ("toolchain_failure", ("toolchain not installed", "no default toolchain", "could not execute process")),
+    ("resource_exhausted", ("no space left on device", "out of memory", "cannot allocate memory")),
+    ("syntax_error", (
+        "unexpected token", "expected one of", "expected identifier", "unclosed delimiter",
+        "unexpected end of file", "no rules expected",
+    )),
+    ("unstable_feature", ("is unstable", "unstable library feature")),
+)
+
+
+def _h006_compiler_diagnostics(
+    text: str, workspace: Path | None = None
+) -> dict[str, Any]:
+    bounded = text[-16 * 1024:]
+    error_codes = {
+        code.upper() for code in re.findall(r"\berror\[(E\d{4})\]", bounded, re.IGNORECASE)
+    }
+    messages = []
+    compiler_message_count = 0
+    compiler_error_message_count = 0
+    compiler_error_source_span_count = 0
+    compiler_error_without_source_span_count = 0
+    compiler_error_os_kinds: set[str] = set()
+    compiler_error_origins: set[str] = set()
+    compiler_error_message_kinds: set[str] = set()
+    compiler_error_path_roles: set[str] = set()
+    compiler_error_path_subroles: set[str] = set()
+    compiler_error_artifact_kinds: set[str] = set()
+    compiler_error_unmapped_os_numbers: set[int] = set()
+    build_finished_count = 0
+    lines = bounded.splitlines()
+    sampled_lines = lines if len(lines) <= 256 else lines[:128] + lines[-128:]
+    for line in sampled_lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        reason = event.get("reason")
+        if reason == "build-finished":
+            build_finished_count += 1
+            continue
+        if reason != "compiler-message":
+            continue
+        compiler_message_count += 1
+        diagnostic = event.get("message")
+        if not isinstance(diagnostic, dict) or diagnostic.get("level") != "error":
+            continue
+        compiler_error_message_count += 1
+        raw_package_id = event.get("package_id")
+        package_match = (re.search(r"#([A-Za-z0-9_-]+)@", raw_package_id)
+                         if isinstance(raw_package_id, str) else None)
+        package = (_H006_CARGO_FIXTURE_PACKAGES.get(package_match.group(1), "other")
+                   if package_match else "other")
+        target = event.get("target")
+        raw_target_kinds = target.get("kind") if isinstance(target, dict) else None
+        target_kinds = (raw_target_kinds if isinstance(raw_target_kinds, list) else [])
+        target_kind = next((kind for kind in target_kinds
+                            if isinstance(kind, str) and kind in _H006_CARGO_TARGET_KINDS),
+                           "other")
+        if package_match or target_kind != "other":
+            compiler_error_origins.add(f"{package}:{target_kind}")
+        message = diagnostic.get("message")
+        if isinstance(message, str):
+            messages.append(message)
+        code = diagnostic.get("code")
+        code = code.get("code") if isinstance(code, dict) else None
+        if isinstance(code, str) and re.fullmatch(r"E\d{4}", code, re.IGNORECASE):
+            error_codes.add(code.upper())
+        spans = diagnostic.get("spans")
+        if isinstance(spans, list) and spans:
+            compiler_error_source_span_count += 1
+        else:
+            compiler_error_without_source_span_count += 1
+        rendered = diagnostic.get("rendered")
+        diagnostic_text = "\n".join(
+            value for value in (message, rendered) if isinstance(value, str)
+        )
+        lowered_diagnostic_text = diagnostic_text.lower()
+        compiler_error_message_kinds.update(
+            kind for kind, markers in _H006_COMPILER_MESSAGE_KINDS
+            if any(marker in lowered_diagnostic_text for marker in markers)
+        )
+        if workspace is not None:
+            path_role = _h006_write_error_path_role(diagnostic_text, workspace)
+            if path_role is not None:
+                compiler_error_path_roles.add(path_role)
+            path_subrole = _h006_write_error_path_subrole(diagnostic_text, workspace)
+            if path_subrole is not None:
+                compiler_error_path_subroles.add(path_subrole)
+            artifact_kind = _h006_write_error_artifact_kind(diagnostic_text, workspace)
+            if artifact_kind is not None:
+                compiler_error_artifact_kinds.add(artifact_kind)
+        compiler_error_unmapped_os_numbers.update(
+            _h006_write_error_os_numbers(diagnostic_text))
+        for raw_os_error in re.findall(r"\bos error\s+(\d{1,3})\b", diagnostic_text, re.IGNORECASE):
+            os_error_kind = _H006_OS_ERROR_KINDS.get(int(raw_os_error))
+            if os_error_kind:
+                compiler_error_os_kinds.add(os_error_kind)
+    lowered = (bounded + "\n" + "\n".join(messages)).lower()
+    error_families = [
+        family for family, markers in _H006_COMPILER_ERROR_FAMILIES
+        if any(marker in lowered for marker in markers)
+    ]
+    return {
+        "compiler_error_codes": sorted(error_codes)[:8],
+        "compiler_error_families": error_families,
+        "cargo_json_compiler_messages": min(compiler_message_count, 256),
+        "cargo_json_error_messages": min(compiler_error_message_count, 256),
+        "cargo_json_error_source_span_count": min(compiler_error_source_span_count, 256),
+        "cargo_json_error_without_source_span_count": min(
+            compiler_error_without_source_span_count, 256),
+        "cargo_json_os_error_kinds": sorted(compiler_error_os_kinds),
+        "cargo_json_error_origins": sorted(compiler_error_origins)[:8],
+        "cargo_json_error_message_kinds": [
+            kind for kind, _markers in _H006_COMPILER_MESSAGE_KINDS
+            if kind in compiler_error_message_kinds
+        ],
+        "cargo_json_error_path_roles": sorted(compiler_error_path_roles),
+        "cargo_json_error_path_subroles": sorted(compiler_error_path_subroles),
+        "cargo_json_write_error_artifact_kinds": sorted(compiler_error_artifact_kinds),
+        "cargo_json_write_error_os_numbers": sorted(compiler_error_unmapped_os_numbers)[:4],
+        "cargo_json_build_finished_events": min(build_finished_count, 256),
+    }
+
+
+_H006_SYSCALL_TRACE_MAX_BYTES = 1024 * 1024
+_H006_SYSCALL_TRACE_LINE = re.compile(
+    r"^(?:(?P<pid>\d+|\[pid\s+\d+\])\s+)?"
+    r"(?P<operation>rename|renameat|renameat2|link|linkat|copy_file_range)"
+    r"\((?P<arguments>.*)\)\s+=\s+-1\s+EXDEV(?:\s|$)"
+)
+_H006_SYSCALL_TRACE_STRING = re.compile(r'"((?:\\.|[^"\\])*)"')
+
+
+def _h006_syscall_path_role(path: str) -> str:
+    lowered = path.replace("\\", "/").lower()
+    if ".cargo-target" in lowered:
+        return "cargo_target"
+    if ".cargo-home" in lowered:
+        return "cargo_home"
+    if ("/scratch/" in lowered or lowered.endswith("/scratch")
+            or "/codegg-run-" in lowered):
+        return "scratch"
+    if lowered.startswith("/tmp/") or lowered.startswith("/var/tmp/"):
+        return "system_temp"
+    return "other"
+
+
+_H006_CARGO_TARGET_AREAS = {
+    "deps": "deps",
+    "build": "build",
+    ".fingerprint": "fingerprint",
+    "incremental": "incremental",
+    "rmeta.tmp": "rmeta_temp",
+    "tmp": "temporary",
+    "temp": "temporary",
+    "examples": "examples",
+}
+
+
+def _h006_syscall_path_subrole(path: str) -> str:
+    """Return an allowlisted Cargo target subtree, never a path component."""
+    components = path.replace("\\", "/").lower().split("/")
+    target_indexes = [index for index, component in enumerate(components)
+                      if component == ".cargo-target"]
+    if not target_indexes:
+        return _h006_syscall_path_role(path)
+
+    tail = components[target_indexes[-1] + 1:]
+    profile = tail[0] if tail and tail[0] in {"debug", "release"} else None
+    area = next((_H006_CARGO_TARGET_AREAS[component]
+                 for component in tail[1 if profile else 0:]
+                 if component in _H006_CARGO_TARGET_AREAS), None)
+    if profile and area:
+        return f"cargo_target_{profile}_{area}"
+    if profile:
+        return f"cargo_target_{profile}_other"
+    if area:
+        return f"cargo_target_{area}"
+    return "cargo_target_root"
+
+
+def _h006_syscall_path_relationship(left: str, right: str) -> str:
+    """Describe endpoint layout with fixed labels, never returning path text."""
+    def absolute_components(path: str) -> tuple[str, ...] | None:
+        normalized = path.replace("\\", "/").lower()
+        if not normalized.startswith("/"):
+            return None
+        components = []
+        for component in normalized.split("/"):
+            if component in {"", "."}:
+                continue
+            if component == "..":
+                if components and components[-1] != "..":
+                    components.pop()
+                else:
+                    components.append(component)
+            else:
+                components.append(component)
+        return tuple(components)
+
+    left_parts = absolute_components(left)
+    right_parts = absolute_components(right)
+    if left_parts is None or right_parts is None:
+        return "relative_unresolved"
+    if left_parts == right_parts:
+        return "same_path"
+    if left_parts[:-1] == right_parts[:-1]:
+        return "same_parent"
+    if left_parts[:-1] == right_parts or right_parts[:-1] == left_parts:
+        return "ancestor_descendant"
+
+    def target_prefix(parts: tuple[str, ...]) -> tuple[str, ...] | None:
+        try:
+            index = parts.index(".cargo-target")
+        except ValueError:
+            return None
+        return parts[:index + 1]
+
+    left_root = target_prefix(left_parts)
+    right_root = target_prefix(right_parts)
+    if left_root is None or right_root is None or left_root != right_root:
+        return "different_roots"
+    left_tail = left_parts[len(left_root):]
+    right_tail = right_parts[len(right_root):]
+    left_profile = left_tail[0] if left_tail and left_tail[0] in {"debug", "release"} else None
+    right_profile = right_tail[0] if right_tail and right_tail[0] in {"debug", "release"} else None
+    if left_profile != right_profile:
+        return "different_profiles_same_target_root"
+    left_area = next((part for part in left_tail[1 if left_profile else 0:]
+                      if part in _H006_CARGO_TARGET_AREAS), None)
+    right_area = next((part for part in right_tail[1 if right_profile else 0:]
+                       if part in _H006_CARGO_TARGET_AREAS), None)
+    if left_area != right_area:
+        return "different_areas_same_profile"
+    return "different_paths_same_target_area"
+
+
+_H006_MOUNTINFO_MAX_BYTES = 1024 * 1024
+
+
+def _h006_decode_mountinfo_path(path: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), path)
+
+
+def _h006_filesystem_label(raw_type: str) -> str:
+    filesystem = raw_type.lower()
+    if filesystem in {"overlay", "overlayfs"}:
+        return "overlay"
+    if filesystem in {"ext4", "xfs", "btrfs", "tmpfs", "zfs", "f2fs"}:
+        return filesystem
+    if filesystem in {"nfs", "nfs4", "cifs", "smb3", "9p"}:
+        return "network_fs"
+    if filesystem in {"fuse", "fuseblk"} or filesystem.startswith("fuse."):
+        return "fuse"
+    return "other"
+
+
+def _h006_mount_details_for_path(path: str, mountinfo: str) -> tuple[str, str] | None:
+    normalized = os.path.normpath(path)
+    if not normalized.startswith("/"):
+        return None
+    selected: tuple[int, str, str] | None = None
+    for line in mountinfo.splitlines():
+        mount_fields, separator, filesystem_fields = line.partition(" - ")
+        fields = mount_fields.split()
+        filesystem = filesystem_fields.split()
+        if (not separator or len(fields) < 5 or not fields[0].isdigit()
+                or not filesystem):
+            continue
+        mountpoint = os.path.normpath(_h006_decode_mountinfo_path(fields[4]))
+        covered = (mountpoint == "/" or normalized == mountpoint
+                   or normalized.startswith(mountpoint.rstrip("/") + "/"))
+        if covered and (selected is None or len(mountpoint) > selected[0]):
+            selected = (len(mountpoint), fields[0], _h006_filesystem_label(filesystem[0]))
+    return (selected[1], selected[2]) if selected else None
+
+
+def _h006_mount_id_for_path(path: str, mountinfo: str) -> str | None:
+    details = _h006_mount_details_for_path(path, mountinfo)
+    return details[0] if details else None
+
+
+def _h006_path_mount_filesystem_pair_from_mountinfo(
+    left: str, right: str, mountinfo: str,
+) -> tuple[str, str] | None:
+    left_details = _h006_mount_details_for_path(left, mountinfo)
+    right_details = _h006_mount_details_for_path(right, mountinfo)
+    if left_details is None or right_details is None:
+        return None
+    return left_details[1], right_details[1]
+
+
+def _h006_path_mount_relationship_from_mountinfo(
+    left: str, right: str, mountinfo: str,
+) -> str:
+    left_mount = _h006_mount_id_for_path(left, mountinfo)
+    right_mount = _h006_mount_id_for_path(right, mountinfo)
+    if left_mount is None or right_mount is None:
+        return "mountpoint_unresolved"
+    return "same_mount" if left_mount == right_mount else "different_mounts"
+
+
+def _h006_mount_signature_for_path(
+    path: str, mountinfo: str,
+) -> tuple[str, str, int] | None:
+    """The covering mount's id, device, and root depth for `path`.
+
+    The mount is chosen by longest mountpoint prefix, so the answer survives a
+    path a failed rename already removed. The mount root is reduced to its
+    component count because the root is itself a path and must not reach the
+    receipt.
+    """
+    normalized = os.path.normpath(path)
+    if not normalized.startswith("/"):
+        return None
+    selected: tuple[int, str, str, int] | None = None
+    for line in mountinfo.splitlines():
+        mount_fields, separator, filesystem_fields = line.partition(" - ")
+        fields = mount_fields.split()
+        if (not separator or len(fields) < 5 or not fields[0].isdigit()
+                or not filesystem_fields):
+            continue
+        mountpoint = os.path.normpath(_h006_decode_mountinfo_path(fields[4]))
+        covered = (mountpoint == "/" or normalized == mountpoint
+                   or normalized.startswith(mountpoint.rstrip("/") + "/"))
+        if not covered:
+            continue
+        root_components = len([
+            part for part in _h006_decode_mountinfo_path(fields[3]).split("/") if part
+        ])
+        if selected is None or len(mountpoint) > selected[0]:
+            selected = (len(mountpoint), fields[0], fields[2], root_components)
+    if selected is None:
+        return None
+    return selected[1], selected[2], selected[3]
+
+
+def _h006_mount_identity_pairs(
+    left: str, right: str, mountinfo: str,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None, tuple[int, int] | None]:
+    """Project both endpoints' mount identity as bounded, path-free pairs.
+
+    Two bind mounts of one filesystem share a device and a mount root but not a
+    mount id, so the id pair is what distinguishes "the same mount" from "the
+    same filesystem". `rename` refuses to cross a mount even when the device
+    matches, which is why a device-only comparison cannot see the boundary.
+    """
+    left_signature = _h006_mount_signature_for_path(left, mountinfo)
+    right_signature = _h006_mount_signature_for_path(right, mountinfo)
+    if left_signature is None or right_signature is None:
+        return None, None, None
+    return (
+        (left_signature[0], right_signature[0]),
+        (left_signature[1], right_signature[1]),
+        (left_signature[2], right_signature[2]),
+    )
+
+
+def _h006_pid_mount_identity(
+    pid: int, left: str, right: str,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None, tuple[int, int] | None]:
+    """Read the tracee's own mount table once and project both endpoints."""
+    try:
+        with (Path("/proc") / str(pid) / "mountinfo").open("rb") as source:
+            payload = source.read(_H006_MOUNTINFO_MAX_BYTES + 1)
+    except OSError:
+        return None, None, None
+    if len(payload) > _H006_MOUNTINFO_MAX_BYTES:
+        return None, None, None
+    return _h006_mount_identity_pairs(
+        left, right, payload.decode("utf-8", errors="replace"))
+
+
+_H006_PROC_STAT_MAX_BYTES = 4096
+
+
+def _h006_process_identity(pid: int) -> tuple[int, int] | None:
+    """(pid, start time) for a live process, or None when it cannot be pinned.
+
+    `comm` may contain spaces and parentheses, so the fields are read after the
+    last ')'. The start time is field 22; with the pid it names one process
+    incarnation, which is what stops a recycled pid from answering for a tracee
+    that has already exited.
+    """
+    try:
+        with (Path("/proc") / str(pid) / "stat").open("rb") as source:
+            payload = source.read(_H006_PROC_STAT_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(payload) > _H006_PROC_STAT_MAX_BYTES:
+        return None
+    tail = payload.decode("utf-8", errors="replace").rpartition(")")[2].split()
+    if len(tail) < 20 or not tail[19].isdigit():
+        return None
+    return pid, int(tail[19])
+
+
+def _h006_mount_table_evidence(mountinfo: str) -> tuple[str, int, str, str]:
+    """Classify the mount table the probe read.
+
+    Returns (state, entry count, root filesystem label, /tmp filesystem label).
+    The protected mount view builds its child from a tmpfs root, so a root on
+    any other filesystem means the run had no mount view and every mount
+    attribution describes the host instead. Recording that state is what keeps
+    a host measurement from being read as a view measurement.
+    """
+    root_filesystem = "absent"
+    temp_filesystem = "absent"
+    entries = 0
+    for line in mountinfo.splitlines():
+        mount_fields, separator, filesystem_fields = line.partition(" - ")
+        fields = mount_fields.split()
+        if (not separator or len(fields) < 5 or not fields[0].isdigit()
+                or not filesystem_fields):
+            continue
+        entries += 1
+        mountpoint = os.path.normpath(_h006_decode_mountinfo_path(fields[4]))
+        label = _h006_filesystem_label(filesystem_fields.split()[0])
+        if mountpoint == "/":
+            root_filesystem = label
+        elif mountpoint == "/tmp":
+            temp_filesystem = label
+    if entries == 0:
+        return "mount_table_unavailable", 0, "absent", "absent"
+    if root_filesystem == "tmpfs":
+        return "sandboxed_view", entries, root_filesystem, temp_filesystem
+    return "host_view", entries, root_filesystem, temp_filesystem
+
+
+def _h006_mount_id_from_fdinfo(text: str) -> str | None:
+    if len(text) > 4096:
+        return None
+    match = re.search(r"(?m)^mnt_id:\s*(\d+)\s*$", text)
+    return match.group(1) if match else None
+
+
+def _h006_mount_relationship_from_ids(
+    left_mount: str | None, right_mount: str | None,
+) -> str:
+    if left_mount is None or right_mount is None:
+        return "resolved_mount_unavailable"
+    return "same_resolved_mount" if left_mount == right_mount else "different_resolved_mounts"
+
+
+def _h006_fd_mount_id(fd: int) -> str | None:
+    fdinfo_path = Path("/proc/self/fdinfo") / str(fd)
+    try:
+        with fdinfo_path.open("r", encoding="ascii", errors="replace") as source:
+            return _h006_mount_id_from_fdinfo(source.read(4097))
+    except OSError:
+        return None
+
+
+def _h006_pid_path_mount_id(
+    pid: int, path: str, target_root: Path,
+) -> tuple[str | None, str]:
+    normalized = os.path.normpath(path)
+    if (not path.startswith("/")
+            or any(part in {".", ".."} for part in path.split("/"))):
+        return None, "noncanonical_path"
+    if not _h006_is_target_path(normalized, target_root):
+        return None, "outside_target"
+    required_flags = ("O_PATH", "O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW")
+    if (not all(hasattr(os, name) for name in required_flags)
+            or os.open not in os.supports_dir_fd):
+        return None, "path_open_unavailable"
+
+    # Walk from the tracee's root with descriptor-relative, no-follow opens.
+    # The final component is also no-follow, matching rename's treatment of a
+    # symlink leaf; an intermediate symlink is refused instead of escaping the
+    # lexical target-root boundary.
+    root = Path("/proc") / str(pid) / "root"
+    try:
+        current_fd = os.open(
+            root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC,
+        )
+    except (OSError, ValueError):
+        return None, "process_root_unavailable"
+    try:
+        components = [part for part in normalized.split("/") if part]
+        for index, component in enumerate(components):
+            flags = os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW
+            if index < len(components) - 1:
+                flags |= os.O_DIRECTORY
+            try:
+                next_fd = os.open(component, flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                mount_id = _h006_fd_mount_id(current_fd)
+                return mount_id, ("nearest_existing_parent" if mount_id
+                                  else "mount_id_unavailable")
+            except (NotADirectoryError, OSError, ValueError):
+                return None, "path_open_unavailable"
+            os.close(current_fd)
+            current_fd = next_fd
+        mount_id = _h006_fd_mount_id(current_fd)
+        return mount_id, ("exact_path" if mount_id else "mount_id_unavailable")
+    finally:
+        os.close(current_fd)
+
+
+def _h006_pid_mount_diagnostics(
+    pid: int, left: str, right: str, target_root: Path,
+) -> tuple[str, tuple[str, str] | None, str, tuple[str, str]]:
+    try:
+        with (Path("/proc") / str(pid) / "mountinfo").open("rb") as source:
+            payload = source.read(_H006_MOUNTINFO_MAX_BYTES + 1)
+    except FileNotFoundError:
+        unavailable = ("process_root_unavailable", "process_root_unavailable")
+        return "tracee_exited", None, "resolved_mount_unavailable", unavailable
+    except OSError:
+        unavailable = ("process_root_unavailable", "process_root_unavailable")
+        return "mountinfo_unavailable", None, "resolved_mount_unavailable", unavailable
+    if len(payload) > _H006_MOUNTINFO_MAX_BYTES:
+        unavailable = ("process_root_unavailable", "process_root_unavailable")
+        return "mountinfo_oversize", None, "resolved_mount_unavailable", unavailable
+    mountinfo = payload.decode("utf-8", errors="replace")
+    left_resolved, left_state = _h006_pid_path_mount_id(pid, left, target_root)
+    right_resolved, right_state = _h006_pid_path_mount_id(pid, right, target_root)
+    return (
+        _h006_path_mount_relationship_from_mountinfo(left, right, mountinfo),
+        _h006_path_mount_filesystem_pair_from_mountinfo(left, right, mountinfo),
+        _h006_mount_relationship_from_ids(left_resolved, right_resolved),
+        (left_state, right_state),
+    )
+
+
+def _h006_is_target_path(path: str, target_root: Path) -> bool:
+    normalized = os.path.normpath(path)
+    root = os.path.normpath(str(target_root))
+    if not normalized.startswith("/") or not root.startswith("/"):
+        return False
+    return normalized == root or normalized.startswith(root.rstrip("/") + "/")
+
+
+class _H006SyscallMountProbe:
+    def __init__(self, trace_path: Path, target_root: Path) -> None:
+        self.trace_path = trace_path
+        self.target_root = target_root
+        self._stop = threading.Event()
+        self._offset = 0
+        self._pending = b""
+        self._relationships: set[str] = set()
+        self._filesystem_pairs: set[tuple[str, str]] = set()
+        self._resolved_relationships: set[str] = set()
+        self._resolution_states: set[tuple[str, str]] = set()
+        self._mount_id_pairs: set[tuple[str, str]] = set()
+        self._mount_device_pairs: set[tuple[str, str]] = set()
+        self._mount_root_component_pairs: set[tuple[int, int]] = set()
+        self._table_states: set[str] = set()
+        self._table_entry_count = 0
+        self._table_root_filesystem = "absent"
+        self._table_temp_filesystem = "absent"
+        self._identity: tuple[int, int] | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1)
+
+    def relationships(self) -> list[str]:
+        return sorted(self._relationships)[:8]
+
+    def filesystem_pairs(self) -> list[tuple[str, str]]:
+        return sorted(self._filesystem_pairs)[:8]
+
+    def resolved_relationships(self) -> list[str]:
+        return sorted(self._resolved_relationships)[:8]
+
+    def resolution_states(self) -> list[tuple[str, str]]:
+        return sorted(self._resolution_states)[:8]
+
+    def mount_id_pairs(self) -> list[tuple[str, str]]:
+        return sorted(self._mount_id_pairs)[:8]
+
+    def mount_device_pairs(self) -> list[tuple[str, str]]:
+        return sorted(self._mount_device_pairs)[:8]
+
+    def mount_root_component_pairs(self) -> list[tuple[int, int]]:
+        return sorted(self._mount_root_component_pairs)[:8]
+
+    def mount_table_state(self) -> str:
+        if not self._table_states:
+            return "not_observed"
+        # A host table outranks a later tracee exit: it says the run had no
+        # protected mount view at all, which no exit explains away.
+        for preferred in ("host_view", "mount_table_unavailable", "sandboxed_view"):
+            if preferred in self._table_states:
+                return preferred
+        return sorted(self._table_states)[0]
+
+    def mount_table_entry_count(self) -> int:
+        return self._table_entry_count
+
+    def mount_table_root_filesystem(self) -> str:
+        return self._table_root_filesystem
+
+    def mount_table_temp_filesystem(self) -> str:
+        return self._table_temp_filesystem
+
+    def _record_mount_table(self, pid: int) -> None:
+        try:
+            with (Path("/proc") / str(pid) / "mountinfo").open("rb") as source:
+                payload = source.read(_H006_MOUNTINFO_MAX_BYTES + 1)
+        except OSError:
+            self._table_states.add("mount_table_unavailable")
+            return
+        if len(payload) > _H006_MOUNTINFO_MAX_BYTES:
+            self._table_states.add("mount_table_unavailable")
+            return
+        state, entries, root_filesystem, temp_filesystem = _h006_mount_table_evidence(
+            payload.decode("utf-8", errors="replace"))
+        self._table_states.add(state)
+        self._table_entry_count = max(self._table_entry_count, entries)
+        if state != "mount_table_unavailable":
+            self._table_root_filesystem = root_filesystem
+            self._table_temp_filesystem = temp_filesystem
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._scan()
+            self._stop.wait(0.005)
+        self._scan()
+
+    def _scan(self) -> None:
+        if len(self._relationships) >= 8:
+            return
+        try:
+            size = self.trace_path.stat().st_size
+            if size > _H006_SYSCALL_TRACE_MAX_BYTES:
+                return
+            remaining = _H006_SYSCALL_TRACE_MAX_BYTES - self._offset
+            if remaining <= 0:
+                return
+            with self.trace_path.open("rb") as source:
+                source.seek(self._offset)
+                chunk = source.read(min(64 * 1024, remaining))
+        except OSError:
+            return
+        if not chunk:
+            return
+        self._offset += len(chunk)
+        lines = (self._pending + chunk).split(b"\n")
+        self._pending = lines.pop()
+        for raw_line in lines:
+            line = raw_line.decode("utf-8", errors="replace")
+            match = _H006_SYSCALL_TRACE_LINE.match(line)
+            if match is None:
+                continue
+            paths = [
+                _h006_decode_mountinfo_path(path)
+                for path in _H006_SYSCALL_TRACE_STRING.findall(match.group("arguments"))[:2]
+            ]
+            if len(paths) < 2 or not all(
+                _h006_is_target_path(path, self.target_root) for path in paths
+            ):
+                continue
+            raw_pid = match.group("pid")
+            digits = re.search(r"\d+", raw_pid or "")
+            if digits is None:
+                self._relationships.add("tracee_pid_unavailable")
+                continue
+            pid = int(digits.group())
+            identity = _h006_process_identity(pid)
+            if identity is None:
+                # A tracee that has already exited cannot answer for its own
+                # mount table, and a reused pid would answer as somebody else.
+                if self._identity is None:
+                    self._table_states.add("tracee_unavailable")
+                continue
+            if self._identity is None:
+                self._identity = identity
+            elif identity != self._identity:
+                self._identity = None
+                self._table_states.add("tracee_replaced")
+                continue
+            self._record_mount_table(pid)
+            relationship, filesystems, resolved_relationship, resolution_states = (
+                _h006_pid_mount_diagnostics(
+                    pid, paths[0], paths[1], self.target_root)
+            )
+            self._relationships.add(relationship)
+            self._resolved_relationships.add(resolved_relationship)
+            self._resolution_states.add(resolution_states)
+            if filesystems is not None:
+                self._filesystem_pairs.add(filesystems)
+            mount_ids, devices, root_components = _h006_pid_mount_identity(
+                pid, paths[0], paths[1])
+            if mount_ids is not None:
+                self._mount_id_pairs.add(mount_ids)
+            if devices is not None:
+                self._mount_device_pairs.add(devices)
+            if root_components is not None:
+                self._mount_root_component_pairs.add(root_components)
+
+
+def _h006_syscall_trace_diagnostics(
+    trace_path: Path, path_mount_relationships: tuple[str, ...] | list[str] = (),
+    path_mount_filesystem_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    path_resolved_mount_relationships: tuple[str, ...] | list[str] = (),
+    path_resolved_mount_path_states: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    path_mount_id_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    path_mount_device_pairs: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    path_mount_root_component_pairs: (
+        tuple[tuple[int, int], ...] | list[tuple[int, int]]
+    ) = (),
+    mount_table_state: str = "not_observed",
+    mount_table_entry_count: int = 0,
+    mount_table_root_filesystem: str = "absent",
+    mount_table_temp_filesystem: str = "absent",
+) -> dict[str, Any]:
+    """Project failed file-move syscalls without retaining any raw path text."""
+    empty = {
+        "errno": None,
+        "operations": [],
+        "path_role_pairs": [],
+        "path_subrole_pairs": [],
+        "path_relationships": [],
+        "path_mount_relationships": [],
+        "path_mount_filesystem_pairs": [],
+        "path_resolved_mount_relationships": [],
+        "path_resolved_mount_path_states": [],
+        "path_mount_id_pairs": [],
+        "path_mount_device_pairs": [],
+        "path_mount_root_component_pairs": [],
+        "mount_table_state": "not_observed",
+        "mount_table_entry_count": 0,
+        "mount_table_root_filesystem": "absent",
+        "mount_table_temp_filesystem": "absent",
+        "artifact_kinds": [],
+    }
+    try:
+        size = trace_path.stat().st_size
+        if size == 0:
+            return {"state": "empty", **empty}
+        if size > _H006_SYSCALL_TRACE_MAX_BYTES:
+            return {"state": "oversize", **empty}
+        text = trace_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return {"state": "missing", **empty}
+    except OSError:
+        return {"state": "unreadable", **empty}
+
+    operations: set[str] = set()
+    path_role_pairs: set[tuple[str, str]] = set()
+    path_subrole_pairs: set[tuple[str, str]] = set()
+    path_relationships: set[str] = set()
+    artifact_kinds: set[str] = set()
+    for line in text.splitlines():
+        match = _H006_SYSCALL_TRACE_LINE.match(line)
+        if match is None:
+            continue
+        paths = _H006_SYSCALL_TRACE_STRING.findall(match.group("arguments"))
+        roles = [_h006_syscall_path_role(path) for path in paths[:2]]
+        subroles = [_h006_syscall_path_subrole(path) for path in paths[:2]]
+        if roles:
+            path_role_pairs.add((roles[0], roles[1] if len(roles) > 1 else "unavailable"))
+            path_subrole_pairs.add((
+                subroles[0], subroles[1] if len(subroles) > 1 else "unavailable"))
+            relationship = (_h006_syscall_path_relationship(paths[0], paths[1])
+                            if len(paths) > 1 else "unavailable")
+            path_relationships.add(relationship)
+        lowered_paths = [path.lower() for path in paths[:2]]
+        for extension, kind in _H006_WRITE_ERROR_ARTIFACT_KINDS:
+            if any(path.endswith(extension) for path in lowered_paths):
+                artifact_kinds.add(kind)
+        operations.add(match.group("operation"))
+
+    return {
+        "state": "exdev_observed" if operations else "no_exdev",
+        **empty,
+        "errno": "EXDEV" if operations else None,
+        "operations": sorted(operations)[:8],
+        "path_role_pairs": [list(pair) for pair in sorted(path_role_pairs)[:8]],
+        "path_subrole_pairs": [list(pair) for pair in sorted(path_subrole_pairs)[:8]],
+        "path_relationships": sorted(path_relationships)[:8],
+        "path_mount_relationships": sorted(set(path_mount_relationships))[:8],
+        "path_mount_filesystem_pairs": [
+            list(pair) for pair in sorted(set(path_mount_filesystem_pairs))[:8]
+        ],
+        "path_resolved_mount_relationships": sorted(
+            set(path_resolved_mount_relationships))[:8],
+        "path_resolved_mount_path_states": [
+            list(pair) for pair in sorted(set(path_resolved_mount_path_states))[:8]
+        ],
+        "path_mount_id_pairs": [
+            list(pair) for pair in sorted(set(path_mount_id_pairs))[:8]
+        ],
+        "path_mount_device_pairs": [
+            list(pair) for pair in sorted(set(path_mount_device_pairs))[:8]
+        ],
+        "path_mount_root_component_pairs": [
+            list(pair) for pair in sorted(set(path_mount_root_component_pairs))[:8]
+        ],
+        "mount_table_state": mount_table_state,
+        "mount_table_entry_count": min(max(int(mount_table_entry_count), 0), 1 << 20),
+        "mount_table_root_filesystem": mount_table_root_filesystem,
+        "mount_table_temp_filesystem": mount_table_temp_filesystem,
+        "artifact_kinds": sorted(artifact_kinds)[:8],
+    }
+
+
+def _h006_cwd_scope(workspace: Path, raw_cwd: Any) -> str:
+    if not isinstance(raw_cwd, str):
+        return "unavailable"
+    try:
+        root = workspace.resolve()
+        cwd = Path(raw_cwd).resolve(strict=False)
+        job_check = (root / "job-check").resolve(strict=False)
+    except (OSError, RuntimeError):
+        return "unresolved"
+    if cwd == job_check:
+        return "job_check"
+    if cwd.is_relative_to(job_check):
+        return "job_check_subpath"
+    if cwd == root:
+        return "workspace_root"
+    if cwd.is_relative_to(root):
+        return "workspace_subpath"
+    return "outside_workspace"
+
+
+def _h006_managed_test_diagnostics(workspace: Path) -> list[dict[str, Any]]:
+    root = workspace.resolve()
+    report_root = root / "job-check" / ".codegg" / "test-runs"
+    if not report_root.is_dir():
+        return []
+    diagnostics = []
+    for report_path in sorted(report_root.glob("*/report.json"))[-4:]:
+        try:
+            if not report_path.resolve(strict=True).is_relative_to(root):
+                continue
+            if report_path.stat().st_size > 256 * 1024:
+                continue
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        cwd_scope = _h006_cwd_scope(root, report.get("cwd"))
+        status = report.get("status")
+        status = status.lower() if isinstance(status, str) else "unknown"
+        if status not in {"passed", "failed", "error", "timedout", "cancelled", "unknown"}:
+            status = "unknown"
+        raw_exit_code = report.get("exit_code")
+        exit_code = (raw_exit_code if isinstance(raw_exit_code, int)
+                     and not isinstance(raw_exit_code, bool)
+                     and -255 <= raw_exit_code <= 255 else None)
+        raw_duration = report.get("duration_ms")
+        duration_ms = (raw_duration if isinstance(raw_duration, int)
+                       and not isinstance(raw_duration, bool)
+                       and 0 <= raw_duration <= 300_000 else None)
+        raw_output_truncated = report.get("output_truncated")
+        output_truncated = raw_output_truncated if isinstance(raw_output_truncated, bool) else None
+        raw_failures = report.get("failures")
+        failure_classes = sorted({
+            _H006_FAILURE_CLASSES[failure_class]
+            for failure in raw_failures if isinstance(failure, dict)
+            if isinstance(failure_class := failure.get("failure_class"), str)
+            and failure_class in _H006_FAILURE_CLASSES
+        }) if isinstance(raw_failures, list) else []
+        stdout_category = "unavailable"
+        stderr_category = "unavailable"
+        stdout_log_bytes: int | None = None
+        stderr_log_bytes: int | None = None
+        compiler_error_codes: set[str] = set()
+        compiler_error_families: set[str] = set()
+        cargo_json_os_error_kinds: set[str] = set()
+        cargo_json_error_origins: set[str] = set()
+        cargo_json_error_message_kinds: set[str] = set()
+        cargo_json_error_path_roles: set[str] = set()
+        cargo_json_error_path_subroles: set[str] = set()
+        cargo_json_write_error_artifact_kinds: set[str] = set()
+        cargo_json_write_error_os_numbers: set[int] = set()
+        cargo_json_compiler_messages = 0
+        cargo_json_error_messages = 0
+        cargo_json_error_source_span_count = 0
+        cargo_json_error_without_source_span_count = 0
+        cargo_json_build_finished_events = 0
+        for stream_name in ("stdout_log", "stderr_log"):
+            raw_log_path = report.get(stream_name)
+            if not isinstance(raw_log_path, str):
+                continue
+            try:
+                log_path = Path(raw_log_path).resolve(strict=True)
+                if not log_path.is_relative_to(root) or not log_path.is_file():
+                    continue
+                with log_path.open("rb") as log:
+                    log.seek(0, os.SEEK_END)
+                    size = log.tell()
+                    if stream_name == "stdout_log":
+                        stdout_log_bytes = min(size, 1_000_000)
+                    else:
+                        stderr_log_bytes = min(size, 1_000_000)
+                    if size <= 16 * 1024:
+                        log.seek(0)
+                        sample = log.read(16 * 1024)
+                    else:
+                        log.seek(0)
+                        head = log.read(8 * 1024)
+                        log.seek(size - (8 * 1024 - 1), os.SEEK_SET)
+                        sample = head + b"\n" + log.read(8 * 1024 - 1)
+                log_text = sample.decode("utf-8", errors="replace")
+                stream_category = _h006_failure_log_category(log_text)
+                if stream_name == "stdout_log":
+                    stdout_category = stream_category
+                else:
+                    stderr_category = stream_category
+                stream_diagnostics = _h006_compiler_diagnostics(log_text, workspace=root)
+                compiler_error_codes.update(stream_diagnostics["compiler_error_codes"])
+                compiler_error_families.update(stream_diagnostics["compiler_error_families"])
+                cargo_json_compiler_messages = min(
+                    cargo_json_compiler_messages
+                    + stream_diagnostics["cargo_json_compiler_messages"], 256)
+                cargo_json_error_messages = min(
+                    cargo_json_error_messages
+                    + stream_diagnostics["cargo_json_error_messages"], 256)
+                cargo_json_error_source_span_count = min(
+                    cargo_json_error_source_span_count
+                    + stream_diagnostics["cargo_json_error_source_span_count"], 256)
+                cargo_json_error_without_source_span_count = min(
+                    cargo_json_error_without_source_span_count
+                    + stream_diagnostics["cargo_json_error_without_source_span_count"], 256)
+                cargo_json_os_error_kinds.update(stream_diagnostics["cargo_json_os_error_kinds"])
+                cargo_json_error_origins.update(stream_diagnostics["cargo_json_error_origins"])
+                cargo_json_error_message_kinds.update(
+                    stream_diagnostics["cargo_json_error_message_kinds"])
+                cargo_json_error_path_roles.update(
+                    stream_diagnostics["cargo_json_error_path_roles"])
+                cargo_json_error_path_subroles.update(
+                    stream_diagnostics["cargo_json_error_path_subroles"])
+                cargo_json_write_error_artifact_kinds.update(
+                    stream_diagnostics["cargo_json_write_error_artifact_kinds"])
+                cargo_json_write_error_os_numbers.update(
+                    stream_diagnostics["cargo_json_write_error_os_numbers"])
+                cargo_json_build_finished_events = min(
+                    cargo_json_build_finished_events
+                    + stream_diagnostics["cargo_json_build_finished_events"], 256)
+            except (OSError, RuntimeError):
+                continue
+        compiler_diagnostics = {
+            "compiler_error_codes": sorted(compiler_error_codes)[:8],
+            "compiler_error_families": [
+                family for family, _markers in _H006_COMPILER_ERROR_FAMILIES
+                if family in compiler_error_families
+            ],
+            "cargo_json_compiler_messages": cargo_json_compiler_messages,
+            "cargo_json_error_messages": cargo_json_error_messages,
+            "cargo_json_error_source_span_count": cargo_json_error_source_span_count,
+            "cargo_json_error_without_source_span_count": cargo_json_error_without_source_span_count,
+            "cargo_json_os_error_kinds": sorted(cargo_json_os_error_kinds),
+            "cargo_json_error_origins": sorted(cargo_json_error_origins)[:8],
+            "cargo_json_error_message_kinds": [
+                kind for kind, _markers in _H006_COMPILER_MESSAGE_KINDS
+                if kind in cargo_json_error_message_kinds
+            ],
+            "cargo_json_error_path_roles": sorted(cargo_json_error_path_roles),
+            "cargo_json_error_path_subroles": sorted(cargo_json_error_path_subroles),
+            "cargo_json_write_error_artifact_kinds": sorted(cargo_json_write_error_artifact_kinds),
+            "cargo_json_write_error_os_numbers": sorted(cargo_json_write_error_os_numbers)[:4],
+            "cargo_json_build_finished_events": cargo_json_build_finished_events,
+        }
+        diagnostics.append({
+            "status": status,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "cwd_scope": cwd_scope,
+            "output_truncated": output_truncated,
+            "stdout_log_bytes": stdout_log_bytes,
+            "stderr_log_bytes": stderr_log_bytes,
+            "failure_classes": failure_classes,
+            "stdout_category": stdout_category,
+            "stderr_category": stderr_category,
+            **compiler_diagnostics,
+        })
+    return diagnostics
+
+
 def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash: bool = False,
                    ledger_root: Path | None = None, candidate: str = "current",
                    task_id: str = "safe-bash-write", group_id: str = "native-tool-smoke",
@@ -883,15 +2301,32 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                    external_verifier: Path | None = None,
                    rustc_executable: Path | None = None,
                    source_root: Path | None = None,
-                   causal_trace_output: Path | None = None) -> dict[str, Any]:
+                   cargo_home_under_test_workdir: bool = False,
+                   causal_trace_output: Path | None = None,
+                   trace_h006_syscalls: bool = False) -> dict[str, Any]:
     """Run one native ACP turn against a local deterministic OpenAI wire fixture."""
     from .provider_fixture import FixtureProvider
     import shlex
     if profile not in {"full-host", "workspace-write"}:
         raise HarnessError("profile must be full-host or workspace-write")
+    if trace_h006_syscalls and task_id != "h006-real-job-observation":
+        raise HarnessError("syscall tracing is reserved for the H006 diagnostic trial")
     trial_started = time.monotonic()
     binary = binary.resolve()
-    with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-"):
+    with tempfile.TemporaryDirectory(prefix="codegg-harness-tool-") as trace_temp:
+        trace_state = "not_requested"
+        strace_executable = None
+        syscall_trace_path = None
+        if trace_h006_syscalls:
+            if platform.system().lower() != "linux":
+                trace_state = "unsupported_platform"
+            else:
+                strace_executable = shutil.which("strace")
+                if strace_executable is None:
+                    trace_state = "strace_unavailable"
+                else:
+                    trace_state = "pending"
+                    syscall_trace_path = Path(trace_temp) / "h006-syscalls.trace"
         root = private_dir(lane_root("tool-" + uuid.uuid4().hex[:8]))
         lane_tracker = os.environ.get("CODEGG_HARNESS_S010_PRIVATE_LANE_TRACKER")
         if lane_tracker:
@@ -957,7 +2392,19 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             if not rustc_path.is_file():
                 raise HarnessError("configured rustc executable is not a regular file")
             env["RUSTC"] = str(rustc_path)
-        env["CARGO_TARGET_DIR"] = str(private_dir(workspace / ".cargo-target"))
+        cargo_target_root = workspace
+        if cargo_home_under_test_workdir:
+            # Keep Cargo's writable home and target artifacts inside the
+            # accepted job-check grant. HOME remains the harness-private root
+            # so sensitive home-path denies stay outside the workspace grant.
+            test_workdir = workspace / "job-check"
+            if not test_workdir.is_dir():
+                raise HarnessError("test-workdir Cargo state requires the job-check fixture")
+            cargo_target_root = test_workdir
+            cargo_home = private_dir(test_workdir / ".cargo-home")
+            env["CARGO_HOME"] = str(cargo_home)
+        cargo_target_dir = private_dir(cargo_target_root / ".cargo-target")
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
         config = {
             "provider": {"openai": {
                 "api_key": "local-fixture-only",
@@ -978,7 +2425,13 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
         config_path = Path(env["CODEGG_TUI_CONFIG"])
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config), encoding="utf-8")
-        client = AcpClient(binary, env, workspace, timeout, profile)
+        client = AcpClient(
+            binary, env, workspace, timeout, profile,
+            strace_path=Path(strace_executable) if strace_executable else None,
+            syscall_trace_path=syscall_trace_path,
+            syscall_target_root=(Path(env["CARGO_TARGET_DIR"])
+                                 if syscall_trace_path is not None else None),
+        )
         from . import causal_trace
         causal_recorder = causal_trace.Recorder(
             root / "artifacts" / "causal-trace.jsonl", run_id=uuid.uuid4().hex,
@@ -998,6 +2451,7 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
 
         client.notification_observer = observe_tool_completion
         session_id = None
+        h006_trial_result: dict[str, Any] | None = None
         try:
             client.request("initialize", {"protocolVersion": 1, "clientInfo": {"name": "codegg-harness-lab", "version": "1"}})
             opened = client.request("session/new", {"cwd": str(workspace), "title": "harness-lab-native-tool-fixture"})
@@ -1271,6 +2725,9 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 "workspace": str(workspace),
                 "expected_file": expected_file,
             }
+            if task_id == "h006-real-job-observation":
+                h006_trial_result = result
+                result["managed_test_diagnostics"] = _h006_managed_test_diagnostics(workspace)
             if ledger_root is not None:
                 from .ledger import record
                 trace = []
@@ -1304,8 +2761,16 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
             client.close()
             log = spec.root / "acp.stderr"
             tail = log.read_text(encoding="utf-8", errors="replace")[-8192:] if log.exists() else ""
+            # `tool_updates` is built only after the prompt returns. A failure
+            # inside the notification observer, such as a snapshot race, has
+            # notifications but not that local. The tail only needs rawOutput.
+            received_updates = [
+                item.get("params", {}).get("update", {})
+                for item in client.notifications
+                if item.get("method") == "session/update"
+            ]
             managed_test_tail = (
-                _bounded_managed_test_log_tail(tool_updates, workspace)
+                _bounded_managed_test_log_tail(received_updates, workspace)
                 if task_id == "h006-real-job-observation" else ""
             )
             if ledger_root is not None:
@@ -1359,6 +2824,51 @@ def run_tool_trial(binary: Path, profile: str, timeout: float = 45.0, deny_bash:
                 except (HarnessError, OSError):
                     pass
             client.close()
+            if task_id == "h006-real-job-observation" and trace_h006_syscalls:
+                syscall_diagnostics = (
+                    _h006_syscall_trace_diagnostics(
+                        syscall_trace_path,
+                        tuple(client.syscall_path_mount_relationships),
+                        tuple(client.syscall_path_mount_filesystem_pairs),
+                        tuple(client.syscall_path_resolved_mount_relationships),
+                        tuple(client.syscall_path_resolved_mount_path_states),
+                        tuple(client.syscall_path_mount_id_pairs),
+                        tuple(client.syscall_path_mount_device_pairs),
+                        tuple(client.syscall_path_mount_root_component_pairs),
+                        client.syscall_mount_table_state,
+                        client.syscall_mount_table_entry_count,
+                        client.syscall_mount_table_root_filesystem,
+                        client.syscall_mount_table_temp_filesystem,
+                    )
+                    if syscall_trace_path is not None
+                    else {
+                        "state": trace_state,
+                        "errno": None,
+                        "operations": [],
+                        "path_role_pairs": [],
+                        "path_subrole_pairs": [],
+                        "path_relationships": [],
+                        "path_mount_relationships": [],
+                        "path_mount_filesystem_pairs": [],
+                        "path_resolved_mount_relationships": [],
+                        "path_resolved_mount_path_states": [],
+                        "path_mount_id_pairs": [],
+                        "path_mount_device_pairs": [],
+                        "path_mount_root_component_pairs": [],
+                        "mount_table_state": "not_observed",
+                        "mount_table_entry_count": 0,
+                        "mount_table_root_filesystem": "absent",
+                        "mount_table_temp_filesystem": "absent",
+                        "artifact_kinds": [],
+                    }
+                )
+                if h006_trial_result is not None:
+                    h006_trial_result["syscall_diagnostics"] = syscall_diagnostics
+                if syscall_trace_path is not None:
+                    try:
+                        syscall_trace_path.unlink()
+                    except OSError:
+                        pass
             try:
                 _stop_daemon(spec, min(timeout, 5))
             except (HarnessError, FileNotFoundError, OSError, subprocess.TimeoutExpired):

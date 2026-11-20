@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from dev.harness_lab.supervisor import (
     AcpClient,
@@ -197,7 +198,12 @@ while True:
         self.assertEqual(env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"], "60")
         self.assertTrue(env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"].endswith(
             "artifacts/provider-request-admissions.jsonl"))
-        self.assertEqual(env["RUST_LOG"], "error,codegg_providers::request_budget=info")
+        self.assertEqual(
+            env["RUST_LOG"],
+            "error,codegg_providers::request_budget=info,"
+            "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug,"
+            "codegg::agent::context_runtime=debug,codegg::agent::loop=debug",
+        )
 
     def test_provider_request_limit_can_be_bound_to_a_trial_without_parent_env(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -219,7 +225,12 @@ while True:
         self.assertEqual(env["CODEGG_HARNESS_MAX_PROVIDER_REQUESTS"], "297")
         self.assertTrue(env["CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT"].endswith(
             "artifacts/provider-request-admissions.jsonl"))
-        self.assertEqual(env["RUST_LOG"], "error,codegg_providers::request_budget=info")
+        self.assertEqual(
+            env["RUST_LOG"],
+            "error,codegg_providers::request_budget=info,"
+            "codegg_providers::opencode_go=debug,codegg::agent::provider_turn=debug,"
+            "codegg::agent::context_runtime=debug,codegg::agent::loop=debug",
+        )
         child = subprocess.run(
             [sys.executable, "-c", "import os; print(os.environ['CODEGG_HARNESS_MAX_PROVIDER_REQUESTS']); print(os.environ['CODEGG_HARNESS_PROVIDER_REQUEST_RECEIPT'])"],
             env=env, capture_output=True, text=True, check=True)
@@ -421,6 +432,26 @@ class JobObservationProjectionTests(unittest.TestCase):
             "job", "status", "Error: tool execution failed: job failed\njob_id: job_abc-123")
         self.assertEqual(projected, {"action": "status", "job_id": "job_abc-123", "status": "failed"})
 
+    def test_native_failed_test_projects_only_allowlisted_report_class(self) -> None:
+        projected = _project_job_observation(
+            "job", "wait",
+            "job failed\njob_id: job_abc-123\nFailure class:\nrust_compile_error\n"
+            "Summary:\nPRIVATE_COMMAND_OUTPUT")
+        self.assertEqual(projected, {
+            "action": "wait", "job_id": "job_abc-123", "status": "failed",
+            "failure_class": "test_rust_compile_error",
+        })
+        self.assertNotIn("PRIVATE_COMMAND_OUTPUT", repr(projected))
+
+    def test_test_runner_error_projects_only_the_failure_owner(self) -> None:
+        projected = _project_job_observation(
+            "job", "wait", "job failed\njob_id: job_abc-123\ntest runner error: PRIVATE_DETAIL")
+        self.assertEqual(projected, {
+            "action": "wait", "job_id": "job_abc-123", "status": "failed",
+            "failure_class": "test_runner_error",
+        })
+        self.assertNotIn("PRIVATE_DETAIL", repr(projected))
+
     def test_native_test_submission_extracts_only_bounded_job_identity(self) -> None:
         projected = _project_job_observation(
             "test", None, "background test submitted as job job_abc-123; terminal notification follows")
@@ -448,6 +479,80 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             b"pub fn stable() -> bool { true }\n").hexdigest()
         self.assertEqual(files, {"src/lib.rs": expected_source_digest})
         self.assertEqual(len(digest), 64)
+
+    def test_nested_product_run_manifest_is_excluded_from_candidate_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            manifest = (workspace / "job-check" / ".codegg" / "runs" / "2026-11-17"
+                        / "96c38d73-c5ca-4c9d-a7e8-5369efe3b224" / ".manifest.json.tmp")
+            manifest.parent.mkdir(parents=True)
+            with manifest.open("wb") as artifact:
+                artifact.truncate(64 * 1024 * 1024 + 1)
+
+            _digest, files = _workspace_snapshot_digest(workspace)
+
+        expected_source_digest = hashlib.sha256(
+            b"pub fn stable() -> bool { true }\n").hexdigest()
+        self.assertEqual(files, {"src/lib.rs": expected_source_digest})
+
+    def test_file_removed_between_listing_and_read_is_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            ephemeral = workspace / "ephemeral.txt"
+            ephemeral.write_text("gone", encoding="utf-8")
+            original = Path.read_bytes
+
+            def read_bytes(path: Path) -> bytes:
+                if path.name == "ephemeral.txt":
+                    raise FileNotFoundError(path)
+                return original(path)
+
+            with mock.patch.object(Path, "read_bytes", read_bytes):
+                _digest, files = _workspace_snapshot_digest(workspace)
+
+        expected_source_digest = hashlib.sha256(
+            b"pub fn stable() -> bool { true }\n").hexdigest()
+        self.assertEqual(files, {"src/lib.rs": expected_source_digest})
+
+    def test_directory_removed_during_listing_is_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            vanished = workspace / "ephemeral" / "note.txt"
+            vanished.parent.mkdir()
+            vanished.write_text("gone", encoding="utf-8")
+            original = Path.iterdir
+
+            def iterdir(path: Path):
+                if path.name == "ephemeral":
+                    raise FileNotFoundError(path)
+                return original(path)
+
+            with mock.patch.object(Path, "iterdir", iterdir):
+                _digest, files = _workspace_snapshot_digest(workspace)
+
+        expected_source_digest = hashlib.sha256(
+            b"pub fn stable() -> bool { true }\n").hexdigest()
+        self.assertEqual(files, {"src/lib.rs": expected_source_digest})
+
+    def test_symlink_in_the_fixture_tree_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "src" / "lib.rs"
+            source.parent.mkdir()
+            source.write_text("pub fn stable() -> bool { true }\n", encoding="utf-8")
+            link = workspace / "src" / "link.rs"
+            link.symlink_to(source)
+            with self.assertRaisesRegex(HarnessError, "unexpected symlink"):
+                _workspace_snapshot_digest(workspace)
 
     def test_candidate_visible_tree_remains_subject_to_the_byte_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

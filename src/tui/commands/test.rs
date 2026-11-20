@@ -1,9 +1,11 @@
 //! /test slash command handler for supervised test execution.
 
 use crate::test_runner::custom::validate_custom_command;
+use crate::tui::app::send_tui;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 /// Parse the raw arguments after `/test` into a scope string and extra args.
@@ -61,7 +63,7 @@ fn build_test_request(
             if validate_custom_command(cmd).is_err() {
                 return Err(format!(
                     "custom command rejected by safety validator: '{cmd}'. \
-                     Allowed argv prefixes: cargo test, cargo nextest, pytest, \
+                     Allowed argv prefixes: cargo test, cargo clippy, cargo nextest, pytest, \
                      uv run pytest, go test, zig build test, make test, make check, \
                      npm test, pnpm test, yarn test, bun test. \
                      Shell metacharacters, redirection, pipes, command substitution, \
@@ -343,6 +345,24 @@ pub(crate) fn apply_test_run_finished(
     }
 }
 
+pub(crate) fn dispatch_tests(app: &mut App, argument: &str) {
+    let subcmd = argument;
+    app.ui_state.command_mode = false;
+    app.handle_tests_command(subcmd);
+}
+
+pub(crate) fn dispatch_test(app: &mut App, argument: &str) {
+    let raw_args = argument.to_string();
+    let (scope, args) = crate::tui::commands::test::parse_test_slash_args(&raw_args);
+    close_command_mode(app);
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::TestRun { scope, args });
+    }
+    app.messages_state
+        .toasts
+        .info("Starting supervised test run...");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,6 +494,20 @@ mod tests {
     fn tui_test_custom_accepts_normal_cargo_test_args() {
         let req =
             build_test_request("custom", "cargo test --lib -p codegg-core", "/tmp".into()).unwrap();
+        assert!(matches!(
+            req.scope,
+            crate::test_runner::TestScope::CustomCommand(_)
+        ));
+    }
+
+    #[test]
+    fn tui_test_custom_accepts_cargo_clippy_args() {
+        let req = build_test_request(
+            "custom",
+            "cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+            "/tmp".into(),
+        )
+        .unwrap();
         assert!(matches!(
             req.scope,
             crate::test_runner::TestScope::CustomCommand(_)

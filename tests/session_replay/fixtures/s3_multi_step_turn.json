@@ -1,0 +1,112 @@
+{
+  "format": 1,
+  "id": "s3_multi_step_turn",
+  "kind": "scenario",
+  "notes": "multi-step: two tool iterations, the second request carries the first tool's real output (recorded from the shipped loop)",
+  "session_id": "s3_multi_step_turn",
+  "user_input": "Read the replay target, then read the secondary target.",
+  "profile": "read",
+  "responses": [
+    [
+      {
+        "type": "tool_call",
+        "id": "call_read_1",
+        "name": "read",
+        "arguments": {
+          "path": "tests/session_replay/fixtures/read_target.txt"
+        }
+      },
+      {
+        "type": "finish",
+        "stop_reason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "tool_call",
+        "id": "call_read_2",
+        "name": "read",
+        "arguments": {
+          "path": "tests/session_replay/fixtures/read_target_secondary.txt"
+        }
+      },
+      {
+        "type": "finish",
+        "stop_reason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "text_delta",
+        "text": "The marker line is \"The recording marker is alpha-7731.\""
+      },
+      {
+        "type": "finish",
+        "stop_reason": "stop"
+      }
+    ],
+    [
+      {
+        "type": "finish",
+        "stop_reason": "stop"
+      }
+    ]
+  ],
+  "expect": {
+    "assistant_text": "The marker line is \"The recording marker is alpha-7731.\"",
+    "tool_calls": [
+      {
+        "name": "read",
+        "arguments": {
+          "path": "tests/session_replay/fixtures/read_target.txt"
+        }
+      },
+      {
+        "name": "read",
+        "arguments": {
+          "path": "tests/session_replay/fixtures/read_target_secondary.txt"
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "tool": "read",
+        "outcome": "success"
+      },
+      {
+        "tool": "read",
+        "outcome": "success"
+      }
+    ],
+    "terminal": "completed",
+    "request_count": 4,
+    "request_roles": [
+      [
+        "user"
+      ],
+      [
+        "user",
+        "assistant",
+        "tool"
+      ],
+      [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool"
+      ],
+      [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant"
+      ]
+    ],
+    "tools_declared": [
+      "read"
+    ]
+  }
+}

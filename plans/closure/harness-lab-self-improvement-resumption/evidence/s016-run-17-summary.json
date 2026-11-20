@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 17,
+  "run_kind": "diagnostic_launch",
+  "run_status": "timeout_before_provider_admission_not_counted_as_live_model_run",
+  "counts_as_live_provider_run": false,
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "9c6ecbc1fa3d154d3bb89bd73764c98609e09fed",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_exact_job_observation_diagnostic_v6/cases.jsonl",
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d3f187c2f6f4fc178",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T23:02:24Z",
+  "terminal_observed_at_utc": "2026-10-31T23:02:27Z",
+  "elapsed_seconds": 3.422,
+  "case_duration_ms": 1556,
+  "provider_requests": 0,
+  "request_cap": 10,
+  "request_cap_exhausted": false,
+  "usd_cost": "unknown_no_provider_request",
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 0,
+    "body_eof": 0,
+    "idle_timeouts": 0
+  },
+  "task": {
+    "agent_terminal": "timeout",
+    "tool_calls": 0,
+    "exact_job_status_observed": false,
+    "reason": "ACP session/prompt timed out before any agent tool call or provider request admission"
+  },
+  "event_observation": {
+    "tool_started_count": 0,
+    "tool_terminal_count": 0,
+    "event_count": 2,
+    "events": [
+      "verifier_started",
+      "verifier_terminal"
+    ],
+    "event_gaps": 0,
+    "dropped_events": 0
+  },
+  "verification": {
+    "harness_started_unchanged_verifier": true,
+    "timed_out": true,
+    "tests_run": null,
+    "verifier_contents_not_inspected": true
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 34079477760,
+    "minimum_free_bytes": 34075635712,
+    "free_bytes_at_end": 34075697152
+  },
+  "diagnosis": {
+    "configured_case_wallclock_seconds": 300,
+    "run_case_reserves_seconds_for_H007_teardown_and_verification": 300,
+    "effective_turn_timeout_seconds": 1,
+    "evidence": "dev/harness_lab/autonomy_run.py::_turn_timeout returns max(1.0, remaining_seconds - 300.0) for H007; a 300-second diagnostic budget therefore left a one-second ACP prompt timeout"
+  },
+  "interpretation": "The runner created the lane and daemon but timed out before any ACP tool event or provider request admission. The run is recorded but not counted against the user\u2019s live-model allowance. Source inspection of the harness timeout calculation explains the immediate timeout: H007 reserves 300 seconds for teardown/verification and this diagnostic supplied exactly 300 seconds total, leaving a one-second turn budget. This is a diagnostic budget mismatch, not a provider, ACP, or job-surface defect. The next long qualification already uses a 3,600-second cap; no product code change is indicated. A future short H007 diagnostic must use a total wallclock cap greater than 300 seconds.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt17.json",
+    "receipt_sha256": "a8095cc5071d60050bf6ca461ac5f7b2b891175fe34686f710ff44be9397d07d",
+    "transcript_path": "/private/tmp/s016-live17/case00/private/TRANSCRIPT.json",
+    "transcript_sha256": "8c9e772da02989f1c2b5c9c0da1e724bf69bfeb304fa12a8ed5a643c3a3db292",
+    "causal_trace_path": "/private/tmp/s016-live17/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "c9378aae94d3af7624440193b01b9e7a26441c08e7ce7cd0780cb6de2643eedc",
+    "daemon_log_path": "/private/tmp/s016-live17/case00/daemon/daemon.log",
+    "daemon_log_sha256": "26c83c3a0dc2e27017f896f04586b29ba4b848c533a3b6ff61e71a2dedef1fb3",
+    "codegg_debug_log_path": "/private/tmp/s016-live17/case00/case/codegg_debug.log",
+    "codegg_debug_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "provider_admission_receipt": "not_created_no_provider_request"
+  }
+}

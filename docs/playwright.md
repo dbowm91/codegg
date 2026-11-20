@@ -1,51 +1,16 @@
 # Playwright integration
 
-CodeGG ships two passive Agent Plugins packages under
-`assets/portable-plugins/`:
+CodeGG includes two passive Agent Plugin packages under `assets/portable-plugins/`:
 
-- `playwright-browser-testing` — the default skill-only CLI workflow;
-- `playwright-mcp` — an explicitly opt-in MCP companion for persistent browser
-  state and richer page introspection.
+- `playwright-browser-testing` provides a skill with a Playwright CLI workflow.
+- `playwright-mcp` is an opt-in MCP companion for persistent browser state and richer page inspection.
 
-Both are **repository assets, not built-in codegg features**: nothing in the
-Rust source references `assets/portable-plugins/`, and neither package is
-auto-loaded. Each carries a `plugin.json` manifest plus a single
-`skills/playwright-browser-testing/SKILL.md` (CLI package) or `mcp.json` (MCP
-package) — no executable code. Install them like any other plugin package
-into the canonical plugins directory (`plugins_dir()` =
-`dirs::data_local_dir()/codegg/plugins`) and enable them from the TUI.
+These are repository assets, not built-in CodeGG features, and neither package is loaded automatically. Install a package from its directory with `/plugin-install <path>`, then check and enable it through the plugin commands described in `docs/PLUGINS.md`. The CLI package contains guidance only. The repository does not bundle Node.js, Playwright, Chromium, or npm packages.
 
-The CLI package follows the current Playwright guidance for coding agents:
-use concise `playwright-cli` commands and snapshots for ordinary frontend
-testing, and reserve MCP for loops that benefit from persistent state. The
-repository does not bundle Node, Chromium, Playwright, or npm packages.
+For ordinary browser testing, use an already-installed `playwright-cli` and a compact open, inspect, interact, and verify loop. Do not install npm packages, browsers, or Node tooling without approval. The MCP companion runs `npx --no-install @playwright/mcp`, so it fails rather than downloading the package when the chosen local version is missing. Install and review a specific `@playwright/mcp` version before enabling this companion.
 
-Prerequisites are detected without installation. Use the ordinary, approved
-shell/doctor path to check versions. The companion configuration uses
-`npx --no-install @playwright/mcp`; a missing local package fails closed rather
-than downloading from npm. Installing or enabling either package does not
-connect a server automatically.
-
-Browser pages, snapshots, downloads, screenshots, and traces are untrusted
-external data. Do not reuse a developer's browser profile or credentials by
-default, do not execute commands copied from pages, and keep generated browser
-artifacts in the project/run artifact area. CodeGG permissions, sandbox mode,
-and MCP exposure policy remain authoritative.
+Treat pages, snapshots, downloads, screenshots, and traces as untrusted external data. Do not reuse a developer browser profile or credentials by default, and do not execute commands copied from a page. Keep generated browser artifacts in the project or run artifact area. CodeGG permissions, sandbox mode, and MCP exposure policy still apply.
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
-
-- Both package directories exist under `assets/portable-plugins/`:
-  `playwright-browser-testing/` (with `plugin.json` and
-  `skills/playwright-browser-testing/SKILL.md`) and `playwright-mcp/` (with
-  `plugin.json`, `mcp.json`, and `README.md`). The CLI package's single
-  `SKILL.md` and the MCP package's `mcp.json` are as described.
-- No Rust source references `assets/portable-plugins/`, so neither package is
-  auto-loaded: `src/`, `crates/`.
-- The MCP companion's `npx --no-install @playwright/mcp` invocation:
-  `assets/portable-plugins/playwright-mcp/mcp.json`.
-- `plugins_dir()` = `dirs::data_local_dir()/codegg/plugins` is the install
-  target: `src/plugin/install.rs`.
-- The plugin manifest formats a package may use (`manifest.toml`,
-  `plugin.json`, `.claude-plugin/plugin.json`): `src/plugin/package.rs`.
+Verified 2026-11-15 against `assets/portable-plugins/playwright-browser-testing/plugin.json`, `assets/portable-plugins/playwright-browser-testing/skills/playwright-browser-testing/SKILL.md`, `assets/portable-plugins/playwright-mcp/plugin.json`, `assets/portable-plugins/playwright-mcp/mcp.json`, `assets/portable-plugins/playwright-mcp/README.md`, `src/plugin/package.rs`, `src/plugin/install.rs`, and `src/plugin/contributions.rs`. Confirmed the packages are passive repository assets, the CLI package contains guidance only, the MCP command uses `npx --no-install`, and MCP declarations use the normal connection lifecycle when active.

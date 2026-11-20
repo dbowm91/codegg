@@ -189,7 +189,7 @@ fn draw(app: &mut App, width: u16, height: u16) -> Frame {
 
 /// The caret's cell in the composer's own area, as the app computed it.
 fn caret_cell(app: &App) -> (u16, u16) {
-    let area = app.prompt_area.expect("the composer is rendered");
+    let area = app.frame_plan.prompt;
     app.prompt_state
         .prompt
         .caret_cell(area)

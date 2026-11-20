@@ -291,6 +291,21 @@ mod tests {
     }
 
     #[test]
+    fn the_last_row_is_reachable_through_a_one_row_viewport() {
+        let mut state = PanelListState::new(SidePanelId::Session);
+        state.move_cursor(10_000);
+        let last = SidePanelId::ALL.len() - 1;
+        assert_eq!(state.cursor(), last);
+        assert_eq!(
+            state.scroll(3) as usize,
+            last,
+            "a three-row box shows one content row after its border, and this \
+             helper subtracts those two rows itself — so the offset must be the \
+             last row rather than zero"
+        );
+    }
+
+    #[test]
     fn the_query_is_bounded() {
         let mut state = PanelListState::new(SidePanelId::Session);
         for _ in 0..(MAX_QUERY_LEN * 3) {

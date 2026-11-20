@@ -88,11 +88,9 @@ fn area() -> ratatui::layout::Rect {
 /// Render `widget` the way the panel host does, and return the column as text.
 fn host_rows(widget: &mut dyn Component, id: SidePanelId, focused: bool) -> Vec<String> {
     let area = area();
-    let dot = if focused { "●" } else { " " };
-    let title = format!(" {} {} ", id.label(), dot);
     let theme = theme();
     let mut buf = ratatui::buffer::Buffer::empty(area);
-    render_hosted(widget, &mut buf, area, &theme, &title);
+    render_hosted(widget, &mut buf, area, &theme, id.label(), focused);
     (0..area.height)
         .map(|y| {
             (0..area.width)
@@ -275,10 +273,14 @@ fn diff_leaves_the_panel_chrome_alone() {
 fn diff_advertises_only_the_verbs_a_column_can_deliver() {
     let dialog = DiffDialog::new("a\n".into(), "b\n".into(), "t".into());
     // `enter` and `Esc` both return `CloseDialog`, so this box has no close
-    // verb at all once hosted; everything else it dispatches is paging.
+    // verb at all once hosted; everything else it dispatches is paging, and
+    // the page keys are the two `handle_key` answers (`PgUp`/`PgDn`). The
+    // hint named `^d`/`^u` for three milestones, and this list carried them
+    // too, so the check could not see that neither handler has a `CONTROL`
+    // arm.
     hint_matches(
         &dialog.keymap_hint(),
-        &["j", "k", "s", "^d", "^u", "Home", "End"],
+        &["j", "k", "PgUp", "PgDn", "s", "Home", "End"],
         "DiffDialog",
     );
 }
@@ -442,9 +444,13 @@ fn security_review_advertises_only_the_verbs_a_column_can_deliver() {
     let dialog = SecurityReviewDialog::new();
     // No `H`: bare uppercase `H` is `InputAction::DirectionLeft`. No `n`/`p`
     // confusion — both remain, they are only ever set here by their own arms.
+    // The page keys are the two the handler answers; `^d`/`^u` were named by
+    // the hint and listed here for three milestones while no arm saw them.
     hint_matches(
         &dialog.keymap_hint(),
-        &["j", "k", "^d", "^u", "f", "n", "p", "enter", "h", "]", "["],
+        &[
+            "j", "k", "PgUp", "PgDn", "f", "n", "p", "enter", "h", "]", "[",
+        ],
         "SecurityReviewDialog",
     );
 }

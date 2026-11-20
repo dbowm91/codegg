@@ -421,6 +421,12 @@ fn render_empty_home_state_all_sizes() {
             !buffer_contains(&buf, "Rendering Error"),
             "unexpected render error at {w}x{h}"
         );
+        if w >= 100 {
+            assert!(
+                buffer_contains(&buf, "Ctrl+N new session · Ctrl+L change model · ? help"),
+                "the home row is not painted at {w}x{h}"
+            );
+        }
     }
 }
 
@@ -2356,7 +2362,7 @@ fn command_palette_shows_single_exact_match() {
     let buf = assert_render_ok(&mut app, 100, 32);
     // Assert above the prompt band only: the prompt echoes the typed query, so
     // a whole-buffer search would pass even when the popup renders nothing.
-    let prompt_top = app.prompt_area.map(|a| a.y).unwrap_or(buf.area.height);
+    let prompt_top = app.frame_plan.prompt.y;
     let above = text_above_prompt(&buf, prompt_top);
     assert!(
         above.to_lowercase().contains(&expected.to_lowercase()),
@@ -2485,7 +2491,8 @@ fn completion_popup_order_matches_tab_accept_order() {
         .expect("render completions");
 
     let area = app
-        .completion_area
+        .frame_plan
+        .completion
         .expect("completion overlay should publish its rect");
     // Row 0 is the popup border, so the first entry is at `area.y + 1`.
     let drawn_first = {
@@ -2533,7 +2540,8 @@ fn completion_hit_rect_covers_only_drawn_rows() {
         .expect("render with filtered completions");
 
     let area = app
-        .completion_area
+        .frame_plan
+        .completion
         .expect("completion overlay should publish its rect");
     assert_eq!(
         area.height as usize - 2,

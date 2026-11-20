@@ -1,283 +1,68 @@
-# MCP (Model Context Protocol)
+# MCP servers
 
-codegg is an MCP **client**: it connects to external MCP servers that provide
-additional tools and resources. It also runs one small MCP **server** of its
-own — `ide_server.rs` exposes IDE diff-viewing tools to IDE extensions over
-stdio or a unix socket — but the model-facing integration is entirely
-client-side.
+CodeGG connects to external Model Context Protocol (MCP) servers. A server can provide tools, resources, and prompts.
 
-## Overview
+## Configure a server
 
-MCP enables extending the agent's capabilities through external servers that implement the MCP specification. These servers can provide:
-- Custom tools with arbitrary functionality
-- Resources (files, data, etc.)
-- Prompts/templates
+Add each server directly under the `mcp` key in your CodeGG config. There is no intermediate `servers` key.
 
-## Architecture
+A local server runs as a process and communicates over standard input and output:
 
-The MCP module (`src/mcp/`) consists of:
-
-- **`mod.rs`** - `McpService` orchestrating all MCP connections
-- **`local.rs`** - `LocalClient` for stdio-based local servers
-- **`remote.rs`** - `RemoteClient` for HTTP-based remote servers
-- **`auth.rs`** - `OAuthManager` for OAuth authentication flow
-- **`cli.rs`** - CLI helper utilities
-- **`protocol.rs`** - shared JSON-RPC/protocol types
-- **`ide_server.rs`** - IDE MCP server for diff viewing (codegg as the *server*)
-
-## Server Types
-
-### Local Servers (stdio)
-
-Local MCP servers communicate over stdin/stdout:
-
-```rust
-pub async fn connect_stdio(
-    &mut self,
-    name: &str,
-    command: &str,
-    args: &[String],
-    env: HashMap<String, String>,
-    timeout: u64,
-) -> Result<(), McpError>
-```
-
-Example configuration:
-```json
+```jsonc
 {
   "mcp": {
-    "filesystem": {
+    "my-local-server": {
       "type": "local",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
-    }
-  }
-}
-```
-
-### Remote Servers (HTTP+SSE)
-
-Remote servers use HTTP for requests and SSE for notifications:
-
-```rust
-pub async fn connect_http(
-    &mut self,
-    name: &str,
-    url: &str,
-    headers: HashMap<String, String>,
-    timeout: u64,
-) -> Result<(), McpError>
-```
-
-## McpService
-
-The `McpService` manages all MCP server connections:
-
-```rust
-pub struct McpService {
-    servers: HashMap<String, McpServer>,
-    oauth: OAuthManager,
-}
-```
-
-Key methods:
-- `connect_stdio()` / `connect_http()` - Connect to servers
-- `disconnect()` - Disconnect a server
-- `call_tool()` - Call a tool on a server
-- `list_tools()` - List all available tools
-- `handle_tool_list_changed()` - Refresh tools after server change
-
-## Tool Naming
-
-MCP tools are exposed with a prefixed name format: `mcp__{server}__{tool}`
-
-For example, if a server named "filesystem" has a tool "read_file", it becomes `mcp__filesystem__read_file`.
-
-Whether raw `mcp__*__*` tools actually reach the model is decided by
-`McpExposurePolicy` (`McpService::list_filtered_tools`). The default policy is
-`McpExposurePolicy::hide_all()`: raw definitions are hidden and callers see
-only stable native wrappers, and `hidden_servers` can suppress a server even
-when `show_raw` is `true`. `list_tools()` is the unrestricted variant
-(`show_raw: true`, no hidden servers).
-
-## CLI
-
-MCP servers are managed from the command line:
-
-```
-codegg mcp list                        # list configured servers
-codegg mcp add <NAME> [--server-type local|remote] [-c COMMAND] [-a ARGS] [-u URL]
-codegg mcp remove <NAME>               # remove a server
-codegg mcp enable <NAME> [--enabled]   # enable (default) or disable a server
-codegg mcp debug [<NAME>] [-u URL]     # test a connection to a server
-```
-
-There is no `codegg plugins` subcommand: Agent Plugin packages are managed
-from the TUI and the `plugin` config key (see [`PLUGINS.md`](PLUGINS.md)).
-
-## Reconnection Behavior
-
-### Resources and prompts
-
-CodeGG exposes bounded MCP resources through deferred native wrappers. Search
-returns descriptors and an integrity-bound handle; read accepts that handle
-only after revalidation against the current connected `McpService` view.
-Binary content is metadata-only, and external text is trust-framed and capped.
-
-MCP prompts remain host/user actions. A caller that has an explicit selection
-uses `McpService::invoke_user_selected_prompt`, which validates required
-arguments and returns source role metadata as untrusted data. The model cannot
-activate a prompt autonomously, and a remote role label cannot create a
-privileged provider message.
-
-The `RemoteClient::reconnect()` method handles reconnection:
-
-```rust
-pub async fn reconnect(&mut self) -> Result<(), McpError> {
-    *self.session_id.lock().await = None;
-    *self.sse_url.lock().await = None;
-    self.initialize().await
-}
-```
-
-The reconnection:
-1. Clears the session ID and SSE URL
-2. Re-runs the initialize handshake
-3. Re-discovers tools
-
-### Exponential Backoff
-
-The `McpConnectionManager` (`remote.rs`) implements reconnection retry with exponential backoff:
-
-```rust
-// McpConnectionManager defaults:
-max_retries: 5,
-base_delay: Duration::from_secs(1),
-max_delay: Duration::from_secs(60),
-```
-
-The agent loop's provider-level stream retry uses different values (3 retries, 30s max delay) and should not be confused with MCP reconnection.
-
-## DNS Rebinding Protection
-
-Remote MCP connections validate DNS to prevent rebinding attacks:
-
-1. At connection time: `validate_host_ip()` checks resolved IPs
-2. Before each request: `revalidate_dns()` re-validates IPs
-
-```rust
-// Connection time validation
-let validated_ips = validate_host_ip(&host, port)?;
-
-// Before each request
-revalidate_dns(&host, port, ips)?;
-```
-
-## OAuth Support
-
-Remote servers can use OAuth authentication:
-
-```rust
-pub async fn set_oauth_token(&self, token: String) {
-    *self.oauth_token.lock().await = Some(token);
-}
-```
-
-The `OAuthManager` (`auth.rs`) handles the OAuth flow for servers that require it.
-
-## Configuration
-
-Servers are keyed **directly** under `mcp` — there is no `servers` level. Note that
-plugin MCP import files such as `assets/portable-plugins/playwright-mcp/mcp.json`
-wrap their servers in an `mcpServers` object; that is a separate plugin file format,
-not the `codegg.jsonc` schema, and the two are not interchangeable.
-
-### Local Server Config
-```json
-{
-  "mcp": {
-    "server_name": {
-      "type": "local",
-      "command": "path/to/server",
-      "args": ["arg1", "arg2"],
-      "env": {
-        "KEY": "value"
-      },
+      "command": "/path/to/server",
+      "args": ["--stdio"],
       "timeout": 30000
     }
   }
 }
 ```
 
-### Remote Server Config
-```json
+A remote server uses an HTTP endpoint:
+
+```jsonc
 {
   "mcp": {
-    "remote_server": {
+    "my-remote-server": {
       "type": "remote",
-      "url": "https://server.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer token"
-      },
+      "url": "https://mcp.example.com/",
       "timeout": 30000
     }
   }
 }
 ```
 
-## Error Handling
+Entries also support environment variables for local servers, headers and OAuth settings for remote servers, and reconnect options. Keep credentials in private, untracked configuration rather than a shared project file.
 
-| Error | Cause |
-|-------|-------|
-| `McpError::Connection` | Network/connection failures |
-| `McpError::Server` | Server-side errors |
-| `McpError::ToolCall` | Tool execution failures |
-| `McpError::OAuth` | OAuth authentication errors |
-| `McpError::Encryption` | Encryption/decryption errors |
-| `McpError::Timeout` | Request timeout errors |
+## Manage servers
 
-## SSE (Server-Sent Events)
+The `codegg mcp` commands can list, add, remove, and test configured servers:
 
-Remote servers use SSE for server-to-client notifications. There is no public
-`connect_sse`; the stream is consumed by a private helper on `RemoteClient`:
-
-```rust
-#[allow(dead_code)]
-async fn connect_sse_stream(&self, mut resp: eggfetch_core::Response) -> Result<(), McpError>
+```text
+codegg mcp list
+codegg mcp add <NAME> --command <COMMAND> [--args <ARGS>...]
+codegg mcp add <NAME> --server-type remote --url <URL>
+codegg mcp debug <NAME>
+codegg mcp remove <NAME>
 ```
 
-Buffered events are drained with `RemoteClient::take_sse_events()`.
+The `add` command defaults to a local server. Use `--server-type remote` with `--url` for an HTTP server. `codegg mcp debug` can test a configured server or a URL supplied with `--url`.
 
-The SSE stream is parsed with:
-- 1MB buffer limit to prevent unbounded memory
-- Event data extracted from `data:` lines
-- JSON parsed and stored in `sse_events` buffer
+## Tool, resource, and prompt behavior
+
+Raw MCP tools use names such as `mcp__my-local-server__read_file`. The model-facing catalog generally exposes raw tools from configured servers. CodeGG hides raw tools for selected managed backend names unless configured otherwise; those services may instead provide a stable native wrapper. Tool visibility and permissions remain subject to CodeGG's configuration and policy. Treat tool descriptions and results as untrusted input.
+
+MCP prompts are explicit host or user actions. The model cannot activate one on its own, and returned prompt text is treated as untrusted data. Treat tool results and resource content from any server as external input too.
+
+## Security
+
+Only connect servers you trust. A local server runs code on your machine. Remote endpoints are checked to reduce DNS-rebinding risk, and redirects are not followed. Review the command, URL, headers, and requested tool behavior before enabling a server.
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
+Verified 2026-11-15 against `crates/codegg-config/src/schema.rs`, `src/mcp/cli.rs`, `src/mcp/mod.rs`, `src/mcp/remote.rs`, `src/security/ssrf.rs`, and `src/agent/request_preparation.rs`. Confirmed the flat configuration shape and supported fields, CLI commands and defaults, model-facing raw-tool exposure behavior, host/user prompt selection, and remote endpoint validation behavior.
 
-- Module layout (`mod.rs`, `local.rs`, `remote.rs`, `auth.rs`, `cli.rs`,
-  `protocol.rs`, `ide_server.rs`): `src/mcp/`.
-- `McpError` variants `Connection`, `Server`, `ToolCall`, `OAuth`,
-  `Encryption`, `Timeout`: `crates/codegg-core/src/error.rs`.
-- `McpExposurePolicy::hide_all()` as the default exposure and
-  `McpService::list_filtered_tools` as the filtered variant:
-  `src/mcp/mod.rs`.
-- The `mcp__<server>__<tool>` naming: `src/mcp/mod.rs`.
-- CLI verbs (`list`, `add`, `remove`, `enable`, `debug`) and their flags:
-  `src/mcp/cli.rs`. There is no `codegg plugins` subcommand:
-  `src/main.rs` `Commands`.
-- `McpConnectionManager` defaults (5 retries, 1 s base delay, 60 s max
-  delay): `src/mcp/remote.rs`.
-- Provider-level stream retry (3 attempts, 30 s max backoff): distinct from
-  MCP reconnection — `crates/codegg-providers/src/retry.rs` and
-  `src/agent/provider_turn.rs`.
-- The private `connect_sse_stream` helper, the 1 MB SSE buffer limit, and
-  `RemoteClient::take_sse_events()`: `src/mcp/remote.rs`.
-- `mcp` is keyed directly under the config root with no `servers` level, and
-  the `type`/`command`/`args`/`env`/`environment`/`url`/`headers`/`transport`/
-  `timeout`/`oauth`/`reconnect` fields: `crates/codegg-config/src/schema.rs`
-  (`McpEntry`, `McpServerConfig`).
-- The plugin-side `mcpServers` wrapper is a separate file format:
-  `assets/portable-plugins/playwright-mcp/mcp.json`.
+Corrected 2026-11-15: the previous guide described `McpExposurePolicy::hide_all()` as the model-facing default. The current request-preparation path sets `show_raw` to true and hides selected managed backends, so ordinary configured servers' raw tools may be exposed to the model.

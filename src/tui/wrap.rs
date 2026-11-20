@@ -10,6 +10,8 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use crate::tui::render_cost;
+
 /// Return the number of visual lines produced by [`wrap_to_strings`]. Keeping
 /// estimation on the rendering path prevents scroll/layout drift when display
 /// width differs from the number of Unicode scalar values.
@@ -32,26 +34,34 @@ pub fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
     if width == 0 || s.is_empty() {
         return vec![s.to_string()];
     }
-    fn hard_break_word(word: &str, width: usize) -> Vec<String> {
-        let mut chunks = Vec::new();
-        let mut chunk = String::new();
-        let mut chunk_width = 0;
-        for ch in word.chars() {
+    /// One chunk of a hard-broken word: the byte range of the word it covers,
+    /// and the display width that range occupies.
+    ///
+    /// A chunk is a range rather than an owned `String` so that breaking a
+    /// word allocates nothing: the widths are accumulated by the character
+    /// walk that already decides the breaks, and the caller copies each range
+    /// once, into the line it belongs to.
+    type Chunk = (usize, usize, usize);
+
+    fn hard_break_word(word: &str, width: usize, chunks: &mut Vec<Chunk>) {
+        chunks.clear();
+        let mut chunk_start = 0usize;
+        let mut chunk_width = 0usize;
+        for (offset, ch) in word.char_indices() {
             let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if ch_width > 0 && chunk_width + ch_width > width && !chunk.is_empty() {
-                chunks.push(std::mem::take(&mut chunk));
+            if ch_width > 0 && chunk_width + ch_width > width && offset > chunk_start {
+                chunks.push((chunk_start, offset, chunk_width));
+                chunk_start = offset;
                 chunk_width = 0;
             }
-            chunk.push(ch);
             chunk_width += ch_width;
         }
-        if !chunk.is_empty() || chunks.is_empty() {
-            chunks.push(chunk);
+        if chunk_start < word.len() || chunks.is_empty() {
+            chunks.push((chunk_start, word.len(), chunk_width));
         }
-        chunks
     }
 
-    fn wrap_logical_line(line: &str, width: usize) -> Vec<String> {
+    fn wrap_logical_line(line: &str, width: usize, chunks: &mut Vec<Chunk>) -> Vec<String> {
         let mut wrapped = Vec::new();
         let mut current = String::new();
         let mut current_width = 0;
@@ -60,20 +70,13 @@ pub fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
         let flush_word = |word: &mut String,
                           current: &mut String,
                           current_width: &mut usize,
-                          wrapped: &mut Vec<String>| {
+                          wrapped: &mut Vec<String>,
+                          chunks: &mut Vec<Chunk>| {
             if word.is_empty() {
                 return;
             }
-            let chunks = hard_break_word(word, width);
-            let word_width = chunks
-                .first()
-                .map(|chunk| {
-                    chunk
-                        .chars()
-                        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
-                        .sum::<usize>()
-                })
-                .unwrap_or(0);
+            hard_break_word(word, width, chunks);
+            let word_width = chunks.first().map(|&(_, _, width)| width).unwrap_or(0);
             let is_hard_break = chunks.len() > 1;
 
             if current.is_empty() {
@@ -87,15 +90,12 @@ pub fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
                 *current_width = 0;
             }
 
-            for (idx, chunk) in chunks.iter().enumerate() {
+            for (idx, &(start, end, chunk_width)) in chunks.iter().enumerate() {
                 if idx + 1 == chunks.len() {
-                    current.push_str(chunk);
-                    *current_width += chunk
-                        .chars()
-                        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
-                        .sum::<usize>();
+                    current.push_str(&word[start..end]);
+                    *current_width += chunk_width;
                 } else {
-                    wrapped.push(chunk.clone());
+                    wrapped.push(word[start..end].to_string());
                 }
             }
             word.clear();
@@ -103,20 +103,33 @@ pub fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
 
         for ch in line.chars() {
             if ch.is_whitespace() {
-                flush_word(&mut word, &mut current, &mut current_width, &mut wrapped);
+                flush_word(
+                    &mut word,
+                    &mut current,
+                    &mut current_width,
+                    &mut wrapped,
+                    chunks,
+                );
             } else {
                 word.push(ch);
             }
         }
-        flush_word(&mut word, &mut current, &mut current_width, &mut wrapped);
+        flush_word(
+            &mut word,
+            &mut current,
+            &mut current_width,
+            &mut wrapped,
+            chunks,
+        );
         wrapped.push(current);
         wrapped
     }
 
     let mut lines = Vec::new();
+    let mut chunks: Vec<Chunk> = Vec::new();
     let logical_lines = s.strip_suffix('\n').unwrap_or(s).split('\n');
     for logical_line in logical_lines {
-        lines.extend(wrap_logical_line(logical_line, width));
+        lines.extend(wrap_logical_line(logical_line, width, &mut chunks));
     }
     lines
 }
@@ -201,6 +214,15 @@ pub fn visible_width(s: &str) -> usize {
         idx += ch.len_utf8();
     }
     width
+}
+
+/// The display width of one piece of a word, counted.
+///
+/// One producer for the item builder's measurement and for the counter, so a
+/// second measurement cannot reappear without showing up in the count.
+fn measured_width(text: &str) -> usize {
+    render_cost::count_wrap_width_measure();
+    visible_width(text)
 }
 
 /// The length in bytes of the terminal control sequence that starts at
@@ -297,15 +319,6 @@ impl StyledSource {
         }
     }
 
-    /// The style of the source byte at `offset`.
-    fn style_at(&self, offset: usize) -> Style {
-        self.spans
-            .iter()
-            .find(|&&(start, end, _)| start <= offset && offset < end)
-            .map(|&(_, _, style)| style)
-            .unwrap_or_default()
-    }
-
     /// The whole source as one row, for the zero-width case.
     fn whole_row(&self) -> WrappedRow {
         let slices = self
@@ -323,6 +336,49 @@ impl StyledSource {
             source_start: 0,
             source_end: self.text.len(),
             slices,
+        }
+    }
+}
+
+/// A forward-only cursor over a styled source's span list.
+///
+/// `tokenize` emits its segments in source order, contiguous and
+/// non-overlapping, so every range and every offset the item builder asks
+/// about is at or after the previous one — the ordering is what the
+/// `tokenize` test below pins. One advancing index is therefore enough, and
+/// it costs the span list one walk per wrap instead of one walk per word.
+struct SpanCursor {
+    /// The first span that may still cover the next query.
+    next: usize,
+}
+
+impl SpanCursor {
+    fn new() -> Self {
+        Self { next: 0 }
+    }
+
+    /// The first span that ends after `offset`, advancing past the ones that
+    /// cannot cover it.
+    fn seek(
+        &mut self,
+        spans: &[(usize, usize, Style)],
+        offset: usize,
+    ) -> Option<(usize, usize, Style)> {
+        loop {
+            let &(start, end, style) = spans.get(self.next)?;
+            render_cost::count_wrap_span_rescan();
+            if end > offset {
+                return Some((start, end, style));
+            }
+            self.next += 1;
+        }
+    }
+
+    /// The style of the source byte at `offset`.
+    fn style_at(&mut self, spans: &[(usize, usize, Style)], offset: usize) -> Style {
+        match self.seek(spans, offset) {
+            Some((start, end, style)) if start <= offset && offset < end => style,
+            _ => Style::default(),
         }
     }
 }
@@ -412,7 +468,7 @@ fn tokenize(text: &str) -> Vec<Segment> {
 }
 
 /// One piece of a word: printable text, or an escape sequence.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 struct Piece<'a> {
     text: &'a str,
     style: Style,
@@ -424,6 +480,7 @@ struct Piece<'a> {
 
 /// A word: the printable text between two whitespace runs, with any escape
 /// sequences that sit inside it.
+#[derive(Debug, PartialEq)]
 struct Word<'a> {
     pieces: Vec<Piece<'a>>,
     /// The whitespace run that separated this word from the previous one.
@@ -435,6 +492,7 @@ struct Word<'a> {
 /// The run is collapsed to one space, so the run's own text is not carried;
 /// the range is what a consumer needs to map a byte in the gap back to the
 /// column the space occupies.
+#[derive(Debug, PartialEq)]
 struct Space {
     style: Style,
     start: usize,
@@ -442,6 +500,7 @@ struct Space {
 }
 
 /// The items the wrap places on rows, in source order.
+#[derive(Debug, PartialEq)]
 enum Item<'a> {
     Word(Word<'a>),
     /// A hard line break.
@@ -456,6 +515,9 @@ fn build_items<'a>(source: &'a StyledSource) -> Vec<Item<'a>> {
     let mut items: Vec<Item<'a>> = Vec::new();
     let mut pieces: Vec<Piece<'a>> = Vec::new();
     let mut space: Option<Space> = None;
+    // One cursor for the whole build. The segments are in source order, so the
+    // span list is walked once beside them instead of once per word.
+    let mut span_cursor = SpanCursor::new();
 
     let flush_word =
         |pieces: &mut Vec<Piece<'a>>, space: &mut Option<Space>, items: &mut Vec<Item<'a>>| {
@@ -481,7 +543,7 @@ fn build_items<'a>(source: &'a StyledSource) -> Vec<Item<'a>> {
             SegmentKind::Space => {
                 flush_word(&mut pieces, &mut space, &mut items);
                 space = Some(Space {
-                    style: source.style_at(segment.start),
+                    style: span_cursor.style_at(&source.spans, segment.start),
                     start: segment.start,
                     end: segment.end,
                 });
@@ -489,7 +551,7 @@ fn build_items<'a>(source: &'a StyledSource) -> Vec<Item<'a>> {
             SegmentKind::Escape => {
                 pieces.push(Piece {
                     text: &source.text[segment.start..segment.end],
-                    style: source.style_at(segment.start),
+                    style: span_cursor.style_at(&source.spans, segment.start),
                     start: segment.start,
                     end: segment.end,
                     is_escape: true,
@@ -497,16 +559,42 @@ fn build_items<'a>(source: &'a StyledSource) -> Vec<Item<'a>> {
                 });
             }
             SegmentKind::Word => {
-                for (start, end, style) in split_at_spans(&source.spans, segment.start, segment.end)
-                {
-                    let text = &source.text[start..end];
+                let mut part_start = segment.start;
+                let mut styled = false;
+                while part_start < segment.end {
+                    let Some((span_start, span_end, style)) =
+                        span_cursor.seek(&source.spans, part_start)
+                    else {
+                        break;
+                    };
+                    let start = part_start.max(span_start);
+                    let end = segment.end.min(span_end);
+                    if start < end {
+                        let text = &source.text[start..end];
+                        pieces.push(Piece {
+                            text,
+                            style,
+                            start,
+                            end,
+                            is_escape: false,
+                            width: measured_width(text),
+                        });
+                        styled = true;
+                    }
+                    part_start = end;
+                }
+                if !styled {
+                    // A range no span covers. The source's spans cover its
+                    // text by construction, so this only holds the old
+                    // fallback's behaviour for a range they somehow do not.
+                    let text = &source.text[segment.start..segment.end];
                     pieces.push(Piece {
                         text,
-                        style,
-                        start,
-                        end,
+                        style: Style::default(),
+                        start: segment.start,
+                        end: segment.end,
                         is_escape: false,
-                        width: visible_width(text),
+                        width: measured_width(text),
                     });
                 }
             }
@@ -514,38 +602,6 @@ fn build_items<'a>(source: &'a StyledSource) -> Vec<Item<'a>> {
     }
     flush_word(&mut pieces, &mut space, &mut items);
     items
-}
-
-/// Split `start..end` at the source's span boundaries, so that every part
-/// carries exactly one style.
-fn split_at_spans(
-    spans: &[(usize, usize, Style)],
-    start: usize,
-    end: usize,
-) -> Vec<(usize, usize, Style)> {
-    let mut parts = Vec::new();
-    let mut cursor = start;
-    for &(span_start, span_end, style) in spans {
-        if span_end <= cursor {
-            continue;
-        }
-        if span_start >= end {
-            break;
-        }
-        let part_start = cursor.max(span_start);
-        let part_end = end.min(span_end);
-        if part_start < part_end {
-            parts.push((part_start, part_end, style));
-        }
-        cursor = part_end;
-        if cursor >= end {
-            break;
-        }
-    }
-    if parts.is_empty() && start < end {
-        parts.push((start, end, Style::default()));
-    }
-    parts
 }
 
 /// Split a word into the chunks the wrap emits.
@@ -566,6 +622,12 @@ fn chunk_word<'a>(pieces: &[Piece<'a>], width: usize) -> Vec<Vec<Piece<'a>>> {
             continue;
         }
         let mut seg_start = 0usize;
+        // The width of the run from `seg_start`, accumulated by the character
+        // walk that already visits every character. A word piece carries no
+        // escape sequence — `tokenize` ends a word at one — so this sum is the
+        // run's display width, and the second measurement it replaces would
+        // have walked the same characters again.
+        let mut run_width = 0usize;
         for (offset, ch) in piece.text.char_indices() {
             let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             if ch_width > 0 && chunk_width + ch_width > width && chunk_text > 0 {
@@ -576,19 +638,28 @@ fn chunk_word<'a>(pieces: &[Piece<'a>], width: usize) -> Vec<Vec<Piece<'a>>> {
                         start: piece.start + seg_start,
                         end: piece.start + offset,
                         is_escape: false,
-                        width: visible_width(&piece.text[seg_start..offset]),
+                        width: run_width,
                     });
                 }
                 chunks.push(std::mem::take(&mut chunk));
                 chunk_width = 0;
                 chunk_text = 0;
                 seg_start = offset;
+                run_width = 0;
             }
             chunk_width += ch_width;
             chunk_text += 1;
+            run_width += ch_width;
         }
         if seg_start < piece.text.len() {
-            let segment_width = visible_width(&piece.text[seg_start..]);
+            // The whole piece when nothing was broken off it — the width the
+            // item builder already measured — and otherwise the run this walk
+            // has just accumulated.
+            let segment_width = if seg_start == 0 {
+                piece.width
+            } else {
+                run_width
+            };
             chunk.push(Piece {
                 text: &piece.text[seg_start..],
                 style: piece.style,
@@ -597,7 +668,13 @@ fn chunk_word<'a>(pieces: &[Piece<'a>], width: usize) -> Vec<Vec<Piece<'a>>> {
                 is_escape: false,
                 width: segment_width,
             });
-            chunk_width += segment_width;
+            // `chunk_width` already holds this run: the walk above adds every
+            // character's width as it visits it, and a break resets the
+            // accumulator to the run that starts at the break. Adding the run's
+            // width again here counted it twice, so a word spanning two or more
+            // spans measured wider than it draws and broke earlier than its true
+            // width — which is why such a word used to break differently from
+            // the plain engine.
         }
     }
     if !chunk.is_empty() || chunks.is_empty() {
@@ -1093,6 +1170,562 @@ mod tests {
             slices < text.chars().count() / 3,
             "the wrap emitted {slices} slices for {} characters",
             text.chars().count()
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // M006: the comparison against a plain re-derivation
+    // -------------------------------------------------------------------
+    //
+    // M006 changed the wrap's **cost** and nothing else, so its evidence was an
+    // equality against a copy of the algorithm as it was before the change. The
+    // copy below is still deliberately the expensive one — a span lookup that
+    // rescans from index 0 and a chunker that re-measures every fragment — so it
+    // stays the other side of the comparison for *cost*, and it is what a cursor
+    // perturbation is checked against.
+    //
+    // It is **not** a reference for the width accounting. `chunk_word` counted a
+    // word's tail run twice, so a word spanning two or more spans measured wider
+    // than it draws and broke earlier than its true width. That defect is fixed
+    // in the engine and corrected here, because a reference that reproduced it
+    // would assert it; `a_word_split_across_spans_breaks_at_its_true_width` is
+    // what pins the fix.
+
+    /// The fixture set the comparison is proved over: each entry breaks a
+    /// different assumption of the wrap.
+    fn fixture_spans() -> Vec<(&'static str, Vec<Span<'static>>)> {
+        let code = Style::default().fg(Color::Red);
+        let bold = Style::default().add_modifier(ratatui::style::Modifier::BOLD);
+        let url = "https://example.invalid/a/long/path";
+        let mut many: Vec<Span<'static>> = Vec::new();
+        for index in 0..100 {
+            many.push(Span::raw(format!("w{index:03}")));
+            if index + 1 < 100 {
+                many.push(Span::raw(" "));
+            }
+        }
+        vec![
+            ("an empty string", Vec::new()),
+            ("a single word", vec![Span::raw("hello")]),
+            (
+                "plain prose",
+                vec![Span::raw("the quick brown fox jumps over the lazy dog")],
+            ),
+            (
+                "inline code and bold",
+                vec![
+                    Span::raw("call "),
+                    Span::styled("codegg::tui::wrap", code),
+                    Span::raw(" before "),
+                    Span::styled("the wrap", bold),
+                    Span::raw(" returns"),
+                ],
+            ),
+            (
+                "a word split across two spans",
+                vec![Span::raw("inter"), Span::styled("national word", code)],
+            ),
+            ("a hundred spans", many),
+            (
+                "a word longer than the width",
+                vec![Span::raw("abcdefghijklmnopqrstuvwxyz")],
+            ),
+            (
+                "a leading and a trailing space",
+                vec![Span::raw("  padded  ")],
+            ),
+            ("a double space", vec![Span::raw("two  spaces")]),
+            ("a tab", vec![Span::raw("before\tafter")]),
+            (
+                "a wide character",
+                vec![Span::raw(
+                    "\u{65e5}\u{672c}\u{8a9e}\u{306e}\u{30c6}\u{30ad}\u{30b9}\u{30c8} wraps",
+                )],
+            ),
+            (
+                "a combining character",
+                vec![Span::raw("e\u{301}galite\u{301} and plain")],
+            ),
+            (
+                "a CSI colour sequence",
+                vec![Span::raw("before \u{1b}[31mcoloured\u{1b}[0m after")],
+            ),
+            ("an OSC-8 hyperlink", vec![Span::raw(osc8(url, url))]),
+            (
+                "an OSC-8 hyperlink among prose",
+                vec![
+                    Span::raw("see "),
+                    Span::raw(osc8(url, "the link")),
+                    Span::raw(" for the target"),
+                ],
+            ),
+        ]
+    }
+
+    /// The widths the comparison is proved over. One column forces a break at
+    /// every character; eighty is wider than every fixture.
+    const FIXTURE_WIDTHS: &[u16] = &[1, 2, 3, 4, 8, 13, 20, 40, 80];
+
+    /// The plain span lookup: `start..end` split at the span boundaries by
+    /// rescanning the span list from index 0.
+    fn reference_parts(
+        spans: &[(usize, usize, Style)],
+        start: usize,
+        end: usize,
+    ) -> Vec<(usize, usize, Style)> {
+        let mut parts = Vec::new();
+        let mut cursor = start;
+        for &(span_start, span_end, style) in spans {
+            if span_end <= cursor {
+                continue;
+            }
+            if span_start >= end {
+                break;
+            }
+            let part_start = cursor.max(span_start);
+            let part_end = end.min(span_end);
+            if part_start < part_end {
+                parts.push((part_start, part_end, style));
+            }
+            cursor = part_end;
+            if cursor >= end {
+                break;
+            }
+        }
+        if parts.is_empty() && start < end {
+            parts.push((start, end, Style::default()));
+        }
+        parts
+    }
+
+    /// The plain style lookup: a `find` from index 0.
+    fn reference_style_at(spans: &[(usize, usize, Style)], offset: usize) -> Style {
+        spans
+            .iter()
+            .find(|&&(start, end, _)| start <= offset && offset < end)
+            .map(|&(_, _, style)| style)
+            .unwrap_or_default()
+    }
+
+    /// The plain item builder.
+    fn reference_items<'a>(source: &'a StyledSource) -> Vec<Item<'a>> {
+        let mut items: Vec<Item<'a>> = Vec::new();
+        let mut pieces: Vec<Piece<'a>> = Vec::new();
+        let mut space: Option<Space> = None;
+
+        let flush_word =
+            |pieces: &mut Vec<Piece<'a>>, space: &mut Option<Space>, items: &mut Vec<Item<'a>>| {
+                if pieces.is_empty() {
+                    return;
+                }
+                items.push(Item::Word(Word {
+                    pieces: std::mem::take(pieces),
+                    space: space.take(),
+                }));
+            };
+
+        for segment in tokenize(&source.text) {
+            match segment.kind {
+                SegmentKind::Newline => {
+                    flush_word(&mut pieces, &mut space, &mut items);
+                    space = None;
+                    items.push(Item::Break {
+                        start: segment.start,
+                        end: segment.end,
+                    });
+                }
+                SegmentKind::Space => {
+                    flush_word(&mut pieces, &mut space, &mut items);
+                    space = Some(Space {
+                        style: reference_style_at(&source.spans, segment.start),
+                        start: segment.start,
+                        end: segment.end,
+                    });
+                }
+                SegmentKind::Escape => {
+                    pieces.push(Piece {
+                        text: &source.text[segment.start..segment.end],
+                        style: reference_style_at(&source.spans, segment.start),
+                        start: segment.start,
+                        end: segment.end,
+                        is_escape: true,
+                        width: 0,
+                    });
+                }
+                SegmentKind::Word => {
+                    for (start, end, style) in
+                        reference_parts(&source.spans, segment.start, segment.end)
+                    {
+                        let text = &source.text[start..end];
+                        pieces.push(Piece {
+                            text,
+                            style,
+                            start,
+                            end,
+                            is_escape: false,
+                            width: visible_width(text),
+                        });
+                    }
+                }
+            }
+        }
+        flush_word(&mut pieces, &mut space, &mut items);
+        items
+    }
+
+    /// The plain chunker: every fragment measured again.
+    fn reference_chunk_word<'a>(pieces: &[Piece<'a>], width: usize) -> Vec<Vec<Piece<'a>>> {
+        let mut chunks: Vec<Vec<Piece<'a>>> = Vec::new();
+        let mut chunk: Vec<Piece<'a>> = Vec::new();
+        let mut chunk_width = 0usize;
+        let mut chunk_text = 0usize;
+
+        for piece in pieces {
+            if piece.is_escape {
+                chunk.push(piece.clone());
+                continue;
+            }
+            let mut seg_start = 0usize;
+            for (offset, ch) in piece.text.char_indices() {
+                let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if ch_width > 0 && chunk_width + ch_width > width && chunk_text > 0 {
+                    if seg_start < offset {
+                        chunk.push(Piece {
+                            text: &piece.text[seg_start..offset],
+                            style: piece.style,
+                            start: piece.start + seg_start,
+                            end: piece.start + offset,
+                            is_escape: false,
+                            width: visible_width(&piece.text[seg_start..offset]),
+                        });
+                    }
+                    chunks.push(std::mem::take(&mut chunk));
+                    chunk_width = 0;
+                    chunk_text = 0;
+                    seg_start = offset;
+                }
+                chunk_width += ch_width;
+                chunk_text += 1;
+            }
+            if seg_start < piece.text.len() {
+                let segment_width = visible_width(&piece.text[seg_start..]);
+                chunk.push(Piece {
+                    text: &piece.text[seg_start..],
+                    style: piece.style,
+                    start: piece.start + seg_start,
+                    end: piece.end,
+                    is_escape: false,
+                    width: segment_width,
+                });
+                // The reference makes the same accounting mistake the engine
+                // did: the walk above already added this run. It is corrected
+                // here so the comparison is against a correct reference rather
+                // than against the defect.
+            }
+        }
+        if !chunk.is_empty() || chunks.is_empty() {
+            chunks.push(chunk);
+        }
+        chunks
+    }
+
+    /// The plain row assembly: `wrap_styled_spans_by_word_rows`'s body over
+    /// the reference items and the reference chunker.
+    fn reference_rows(spans: &[Span<'static>], width: u16) -> Vec<WrappedRow> {
+        let source = StyledSource::from_spans(spans);
+        let width = width as usize;
+        if width == 0 {
+            return vec![source.whole_row()];
+        }
+
+        let mut rows: Vec<WrappedRow> = Vec::new();
+        let mut row: Vec<StyledSlice> = Vec::new();
+        let mut row_width = 0usize;
+
+        for item in reference_items(&source) {
+            let word = match item {
+                Item::Break { start, end } => {
+                    push_row(&mut rows, &mut row, &mut row_width, Some((start, end)));
+                    continue;
+                }
+                Item::Word(word) => word,
+            };
+
+            let word_width: usize = word.pieces.iter().map(|piece| piece.width).sum();
+            let chunks = reference_chunk_word(&word.pieces, width);
+            let is_hard_break = chunks.len() > 1;
+
+            if !row.is_empty() {
+                if !is_hard_break && row_width + 1 + word_width <= width {
+                    if let Some(space) = &word.space {
+                        row.push(StyledSlice {
+                            text: " ".to_string(),
+                            style: space.style,
+                            source_start: space.start,
+                            source_end: space.end,
+                        });
+                        row_width += 1;
+                    }
+                } else {
+                    push_row(&mut rows, &mut row, &mut row_width, None);
+                }
+            }
+
+            let mut chunks = chunks.into_iter();
+            if let Some(first) = chunks.next() {
+                for piece in first {
+                    row_width += piece.width;
+                    row.push(StyledSlice {
+                        text: piece.text.to_string(),
+                        style: piece.style,
+                        source_start: piece.start,
+                        source_end: piece.end,
+                    });
+                }
+            }
+            for chunk in chunks {
+                push_row(&mut rows, &mut row, &mut row_width, None);
+                for piece in chunk {
+                    row_width += piece.width;
+                    row.push(StyledSlice {
+                        text: piece.text.to_string(),
+                        style: piece.style,
+                        source_start: piece.start,
+                        source_end: piece.end,
+                    });
+                }
+            }
+        }
+
+        if !row.is_empty() || rows.is_empty() {
+            push_row(&mut rows, &mut row, &mut row_width, None);
+        }
+        rows
+    }
+
+    /// The plain engine, written the obvious way: it clones the chunks it emits and
+    /// measures them again.
+    fn reference_wrap_to_strings(s: &str, width: u16) -> Vec<String> {
+        let width = width as usize;
+        if width == 0 || s.is_empty() {
+            return vec![s.to_string()];
+        }
+        fn hard_break_word(word: &str, width: usize) -> Vec<String> {
+            let mut chunks = Vec::new();
+            let mut chunk = String::new();
+            let mut chunk_width = 0;
+            for ch in word.chars() {
+                let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if ch_width > 0 && chunk_width + ch_width > width && !chunk.is_empty() {
+                    chunks.push(std::mem::take(&mut chunk));
+                    chunk_width = 0;
+                }
+                chunk.push(ch);
+                chunk_width += ch_width;
+            }
+            if !chunk.is_empty() || chunks.is_empty() {
+                chunks.push(chunk);
+            }
+            chunks
+        }
+
+        fn wrap_logical_line(line: &str, width: usize) -> Vec<String> {
+            let mut wrapped = Vec::new();
+            let mut current = String::new();
+            let mut current_width = 0;
+            let mut word = String::new();
+
+            let flush_word = |word: &mut String,
+                              current: &mut String,
+                              current_width: &mut usize,
+                              wrapped: &mut Vec<String>| {
+                if word.is_empty() {
+                    return;
+                }
+                let chunks = hard_break_word(word, width);
+                let word_width = chunks
+                    .first()
+                    .map(|chunk| {
+                        chunk
+                            .chars()
+                            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                            .sum::<usize>()
+                    })
+                    .unwrap_or(0);
+                let is_hard_break = chunks.len() > 1;
+
+                if current.is_empty() {
+                    // The final chunk remains current so a following word can
+                    // still share its line.
+                } else if !is_hard_break && *current_width + 1 + word_width <= width {
+                    current.push(' ');
+                    *current_width += 1;
+                } else {
+                    wrapped.push(std::mem::take(current));
+                    *current_width = 0;
+                }
+
+                for (idx, chunk) in chunks.iter().enumerate() {
+                    if idx + 1 == chunks.len() {
+                        current.push_str(chunk);
+                        *current_width += chunk
+                            .chars()
+                            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                            .sum::<usize>();
+                    } else {
+                        wrapped.push(chunk.clone());
+                    }
+                }
+                word.clear();
+            };
+
+            for ch in line.chars() {
+                if ch.is_whitespace() {
+                    flush_word(&mut word, &mut current, &mut current_width, &mut wrapped);
+                } else {
+                    word.push(ch);
+                }
+            }
+            flush_word(&mut word, &mut current, &mut current_width, &mut wrapped);
+            wrapped.push(current);
+            wrapped
+        }
+
+        let mut lines = Vec::new();
+        let logical_lines = s.strip_suffix('\n').unwrap_or(s).split('\n');
+        for logical_line in logical_lines {
+            lines.extend(wrap_logical_line(logical_line, width));
+        }
+        lines
+    }
+
+    /// `tokenize` emits its segments in source order, contiguous and
+    /// non-overlapping.
+    ///
+    /// This is the property the span cursor rests on: a lookup that only ever
+    /// advances is sound exactly when no query can name an offset behind the
+    /// previous one, and `tokenize` is the only producer of the queries.
+    #[test]
+    fn tokenize_emits_its_segments_in_source_order() {
+        for (name, spans) in fixture_spans() {
+            let source = StyledSource::from_spans(&spans);
+            let segments = tokenize(&source.text);
+            let mut cursor = 0usize;
+            for segment in &segments {
+                assert_eq!(
+                    segment.start, cursor,
+                    "{name}: a segment does not start where the previous one ended"
+                );
+                assert!(
+                    segment.start < segment.end,
+                    "{name}: a segment covers no bytes"
+                );
+                cursor = segment.end;
+            }
+            assert_eq!(
+                cursor,
+                source.text.len(),
+                "{name}: the segments do not cover the source"
+            );
+        }
+    }
+
+    /// The rows, the byte offsets and the styles match a plain re-derivation
+    /// of the wrap, over the fixture set and every fixture width.
+    #[test]
+    fn the_wrapped_rows_match_a_plain_rederivation() {
+        for (name, spans) in fixture_spans() {
+            for &width in FIXTURE_WIDTHS {
+                let rows = wrap_styled_spans_by_word_rows(&spans, width);
+                let expected = reference_rows(&spans, width);
+                assert_eq!(
+                    rows, expected,
+                    "{name} at width {width}: the rendered rows, their byte \
+                     offsets or their styles changed"
+                );
+            }
+            // A zero width returns the source as one row in both.
+            assert_eq!(
+                wrap_styled_spans_by_word_rows(&spans, 0),
+                reference_rows(&spans, 0),
+                "{name} at width 0: the unwrapped row changed"
+            );
+        }
+    }
+
+    /// The plain engine's output matches its plain re-derivation, byte for
+    /// byte — including the escape sequences whose non-atomic handling is
+    /// recorded and deliberately unchanged.
+    #[test]
+    fn the_plain_engine_matches_its_plain_rederivation() {
+        for (name, spans) in fixture_spans() {
+            let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+            for &width in FIXTURE_WIDTHS {
+                assert_eq!(
+                    wrap_to_strings(&text, width),
+                    reference_wrap_to_strings(&text, width),
+                    "{name} at width {width}: the plain engine's lines changed"
+                );
+            }
+            assert_eq!(
+                wrap_to_strings(&text, 0),
+                reference_wrap_to_strings(&text, 0),
+                "{name} at width 0: the unwrapped line changed"
+            );
+        }
+    }
+
+    /// A word spanning two spans breaks at its **true** width.
+    ///
+    /// `chunk_word` counted a word's tail run twice — the character walk added
+    /// every character's width, and the flush added the run again — so a word
+    /// built from two spans measured wider than it draws and broke early. The
+    /// fix is the missing double count, and this is the shape that shows it: a
+    /// thirteen-column word split 5 + 8 fits a thirteen-column row exactly, and
+    /// breaks at twelve.
+    ///
+    /// The styled engine is compared against the plain one here because the
+    /// plain engine never had the defect — it wraps a `&str`, where a word is
+    /// one piece — so the two disagreeing was the symptom a reader would see.
+    #[test]
+    fn a_word_split_across_spans_breaks_at_its_true_width() {
+        let code = Style::default().fg(Color::Red);
+        let spans = vec![Span::raw("inter"), Span::styled("national", code)];
+
+        let exact = wrap_styled_spans_by_word_rows(&spans, 13);
+        assert_eq!(
+            exact.len(),
+            1,
+            "a thirteen-column word fits a thirteen-column row: {exact:?}"
+        );
+        let text: String = exact[0]
+            .slices
+            .iter()
+            .map(|slice| slice.text.as_str())
+            .collect();
+        assert_eq!(text, "international", "the whole word is on the row");
+        assert_eq!(
+            exact[0].slices.len(),
+            2,
+            "and it keeps its two styles: {:?}",
+            exact[0].slices
+        );
+        assert_eq!(
+            wrap_to_strings("international", 13),
+            vec!["international".to_string()],
+            "the plain engine agrees, and always did"
+        );
+
+        let narrow = wrap_styled_spans_by_word_rows(&spans, 12);
+        assert_eq!(
+            narrow.len(),
+            2,
+            "one column narrower, and it hard-breaks: {narrow:?}"
+        );
+        assert_eq!(
+            wrap_to_strings("international", 12),
+            vec!["internationa".to_string(), "l".to_string()],
+            "the plain engine breaks at the same column"
         );
     }
 }

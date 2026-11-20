@@ -1,45 +1,52 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::{Section, SectionFrame};
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::wrap::wrap_count;
 use crate::util::truncate::truncate_prefix;
 
 use crate::research::service::ResearchRunSummary;
 use crate::research::types::{Confidence, ResearchBundle, RunStatus};
 
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own border, heading and keymap footer per mode; [`Chrome::Hosted`]
-/// is a column in a side panel, where the host has already painted all three
-/// into the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
+/// The verbs `ResearchBrowserMode::RunsList` delivers, for the panel host.
+fn runs_list_hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move")
+        .push("enter", "open")
+        .push("r", "refresh");
+    hint
 }
 
-/// The verbs `ResearchBrowserMode::RunsList` delivers, for the panel host.
-const RUNS_LIST_HINT: &str = "j/k move · enter open · r refresh";
-
 /// The verbs `ResearchBrowserMode::RunDetail` delivers.
-const RUN_DETAIL_HINT: &str = "j/k move · enter section";
+fn run_detail_hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "move").push("enter", "section");
+    hint
+}
 
 /// The verbs `ResearchBrowserMode::ReportView` delivers.
 ///
 /// `Home`/`End` are named because they are **not** panel directions and do
 /// reach a widget from a column. `⌫` is named rather than `Esc` for the same
 /// reason the review diff view names it: `Esc` is the host's, `⌫` is not.
-const REPORT_VIEW_HINT: &str = "j/k scroll · ^d/^u page · Home/End jump · ⌫ back";
+fn report_view_hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "scroll")
+        .push("^d/^u", "page")
+        .push("Home/End", "jump")
+        .push("⌫", "back");
+    hint
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResearchBrowserMode {
@@ -277,16 +284,16 @@ impl Component for ResearchBrowserDialog {
     /// back out of a report and means nothing anywhere else, and `Home`/`End`
     /// jump a report only. One string would have to describe keys that are
     /// dead in the mode on screen.
-    fn keymap_hint(&self) -> Option<String> {
+    fn keymap_hint_line(&self) -> Option<HintLine> {
         Some(match self.mode {
-            ResearchBrowserMode::RunsList => RUNS_LIST_HINT.to_string(),
-            ResearchBrowserMode::RunDetail => RUN_DETAIL_HINT.to_string(),
-            ResearchBrowserMode::ReportView => REPORT_VIEW_HINT.to_string(),
+            ResearchBrowserMode::RunsList => runs_list_hint(),
+            ResearchBrowserMode::RunDetail => run_detail_hint(),
+            ResearchBrowserMode::ReportView => report_view_hint(),
         })
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     /// The listing alone: no border, no title, no footer.
@@ -297,11 +304,13 @@ impl Component for ResearchBrowserDialog {
     /// overwrites all three, in every mode, including the two early-return
     /// branches. `area` is the host's full rect, so inset by its border first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -328,7 +337,13 @@ impl ResearchBrowserDialog {
     /// past it. It is applied here rather than in `handle_key` because only
     /// this routine can see the rect, and doing it here is what stops the
     /// modal and the column reaching different last rows.
-    fn render_body(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Arc<Theme>,
+        chrome: SectionFrame,
+    ) {
         if area.height < 5 {
             return;
         }
@@ -341,23 +356,12 @@ impl ResearchBrowserDialog {
                     " Research Runs "
                 };
 
-                let block = match chrome {
-                    Chrome::Owned => Some(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(theme.border))
-                            .title(title),
-                    ),
-                    Chrome::Hosted => None,
+                let inner = match chrome {
+                    SectionFrame::Owned => Section::verbatim(title.trim(), theme)
+                        .focused(true)
+                        .draw(area, frame.buffer_mut()),
+                    SectionFrame::Hosted => area,
                 };
-
-                let inner = match &block {
-                    Some(block) => block.inner(area),
-                    None => area,
-                };
-                if let Some(block) = &block {
-                    frame.render_widget(block, area);
-                }
 
                 if self.runs.is_empty() {
                     let empty_lines = vec![
@@ -429,9 +433,15 @@ impl ResearchBrowserDialog {
                 let list = List::new(items);
                 frame.render_widget(list, inner);
 
-                if chrome == Chrome::Owned {
+                if chrome == SectionFrame::Owned {
                     let footer = Line::from(Span::styled(
-                        "j/k navigate  |  Enter: details  |  r: refresh  |  Esc close",
+                        HintLine::from_items(&[
+                            ("Esc", "close"),
+                            ("j/k", "move"),
+                            ("Enter", "open"),
+                            ("r", "refresh"),
+                        ])
+                        .render(0),
                         Style::default().fg(theme.muted),
                     ));
                     let footer_area = Rect::new(
@@ -444,23 +454,12 @@ impl ResearchBrowserDialog {
                 }
             }
             ResearchBrowserMode::RunDetail => {
-                let block = match chrome {
-                    Chrome::Owned => Some(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(theme.border))
-                            .title(" Research Run Detail "),
-                    ),
-                    Chrome::Hosted => None,
+                let inner = match chrome {
+                    SectionFrame::Owned => Section::new("Research Run Detail", theme)
+                        .focused(true)
+                        .draw(area, frame.buffer_mut()),
+                    SectionFrame::Hosted => area,
                 };
-
-                let inner = match &block {
-                    Some(block) => block.inner(area),
-                    None => area,
-                };
-                if let Some(block) = &block {
-                    frame.render_widget(block, area);
-                }
 
                 let Some(bundle) = &self.detail else {
                     if self.loading {
@@ -647,9 +646,14 @@ impl ResearchBrowserDialog {
                 let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
                 frame.render_widget(paragraph, inner);
 
-                if chrome == Chrome::Owned {
+                if chrome == SectionFrame::Owned {
                     let footer = Line::from(Span::styled(
-                        " j/k navigate  |  Enter: open section  |  Esc: back to list",
+                        HintLine::from_items(&[
+                            ("Esc", "back to list"),
+                            ("j/k", "move"),
+                            ("Enter", "section"),
+                        ])
+                        .render(0),
                         Style::default().fg(theme.muted),
                     ));
                     let footer_area = Rect::new(
@@ -672,23 +676,12 @@ impl ResearchBrowserDialog {
                     None => " Content ",
                 };
 
-                let block = match chrome {
-                    Chrome::Owned => Some(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(theme.border))
-                            .title(title),
-                    ),
-                    Chrome::Hosted => None,
+                let inner = match chrome {
+                    SectionFrame::Owned => Section::verbatim(title.trim(), theme)
+                        .focused(true)
+                        .draw(area, frame.buffer_mut()),
+                    SectionFrame::Hosted => area,
                 };
-
-                let inner = match &block {
-                    Some(block) => block.inner(area),
-                    None => area,
-                };
-                if let Some(block) = &block {
-                    frame.render_widget(block, area);
-                }
 
                 let Some((_, content)) = &self.report_content else {
                     let msg = Line::from(Span::styled(
@@ -725,8 +718,8 @@ impl ResearchBrowserDialog {
                 // place is what stops the two paths reaching different last
                 // rows from one shared clamp.
                 let visible_rows = match chrome {
-                    Chrome::Owned => (inner.height as usize).saturating_sub(1),
-                    Chrome::Hosted => inner.height as usize,
+                    SectionFrame::Owned => (inner.height as usize).saturating_sub(1),
+                    SectionFrame::Hosted => inner.height as usize,
                 };
                 // `.scroll()` consumes a `u16`, so the ceiling is capped there
                 // too: a report of more than 65535 rows is unreachable rather
@@ -741,9 +734,14 @@ impl ResearchBrowserDialog {
                     .scroll((scroll as u16, 0));
                 frame.render_widget(paragraph, inner);
 
-                if chrome == Chrome::Owned {
+                if chrome == SectionFrame::Owned {
                     let footer = Line::from(Span::styled(
-                        " j/k: scroll  PgUp/PgDn: page  Esc: back",
+                        HintLine::from_items(&[
+                            ("Esc", "back"),
+                            ("j/k", "scroll"),
+                            ("PgUp/PgDn", "page"),
+                        ])
+                        .render(0),
                         Style::default().fg(theme.muted),
                     ));
                     let footer_area = Rect::new(

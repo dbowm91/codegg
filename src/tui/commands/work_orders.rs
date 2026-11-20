@@ -4718,3 +4718,7 @@ mod isolation_tests {
         assert_ne!(app.ui_state.dialog, Dialog::TriggerSecret);
     }
 }
+
+pub(crate) fn dispatch_tasks(app: &mut App) {
+    crate::tui::commands::work_orders::start_tasks_command(app);
+}

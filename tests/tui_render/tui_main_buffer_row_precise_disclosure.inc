@@ -117,7 +117,7 @@ fn app_with_transcript() -> App {
     });
     app.messages_state.messages.invalidate_rows();
     app.messages_state.messages.scroll_to_top();
-    app.viewport_area = Some(Rect::new(0, 0, WIDTH, VIEWPORT as u16));
+    app.frame_plan.viewport = Rect::new(0, 0, WIDTH, VIEWPORT as u16);
     app
 }
 

@@ -1,0 +1,405 @@
+{
+  "activity_stall": {
+    "stall_limit_seconds": 300,
+    "triggered": false
+  },
+  "attempt_number": 38,
+  "authorization": {
+    "combined_starts_consumed": 39,
+    "combined_starts_remaining": 121,
+    "supplemental_starts_consumed": null,
+    "supplemental_starts_remaining": null
+  },
+  "continuation_public_gates": {
+    "all_public_artifacts_present": true,
+    "contract_phase_order_matches": true,
+    "document_valid": false,
+    "gates": {
+      "acceptance_audit": "complete",
+      "bounded_probes": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "independent_review": "complete",
+      "provenance_queries": "complete",
+      "release_scale_overlap": "complete",
+      "starter_repair_format": "complete",
+      "starter_repair_store": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "complete"
+    },
+    "incomplete_gates": [],
+    "incomplete_stages": [],
+    "next_gate": "none",
+    "next_stage": "none",
+    "phase_order_matches": true,
+    "public_artifact_status": {
+      "HARNESS_PROBE_REPORT.json": true,
+      "PUBLIC_ACCEPTANCE_AUDIT.md": true,
+      "tools/catalog_probe.py": true
+    },
+    "release_overlap_confirmed": true,
+    "repair_job_summary": {
+      "complete": false,
+      "documented_repair_cycle_count": 4,
+      "job_ids_unique_across_groups": true,
+      "observed_repair_cycle_count": 4,
+      "qualified_pair_count": 0,
+      "repair_cycle_count_matches": true,
+      "required_pair_count": 2
+    },
+    "required_repair_pair_results": {
+      "catalog_format": {
+        "documented_states_match_observations": true,
+        "failed_job_status_called_immediately": true,
+        "failed_job_submitted_once": true,
+        "failed_terminal_observed": true,
+        "job_ids_are_distinct": true,
+        "productive_change_between_failure_and_rerun": false,
+        "qualified": false,
+        "repair_cycle_correlated": false,
+        "repair_followed_failure": false,
+        "repair_job_status_called_immediately": true,
+        "repair_job_submitted_once": true,
+        "repair_terminal_observed": true
+      },
+      "catalog_store": {
+        "documented_states_match_observations": true,
+        "failed_job_status_called_immediately": true,
+        "failed_job_submitted_once": true,
+        "failed_terminal_observed": true,
+        "job_ids_are_distinct": true,
+        "productive_change_between_failure_and_rerun": false,
+        "qualified": false,
+        "repair_cycle_correlated": false,
+        "repair_followed_failure": false,
+        "repair_job_status_called_immediately": true,
+        "repair_job_submitted_once": true,
+        "repair_terminal_observed": true
+      }
+    },
+    "required_review_observed": true,
+    "required_success_jobs": {
+      "clippy": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      },
+      "workspace_tests": {
+        "completed": true,
+        "documented_completed": true,
+        "observed_terminal_status": "completed",
+        "submitted_once": true
+      }
+    },
+    "stage_order_matches": true,
+    "stages": {
+      "acceptance_audit": "complete",
+      "cli_contract": "complete",
+      "dependency_index": "complete",
+      "durable_import": "complete",
+      "provenance_queries": "complete",
+      "versioned_records": "complete",
+      "workspace_qualification": "complete"
+    },
+    "test_job_lifecycle": {
+      "all_terminal_observed": true,
+      "submission_count": 19,
+      "terminal_observed_count": 19,
+      "terminal_status_counts": {
+        "completed": 15,
+        "failed": 4
+      },
+      "unique_submitted_job_count": 19,
+      "unobserved_count": 0
+    }
+  },
+  "disk": {
+    "current_free_bytes": 52215074816,
+    "external_hard_stop": false,
+    "external_watch_samples": 663,
+    "floor_bytes": 10737418240,
+    "minimum_free_bytes": 41119535104,
+    "runner_exit_code": 2,
+    "triggered": null
+  },
+  "event_measurement": {
+    "correlated_repair_cycles": 4,
+    "dropped_events": 0,
+    "event_count": 653,
+    "explicit_event_gaps": 0,
+    "maximum_activity_gap_ms": 118267,
+    "maximum_native_tool_event_gap_ms": 118267,
+    "tool_started": 283,
+    "tool_terminal": 283,
+    "trace_state": "complete",
+    "unpaired_starts": 0
+  },
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "horizon": {
+    "active_work_span_ms": 3271745,
+    "continuation_confirmed": false,
+    "duration_qualified": true,
+    "exact_job_running_and_terminal": true,
+    "maximum_activity_gap_limit_ms": 300000,
+    "maximum_activity_gap_ms": 118267,
+    "minimum_active_duration_ms": 1800000,
+    "outcome": "not_qualified",
+    "productive_work_during_job": true,
+    "reason": "task_not_passed",
+    "repair_cycles": 4
+  },
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "outcome": {
+    "active_work_span_ms": 3271714,
+    "agent_terminal": "timeout",
+    "continuation_stop_reason": "turn_timeout",
+    "duration_ms": 3299725,
+    "duration_qualified": true,
+    "stop_reason": "turn_timeout",
+    "task": "failed",
+    "task_completion_reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed",
+      "independent_verifier_failures"
+    ],
+    "terminal": "timeout",
+    "turn_timeout_diagnostic": {
+      "autonomous_followup_count": 6,
+      "last_request_elapsed_ms": 68436,
+      "last_request_timeout_seconds": 68.431,
+      "prompt_request_count": 7,
+      "remaining_wallclock_seconds_at_prompt_start": 368.431,
+      "remaining_wallclock_seconds_at_timeout": 299.992,
+      "state": "observed",
+      "verifier_reserve_seconds": 300.0
+    }
+  },
+  "private_receipt_sha256": "130fae3c9313a1e5a572c913c2d73984e3e89d868af82ede6e8ff3d2e932f52f",
+  "prompt_boundary_timeline": {
+    "count": 7,
+    "entries": [
+      {
+        "active_work_span_end_ms": 600175,
+        "active_work_span_start_ms": 0,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 3599080,
+        "request_elapsed_ms": 608774,
+        "request_index": 1,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 375,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 52,
+        "tool_call_count_start": 0
+      },
+      {
+        "active_work_span_end_ms": 989713,
+        "active_work_span_start_ms": 600175,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 2990230,
+        "request_elapsed_ms": 395239,
+        "request_index": 2,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 609225,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 83,
+        "tool_call_count_start": 52
+      },
+      {
+        "active_work_span_end_ms": 1597111,
+        "active_work_span_start_ms": 989713,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 2594913,
+        "request_elapsed_ms": 601539,
+        "request_index": 3,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 1004542,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 135,
+        "tool_call_count_start": 83
+      },
+      {
+        "active_work_span_end_ms": 2193346,
+        "active_work_span_start_ms": 1597111,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 1993316,
+        "request_elapsed_ms": 613612,
+        "request_index": 4,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": true,
+        "started_elapsed_ms": 1606139,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 186,
+        "tool_call_count_start": 135
+      },
+      {
+        "active_work_span_end_ms": 2832461,
+        "active_work_span_start_ms": 2193346,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 1379643,
+        "request_elapsed_ms": 629874,
+        "request_index": 5,
+        "request_timeout_ms": 900000,
+        "reviewer_due_marker_received": true,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 2219812,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 229,
+        "tool_call_count_start": 186
+      },
+      {
+        "active_work_span_end_ms": 3213292,
+        "active_work_span_start_ms": 2832461,
+        "continuation_decision": "continue",
+        "remaining_wallclock_start_ms": 749611,
+        "request_elapsed_ms": 381106,
+        "request_index": 6,
+        "request_timeout_ms": 449611,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": false,
+        "started_elapsed_ms": 2849844,
+        "stop_class": "end_turn",
+        "tool_call_count_end": 277,
+        "tool_call_count_start": 229
+      },
+      {
+        "active_work_span_end_ms": 3271714,
+        "active_work_span_start_ms": 3213292,
+        "continuation_decision": "turn_timeout",
+        "remaining_wallclock_start_ms": 368431,
+        "request_elapsed_ms": 68436,
+        "request_index": 7,
+        "request_timeout_ms": 68431,
+        "reviewer_due_marker_received": false,
+        "reviewer_due_marker_sent_next": null,
+        "started_elapsed_ms": 3231024,
+        "stop_class": "turn_timeout",
+        "tool_call_count_end": 283,
+        "tool_call_count_start": 277
+      }
+    ],
+    "exception_text_retained": false,
+    "prompt_text_retained": false,
+    "provider_text_retained": false,
+    "raw_tool_arguments_retained": false,
+    "schema": "h007_prompt_boundary_timeline_v1"
+  },
+  "provider": {
+    "allowance_usd": 0.137755,
+    "attempts_failed": 2,
+    "attempts_started": 253,
+    "attempts_succeeded": 250,
+    "billed_usd": null,
+    "billed_usd_treatment": "unknown",
+    "provider_timeout_events": 0,
+    "receipt_request_count": 253,
+    "request_count_matches_admission_log": true,
+    "request_limit": 1200,
+    "requests": 253,
+    "retry_scheduled_count": 2
+  },
+  "raw_job_arguments_retained": false,
+  "raw_job_ids_retained": false,
+  "raw_output_retained": false,
+  "reviewer_durable_state": {
+    "elapsed_ms": 79098,
+    "failure_class": null,
+    "failure_message_retained": false,
+    "matched_run_count": 1,
+    "matched_task_count": 1,
+    "raw_identifiers_retained": false,
+    "run_status": "completed",
+    "run_terminal": "completed",
+    "state": "observed",
+    "task_result_body_retained": false,
+    "task_status": "completed",
+    "transcript_retained": false
+  },
+  "reviewer_lifecycle": {
+    "completed_get_result_observed_count": 1,
+    "compliant_status_then_get_lifecycle": true,
+    "continue_action_count": 0,
+    "duplicate_get_count": 0,
+    "explicit_terminal_observation_count": 1,
+    "final_failure_class": null,
+    "final_status": "completed",
+    "get_after_terminal_status_count": 1,
+    "get_count": 1,
+    "get_nonterminal_count": 0,
+    "ordered_completed_get_result_count": 1,
+    "reviewer_event_count": 4,
+    "reviewer_spawn_count": 1,
+    "task_action_counts": {
+      "get": 1,
+      "spawn": 1,
+      "status": 2
+    }
+  },
+  "reviewer_schedule": {
+    "due_prompt_count": 1,
+    "first_due_active_work_span_ms": 2193346,
+    "first_due_followup_number": 4,
+    "reviewer_spawn_count": 1,
+    "start_threshold_active_ms": 1800000,
+    "task_tool_call_count": 4,
+    "task_tool_requested_by_case": true
+  },
+  "schema": "s019_attempt_safe_diagnostic_v1",
+  "source_revision": "ac584c886f03847ff6b829f8509667637e42a052",
+  "task_completion": {
+    "reasons": [
+      "agent_terminal_incomplete",
+      "continuation_not_confirmed",
+      "independent_verifier_failures"
+    ],
+    "state": "agent_incomplete",
+    "verifier_outcome": "assertion_failures",
+    "verifier_public_reconciliation": {
+      "classification": {
+        "continuation_boundary": "public_evidence_incomplete",
+        "transcript_job_lifecycle": "public_evidence_incomplete"
+      },
+      "failure_domain_counts": {
+        "continuation_boundary": 1,
+        "transcript_job_lifecycle": 1
+      },
+      "public_domain_states": {
+        "continuation_boundary": "incomplete",
+        "transcript_job_lifecycle": "incomplete"
+      },
+      "raw_output_retained": false,
+      "transcript_retained": false
+    }
+  },
+  "verifier_aggregate": {
+    "assertion_operation_counts": {
+      "pattern": 1,
+      "truthiness": 1
+    },
+    "assertion_text_retained": false,
+    "failed_test_identities_retained": false,
+    "failure_counts": {
+      "errors": 0,
+      "failures": 2
+    },
+    "failure_domain_counts": {
+      "continuation_boundary": 1,
+      "transcript_job_lifecycle": 1
+    },
+    "passed_count": 3,
+    "raw_output_retained": false,
+    "setup_failure_reason": null,
+    "state": "assertion_failures",
+    "tests_run": 5
+  },
+  "verifier_text_retained": false
+}

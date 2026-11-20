@@ -131,3 +131,13 @@ pub(crate) fn start_connection_lifecycle(
         },
     );
 }
+
+pub(crate) fn dispatch_connect(app: &mut App) {
+    app.ui_state.command_mode = false;
+    app.open_connect_dialog();
+}
+
+pub(crate) fn dispatch_connections(app: &mut App) {
+    app.ui_state.command_mode = false;
+    app.open_connection_selection_dialog();
+}

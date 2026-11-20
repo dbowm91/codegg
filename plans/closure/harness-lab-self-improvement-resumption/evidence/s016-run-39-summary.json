@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "attempt": 39,
+  "campaign_id": "s016-deepseek-raised-cap-20261102",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "source_revision": "e3e628caece88cf8de4590f82fb75c561446f2ed",
+  "binary_sha256": "25cdef11543d434d0e9f0fc20c154ee72f8ec16ad078af956da616cb4e329f10",
+  "manifest_path": "dev/harness_lab/fixtures/agent_autonomy_s016_promptfix_v15/cases.jsonl",
+  "manifest_sha256": "ae2eb1d88d668f5a880683c2b631c1b585cb634ddfe2c1f6cada22433bc650fe",
+  "run_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "receipt_path": "/private/tmp/s016-attempt39.json",
+  "receipt_sha256": "8edcffb0d91d01f96236ad6b59fd25587fe12a342c640dcecf3cf8dcccc32d88",
+  "provider_request_cap": 750,
+  "provider_requests": 150,
+  "provider_cost_usd": 0.078406,
+  "duration_ms": 828233,
+  "active_work_span_ms": 816723,
+  "terminal": "completed",
+  "stop_reason": "end_turn",
+  "task_outcome": "failed",
+  "solved": false,
+  "event_gap": {
+    "state": "observed_complete",
+    "tool_started_count": 145,
+    "tool_terminal_count": 145,
+    "unpaired_count": 0,
+    "event_gap_count": 0
+  },
+  "horizon_evidence": {
+    "active_work_span_ms": 817011,
+    "maximum_activity_gap_ms": 62615,
+    "minimum_active_duration_ms": 1800000,
+    "repair_cycles": 12,
+    "continuation_confirmed": true,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false
+  },
+  "disk_floor": {
+    "minimum_free_bytes": 10737418240,
+    "lowest_observed_free_bytes": 228311592960,
+    "last_free_bytes": 236769771520,
+    "triggered": false
+  },
+  "verification": {
+    "exit_code": 1,
+    "failure_summary": "(failures=3)",
+    "contents_inspected": false
+  },
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "job_lifecycle_missing",
+  "priority_job": {
+    "job_id": "8bee9c86-4f6c-438b-ad2e-c01897ebb612",
+    "terminal_state": "completed",
+    "duration_ms": 5240,
+    "first_status_observation_elapsed_ms": 785908,
+    "submission_elapsed_ms": 775622,
+    "running_observed": false
+  },
+  "finding": "The agent completed nine stages (including a 100,000-package scale test and three-way merge), twelve repair cycles, the read-only child, and 53 final workspace tests in 816.723 seconds active. The argv-safe priority job was accepted and completed in 5.24 seconds. However, the model first wrote continuation state and only polled about 10.3 seconds after submission, after the job was terminal; no running state or productive overlap was recorded. All 145 tool starts paired with terminals with zero gaps; maximum activity gap was 62.615 seconds; disk stayed above 212 GiB; 150/750 requests were used. The model ended normally below 30 minutes. The remaining issue is sequencing the job observation before any intervening work, not provider, request, ACP, stall, or disk behavior."
+}

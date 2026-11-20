@@ -9,15 +9,18 @@
 //!
 //! The only additions are the title bar, which makes the active panel legible
 //! now that more than one panel can occupy this column, and the focus
-//! highlight.
+//! highlight — both from the shared `PanelChrome`, so this panel's edge cannot
+//! disagree with the other four.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::components::sidebar::SidebarActivation;
 use crate::tui::input::InputAction;
 
+use super::chrome::PanelChrome;
 use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
 
 /// Session projection panel. Stateless — all view state lives in
@@ -29,19 +32,13 @@ impl SidePanel for SessionPanel {
         SidePanelId::Session
     }
 
-    /// `SidebarWidget::render_with_title` paints its own border, so the
-    /// panel name goes into the top border row rather than a separate band
-    /// that would steal a content row on a short terminal.
+    /// `SidebarWidget::render_with_title` paints the body inside the chrome
+    /// this panel hands it, so the panel name and the focus marker live on the
+    /// panel edge rather than on a band that would steal a content row.
     fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
-        let label = SidePanelId::Session.label();
-        let title = if ctx.focused {
-            format!(" {label} ● ")
-        } else {
-            format!(" {label} ")
-        };
+        let chrome = PanelChrome::new(SidePanelId::Session.label(), ctx.focused, &ctx.theme);
         ctx.session.set_theme(&ctx.theme);
-        ctx.session
-            .render_with_title(area, buf, &title, ctx.focused);
+        ctx.session.render_with_title(area, buf, &chrome);
     }
 
     /// The session panel has no input mode of its own, so it never claims the
@@ -53,7 +50,14 @@ impl SidePanel for SessionPanel {
 
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
         hints.focused.then(|| {
-            "SESSIONS · jk move · ↵ open · space fold · hl collapse/expand · ⇧S panel".to_string()
+            HintLine::new()
+                .push("SESSIONS", "")
+                .push("jk", "move")
+                .push("↵", "open")
+                .push("space", "fold")
+                .push("hl", "collapse/expand")
+                .push("⇧S", "panel")
+                .render(0)
         })
     }
 

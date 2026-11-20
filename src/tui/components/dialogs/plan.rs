@@ -1,28 +1,18 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
 use crate::tui::components::scroll::CenteredScroll;
+use crate::tui::components::section::{Section, SectionFrame};
 use crate::tui::theme::Theme;
-
-/// Who owns this render's chrome.
-///
-/// The two paths differ only in that. [`Chrome::Owned`] is the modal box, which
-/// draws its own three bordered chunks and their titles; [`Chrome::Hosted`] is
-/// a column in a side panel, where the host has already painted a border, a
-/// title and the `●` focus marker into the same rect.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Chrome {
-    Owned,
-    Hosted,
-}
 
 /// The verbs this box implements, for the panel host to reuse verbatim.
 ///
@@ -36,7 +26,18 @@ enum Chrome {
 /// keymap of a docked `/plan`** — two ways to move a highlight that a column
 /// cannot then confirm, which is exactly what `keymap_hint` has to say out loud
 /// rather than leave to a keymap the host would overwrite.
-const HINT: &str = "j/k select";
+/// The modal's own keymap row: the two verbs the box answers with its border
+/// in its own hands. `Options (` was a label wrapped around the first item, not
+/// an item; the two keys are.
+fn plan_footer() -> String {
+    HintLine::from_items(&[("↑↓", "select"), ("Enter", "confirm")]).render(0)
+}
+
+fn hint() -> HintLine {
+    let mut hint = HintLine::new();
+    hint.push("j/k", "select");
+    hint
+}
 
 #[derive(Clone)]
 pub struct PlanDialog {
@@ -72,17 +73,16 @@ impl PlanDialog {
         ])
         .split(area);
 
-        let title = Paragraph::new(Line::from(vec![
-            Span::styled("Plan ", Style::default().fg(theme.warning)),
-            Span::styled("Confirmation", Style::default().fg(theme.foreground)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Plan Request ")
-                .border_style(Style::default().fg(theme.warning)),
+        let title_inner = Section::new("Plan Request", theme)
+            .focused(true)
+            .draw(chunks[0], frame.buffer_mut());
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Plan ", Style::default().fg(theme.warning)),
+                Span::styled("Confirmation", Style::default().fg(theme.foreground)),
+            ])),
+            title_inner,
         );
-        frame.render_widget(title, chunks[0]);
 
         let description_lines: Vec<Line> = self
             .plan_description
@@ -90,12 +90,8 @@ impl PlanDialog {
             .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.foreground))))
             .collect();
 
-        let description = Paragraph::new(description_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
-        );
-        frame.render_widget(description, chunks[1]);
+        let description_inner = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
+        frame.render_widget(Paragraph::new(description_lines), description_inner);
 
         let options: Vec<Line> = vec![
             if !self.selected {
@@ -122,13 +118,10 @@ impl PlanDialog {
             },
         ];
 
-        let options_para = Paragraph::new(options).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Options (↑↓ select  |  Enter confirm) ")
-                .border_style(Style::default().fg(theme.border)),
-        );
-        frame.render_widget(options_para, chunks[2]);
+        let options_inner = Section::plain(theme)
+            .hint(&HintLine::from_items(&[("↑↓", "select"), ("Enter", "confirm")]).render(0))
+            .draw(chunks[2], frame.buffer_mut());
+        frame.render_widget(Paragraph::new(options), options_inner);
     }
 
     /// One body for both render paths.
@@ -147,7 +140,7 @@ impl PlanDialog {
     /// of those verbs are the host's to answer; the verbs now live in
     /// `keymap_hint`, read once by the host, instead of in three copies of a
     /// border title that a panel overwrote anyway.
-    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: Chrome) {
+    fn render_body(&self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>, chrome: SectionFrame) {
         let description_lines: Vec<Line> = self
             .plan_description
             .lines()
@@ -185,7 +178,7 @@ impl PlanDialog {
         ]);
 
         match chrome {
-            Chrome::Owned => {
+            SectionFrame::Owned => {
                 let chunks = Layout::vertical([
                     Constraint::Length(4),
                     Constraint::Min(6),
@@ -193,30 +186,27 @@ impl PlanDialog {
                 ])
                 .split(area);
 
-                let title = Paragraph::new(heading).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Plan Request ")
-                        .border_style(Style::default().fg(theme.warning)),
-                );
-                frame.render_widget(title, chunks[0]);
+                let title_inner = Section::new("Plan Request", theme)
+                    .focused(true)
+                    .draw(chunks[0], frame.buffer_mut());
+                frame.render_widget(Paragraph::new(heading), title_inner);
 
-                let description = Paragraph::new(description_lines).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme.border)),
-                );
-                frame.render_widget(description, chunks[1]);
+                let description_inner = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
+                frame.render_widget(Paragraph::new(description_lines), description_inner);
 
-                let options_para = Paragraph::new(options).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Options (↑↓ select  |  Enter confirm) ")
-                        .border_style(Style::default().fg(theme.border)),
-                );
-                frame.render_widget(options_para, chunks[2]);
+                // See `confirm.rs`: a border hint is muted when unfocused, and
+                // this surface paints no other muted text, so the keymap stays
+                // in the box's spare interior row at the colour it had as a
+                // border title.
+                let mut options = options;
+                options.push(Line::from(Span::styled(
+                    plan_footer(),
+                    Style::default().fg(theme.foreground),
+                )));
+                let options_inner = Section::plain(theme).draw(chunks[2], frame.buffer_mut());
+                frame.render_widget(Paragraph::new(options), options_inner);
             }
-            Chrome::Hosted => {
+            SectionFrame::Hosted => {
                 // No borders, so no two rows per chunk: one row of heading, one
                 // of ` Options `, and the two option lines themselves.
                 let chunks = Layout::vertical([
@@ -260,19 +250,14 @@ impl PlanDialog {
         // Imported here rather than at the file top: as a `Widget` impl this body
         // got `Block::render` from the trait it was implementing, and an inherent
         // method needs the trait in scope on its own.
-        use ratatui::widgets::Widget;
 
         if area.height < 3 {
             return;
         }
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .title(" Plan Request ");
-
-        let inner = block.inner(area);
-        block.render(area, buf);
+        let inner = Section::new("Plan Request", theme)
+            .focused(true)
+            .draw(area, buf);
 
         let description_lines: Vec<Line> = self
             .plan_description
@@ -308,20 +293,19 @@ impl PlanDialog {
             },
         ];
 
-        let options_para = Paragraph::new(options).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Options (↑↓ select  |  Enter confirm) ")
-                .border_style(Style::default().fg(theme.border)),
-        );
-
         let opts_area = ratatui::layout::Rect {
             x: inner.x,
             y: inner.y.saturating_sub(1),
             width: inner.width,
             height: inner.height.saturating_sub(1),
         };
-        ratatui::widgets::Widget::render(options_para, opts_area, buf);
+        let mut options = options;
+        options.push(Line::from(Span::styled(
+            plan_footer(),
+            Style::default().fg(theme.foreground),
+        )));
+        let options_inner = Section::plain(theme).draw(opts_area, buf);
+        ratatui::widgets::Widget::render(Paragraph::new(options), options_inner, buf);
     }
 }
 
@@ -358,8 +342,8 @@ impl Component for PlanDialog {
     }
 
     /// The verbs this box owns, spelled the way this box spells them.
-    fn keymap_hint(&self) -> Option<String> {
-        Some(HINT.to_string())
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(hint())
     }
 
     /// The plan and its two options: no borders, no border titles, and a
@@ -372,17 +356,19 @@ impl Component for PlanDialog {
     /// included. `area` is the host's full rect, so inset by its border
     /// first.
     fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let inner = area.inner(Margin::new(1, 1));
+        let inner = Section::plain(theme)
+            .frame(SectionFrame::Hosted)
+            .draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        self.render_body(frame, inner, theme, Chrome::Hosted);
+        self.render_body(frame, inner, theme, SectionFrame::Hosted);
     }
 
     /// The modal box: three bordered chunks and their titles, all of which are
     /// correct here and only here.
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.render_body(frame, area, theme, Chrome::Owned);
+        self.render_body(frame, area, theme, SectionFrame::Owned);
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -394,6 +380,7 @@ impl Component for PlanDialog {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::widgets::{Block, Borders};
     use ratatui::Terminal;
 
     fn dialog() -> PlanDialog {
@@ -492,7 +479,7 @@ mod tests {
         );
         let text = rows.join("\n");
         assert!(
-            text.contains("Options (↑↓ select  |  Enter confirm)"),
+            text.contains("↑↓ select · Enter confirm"),
             "the modal keeps its keymap-bearing options title"
         );
     }
@@ -530,6 +517,6 @@ mod tests {
                 "the hint teaches {dead:?}, which a column cannot deliver: {hint:?}"
             );
         }
-        assert_eq!(d.keymap_hint().as_deref(), Some(HINT));
+        assert_eq!(d.keymap_hint().as_deref(), Some("j/k select"));
     }
 }

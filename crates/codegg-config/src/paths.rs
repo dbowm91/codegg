@@ -9,33 +9,89 @@ macro_rules! merge_option {
     };
 }
 
-pub fn resolve_config_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+/// Which configuration layer a path belongs to, in precedence order.
+///
+/// A later variant overrides an earlier one for every key it specifies. The
+/// order is the discovery order `architecture/config.md` documents, and it is
+/// defined once — here — because the provenance dump names the layer that won
+/// a key and a second ordering would attribute keys to the wrong file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ConfigLayerKind {
+    /// `CODEGG_TUI_CONFIG`, an explicit file override.
+    EnvOverride,
+    /// The machine-wide configuration file.
+    System,
+    /// The user-level configuration file.
+    Global,
+    /// The nearest project configuration file, found by walking upward.
+    Project,
+}
+
+impl ConfigLayerKind {
+    /// Every layer, in precedence order (lowest first).
+    pub const ALL: [ConfigLayerKind; 4] = [
+        ConfigLayerKind::EnvOverride,
+        ConfigLayerKind::System,
+        ConfigLayerKind::Global,
+        ConfigLayerKind::Project,
+    ];
+
+    /// The stable name used in provenance output and in the generated catalog.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConfigLayerKind::EnvOverride => "env-override",
+            ConfigLayerKind::System => "system",
+            ConfigLayerKind::Global => "global",
+            ConfigLayerKind::Project => "project",
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigLayerKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The discovered config files, each with the layer it belongs to.
+///
+/// This is the only place the discovery order exists: `resolve_config_paths`
+/// projects it, and the provenance engine reads it. Two independent orderings
+/// would disagree the first time one of them changed.
+pub fn resolve_config_layer_paths() -> Vec<(ConfigLayerKind, PathBuf)> {
+    let mut layers = Vec::new();
 
     if let Ok(path) = std::env::var("CODEGG_TUI_CONFIG") {
         let p = PathBuf::from(path);
         if p.exists() {
-            paths.push(p);
+            layers.push((ConfigLayerKind::EnvOverride, p));
         }
     }
 
     if let Some(system_config) = system_config_path() {
         if system_config.exists() {
-            paths.push(system_config);
+            layers.push((ConfigLayerKind::System, system_config));
         }
     }
 
     if let Some(global_config) = global_config_path() {
         if global_config.exists() {
-            paths.push(global_config);
+            layers.push((ConfigLayerKind::Global, global_config));
         }
     }
 
     if let Some(project_config) = find_project_config() {
-        paths.push(project_config);
+        layers.push((ConfigLayerKind::Project, project_config));
     }
 
-    paths
+    layers
+}
+
+pub fn resolve_config_paths() -> Vec<PathBuf> {
+    resolve_config_layer_paths()
+        .into_iter()
+        .map(|(_kind, path)| path)
+        .collect()
 }
 
 pub fn find_project_config() -> Option<PathBuf> {
@@ -89,15 +145,43 @@ pub fn system_config_path() -> Option<PathBuf> {
 }
 
 pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
+    load_config_document(path).map(|(config, _document)| config)
+}
+
+/// Load one config file, returning the parsed `Config` **and** the document it
+/// was parsed from.
+///
+/// The document is the layer's own JSON5 value, so a caller can ask which keys
+/// the file actually specified. The typed `Config` cannot answer that: it is
+/// `#[serde(default)]` with `Option` fields, so a section a file never mentions
+/// still deserializes to a fully-formed (mostly-`None`) value. Provenance needs
+/// the presence fact, and this is the same parse that produced the value — a
+/// second parser here would be a second source of truth.
+pub fn load_config_document(path: &Path) -> Result<(Config, serde_json::Value), ConfigError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| ConfigError::NotFound(format!("{}: {}", path.display(), e)))?;
     let interpolated = interpolate_env_vars(&content);
-    parse_config(&interpolated, path)
+    parse_config_document(&interpolated, path)
 }
 
 pub fn parse_config(content: &str, path: &Path) -> Result<Config, ConfigError> {
+    parse_config_document(content, path).map(|(config, _document)| config)
+}
+
+/// Parse one config document, returning the `Config` and the document value.
+pub fn parse_config_document(
+    content: &str,
+    path: &Path,
+) -> Result<(Config, serde_json::Value), ConfigError> {
     let cleaned = strip_jsonc_comments(content);
-    let value: serde_json::Value = json5::from_str(&cleaned)
+    let value = parse_document_value(&cleaned, path)?;
+    let config = parse_typed_config(&cleaned, path)?;
+    Ok((config, value))
+}
+
+/// The document-level parse: JSON5 plus the removed-key guard.
+fn parse_document_value(cleaned: &str, path: &Path) -> Result<serde_json::Value, ConfigError> {
+    let value: serde_json::Value = json5::from_str(cleaned)
         .map_err(|e| ConfigError::Parse(format!("{}: {}", path.display(), e)))?;
     if value.pointer("/search/fallback_to_builtin").is_some() {
         return Err(ConfigError::Parse(format!(
@@ -105,7 +189,13 @@ pub fn parse_config(content: &str, path: &Path) -> Result<Config, ConfigError> {
             path.display()
         )));
     }
-    json5::from_str(&cleaned).map_err(|e| ConfigError::Parse(format!("{}: {}", path.display(), e)))
+    Ok(value)
+}
+
+/// The typed parse, kept as its own step so the error precedence and message
+/// shape of `parse_config` are unchanged.
+fn parse_typed_config(cleaned: &str, path: &Path) -> Result<Config, ConfigError> {
+    json5::from_str(cleaned).map_err(|e| ConfigError::Parse(format!("{}: {}", path.display(), e)))
 }
 
 fn strip_jsonc_comments(input: &str) -> String {

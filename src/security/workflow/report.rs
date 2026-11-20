@@ -583,7 +583,6 @@ pub async fn run_security_review_workflow(
                 result.evidence.len()
             );
         }
-        // Append concise per-file hunk context summaries to notes.
         for summary in &result.summaries {
             notes.push(format!("hunkSourceContext:\n{summary}"));
         }
@@ -3449,17 +3448,8 @@ mod tests {
 
     #[tokio::test]
     async fn hunk_source_context_real_patches_used_for_policy_not_synthetic_headers() {
-        // Verify that when real_patches HashMap is provided, the REAL patch
-        // content is used for policy evaluation (max_patch_bytes check),
-        // NOT the synthetic hunk headers from ChangedHunk.
-        //
-        // Setup: src/large.rs has a ChangedHunk with tiny synthetic headers
-        // but a real_patches entry that is > 64KB (exceeds default cap).
-        // Result: src/large.rs should be SKIPPED (policy uses real patch size).
-        //
-        // Setup: src/small.rs has a ChangedHunk with small synthetic headers
-        // and is NOT in real_patches, so synthetic headers are used.
-        // Result: src/small.rs should be PROCESSED (synthetic headers pass policy).
+        // `src/large.rs` is skipped using its oversized real patch; `src/small.rs`
+        // is processed from synthetic headers because it has no real patch.
 
         let hunks = vec![
             make_test_hunk("src/large.rs", 10, 5),

@@ -116,9 +116,8 @@ fn interior_fgs(
     theme: &Arc<Theme>,
 ) -> Vec<ratatui::style::Color> {
     let area = ratatui::layout::Rect::new(0, 0, 40, 16);
-    let title = format!(" {} ", id.label());
     let mut buf = ratatui::buffer::Buffer::empty(area);
-    render_hosted(widget, &mut buf, area, theme, &title);
+    render_hosted(widget, &mut buf, area, theme, id.label(), false);
 
     let mut out: Vec<ratatui::style::Color> = Vec::new();
     for y in 1..area.height.saturating_sub(1) {
@@ -399,12 +398,21 @@ fn the_boxes_that_already_read_the_seam_theme_pass_this_check() {
 /// would silently destroy.
 #[test]
 fn the_theme_picker_shows_each_candidate_palette_rather_than_the_active_one() {
-    let mut picker = theme_dialog(&dark());
+    let chrome = dark();
+    let mut picker = theme_dialog(&chrome);
     let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 16));
     let area = ratatui::layout::Rect::new(0, 0, 40, 16);
-    render_hosted(&mut *picker, &mut buf, area, &dark(), " Themes ");
+    render_hosted(
+        &mut *picker,
+        &mut buf,
+        area,
+        &chrome,
+        SidePanelId::Themes.label(),
+        false,
+    );
 
     let mut painted: Vec<ratatui::style::Color> = Vec::new();
+    let chrome_fills = [chrome.background, chrome.selection];
     for y in 0..area.height {
         for x in 0..area.width {
             let Some(cell) = buf.cell((x, y)) else {
@@ -412,6 +420,11 @@ fn the_theme_picker_shows_each_candidate_palette_rather_than_the_active_one() {
             };
             if cell.symbol().trim().is_empty() {
                 continue;
+            }
+            if let Some(bg) = cell.style().bg {
+                if !chrome_fills.contains(&bg) && !painted.contains(&bg) {
+                    painted.push(bg);
+                }
             }
             if let Some(fg) = cell.style().fg {
                 if !painted.contains(&fg) {

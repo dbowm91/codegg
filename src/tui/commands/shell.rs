@@ -4,6 +4,9 @@ use super::super::task_lifecycle::TuiTaskKind;
 use crate::protocol::projection::dto::ShellRunProjection;
 use crate::tui as app;
 use crate::tui::app::send_tui;
+use crate::tui::app::App;
+use crate::tui::app::TuiCommand;
+use crate::tui::components::hint_line::HintLine;
 use crate::util::truncate::truncate_prefix;
 use std::collections::VecDeque;
 
@@ -1550,11 +1553,19 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
         app,
         id,
         lines,
-        "i include  |  a ask  |  r rerun  |  k kill  |  e expand  |  j/k scroll  |  Esc close",
+        HintLine::from_items(&[
+            ("i", "include"),
+            ("a", "ask"),
+            ("r", "rerun"),
+            ("k", "kill"),
+            ("e", "expand"),
+            ("j/k", "scroll"),
+            ("Esc", "close"),
+        ]),
     );
 }
 
-fn show_shell_detail(app: &mut app::App, id: u64, lines: Vec<String>, footer: &str) {
+fn show_shell_detail(app: &mut app::App, id: u64, lines: Vec<String>, footer: HintLine) {
     let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
     if let Some(dialog) = app
         .focus_manager
@@ -1563,14 +1574,14 @@ fn show_shell_detail(app: &mut app::App, id: u64, lines: Vec<String>, footer: &s
         dialog.set_info_type(info_type);
         dialog.set_content(lines);
         dialog.set_theme(&app.ui_state.theme);
-        dialog.set_custom_footer(footer.to_string());
+        dialog.set_custom_footer(footer.clone());
     } else {
         let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
             std::sync::Arc::clone(&app.ui_state.theme),
             info_type,
             lines,
         );
-        dialog.set_custom_footer(footer.to_string());
+        dialog.set_custom_footer(footer.clone());
         app.focus_manager.push(Box::new(dialog));
     }
     app.dialog_state.shell_detail_id = Some(id);
@@ -1678,7 +1689,12 @@ pub(crate) fn handle_shell_expand(
                 lines.push(format!("  {}", line));
             }
 
-            show_shell_detail(app, id, lines, "j/k scroll  |  / search  |  Esc close");
+            show_shell_detail(
+                app,
+                id,
+                lines,
+                HintLine::from_items(&[("j/k", "scroll"), ("/", "search"), ("Esc", "close")]),
+            );
         }
         None => {
             // In the legacy store, not the durable one: the bridge has not finalized it
@@ -1909,5 +1925,188 @@ mod shell_list_projection_tests {
             !text.contains("[promoted]"),
             "a run with no daemon binding is not claimed: {text}"
         );
+    }
+}
+
+pub(crate) fn dispatch_shell_include(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let args_str = argument;
+    let args: Vec<&str> = args_str.splitn(3, ' ').collect();
+    let id_str = args.first().copied().unwrap_or("");
+    let flag = args.get(1).copied().unwrap_or("all");
+    let extra = args.get(2).map(|s| s.to_string());
+    match app.resolve_shell_id(id_str) {
+        Some(id) => {
+            let mode = match flag {
+                "--tail" => {
+                    let n = extra
+                        .as_deref()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(200);
+                    format!("tail {}", n)
+                }
+                "--stdout" => "stdout".to_string(),
+                "--stderr" => "stderr".to_string(),
+                "--summary" => "summary".to_string(),
+                "stdout" => "stdout".to_string(),
+                "stderr" => "stderr".to_string(),
+                "summary" => "summary".to_string(),
+                "all" => "all".to_string(),
+                _ => "all".to_string(),
+            };
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::ShellInclude {
+                        id,
+                        mode,
+                        question: None,
+                    },
+                );
+            }
+        }
+        None => {
+            app.messages_state.toasts.warning(
+                "Usage: /shell-include <id|last> [--tail N|--stdout|--stderr|--summary|all]",
+            );
+        }
+    }
+}
+
+pub(crate) fn dispatch_shell_rerun(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let id_str = argument;
+    match app.resolve_shell_id(id_str) {
+        Some(id) => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::ShellRerun { id });
+            }
+        }
+        None => {
+            app.messages_state
+                .toasts
+                .warning("Usage: /shell-rerun <id|last>");
+        }
+    }
+}
+
+pub(crate) fn dispatch_shell_kill(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let id_str = argument;
+    match app.resolve_shell_id(id_str) {
+        Some(id) => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::ShellKill { id });
+            }
+        }
+        None => {
+            app.messages_state
+                .toasts
+                .warning("Usage: /shell-kill <id|last>");
+        }
+    }
+}
+
+pub(crate) fn dispatch_shell_list(app: &mut App) {
+    app.ui_state.command_mode = false;
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::ShellList);
+    } else {
+        let recent = app.shell_store.list_recent(10);
+        if recent.is_empty() {
+            app.messages_state
+                .toasts
+                .info("No shell commands in history");
+        } else {
+            let lines: Vec<String> = recent
+                .iter()
+                .map(|e| {
+                    format!(
+                        "[{}] ${} ({})",
+                        e.id.0,
+                        e.command,
+                        match e.status {
+                            crate::shell::types::ShellStatus::Running => "running",
+                            crate::shell::types::ShellStatus::Exited => "done",
+                            crate::shell::types::ShellStatus::TimedOut => "timeout",
+                            crate::shell::types::ShellStatus::FailedToStart => "failed",
+                            crate::shell::types::ShellStatus::Killed => "killed",
+                        }
+                    )
+                })
+                .collect();
+            app.messages_state.toasts.info(&lines.join("\n"));
+        }
+    }
+}
+
+pub(crate) fn dispatch_shell_show(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let id_str = argument;
+    match app.resolve_shell_id(id_str) {
+        Some(id) => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(tx, TuiCommand::ShellShow { id });
+            }
+        }
+        None => {
+            app.messages_state
+                .toasts
+                .warning("Usage: /shell-show <id|last>");
+        }
+    }
+}
+
+pub(crate) fn dispatch_shell_expand(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let args_str = argument;
+    let args: Vec<&str> = args_str.splitn(3, ' ').collect();
+    let id_str = args.first().copied().unwrap_or("");
+    let stream_str = args.get(1).copied().unwrap_or("stdout");
+    let range_str = args.get(2).map(|s| s.to_string());
+    match app.resolve_shell_id(id_str) {
+        Some(id) => {
+            if let Some(ref tx) = app.tui_cmd_tx {
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::ShellExpand {
+                        id,
+                        stream: stream_str.to_string(),
+                        range: range_str,
+                    },
+                );
+            }
+        }
+        None => {
+            app.messages_state
+                .toasts
+                .warning("Usage: /shell-expand <id|last> stdout|stderr [start..end]");
+        }
+    }
+}
+
+pub(crate) fn dispatch_shell_ask(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let args_str = argument;
+    let parts: Vec<&str> = args_str.splitn(2, ' ').collect();
+    let id_str = parts.first().copied().unwrap_or("");
+    let question = parts.get(1).copied().unwrap_or("").to_string();
+    if question.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /shell-ask <id|last> <question>");
+    } else {
+        match app.resolve_shell_id(id_str) {
+            Some(id) => {
+                if let Some(ref tx) = app.tui_cmd_tx {
+                    let _ = send_tui(tx, TuiCommand::ShellAsk { id, question });
+                }
+            }
+            None => {
+                app.messages_state
+                    .toasts
+                    .warning("Usage: /shell-ask <id|last> <question>");
+            }
+        }
     }
 }

@@ -58,7 +58,7 @@ use crate::error::StorageError;
 ///
 /// M007-I adds **v94**, the daemon's durable skill-promotion record, keyed on
 /// the canonical `WorkspaceId`.
-pub const STORAGE_LAYOUT_VERSION: u32 = 94;
+pub const STORAGE_LAYOUT_VERSION: u32 = 95;
 
 pub struct Database {
     pool: SqlitePool,

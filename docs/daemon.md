@@ -6,9 +6,8 @@ changes when you run without it.
 
 ## What the daemon is
 
-The daemon is the core runtime: the part of CodeGG that owns session state,
-job execution, and the event stream. Frontends — the TUI, the HTTP server —
-are clients of it.
+The daemon is the core runtime that owns session state, job execution, and the
+event stream. Frontends such as the TUI and HTTP server are its clients.
 
 Ordinary CodeGG clients share exactly **one default daemon per OS user**,
 enforced by an advisory lock (`daemon.lock`) that the daemon holds for its
@@ -39,7 +38,7 @@ Inside a single per-user root directory:
 
 | File | Purpose |
 |---|---|
-| `daemon.lock` | The singleton lock. Authoritative — this is what "is a daemon running" really means. |
+| `daemon.lock` | The authoritative OS lock that indicates whether a daemon is running. |
 | `daemon.json` | Identity record: daemon id, generation, PID, endpoint, protocol version, start time, binary version. Read by `daemon status` and by `daemon stop`, which verifies the live daemon's id against it before signalling. |
 | `core.sock` | The local socket endpoint (a named pipe on Windows). |
 | `daemon.log` | Startup and runtime diagnostics. |
@@ -67,13 +66,13 @@ it to become ready.
 
 The daemon it starts is detached from your terminal. Quitting the TUI does
 not stop it, and the next `codegg` reconnects to the same instance. This is
-the intended behavior, not a leak — use `codegg daemon stop` when you want it
+the intended behavior, not a leak. Use `codegg daemon stop` when you want it
 gone.
 
 Readiness is a live identity probe, not just an open socket, so a stale or
 incompatible socket is never mistaken for a working daemon.
 
-## `daemon start` blocks — keep this in mind
+## `daemon start` runs in the foreground
 
 ```bash
 codegg daemon start
@@ -88,9 +87,9 @@ codegg daemon start &     # your shell, backgrounded
 nohup codegg daemon start >/dev/null 2>&1 &   # detached from your shell
 ```
 
-In practice you rarely need this command at all — connect-or-start covers the
-common case — but it is the way to run a daemon deliberately in its own
-terminal when debugging.
+You rarely need to run this command manually because connect-or-start covers
+the common case. Use it when you need to run the daemon in its own terminal
+for debugging.
 
 ### Starting a second one
 
@@ -118,7 +117,7 @@ lock steps in `docs/TROUBLESHOOTING.md`.
 | `codegg daemon start` | Starts the daemon **in the foreground** (see above). `--endpoint` picks the socket; `--force-take-lock` is accepted but cannot override a held lock. |
 | `codegg daemon stop` | Graceful shutdown. Verifies the live daemon's identity first, then signals it. Unix only. |
 | `codegg daemon status` | Reports whether a daemon is reachable, plus its id, generation, PID, start time, protocol version, binary version, endpoint, uptime, active sessions, connected clients, and a one-line scratch usage summary. |
-| `codegg daemon scratch-usage` | Measures the daemon's disposable scratch cache: tree count, total size, age, and the reclaim path's verdict for each tree. A tree the walk did not finish reading carries **no** verdict — it is reported as `unknown`, never as reclaimable. `--json` emits the raw report; `--refresh` runs a fresh measurement instead of the daemon's last snapshot. |
+| `codegg daemon scratch-usage` | Measures the disposable scratch cache and reports each tree's reclaim status. Incomplete reads are `unknown`, never reclaimable. Use `--json` for machine-readable output or `--refresh` for a fresh measurement. |
 | `codegg daemon scratch-reclaim` | Disposes of one scratch tree, named by its opaque digest. A dry run is the default: the command reports what it would remove and removes nothing. `--apply` actually removes it. |
 | `codegg daemon logs` | Shows the tail of `daemon.log`. `--lines` defaults to `50`; `--file` reads a specific file. |
 | `codegg daemon attach` | Opens the TUI against a running daemon over the local socket. `--endpoint`, `--session`, `--new`. |
@@ -132,21 +131,21 @@ codegg daemon stop
 
 `daemon scratch-usage` is a **measurement**, not a lifecycle event. It reads
 the daemon's own disposable scratch cache and reports counts, sizes, ages, and
-the opaque digest that names each tree — never a path, a file name, file
-content, or a session identity. The daemon answers from its last snapshot;
+an opaque digest for each tree. It does not expose paths, file names, file
+contents, or session identities. The daemon answers from its last snapshot;
 `--refresh` asks for exactly one fresh bounded walk. The command is served on
 the local daemon socket only.
 
 Each tree carries the reclaim path's own verdict, and the verdict has three
 states: **yes**, **no**, and **unknown**. A tree whose walk hit a budget
-before the tree was fully read has no verdict at all — the entries it did not
-reach could be ones the reclaim path would refuse, so the report says
-`unknown` rather than claiming the tree is reclaimable. A tree that vanished
+before the tree is fully read has no verdict. Unread entries could make the
+reclaim path refuse, so the report says `unknown` rather than claiming the tree
+is reclaimable. A tree that vanished
 while it was being read is `unknown` for the same reason.
 
-`daemon scratch-reclaim` is the operator disposition for a tree the automatic
-reclaim path can never accept — a tree holding a planted symlink, say. It is
-named by the same opaque digest `scratch-usage` reports. The command is a dry
+`daemon scratch-reclaim` lets an operator inspect and dispose of a tree the
+automatic reclaim path refuses, for example because it contains a symlink. The
+command takes the same opaque digest reported by `scratch-usage`. The command is a dry
 run by default: it reports the tree's entry count, size, and the automatic
 path's verdict, and removes nothing until `--apply` is passed. The lease is
 honoured exactly as the sweep honours it, so a tree whose session still has an
@@ -159,10 +158,9 @@ reclaims a session's tree once that session has been idle past
 `scratch.retention_days` (14 days by default), a soft-deleted session's tree
 once its lease is clear, and a tree that no durable session owns once it has
 been untouched past `scratch.orphan_grace_hours` (24 hours by default). The
-sweep never runs on the agent hot path and never blocks a tool call. The whole
-policy — including `scratch.enabled`, which turns the sweep off entirely — is
-in the `scratch` configuration section; see `architecture/config.md` for the
-defaults and the floors. The daemon reads that section once, at startup, so a
+sweep never runs on the agent hot path and never blocks a tool call. The `scratch` configuration section controls the policy, including
+`scratch.enabled`, which turns the sweep off. See `architecture/config.md` for
+defaults and minimums. The daemon reads that section once, at startup, so a
 policy change needs a daemon restart.
 
 `daemon stop` is a bounded, verified operation: it will not signal a PID it
@@ -261,13 +259,11 @@ codegg daemon logs --lines 200
 
 ## See also
 
-- `architecture/core.md` — transport modes, the singleton lifecycle, and the
-  connect-or-start contract.
-- `architecture/scheduler.md` — the machine-wide admission guarantee and what
-  standalone mode steps outside of it.
-- `architecture/client.md` — the native client and frontend/daemon boundary.
-- `docs/install.md` — installing CodeGG and its managed runfiles.
-- `docs/TROUBLESHOOTING.md` — symptom-driven daemon diagnosis.
+- `architecture/core.md`: transport modes, singleton lifecycle, and connect-or-start.
+- `architecture/scheduler.md`: machine-wide admission and standalone-mode limits.
+- `architecture/client.md`: the native client and frontend/daemon boundary.
+- `docs/install.md`: installing CodeGG and its managed runfiles.
+- `docs/TROUBLESHOOTING.md`: symptom-driven daemon diagnosis.
 
 ## Source verification
 

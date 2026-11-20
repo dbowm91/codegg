@@ -418,6 +418,94 @@ pub fn is_active(app: &App) -> bool {
     app.change_review_state.is_open() && app.change_review_state.focused
 }
 
+pub(crate) fn dispatch_review(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let id = argument.to_string();
+    // M007-H (D4): the daemon owns the preview store, so the
+    // candidate is read from it. The TUI's own `LspTool` copy is
+    // never installed, so the old arm could not work.
+    crate::tui::commands::change_review::open_via_daemon(app, &id);
+}
+
+pub(crate) fn dispatch_lsp_preview_apply(app: &mut App, argument: &str) {
+    app.ui_state.command_mode = false;
+    let id = argument;
+    if id.is_empty() {
+        app.messages_state
+            .toasts
+            .info("Usage: /lsp-preview-apply <id>");
+    } else if let Some(ref lsp_tool) = app.lsp_tool {
+        let (is_stale, refresh_detail) = lsp_tool
+            .refresh_preview_staleness(id)
+            .unwrap_or((true, "preview not found".to_string()));
+        if is_stale {
+            app.messages_state.toasts.info(&format!(
+                "Preview is STALE — base content has changed since creation.\n\
+                 Refresh/recompute the preview before applying.\n\n\
+                 Detail: {refresh_detail}"
+            ));
+        } else {
+            // M006-E: the request is built by the one shared
+            // helper the review surface also calls, so the two
+            // paths cannot drift into two apply semantics.
+            let core_request = match crate::tui::commands::change_review::build_apply_request(
+                app,
+                crate::tui::commands::change_review::ApplySource::Registry(id),
+            ) {
+                Ok(request) => request,
+                Err(refusal) => {
+                    app.messages_state.toasts.info(refusal.message());
+                    return;
+                }
+            };
+            let Some(core_client) = app.core_client.clone() else {
+                app.messages_state
+                    .toasts
+                    .info("LSP preview apply requires the daemon core client");
+                return;
+            };
+            // M006-E: the shared builder already resolved the
+            // session; capture it for the completion so the
+            // existing handler keeps its session id.
+            let session_id = app.active_session_id().unwrap_or_default().to_string();
+            app.messages_state
+                .toasts
+                .info("Applying LSP preview through the checked edit service…");
+            crate::tui::async_cmd::spawn_registered_tui_task(
+                app.tui_cmd_tx.clone(),
+                &mut app.task_registry,
+                crate::tui::task_lifecycle::TuiTaskKind::Command,
+                "lsp_preview_apply",
+                async move {
+                    let response = core_client
+                        .request(crate::core::new_request(
+                            uuid::Uuid::new_v4().to_string(),
+                            core_request,
+                        ))
+                        .await;
+                    let (result, error) = match response {
+                        Ok(crate::protocol::core::CoreResponse::LspPreviewApplyResult {
+                            result,
+                        }) => (Some(result), None),
+                        Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                            (None, Some(message))
+                        }
+                        Ok(other) => (None, Some(format!("unexpected core response: {other:?}"))),
+                        Err(error) => (None, Some(error.to_string())),
+                    };
+                    Some(crate::tui::app::TuiCommand::LspPreviewApplyFinished {
+                        session_id,
+                        result,
+                        error,
+                    })
+                },
+            );
+        }
+    } else {
+        app.messages_state.toasts.info("LSP not available");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

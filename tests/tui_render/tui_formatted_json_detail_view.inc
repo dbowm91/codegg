@@ -128,7 +128,7 @@ fn row_containing(buf: &Buffer, area: Rect, needle: &str) -> Option<u16> {
 fn an_expanded_tool_call_shows_the_formatted_payload_and_not_the_banner() {
     let mut app = app_with_parts(vec![framed_websearch_part()]);
     let buffer = render(&mut app);
-    let viewport = app.viewport_area.expect("viewport area recorded");
+    let viewport = app.frame_plan.viewport;
     let text = buffer_text(&buffer, viewport);
 
     assert!(
@@ -150,7 +150,7 @@ fn the_drawn_rows_are_the_rows_the_row_count_reports() {
     let mut app = app_with_parts(vec![framed_websearch_part()]);
     let buffer = render(&mut app);
     let total = app.messages_state.messages.total_lines();
-    let viewport = app.viewport_area.expect("viewport area recorded");
+    let viewport = app.frame_plan.viewport;
 
     // The outline's last leaf is on the last row of the transcript.
     let last_row = row_containing(&buffer, viewport, LAST_LEAF)

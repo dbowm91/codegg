@@ -1,13 +1,15 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use serde::{Deserialize, Deserializer};
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -60,6 +62,11 @@ pub struct QuestionDialog {
     pub current_input: String,
     pub cursor_pos: usize,
 }
+
+/// The content rows of the title and hint boxes, and the body's floor.
+const TITLE_ROWS: u16 = 1;
+const HINT_ROWS: u16 = 1;
+const MIN_BODY_ROWS: u16 = 3;
 
 impl QuestionDialog {
     fn prev_char_boundary(s: &str, idx: usize) -> usize {
@@ -215,26 +222,19 @@ impl QuestionDialog {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(3),
-        ])
-        .split(area);
+    /// The rows the body shows before wrapping: one per question, plus the
+    /// selected question's answer line and its options.
+    fn body_rows(&self) -> u16 {
+        let selected_extra = self
+            .questions
+            .get(self.selected_question)
+            .map(|q| 1 + q.options.as_ref().map_or(0, Vec::len))
+            .unwrap_or(0);
+        u16::try_from(self.questions.len() + selected_extra).unwrap_or(u16::MAX)
+    }
 
-        let title = Paragraph::new(Line::from(Span::styled(
-            "Agent has questions",
-            Style::default().fg(theme.warning),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Question ")
-                .border_style(Style::default().fg(theme.warning)),
-        );
-        frame.render_widget(title, chunks[0]);
-
+    /// The question rows, in the one spelling the box and its height share.
+    fn body_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         for (i, q) in self.questions.iter().enumerate() {
             let prefix = if i == self.selected_question {
@@ -242,8 +242,12 @@ impl QuestionDialog {
             } else {
                 "  "
             };
+            // `selection_text` is the token derived to read on `selection`
+            // (`primary` is an accent and fails that fill on 14 themes).
             let style = if i == self.selected_question {
-                Style::default().fg(theme.primary).bg(theme.selection)
+                Style::default()
+                    .fg(theme.selection_text)
+                    .bg(theme.selection)
             } else {
                 Style::default().fg(theme.foreground)
             };
@@ -273,29 +277,65 @@ impl QuestionDialog {
                 }
             }
         }
+        lines
+    }
 
-        let questions_para = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Questions (↑↓ navigate  |  type answer  |  ←→ cursor  |  Enter submit) ")
-                .border_style(Style::default().fg(theme.border)),
-        );
-        frame.render_widget(questions_para, chunks[1]);
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let chunks = Layout::vertical([
+            Constraint::Length(Section::owned_height(TITLE_ROWS)),
+            Constraint::Min(Section::owned_height(MIN_BODY_ROWS)),
+            Constraint::Length(Section::owned_height(HINT_ROWS)),
+        ])
+        .split(area);
 
-        let hint = Paragraph::new(Line::from(Span::styled(
-            format!(
-                "Question {}/{}  |  Backspace/Del edit  |  Enter submit  |  Esc close",
-                self.selected_question + 1,
-                self.questions.len()
-            ),
-            Style::default().fg(theme.muted),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
+        let title_inner = Section::new("Question", theme)
+            .focused(true)
+            .draw(chunks[0], frame.buffer_mut());
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Agent has questions",
+                Style::default().fg(theme.warning),
+            ))),
+            title_inner,
         );
-        frame.render_widget(hint, chunks[2]);
+
+        let lines = self.body_lines(theme);
+
+        let questions_inner = Section::plain(theme)
+            .hint(
+                &HintLine::from_items(&[
+                    ("↑↓", "navigate"),
+                    ("type", "answer"),
+                    ("←→", "cursor"),
+                    ("Enter", "submit"),
+                ])
+                .render(0),
+            )
+            .draw(chunks[1], frame.buffer_mut());
+        frame.render_widget(Paragraph::new(lines), questions_inner);
+
+        let hint_inner = Section::plain(theme).draw(chunks[2], frame.buffer_mut());
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                {
+                    let mut hint = HintLine::new();
+                    hint.push_required("Esc", "close")
+                        .push("Backspace/Del", "edit")
+                        .push("Enter", "submit")
+                        .push(
+                            &format!(
+                                "Question {}/{}",
+                                self.selected_question + 1,
+                                self.questions.len()
+                            ),
+                            "",
+                        );
+                    hint.render(0)
+                },
+                Style::default().fg(theme.muted),
+            ))),
+            hint_inner,
+        );
     }
 }
 
@@ -351,87 +391,15 @@ impl Component for QuestionDialog {
         }
     }
 
+    fn preferred_area(&self, available: Rect) -> Rect {
+        let rows = Section::owned_height(TITLE_ROWS)
+            + Section::owned_height(self.body_rows().max(MIN_BODY_ROWS))
+            + Section::owned_height(HINT_ROWS);
+        crate::tui::components::dialog_size::preferred_rows(available, rows)
+    }
+
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(3),
-        ])
-        .split(area);
-
-        let title = Paragraph::new(Line::from(Span::styled(
-            "Agent has questions",
-            Style::default().fg(theme.warning),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Question ")
-                .border_style(Style::default().fg(theme.warning)),
-        );
-        frame.render_widget(title, chunks[0]);
-
-        let mut lines = Vec::new();
-        for (i, q) in self.questions.iter().enumerate() {
-            let prefix = if i == self.selected_question {
-                "> "
-            } else {
-                "  "
-            };
-            let style = if i == self.selected_question {
-                Style::default().fg(theme.primary).bg(theme.selection)
-            } else {
-                Style::default().fg(theme.foreground)
-            };
-            lines.push(Line::from(Span::styled(
-                format!("{prefix}{}", q.question),
-                style,
-            )));
-            if i == self.selected_question {
-                let answer_style = Style::default().fg(theme.muted);
-                let answer_text = if self.answers[i].is_empty() {
-                    "(type answer...)".to_string()
-                } else {
-                    self.answers[i].clone()
-                };
-                lines.push(Line::from(Span::styled(
-                    format!("    Answer: {answer_text}"),
-                    answer_style,
-                )));
-                if let Some(ref opts) = q.options {
-                    for (j, opt) in opts.iter().enumerate() {
-                        let opt_prefix = if self.answers[i] == *opt { "* " } else { "  " };
-                        lines.push(Line::from(Span::styled(
-                            format!("      {opt_prefix}[{j}] {opt}"),
-                            Style::default().fg(theme.muted),
-                        )));
-                    }
-                }
-            }
-        }
-
-        let questions_para = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Questions (↑↓ navigate  |  type answer  |  ←→ cursor  |  Enter submit) ")
-                .border_style(Style::default().fg(theme.border)),
-        );
-        frame.render_widget(questions_para, chunks[1]);
-
-        let hint = Paragraph::new(Line::from(Span::styled(
-            format!(
-                "Question {}/{}  |  Backspace/Del edit  |  Enter submit  |  Esc close",
-                self.selected_question + 1,
-                self.questions.len()
-            ),
-            Style::default().fg(theme.muted),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
-        );
-        frame.render_widget(hint, chunks[2]);
+        QuestionDialog::render(self, frame, area, theme);
     }
 
     fn dialog_type(&self) -> DialogType {

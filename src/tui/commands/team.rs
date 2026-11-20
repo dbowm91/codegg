@@ -24,6 +24,7 @@ use crate::tui::app::state::{OneTimeBearer, OneTimeDeviceToken};
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::commands::close_command_mode;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 fn unauthorized_of(code: &str) -> bool {
@@ -1654,6 +1655,17 @@ fn start_channel_mode(
             ))
         },
     );
+}
+
+pub(crate) fn dispatch_team(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    // M003: durable project-team administration. Bare `/team`
+    // shows the bounded member list plus the M002 chat-policy
+    // summary for the active project; subcommands mutate
+    // membership, principals/tokens (LocalOwner), and chat
+    // overrides. `/collaborators` stays the presence view.
+    let args = argument;
+    crate::tui::commands::team::dispatch_team_command(app, args);
 }
 
 #[cfg(test)]

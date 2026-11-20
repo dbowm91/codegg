@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "campaign_id": "s016-deepseek-long-run-corrective-loop-20261031",
+  "run_index": 14,
+  "run_kind": "diagnostic",
+  "run_status": "request_cap_exhausted_before_job_observation",
+  "route": "opencode_go/deepseek-v4.1-flash",
+  "controller_commit": "f31c3a58b",
+  "source_binary_commit": "94fc8d41ff61e5963adf5779475fd9ee08569493",
+  "binary_architecture": "arm64",
+  "binary_sha256": "16481cc8bf0d8866db352c3aab90c35950bde37e5799be1458a43012d594fe2a",
+  "sandbox_helper_sha256": "37ee6c8cd876d1e05bbd650c7a26520753fe55534ac821a52d9089712d751d43",
+  "fixture_manifest": "dev/harness_lab/fixtures/agent_autonomy_s016_natural_overlap_diagnostic_v4/cases.jsonl",
+  "fixture_manifest_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d98f166f15e4358",
+  "qualification_fixture_sha256": "c703c1cb256f268500029cf0ca35faf9a8f246485afb2e3e5d3f187c2f6f4fc178",
+  "hidden_verifier_sha256": "13617671ceedfe1b4cff89c9a96ad5380fd94ca4799f861f95a404f84090d33c",
+  "started_at_utc": "2026-10-31T22:47:47Z",
+  "terminal_observed_at_utc": "2026-10-31T22:50:00Z",
+  "elapsed_seconds": 96.709,
+  "case_duration_ms": 92471,
+  "active_work_span_ms": 88657,
+  "provider_requests": 20,
+  "request_cap": 20,
+  "request_cap_exhausted": true,
+  "usd_cost": 0.007825,
+  "provider_stream_lifecycle": {
+    "transport_requests_started": 20,
+    "response_headers_received": 20,
+    "body_eof": 20,
+    "decoded_event_idle_timeouts": 0,
+    "raw_sse_retained": false
+  },
+  "task": {
+    "agent_terminal": "failed",
+    "task_outcome": "inconclusive",
+    "horizon_outcome": "not_qualified",
+    "horizon_reason": "measurement_incomplete",
+    "repair_cycles": 0,
+    "continuation_confirmed": false,
+    "exact_job_running_and_terminal": false,
+    "productive_work_during_job": false,
+    "tool_counts": {
+      "bash": 10,
+      "read": 6,
+      "edit": 2,
+      "test": 2,
+      "job": 0,
+      "write": 0
+    },
+    "submitted_job_ids": [
+      "0e7291bd-617e-4a5a-89c6-46d324766114",
+      "4fd8cb96-ade1-4e5e-8c56-a9152e0c54da"
+    ],
+    "job_ids_polled": [],
+    "continuation_written": false,
+    "terminal_failure": {
+      "category": "provider_api",
+      "kind": "HarnessTurnFailure",
+      "usage_reason": null
+    }
+  },
+  "event_observation": {
+    "tool_started_count": 20,
+    "tool_terminal_count": 20,
+    "event_gaps": 0,
+    "unpaired_tool_events": 0,
+    "dropped_causal_events": 0
+  },
+  "verification": {
+    "hidden_verifier_ran": true,
+    "exit_code": 1,
+    "tests_run": 0,
+    "reason": "harness automatically invoked unchanged verifier after agent failure; no H007 tests executed"
+  },
+  "disk": {
+    "floor_bytes": 10737418240,
+    "floor_triggered": false,
+    "free_bytes_at_start": 35342077952,
+    "minimum_free_bytes": 34088689664,
+    "free_bytes_at_end": 34240253952
+  },
+  "interpretation": "The diagnostic agent spent 18 requests on inspection and two edits, then submitted two test jobs despite the one-job instruction. It made no continuation write or exact-ID status poll before consuming the 20-request ceiling. Both submissions returned exact IDs, but neither running nor terminal state was observed. All 20 provider bodies reached EOF, all 20 ACP tool calls paired, no idle timeout/event gap occurred, and disk remained above 33 GiB. The unchanged harness verifier was automatically invoked after the agent turn and reported zero tests run; its contents were not inspected. This is consistent with instruction-following/request-budget behavior; it does not reproduce an execution or projection defect. Run 15 simplifies the diagnostic further by requiring the first tool call to be one exact test submission, followed immediately by continuation and the already-specified overlap sequence.",
+  "private_artifacts": {
+    "receipt_path": "/private/tmp/s016-attempt14.json",
+    "receipt_sha256": "7d714e7e3f8b163b9026c9b453e0cb6f52fda3efaafec11a3e8c0e2df5e6aa80",
+    "diagnostic_log_path": "/private/tmp/s016-live14/case00/case/codegg_debug.log",
+    "diagnostic_log_sha256": "70ce2d57912337ab6af572ffb6fafc953625cd9e62373dfb3979a46189cd3c27",
+    "provider_admission_receipt_path": "/private/tmp/s016-live14/case00/artifacts/provider-request-admissions.jsonl",
+    "provider_admission_receipt_sha256": "4ee091ee4e2fb3225e87fd5eece279f1db3899ed2d5bdd683c5c75bc79601274",
+    "causal_trace_path": "/private/tmp/s016-live14/case00/private/causal-trace.jsonl",
+    "causal_trace_sha256": "fe8c244142e8fb76ee4ec68c209f502648e72708e7acb65cf5fd98ed2519b5c1",
+    "fixture_metadata_sha256": "08b51eaf8c61373ddf492a5594e84991cac9b1e2dabb03388662286e454f24bd"
+  }
+}

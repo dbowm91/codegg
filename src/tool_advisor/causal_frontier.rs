@@ -5866,10 +5866,7 @@ mod tests {
         task_properties.remove("scratch_alias");
         task_properties.remove("scratch_id");
         task_properties.remove("shared_scratch");
-        // M005 C006 added the shared-checkout placement parameter after the
-        // M003 receipt was frozen. It is a post-M003 change like the rest, so
-        // it is removed here: the receipt stays immutable and the live schema
-        // keeps the opt-in placement.
+        // Remove the post-M003 shared-checkout fields from this frozen schema.
         assert!(
             task_properties.remove("placement").is_some(),
             "expected post-M003 task input field placement"
@@ -5881,10 +5878,7 @@ mod tests {
         let task_action = task_properties
             .get_mut("action")
             .expect("task action schema");
-        // C004 added the `continue` action after the M003 receipt was frozen.
-        // It is a post-M003 change like the rest, so it is removed here: the
-        // receipt stays immutable and the live schema keeps the continuation
-        // action.
+        // Remove the post-M003 `continue` action from this frozen enum.
         let task_action_enum = task_action["enum"]
             .as_array_mut()
             .expect("task action enum array");
@@ -5921,10 +5915,7 @@ mod tests {
             ]),
             "unexpected post-M003 task action schema"
         );
-        // C004 also extended the action description with the `continue`
-        // sentence. It is a post-M003 edit like the rest, so it is removed
-        // here: the receipt stays immutable and the live schema keeps the
-        // continuation wording.
+        // Remove the post-M003 continuation wording from this frozen description.
         const CONTINUE_SENTENCE: &str =
             "; continue starts one new attempt of a failed durable child through run_id";
         let live_action_description = task_action["description"]
@@ -6500,7 +6491,7 @@ mod tests {
                 .expect("test.command remains declared");
             assert_eq!(
                 entry.get("description").and_then(|d| d.as_str()),
-                Some("Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."),
+                Some("Custom supervised test or quality command (required when scope is custom, ignored otherwise). Must pass command safety checks. Allowed prefixes include cargo test, cargo clippy, cargo nextest, pytest, go test, and make check. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."),
                 "unexpected post-M003 test.command description"
             );
             entry.insert(

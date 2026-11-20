@@ -797,6 +797,11 @@ pub fn hand_off_to_editor(app: &mut App) {
     super::editor::enter_editor_normal(app);
 }
 
+pub(crate) fn dispatch_tree(app: &mut App) {
+    app.ui_state.command_mode = false;
+    app.open_tree_dialog();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1260,7 +1265,8 @@ mod tests {
             root.path().to_path_buf(),
             listing
         ));
-        app.file_tree_state.expanded.insert("src".to_string());
+        // The verb, so the authority's row cache moves with the expansion.
+        app.file_tree_state.expand_and_select("src");
 
         ascend(&mut app);
         assert!(

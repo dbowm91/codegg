@@ -11,13 +11,14 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 /// Render snapshot for the secret dialog. Carries display strings only;
@@ -101,12 +102,8 @@ impl Component for TriggerSecretDialog {
         if area.height < 10 || area.width < 40 {
             return;
         }
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.warning))
-            .title(" External trigger created — copy once ");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let section = Section::new("External trigger created — copy once", theme).focused(true);
+        let inner = section.draw(area, frame.buffer_mut());
         if inner.height == 0 || inner.width < 10 {
             return;
         }

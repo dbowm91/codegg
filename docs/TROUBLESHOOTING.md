@@ -19,12 +19,12 @@ The ordinary `codegg` frontend is not the daemon's lifetime owner. If it autosta
 
 ### Stale socket after crash
 
-**Symptoms:** Daemon refuses to start; lock file exists but socket is unreachable.
+**Symptoms:** Daemon refuses to start; the socket is unreachable.
 
 **Solutions:**
-1. A new daemon start automatically removes stale sockets when the lock is free — try starting again.
-2. If the lock is still held by a dead process, check `codegg daemon status` for the PID and verify the process is alive (`ps -p <pid>`).
-3. Manually remove the lock file only if you are sure no daemon is running: `rm ~/Library/Application Support/codegg/daemon.lock` (macOS) or `rm ${XDG_RUNTIME_DIR:-/tmp}/codegg/daemon.lock` (Linux).
+1. Try `codegg daemon start` again. A stale socket is removed when no process holds the daemon lock.
+2. Run `codegg daemon status` and `codegg daemon logs` to diagnose the active process.
+3. Do not delete `daemon.lock` manually. It is an OS lock held by the daemon process and is released when that process exits.
 
 ### Daemon not reachable
 
@@ -70,10 +70,10 @@ is recorded.
 **Symptoms:** Input is sent but no response, spinner keeps spinning.
 
 **Solutions:**
-1. Check API key is valid: `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`
-2. Check network connectivity
-3. Press `Ctrl+C` to interrupt and try again
-4. Try `/model` to switch to a different model
+1. Check the selected provider's credential with `codegg auth status` and `codegg providers`.
+2. Check network connectivity to the provider.
+3. Press `Ctrl+C` to interrupt, then try again.
+4. Use `/model` to switch models.
 
 ### Context window full
 
@@ -100,16 +100,16 @@ is recorded.
 **Symptoms:** Tool call hangs, no permission prompt.
 
 **Solutions:**
-1. Run `/doctor` to confirm the daemon is reachable — the permission request is registered with the daemon, so the prompt cannot appear if the client cannot reach it
+1. Run `/doctor` to confirm the daemon is reachable. Permission requests are registered with the daemon, so the prompt cannot appear if the client cannot reach it.
 2. Try pressing `Esc` to cancel, then retry
-3. Check the permissions store is writable — `<config dir>/codegg/permissions.json` (`~/Library/Application Support/codegg/permissions.json` on macOS, `~/.config/codegg/permissions.json` on Linux)
+3. Check that `<config dir>/codegg/permissions.json` is writable (`~/Library/Application Support/codegg/permissions.json` on macOS, `~/.config/codegg/permissions.json` on Linux).
 4. Restart the application
 
 ### Approval accepted but the tool never runs
 
 **Symptoms:** You answer the approval prompt, the dialog closes, and the turn
 then sits there indefinitely. In earlier builds the reply could be dropped by
-the daemon and the human wait — unbounded by default — never woke up.
+the daemon and the human wait, which was unbounded by default, never woke up.
 
 **What to look for:** a red toast reading `Approval was not delivered
 (<code>): <detail>`. That means the reply reached the daemon but was refused;
@@ -117,7 +117,7 @@ the code tells you why (`invalid_permission_id` = the request was no longer
 pending, usually because it already expired or was answered elsewhere).
 
 **Solutions:**
-1. Re-run the turn — a stale approval is not reusable
+1. Re-run the turn. A stale approval is not reusable.
 2. If the daemon was restarted mid-turn, pending approvals do not survive it
 3. Run `/doctor` to confirm the daemon is reachable
 
@@ -143,8 +143,8 @@ second `y`, so no single keypress creates a persistent permission.
 
 **Solutions:**
 1. Check HMAC key is consistent: `CODEGG_PERM_KEY` env var
-2. Clear permissions: delete the `permissions.json` file from the config directory above
-3. Check path rules in config - ensure paths are correctly specified
+2. To reset saved grants, stop CodeGG, back up `permissions.json`, then remove only that file. This clears all saved permissions.
+3. Check path rules in config and confirm the paths are correct.
 
 ## LSP Issues
 
@@ -221,7 +221,7 @@ second `y`, so no single keypress creates a persistent permission.
 **Solutions:**
 1. Reduce plugin complexity
 2. Check for infinite loops in plugin code
-3. Fuel is a one-shot per-plugin budget (`MAX_PLUGIN_FUEL_BUDGET`, 10M instructions) that is not replenished on a timer — a plugin that has burned its budget stays exhausted until the process restarts
+3. Fuel is a one-shot per-plugin budget (`MAX_PLUGIN_FUEL_BUDGET`, 10M instructions), not replenished on a timer. A plugin that has used its budget stays exhausted until the process restarts.
 4. Consider splitting into smaller plugins
 
 ## Performance Issues
@@ -254,8 +254,8 @@ second `y`, so no single keypress creates a persistent permission.
 
 **Solutions:**
 1. Check config file location: the global config is `<config dir>/codegg/codegg.jsonc` (`~/Library/Application Support/codegg/codegg.jsonc` on macOS, `~/.config/codegg/codegg.jsonc` on Linux); `codegg.json` and `config.json` in the same directory are also accepted, and `<project>/.codegg/codegg.json` overrides it
-2. Verify JSON is valid (use `jq` to validate)
-3. Ensure file is readable
+2. Validate the config with `codegg validate --config <path>`.
+3. Ensure the file is readable.
 4. Check for duplicate/conflicting settings
 
 ### Model not found
@@ -275,10 +275,9 @@ second `y`, so no single keypress creates a persistent permission.
 **Symptoms:** Crashes immediately after start.
 
 **Solutions:**
-1. Run with `RUST_BACKTRACE=1` for full trace
-2. Check database is not corrupted
-3. Verify all required directories exist
-4. Try deleting `~/Library/Application Support/codegg/` (macOS) or `$XDG_DATA_HOME/codegg/` (Linux) after stopping the daemon
+1. Run with `RUST_BACKTRACE=1` for a backtrace.
+2. Run `codegg doctor` and inspect `codegg daemon logs` for startup errors.
+3. Back up relevant data before attempting database repair. Do not delete the whole CodeGG data or config directory; it may contain credentials or encryption keys.
 
 ### Crash during tool execution
 
@@ -297,7 +296,7 @@ second `y`, so no single keypress creates a persistent permission.
 **Solutions:**
 1. Ensure keyboard focus is on main window
 2. Check terminal supports special keys
-3. Try the bare key instead of the modified one (for example, plain `q` quits; `Ctrl+Q` also quits). `Esc` closes an open dialog but never quits
+3. In the main TUI, press `q` or `Ctrl+C` twice within three seconds to quit. The first press arms the exit and shows which key to press again. `Esc` does not quit.
 4. Restart with clean terminal state
 
 ## Debug Mode
@@ -352,6 +351,13 @@ Checked 2026-10-23 against the source tree.
   The previous "not daemon mode" advice was stale and was replaced.
 
 - Corrected 2026-10-27: `/project-init` does not exist; the command is
-  `/init` (`src/tui/command.rs:579`). Plugin troubleshooting now names the
-  manifest formats `CodeGG` accepts (`src/plugin/package.rs:73-95`) instead
-  of a fixed `plugin.wasm` name.
+  `/init` (`src/tui/command.rs:579`). Plugin troubleshooting names the accepted
+  manifest formats (`src/plugin/package.rs:73-95`) instead of a fixed
+  `plugin.wasm` name.
+- Corrected: daemon locks are OS-managed advisory locks, not stale marker files
+  to delete (`src/core/instance.rs`). The startup recovery advice now uses the
+  daemon commands.
+- Corrected: do not recommend deleting user data directories because they may
+  contain credentials or encryption keys (`crates/codegg-providers/src/auth_types.rs`,
+  `crates/codegg-config/src/encryption.rs`). The TUI's `q` and `Ctrl+C` exits
+  require a second press within three seconds (`src/tui/commands/exit_control.rs`).

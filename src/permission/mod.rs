@@ -174,7 +174,8 @@ pub fn tool_category_for_name(name: &str) -> ToolCategory {
         | "memory_search"
         | "memory_get"
         | "context_read"
-        | "extension_search" => ToolCategory::ReadOnly,
+        | "extension_search"
+        | "present" => ToolCategory::ReadOnly,
         "extension_install_request" => ToolCategory::SafeMutating,
         // Safe-mutating (in-app state only)
         "todowrite" | "todoread" | "question" | "invalid" => ToolCategory::SafeMutating,

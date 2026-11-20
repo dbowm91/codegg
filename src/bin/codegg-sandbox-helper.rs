@@ -1,14 +1,14 @@
 //! One-shot child sandbox launcher.
 //!
-//! This binary intentionally has no daemon or public protocol. The parent
-//! supplies one bounded JSON launch description and one private status-pipe
-//! descriptor. This process applies the complete containment policy in a
-//! normal process context, reports setup state through the private pipe, and
-//! then replaces itself with the target executable.
+//! No daemon, no public protocol: the parent supplies one bounded JSON launch
+//! description and one private status-pipe descriptor; this process applies the
+//! containment policy, reports setup through that pipe, and execs the target.
 //!
-//! This is the only place in the sandbox that uses `unsafe`, and only for
-//! two reasons: the status-pipe descriptor plumbing, and the `sandbox_init`
-//! FFI that the root library cannot make itself (`#![deny(unsafe_code)]`).
+//! It carries the reviewable `unsafe` blocks: status-pipe plumbing, the
+//! `sandbox_init` FFI the root library cannot make (`#![deny(unsafe_code)]`),
+//! the Linux PTY bootstrap ioctls, and the seccomp filter descriptor. The shared
+//! exception, `security::sandbox::linux_mount_view::open_pinned`, owns the
+//! `openat2` syscall under `#[allow(unsafe_code)]`.
 
 #[cfg(unix)]
 use codegg::security::sandbox::{
@@ -424,15 +424,19 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         None
     };
 
+    // Only the process-isolation tier applies a scope, so only it has an ABI
+    // to carry; the filesystem-only tier applies none and reports none.
+    let mut process_scope_abi = None;
     if spec.linux_process_isolation {
-        if let Err(reason) = codegg::security::sandbox::landlock::apply_process_scopes() {
-            fail(
+        match codegg::security::sandbox::landlock::apply_process_scopes() {
+            Ok(abi) => process_scope_abi = Some(abi),
+            Err(reason) => fail(
                 status_fd,
                 SandboxLaunchOutcome::Unavailable {
                     reason: String::new(),
                 },
                 reason,
-            );
+            ),
         }
     }
 
@@ -448,7 +452,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         .arg("/tmp")
         .arg("--setenv")
         .arg("TMPDIR")
-        .arg("/tmp")
+        .arg(contained_temporary_directory(spec))
         .arg("--setenv")
         .arg("GIT_CONFIG_NOSYSTEM")
         .arg("1")
@@ -514,6 +518,20 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
             Ok(())
         });
     }
+    // The last point at which the ABI can be reported: `exec` replaces this
+    // process with Bubblewrap, whose records say nothing about scope. The
+    // record lands ahead of Bubblewrap's, so the parent reads a prefix.
+    if let Some(abi) = process_scope_abi {
+        if let Err(reason) = report_process_scope_abi(status_fd, abi) {
+            fail(
+                status_fd,
+                SandboxLaunchOutcome::SetupError {
+                    reason: String::new(),
+                },
+                reason,
+            );
+        }
+    }
     let error = command.exec();
     drop(pinned_sources);
     fail(
@@ -523,6 +541,72 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         },
         format!("exec trusted Bubblewrap: {error}"),
     )
+}
+
+/// Report the Landlock process-scope ABI this launch obtained. The descriptor
+/// is also Bubblewrap's `--json-status-fd`, so no flush and no close-on-exec
+/// mark are needed: Bubblewrap writes one line after this one.
+#[cfg(target_os = "linux")]
+fn report_process_scope_abi(fd: RawFd, abi: u32) -> Result<(), String> {
+    let record = codegg::security::sandbox::encode_process_scope_abi_record(abi);
+    let mut writer = unsafe { File::from_raw_fd(fd) };
+    writer
+        .write_all(record.as_bytes())
+        .map_err(|error| format!("write process-scope ABI record: {error}"))?;
+    std::mem::forget(writer);
+    Ok(())
+}
+
+/// Resolve the child's temporary directory.
+///
+/// `/tmp` is a tmpfs while write grants are host bind mounts, so staging there
+/// and moving into a grant crosses a device. A request naming an absolute,
+/// resolved, existing directory inside a grant, clear of every deny path, gets
+/// it; everything else keeps the private tmpfs.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn contained_temporary_directory(spec: &SandboxLaunchSpec) -> PathBuf {
+    let private_root = PathBuf::from("/tmp");
+    let Some(requested) = spec
+        .env
+        .iter()
+        .find(|(name, _)| name == "TMPDIR")
+        .map(|(_, value)| PathBuf::from(value))
+    else {
+        return private_root;
+    };
+    if !requested.is_absolute() {
+        return private_root;
+    }
+    if !spec
+        .write_paths
+        .iter()
+        .any(|grant| requested.starts_with(grant))
+    {
+        return private_root;
+    }
+    let Ok(resolved) = requested.canonicalize() else {
+        return private_root;
+    };
+    if !resolved.is_dir() {
+        return private_root;
+    }
+    if !spec.write_paths.iter().any(|grant| {
+        grant
+            .canonicalize()
+            .map(|grant| resolved.starts_with(grant))
+            .unwrap_or(false)
+    }) {
+        return private_root;
+    }
+    if spec.deny_paths.iter().any(|denied| {
+        requested.starts_with(denied)
+            || denied.starts_with(&requested)
+            || resolved.starts_with(denied)
+            || denied.starts_with(&resolved)
+    }) {
+        return private_root;
+    }
+    requested
 }
 
 #[cfg(target_os = "linux")]
@@ -592,68 +676,137 @@ fn seccomp_filter_file(bytes: &[u8]) -> Result<File, String> {
     Ok(file)
 }
 
+/// Pin one mount source by descriptor.
+///
+/// The no-follow open and the device/inode verification are the shared
+/// [`open_pinned`] primitive the Landlock rule compiler also uses, so the view
+/// and the ruleset cannot disagree about "this path". The identity is optional:
+/// device nodes and launch scratch are mounted without a captured snapshot, and
+/// a source that has one is verified against it.
+///
+/// [`open_pinned`]: codegg::security::sandbox::linux_mount_view::open_pinned
 #[cfg(target_os = "linux")]
 fn open_mount_source(
     path: &std::path::Path,
     identities: &[codegg::security::sandbox::SandboxPathIdentity],
 ) -> Result<File, String> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
-
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-
-    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-    let path_c = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| "mount source contains a NUL byte".to_string())?;
-    let flags = if path == std::path::Path::new("/dev/null") {
-        libc::O_RDONLY | libc::O_CLOEXEC
-    } else {
-        libc::O_PATH | libc::O_CLOEXEC
-    };
-    let how = OpenHow {
-        flags: flags as u64,
-        mode: 0,
-        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-    };
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            libc::AT_FDCWD,
-            path_c.as_ptr(),
-            &how,
-            std::mem::size_of::<OpenHow>(),
-        ) as RawFd
-    };
-    if fd < 0 {
-        return Err(format!(
-            "cannot pin mount source {} without following aliases: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    let file = unsafe { File::from_raw_fd(fd) };
-    if let Some(identity) = identities.iter().find(|identity| identity.path == path) {
-        let metadata = file
-            .metadata()
-            .map_err(|error| format!("cannot verify pinned mount source: {error}"))?;
-        if metadata.dev() != identity.device || metadata.ino() != identity.inode {
-            return Err("mount source changed after the workspace lease was captured".into());
-        }
-    }
-    Ok(file)
+    let identity = identities.iter().find(|identity| identity.path == path);
+    codegg::security::sandbox::linux_mount_view::open_pinned(path, identity)
 }
 
 #[cfg(not(unix))]
 fn main() {
     eprintln!("codegg-sandbox-helper is unavailable on this platform");
     std::process::exit(125);
+}
+
+#[cfg(all(test, unix))]
+mod temporary_root_tests {
+    use super::contained_temporary_directory;
+    use codegg::security::sandbox::SandboxLaunchSpec;
+    use std::path::PathBuf;
+
+    fn spec(
+        env: Vec<(String, String)>,
+        write_paths: Vec<PathBuf>,
+        deny_paths: Vec<PathBuf>,
+    ) -> SandboxLaunchSpec {
+        SandboxLaunchSpec {
+            target: PathBuf::from("/bin/true"),
+            args: vec![],
+            env,
+            read_paths: vec![],
+            write_paths,
+            deny_paths,
+            linux_protected_mount_view: true,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: vec![],
+            path_identities: vec![],
+            expected_created_git_pointers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_granted_temporary_root_is_kept_so_temporary_files_share_the_workspace_filesystem() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let granted = fixture.path().join("granted");
+        let temporary = granted.join("cargo-target");
+        std::fs::create_dir_all(&temporary).expect("granted temporary directory");
+
+        let resolved = contained_temporary_directory(&spec(
+            vec![(
+                "TMPDIR".to_string(),
+                temporary.to_string_lossy().into_owned(),
+            )],
+            vec![granted.clone()],
+            vec![],
+        ));
+
+        assert_eq!(
+            resolved, temporary,
+            "a temporary root inside a writable grant must be honored"
+        );
+    }
+
+    #[test]
+    fn a_temporary_root_outside_every_grant_falls_back_to_the_private_tmpfs() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let granted = fixture.path().join("granted");
+        std::fs::create_dir_all(&granted).expect("granted directory");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("outside directory");
+
+        let resolved = contained_temporary_directory(&spec(
+            vec![("TMPDIR".to_string(), outside.to_string_lossy().into_owned())],
+            vec![granted],
+            vec![],
+        ));
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp"),
+            "a temporary root outside every writable grant must not be honored"
+        );
+    }
+
+    #[test]
+    fn a_denied_or_missing_or_relative_temporary_root_falls_back_to_the_private_tmpfs() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let granted = fixture.path().join("granted");
+        std::fs::create_dir_all(&granted).expect("granted directory");
+        let denied = granted.join("denied");
+        std::fs::create_dir_all(&denied).expect("denied directory");
+        let missing = granted.join("missing");
+
+        for requested in [
+            denied.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+            "relative-temporary-root".to_string(),
+        ] {
+            let resolved = contained_temporary_directory(&spec(
+                vec![("TMPDIR".to_string(), requested.clone())],
+                vec![granted.clone()],
+                vec![denied.clone()],
+            ));
+            assert_eq!(
+                resolved,
+                PathBuf::from("/tmp"),
+                "an unusable temporary root must fall back to the private tmpfs: {requested}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_launch_without_a_requested_temporary_root_keeps_the_private_tmpfs() {
+        let resolved = contained_temporary_directory(&spec(vec![], vec![], vec![]));
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp"),
+            "the helper-owned private tmpfs remains the default temporary root"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -681,7 +834,7 @@ mod linux_mount_source_tests {
         let error = open_mount_source(&path, &[identity])
             .expect_err("replacement must not be accepted as the leased mount source");
         assert!(
-            error.contains("mount source changed"),
+            error.contains("changed after its identity was captured"),
             "unexpected identity failure: {error}"
         );
     }

@@ -2,13 +2,15 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 use std::sync::Arc;
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
+use super::super::section::Section;
 use crate::tui::app::TuiMsg;
+use crate::tui::components::hint_line::HintLine;
 use crate::util::clipboard;
 
 #[derive(Clone)]
@@ -136,22 +138,15 @@ impl ShareDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Enter copy  |  Esc close",
+            HintLine::from_items(&[("Esc", "close"), ("Enter", "copy")]).render(0),
             Style::default().fg(theme.muted),
         )));
         lines
     }
 
     fn paragraph(&self, theme: &Theme) -> Paragraph<'static> {
-        let block = Block::default()
-            .title(" Share Session ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
-
-        Paragraph::new(self.build_lines(theme))
-            .block(block)
-            .wrap(Wrap { trim: true })
+        // The frame is drawn by `Section` in `render`; this is the body alone.
+        Paragraph::new(self.build_lines(theme)).wrap(Wrap { trim: true })
     }
 }
 
@@ -163,7 +158,10 @@ impl Default for ShareDialog {
 
 impl Widget for &ShareDialog {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
-        self.paragraph(&self.theme).render(area, buf);
+        let inner = Section::new("Share Session", &self.theme)
+            .focused(true)
+            .draw(area, buf);
+        self.paragraph(&self.theme).render(inner, buf);
     }
 }
 
@@ -196,7 +194,10 @@ impl Component for ShareDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        self.paragraph(theme).render(area, frame.buffer_mut());
+        let inner = Section::new("Share Session", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
+        self.paragraph(theme).render(inner, frame.buffer_mut());
     }
 
     fn dialog_type(&self) -> DialogType {

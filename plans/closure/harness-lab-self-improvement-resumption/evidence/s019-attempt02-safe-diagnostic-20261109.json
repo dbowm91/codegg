@@ -1,0 +1,158 @@
+{
+  "active_work_span_ms": 3293513,
+  "agent_terminal": "timeout",
+  "attempt": 2,
+  "budget_exhausted_cap": null,
+  "case_id": "build-provenance-catalog",
+  "classification": "task_execution_incomplete_and_frozen_input_modified; horizon span exceeded 30 minutes, but continuation was inconsistent, the agent changed a frozen public test, and the reviewer remained running at timeout",
+  "continuation_confirmed": false,
+  "continuation_stop_reason": "turn_timeout",
+  "cost_source": "opencode_go_allowance_receipt",
+  "cost_usd": 0.218061,
+  "disk_floor_bytes": 10737418240,
+  "disk_floor_triggered": false,
+  "duration_ms": 3299882,
+  "event_gap": {
+    "event_gap_count": 0,
+    "event_gap_dropped": 0,
+    "event_observation_state": "observed_complete",
+    "tool_started_count": 486,
+    "tool_terminal_count": 486,
+    "tool_unpaired_start_count": 0
+  },
+  "exact_job_running_and_terminal": true,
+  "free_disk_last_bytes": 49906941952,
+  "free_disk_lowest_bytes": 49906941952,
+  "horizon_outcome": "not_qualified",
+  "horizon_reason": "measurement_incomplete",
+  "maximum_activity_gap_limit_ms": 300000,
+  "maximum_activity_gap_ms": 123044,
+  "minimum_active_duration_ms": 1800000,
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "private_receipt_path": "/private/tmp/s019-muse-runs/attempt02.json",
+  "productive_work_during_job": true,
+  "provider_request_count": 424,
+  "provider_request_limit": 1200,
+  "public_workspace_diagnosis": {
+    "completed_output_retrieved": true,
+    "continuation_next_phase": "workspace_qualification",
+    "frozen_input_differences": [
+      "catalog-index/tests/corpus.rs"
+    ],
+    "next_phase_conflicts_with_completed_gate": true,
+    "recorded_overlap_job_matches_run_scoped_trace": true,
+    "same_job_status_sequence": [
+      "running",
+      "completed"
+    ],
+    "workspace_qualification_marked_completed": true
+  },
+  "receipt_sha256": "2a35671924c929b95f91bc3fee358d6a977df160b9374c5e39b19dab961257b1",
+  "repair_cycles": 7,
+  "reviewer": {
+    "completed_review_result_observed": false,
+    "exact_identity_matched_call_count": 17,
+    "final_failure_class": null,
+    "final_status": "running",
+    "get_after_terminal_status_count": 0,
+    "get_count": 10,
+    "get_nonterminal_count": 10,
+    "get_run_status_counts": {
+      "running": 10
+    },
+    "reviewer_event_count": 17,
+    "reviewer_events_truncated": false,
+    "reviewer_spawn_count": 1,
+    "task_action_counts": {
+      "get": 10,
+      "spawn": 2,
+      "status": 8
+    }
+  },
+  "route": "opencode_go/muse-spark-1.3-contributor",
+  "schema": "s019_h007_run_diagnostic_v1",
+  "solved": false,
+  "stop_reason": "end_turn",
+  "task_outcome": "inconclusive",
+  "tool_call_count": 486,
+  "tool_call_limit": 1600,
+  "verifier": {
+    "diagnostic": {
+      "assertion_text_retained": false,
+      "diagnostic_detail_complete": true,
+      "exit_code": 1,
+      "failed_tests": [
+        {
+          "exception_class": "ValueError",
+          "exception_message": {
+            "kind": "value_error_message",
+            "terms": [
+              "not"
+            ]
+          },
+          "failure_kind": "test_error",
+          "outcome": "error",
+          "test_id": "test_durable_continuation_records_completed_phases_and_next_boundary (test_catalog_contract.CatalogContract.test_durable_continuation_records_completed_phases_and_next_boundary)"
+        },
+        {
+          "exception_class": "AssertionError",
+          "exception_message": {
+            "kind": "comparison_mismatch",
+            "terms": []
+          },
+          "failure_kind": "assertion_failure",
+          "outcome": "fail",
+          "test_id": "test_frozen_inputs_and_manifest_are_unchanged (test_catalog_contract.CatalogContract.test_frozen_inputs_and_manifest_are_unchanged)"
+        },
+        {
+          "exception_class": "AssertionError",
+          "exception_message": {
+            "kind": "assertion_message",
+            "terms": [
+              "all",
+              "before",
+              "completed",
+              "cycle",
+              "failed",
+              "format",
+              "index",
+              "job",
+              "missing",
+              "not",
+              "observed",
+              "order",
+              "parse",
+              "repair",
+              "running",
+              "test",
+              "workspace"
+            ]
+          },
+          "failure_kind": "assertion_failure",
+          "outcome": "fail",
+          "test_id": "test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation (test_catalog_contract.CatalogContract.test_transcript_proves_same_id_running_overlap_terminal_repairs_and_continuation)"
+        }
+      ],
+      "failure_counts": {
+        "errors": 1,
+        "failures": 2
+      },
+      "input_truncated": false,
+      "passed_count": 2,
+      "raw_output_retained": false,
+      "runner_error_class": null,
+      "schema": "h007_verifier_diagnostic_v1",
+      "setup_exception_class": null,
+      "skipped_count": 0,
+      "state": "mixed_test_failures",
+      "tests_run": 5,
+      "timed_out": false,
+      "traceback_retained": false,
+      "verbose_tests_observed": 5
+    },
+    "duration_ms": 34628,
+    "exit_code": 1,
+    "tests_run": 5,
+    "timed_out": false
+  }
+}

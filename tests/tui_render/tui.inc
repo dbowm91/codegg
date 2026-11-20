@@ -740,7 +740,7 @@ fn test_help_dialog_clamps_scroll_to_last_page() {
 fn test_completion_overlay_new() {
     let overlay = CompletionOverlay::new();
     assert!(!overlay.visible);
-    assert_eq!(overlay.selected, 0);
+    assert_eq!(overlay.selected_index(), 0);
     assert!(overlay.items.is_empty());
 }
 
@@ -763,7 +763,7 @@ fn test_completion_overlay_show() {
     overlay.show(CompletionType::Slash, items, "/".to_string(), 0);
 
     assert!(overlay.visible);
-    assert_eq!(overlay.selected, 0);
+    assert_eq!(overlay.selected_index(), 0);
     assert_eq!(overlay.items.len(), 2);
     assert_eq!(overlay.ctype, CompletionType::Slash);
 }
@@ -801,13 +801,13 @@ fn test_completion_overlay_selection() {
     overlay.show(CompletionType::Slash, items, "/".to_string(), 0);
 
     overlay.select_down();
-    assert_eq!(overlay.selected, 1);
+    assert_eq!(overlay.selected_index(), 1);
 
     overlay.select_down();
-    assert_eq!(overlay.selected, 2);
+    assert_eq!(overlay.selected_index(), 2);
 
     overlay.select_up();
-    assert_eq!(overlay.selected, 1);
+    assert_eq!(overlay.selected_index(), 1);
 }
 
 #[test]
@@ -821,10 +821,10 @@ fn test_completion_overlay_selection_bounds() {
     overlay.show(CompletionType::Slash, items, "/".to_string(), 0);
 
     overlay.select_up();
-    assert_eq!(overlay.selected, 0);
+    assert_eq!(overlay.selected_index(), 0);
 
     overlay.select_down();
-    assert_eq!(overlay.selected, 0);
+    assert_eq!(overlay.selected_index(), 0);
 }
 
 #[test]
@@ -937,11 +937,11 @@ fn test_completion_overlay_set_filter() {
         0,
     );
     overlay.select_down();
-    assert_eq!(overlay.selected, 0);
+    assert_eq!(overlay.selected_index(), 0);
 
     overlay.set_filter("/t".to_string());
     assert_eq!(overlay.filter, "/t");
-    assert_eq!(overlay.selected, 0);
+    assert_eq!(overlay.selected_index(), 0);
 }
 
 #[test]

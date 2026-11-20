@@ -700,20 +700,45 @@ fn status_for_error(code: Option<&str>, message: &str) -> TranscriptFollowStatus
 /// finished. It raises the desired high-water and leaves the cache dirty;
 /// the rows come from the authorized page read.
 pub(crate) fn on_snapshot_watermarks(app: &mut App) {
-    let Some((_, snapshot)) = app.projection_client.active_snapshot() else {
+    // The gate reads two scalars, not the snapshot's rows: an unchanged frame
+    // must not build the watermark vector it is about to discard.
+    let Some((stream_id, event_seq)) = app
+        .projection_client
+        .active_snapshot()
+        .map(|(stream_id, snapshot)| (stream_id, snapshot.event_seq))
+    else {
         return;
     };
-    let watermarks: Vec<(String, i64, bool)> = snapshot
-        .transcript_watermarks
-        .iter()
-        .map(|watermark| {
-            (
-                watermark.run_id.clone(),
-                watermark.ordinal,
-                watermark.recording_stopped,
-            )
+    // The scan allocates a watermark vector and a tab-id vector. Neither the
+    // snapshot nor the tab set moved since the last scan — the same revision
+    // the sidebar population is gated on — so there is nothing new to raise
+    // and nothing to start.
+    if app.watermark_scan_is_current(stream_id.as_str(), event_seq) {
+        return;
+    }
+    app.record_watermark_scan(stream_id.as_str(), event_seq);
+    crate::tui::render_cost::count_watermark_scan();
+    // Copy the watermarks out in one borrow; the `&mut app` calls below need
+    // the snapshot borrow gone.
+    let Some(watermarks) = app
+        .projection_client
+        .active_snapshot()
+        .map(|(_, snapshot)| {
+            snapshot
+                .transcript_watermarks
+                .iter()
+                .map(|watermark| {
+                    (
+                        watermark.run_id.clone(),
+                        watermark.ordinal,
+                        watermark.recording_stopped,
+                    )
+                })
+                .collect::<Vec<(String, i64, bool)>>()
         })
-        .collect();
+    else {
+        return;
+    };
     if watermarks.is_empty() {
         return;
     }

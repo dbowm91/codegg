@@ -26,14 +26,22 @@ use crate::tui::document_session::TuiDocumentPresentation;
 use crate::tui::editor::{self, EditorEdit};
 use crate::tui::editor_lsp::EditorDiagnosticStep;
 
-/// One verb whose payload is the system clipboard's contents.
+/// One verb whose payload is a block of text — the clipboard's, or a
+/// register's.
 ///
-/// The clipboard is not editor state, so these three are reported to the App
-/// layer and performed there, in the same division of labour as
-/// `yank_editor_range`: the buffer resolves the *target*, the App layer
-/// owns the *bytes*. There is no local register — `space y` writes to the
-/// OS clipboard and nothing else, so what `p` pastes is whatever the
-/// clipboard holds, including text from another application.
+/// The clipboard is not editor state, so a clipboard-backed paste is reported
+/// to the App layer and performed there, in the same division of labour as
+/// `yank_editor_range`: the buffer resolves the *target*, the App layer owns
+/// the *bytes*.
+///
+/// M007 split the **source** from the verb without adding a fourth variant.
+/// These three describe *where the text lands* — after, before, or in place of
+/// the target — and that is all they ever described. Whether the bytes come
+/// from the system clipboard (`space p`) or from a register (`p`, or `"ap`) is
+/// the App layer's other axis, so a register paste is the same builder with
+/// different text rather than a fourth destination. A register is not a place
+/// in the document, and adding one here would have made this enum answer two
+/// questions.
 ///
 /// Public rather than `pub(crate)` because [`EditorPendingEffect`] is public —
 /// it is named by the public `PrefixAction::Effect` arm — and a `pub` type
@@ -96,6 +104,11 @@ pub enum EditorPendingEffect {
     /// naming an effect the App layer must perform.
     DiagnosticStep(EditorDiagnosticStep),
     /// Run one clipboard verb against the system clipboard.
+    ///
+    /// The `space` family, and only that family: `space p`/`P`/`R` mean the
+    /// clipboard whatever `"` selected. The bare `p`/`P`/`R` chords read a
+    /// register instead, which is why they are a `BufferKey` rather than an
+    /// effect — see `ClipboardVerb`'s own doc.
     Clipboard(ClipboardVerb),
     /// Yank **only** the primary selection to the system clipboard.
     YankPrimary,
@@ -103,6 +116,16 @@ pub enum EditorPendingEffect {
     OpenFilePicker,
     /// Open the editor's `:` command palette.
     OpenCommandPalette,
+    /// Open the **jumplist picker** — the editor's own history of visited
+    /// positions, newest first.
+    ///
+    /// Not a read: the list is on the presentation already
+    /// ([`Jumplist`](crate::tui::document_session::Jumplist)) and nothing is
+    /// asked of the daemon. A new variant rather than a reuse of
+    /// [`OpenFilePicker`](Self::OpenFilePicker) or the LSP picker: the file
+    /// browser lists the workspace and the LSP panel lists a server's answer,
+    /// and neither can carry this editor's own byte offsets.
+    OpenJumplist,
     /// Toggle the editor's **keymap box** — its own catalogue of its keys,
     /// in the bottom-right corner of the editor.
     OpenKeymap,

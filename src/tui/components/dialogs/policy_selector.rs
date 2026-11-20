@@ -20,7 +20,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::sync::Arc;
 
@@ -28,6 +28,8 @@ use codegg_core::approval::{ApprovalMode, SandboxProfile};
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::hint_line::HintLine;
+use crate::tui::components::section::Section;
 use crate::tui::theme::Theme;
 
 /// Which axis the selector is editing.
@@ -199,16 +201,9 @@ impl Component for PolicySelectorDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background))
-            .title(Span::styled(
-                self.title(),
-                Style::default().fg(theme.foreground),
-            ));
-        let inner = block.inner(area);
-        frame.render_widget(Paragraph::new("").block(block), area);
+        let inner = Section::new(self.title(), theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
 
         // Rows first and `Min` so a future fourth option is never silently
         // clipped, then a fixed-height bordered hint. `Length(1)` here would
@@ -219,16 +214,19 @@ impl Component for PolicySelectorDialog {
         let mut rows: Vec<Line> = Vec::new();
         for (i, option) in self.options().iter().enumerate() {
             let is_selected = i == self.selected;
+            // One fill (`primary`) and one derived foreground
+            // (`accent_text`): the detail used to paint `background` on the
+            // window background at 1.00:1.
             let style = if is_selected {
                 Style::default()
-                    .fg(theme.background)
+                    .fg(theme.accent_text)
                     .bg(theme.primary)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.foreground)
             };
             let detail_style = if is_selected {
-                Style::default().fg(theme.background)
+                Style::default().fg(theme.accent_text).bg(theme.primary)
             } else {
                 Style::default().fg(theme.muted)
             };
@@ -243,19 +241,20 @@ impl Component for PolicySelectorDialog {
         }
         frame.render_widget(Paragraph::new(rows), chunks[0]);
 
-        let hint = " ↑↓/j/k move  |  1-3 select now  |  Enter select  |  Esc cancel ";
+        let hint = HintLine::from_items(&[
+            ("Esc", "cancel"),
+            ("↑↓/j/k", "move"),
+            ("1-3", "select now"),
+            ("Enter", "select"),
+        ])
+        .render(0);
+        let hint_inner = Section::plain(theme).draw(chunks[1], frame.buffer_mut());
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 hint,
                 Style::default().fg(theme.muted),
-            )))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border))
-                    .style(Style::default().bg(theme.background)),
-            ),
-            chunks[1],
+            ))),
+            hint_inner,
         );
     }
 

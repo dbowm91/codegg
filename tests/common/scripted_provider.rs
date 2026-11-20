@@ -23,6 +23,26 @@ use codegg::provider::{
 };
 use tokio::sync::{Barrier, Mutex};
 
+/// What the provider does when the scripted turns run out.
+///
+/// The suite that wants an immediate answer — the agent-loop harness and the
+/// M011 race — is the reason the default is [`Exhaustion::Finish`]: a script
+/// that ran one turn short used to end the turn quietly, and changing that
+/// would change what those suites measure.
+///
+/// The replay tier needs the opposite. A recorded scenario declares exactly
+/// the turns it expects, so a loop that asks for one more has left the
+/// fixture — and a synthetic empty `Finish` would let that pass as a
+/// completed turn. [`Exhaustion::Fail`] names the request index instead.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Exhaustion {
+    /// Answer an extra request with an empty completed turn.
+    #[default]
+    Finish,
+    /// Fail the extra request, naming its index.
+    Fail,
+}
+
 /// A provider that answers with scripted turns and records its requests.
 #[derive(Clone)]
 pub struct ScriptedProvider {
@@ -37,6 +57,8 @@ pub struct ScriptedProvider {
     /// Whether this provider has already claimed its barrier slot. Shared
     /// across clones so a cloned provider does not wait a second time.
     barrier_claimed: Arc<Mutex<bool>>,
+    /// What to do when the script runs out.
+    exhaustion: Exhaustion,
 }
 
 impl ScriptedProvider {
@@ -48,7 +70,14 @@ impl ScriptedProvider {
             response_index: Arc::new(Mutex::new(0)),
             barrier: None,
             barrier_claimed: Arc::new(Mutex::new(false)),
+            exhaustion: Exhaustion::Finish,
         }
+    }
+
+    /// Choose what happens when the script runs out. See [`Exhaustion`].
+    pub fn with_exhaustion(mut self, exhaustion: Exhaustion) -> Self {
+        self.exhaustion = exhaustion;
+        self
     }
 
     /// Hold the first request until the barrier has as many participants as
@@ -118,6 +147,24 @@ impl Provider for ScriptedProvider {
             .push(std::time::Instant::now());
 
         let mut idx = self.response_index.lock().await;
+        let request_index = *idx;
+        if request_index >= self.responses.len() {
+            match self.exhaustion {
+                // The provider has already recorded the request, so the
+                // caller can still see exactly which request had no script.
+                Exhaustion::Fail => {
+                    *idx += 1;
+                    return Err(ProviderError::api(
+                        "replay_fixture_exhausted",
+                        format!(
+                            "fixture script exhausted at request index {request_index}: \
+                             the loop asked for a turn the fixture does not script"
+                        ),
+                    ));
+                }
+                Exhaustion::Finish => {}
+            }
+        }
         let events = if *idx < self.responses.len() {
             self.responses[*idx].clone()
         } else {
