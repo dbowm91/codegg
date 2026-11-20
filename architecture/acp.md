@@ -311,7 +311,7 @@ the shared broadcast.
 cargo test -p codegg --lib acp                  # unit tests for ActivePrompt, helpers
 cargo test -p codegg --lib acp::tests            # lifecycle, cancellation, terminal detection
 cargo test -p codegg --lib acp::helper_tests     # cwd / prompt-block / frame-limit helpers
-python3 -m unittest discover -s dev/harness_lab/tests -v
+python3 -m unittest discover -s dev/harness_lab/tests -v  # local development only
 ```
 
 Test coverage (inline, `src/acp.rs:1178-1695`, split across two modules —

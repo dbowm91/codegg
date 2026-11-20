@@ -99,6 +99,9 @@ authors = ["David Bowman"]
 readme = "README.md"
 keywords = ["ai", "coding", "agent", "llm", "claude"]
 categories = ["command-line-utilities", "artificial-intelligence"]
+# Development-only. Release archives already ship runfiles only; this keeps
+# the lab out of a published crate as well.
+exclude = ["dev/harness_lab", "dev/harness_lab/**"]
 
 # Note: the root package intentionally does NOT inherit `[workspace.lints]`.
 # `src/lib.rs` keeps `#![deny(unsafe_code)]` for the library, while

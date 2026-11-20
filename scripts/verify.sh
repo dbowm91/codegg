@@ -681,8 +681,8 @@ run_quick() {
 
     run_guards
 
-    echo "==> python3 -m unittest discover -s dev/harness_lab/tests"
-    (cd "$REPO_ROOT" && python3 -m unittest discover -s dev/harness_lab/tests)
+    # Harness Lab remains a local development suite. Run it explicitly; it is
+    # not part of this gate or of release builds.
 
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
