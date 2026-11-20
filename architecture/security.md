@@ -717,18 +717,21 @@ entry is kernel-verified rather than only structurally asserted.
 
 **Linux default containment (C002, ADR-0061 Option B).** The default
 (`LegacyPrivateHelper`) route is Landlock filesystem rules **plus the Landlock
-ABI 6 process scope** — `Scope::SIGNAL | Scope::ABSTRACT_UNIX_SOCKET`, applied by
-a second `restrict_self()` in the helper before `exec`. No namespace, container
-runtime, or privileged helper is required, and nothing about network or pathname
-sockets changes.
+ABI 6 process scope** — `Scope::SIGNAL | Scope::ABSTRACT_UNIX_SOCKET`, requested
+on the same ruleset as the filesystem grants and applied by that ruleset's one
+`restrict_self()` before `exec`. A second, scope-only `restrict_self()` is not
+used on this route: a layer that handles no filesystem access is still initially
+denied `Refer`, and a cross-directory rename then returns `EXDEV`. No namespace,
+container runtime, or privileged helper is required, and nothing about network
+or pathname sockets changes.
 
 **Obtained** on a host with Landlock ABI 6: a contained child cannot signal a
 process outside its Landlock domain, and cannot connect to an abstract AF_UNIX
 socket created outside it. Both are reported as obtained facts — the status
-frame carries a guarantee naming the ABI the second `restrict_self()` returned,
-and the in-memory `BackendEnforcement::process_scope_abi` holds the same value.
-That value is never serialized to durable storage, so no wire or payload schema
-changed.
+frame carries a guarantee naming the effective ABI of the ruleset that obtained
+the scope, and the in-memory `BackendEnforcement::process_scope_abi` holds the
+same value. That value is never serialized to durable storage, so no wire or
+payload schema changed.
 
 **Not obtained, and stated as a limit rather than a guarantee:**
 
@@ -1457,3 +1460,14 @@ Verified 2026-10-23 against `src/security/` (all of it), `src/bin/codegg-sandbox
   `505`, `classify_tool_call` `509`, `inspect_text` `scanner.rs:319`,
   `inspect_file` `scanner.rs:402`, `ProfileRunner::inspect_paths`
   `profile.rs:48`).
+- **Corrected the default-route scope mechanism (2026-11-20).** The C002
+  paragraph said the ABI 6 scope was a second `restrict_self()` after the
+  filesystem ruleset. `landlock::apply` now requests `Scope::from_all(ABI::V6)`
+  on that same ruleset before `create()`, and does not call
+  `apply_process_scopes()`. Linux 6.17 `landlock_get_fs_access_mask` ORs
+  `_LANDLOCK_ACCESS_FS_INITIALLY_DENIED` onto every layer, including one whose
+  filesystem mask is empty, and `current_check_refer_path` then returns
+  `EXDEV` when `Refer` is the missing right. A single ruleset that handles
+  both permits the rename
+  (`https://github.com/landlock-lsm/linux/issues/67`). The Bubblewrap route
+  still calls `apply_process_scopes()` with no prior filesystem layer.

@@ -96,17 +96,24 @@ fn landlock_enforcement(effective_abi: u32, process_scope_abi: Option<u32>) -> B
     enforcement
 }
 
-/// Apply the ABI 6 scope only when the host advertises it. A host without
-/// the scope keeps the filesystem-only tier; a failed application is a refusal.
+/// The filesystem ruleset requests ABI 6 scopes only when the host has them.
 #[cfg(any(target_os = "linux", test))]
-fn process_scope_from(
-    probe: impl FnOnce() -> Result<(), String>,
-    apply: impl FnOnce() -> Result<u32, String>,
-) -> Result<Option<u32>, String> {
-    if probe().is_err() {
+fn filesystem_ruleset_requests_process_scope(probe: impl FnOnce() -> Result<(), String>) -> bool {
+    probe().is_ok()
+}
+
+/// A requested scope that the ruleset did not obtain is a refusal.
+#[cfg(any(target_os = "linux", test))]
+fn obtained_process_scope_abi(requested: bool, effective_abi: u32) -> Result<Option<u32>, String> {
+    if !requested {
         return Ok(None);
     }
-    apply().map(Some)
+    if effective_abi < 6 {
+        return Err(format!(
+            "Landlock ABI 6 process scopes unavailable after setup: ABI {effective_abi}"
+        ));
+    }
+    Ok(Some(effective_abi))
 }
 
 /// Apply the policy to the current process.
@@ -117,7 +124,7 @@ fn process_scope_from(
 #[cfg(target_os = "linux")]
 pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
     use landlock::{
-        Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetStatus, ABI,
+        Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetStatus, Scope, ABI,
     };
 
     super::policy::validate_landlock_write_exclusions(&spec.write_paths, &spec.deny_paths)?;
@@ -134,7 +141,17 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
         .map_err(|e| format!("Landlock ruleset access selection failed: {e}"))?
         .set_compatibility(CompatLevel::BestEffort)
         .handle_access(AccessFs::from_all(ABI::V9))
-        .map_err(|e| format!("Landlock optional access selection failed: {e}"))?
+        .map_err(|e| format!("Landlock optional access selection failed: {e}"))?;
+    // ADR-0061 scopes share this ruleset: a later scope-only layer is initially
+    // denied Refer, and a cross-directory rename then returns EXDEV.
+    let scopes_requested = filesystem_ruleset_requests_process_scope(probe_process_scopes);
+    if scopes_requested {
+        ruleset = ruleset
+            .set_compatibility(CompatLevel::HardRequirement)
+            .scope(Scope::from_all(ABI::V6))
+            .map_err(|e| format!("Landlock process scope selection failed: {e}"))?;
+    }
+    let mut ruleset = ruleset
         .create()
         .map_err(|e| format!("Landlock ruleset creation failed: {e}"))?;
 
@@ -171,10 +188,8 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
                     "Landlock effective ABI {effective_abi:?} is below required ABI V3"
                 ));
             }
-            // ADR-0061: ABI 6 scopes are part of the default route and need
-            // no namespace. They restrict signals and abstract AF_UNIX
-            // sockets at no cost to the filesystem ruleset above.
-            let process_scope_abi = process_scope_from(probe_process_scopes, apply_process_scopes)?;
+            let process_scope_abi =
+                obtained_process_scope_abi(scopes_requested, effective_abi as u32)?;
             Ok(landlock_enforcement(
                 effective_abi as u32,
                 process_scope_abi,
@@ -187,9 +202,9 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
 }
 
 /// Apply the M004 Landlock ABI 6 IPC scopes without adding filesystem or
-/// network restrictions. Called by the trusted helper immediately before it
-/// executes Bubblewrap so the namespace launcher and target inherit the same
-/// signal and abstract-socket domain.
+/// network restrictions. Only the Bubblewrap route calls this. A scope-only
+/// layer after a filesystem ruleset is initially denied Refer and returns
+/// EXDEV for a cross-directory rename; the default route must not call it.
 #[cfg(target_os = "linux")]
 pub fn apply_process_scopes() -> Result<u32, String> {
     use landlock::{
@@ -508,18 +523,26 @@ mod tests {
 
     #[test]
     fn a_failed_process_scope_is_a_refusal_not_an_absent_scope() {
-        let absent = process_scope_from(
-            || Err("no Landlock ABI 6".to_string()),
-            || panic!("a host without the scope must not have it applied"),
-        )
-        .expect("a host without the scope keeps the filesystem-only tier");
-        assert_eq!(absent, None);
         assert!(
-            process_scope_from(|| Ok(()), || Err("scope denied".to_string())).is_err(),
-            "a failed application must refuse the launch, not degrade it"
+            !filesystem_ruleset_requests_process_scope(|| Err("no Landlock ABI 6".to_string())),
+            "a host without the scope keeps the filesystem-only tier"
+        );
+        assert!(
+            filesystem_ruleset_requests_process_scope(|| Ok(())),
+            "a host that advertises the scope must request it on the filesystem ruleset"
         );
         assert_eq!(
-            process_scope_from(|| Ok(()), || Ok(6)).expect("an obtained scope"),
+            obtained_process_scope_abi(false, 4).expect("an absent scope stays absent"),
+            None
+        );
+        let refused = obtained_process_scope_abi(true, 4)
+            .expect_err("a requested scope below ABI 6 must refuse the launch");
+        assert!(
+            refused.contains("ABI 4"),
+            "the refusal must name the ABI that was obtained: {refused}"
+        );
+        assert_eq!(
+            obtained_process_scope_abi(true, 6).expect("an obtained scope"),
             Some(6)
         );
     }
