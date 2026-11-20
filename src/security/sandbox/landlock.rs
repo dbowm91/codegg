@@ -149,7 +149,8 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
         ruleset = ruleset
             .set_compatibility(CompatLevel::HardRequirement)
             .scope(Scope::from_all(ABI::V6))
-            .map_err(|e| format!("Landlock process scope selection failed: {e}"))?;
+            .map_err(|e| format!("Landlock process scope selection failed: {e}"))?
+            .set_compatibility(CompatLevel::BestEffort);
     }
     let mut ruleset = ruleset
         .create()
