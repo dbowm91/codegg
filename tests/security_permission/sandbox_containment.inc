@@ -1232,10 +1232,10 @@ async fn run_contained_request(
 /// A descriptor the launching process holds is not readable by a contained
 /// child on macOS or on the default Linux tier.
 ///
-/// The positive control bypasses the daemon's closure and reaches the real
-/// helper directly, so the same descriptor *is* readable there: the refusal is
-/// the closure, not the sandbox mechanism. The process-isolation tier uses the
-/// same closure and keeps its behaviour.
+/// The probe is bash, not host sh: dash rejects <& above 9 before reading.
+/// The positive control reaches the real helper directly, so that descriptor
+/// is readable there: the refusal is the closure, not the sandbox mechanism.
+/// The process-isolation tier uses the same closure and keeps its behaviour.
 #[tokio::test(flavor = "current_thread")]
 async fn a_contained_child_cannot_read_an_inherited_descriptor() {
     require_backend!();
@@ -1246,8 +1246,12 @@ async fn a_contained_child_cannot_read_an_inherited_descriptor() {
     let opened = std::fs::File::open(&secret).expect("pre-open the sensitive file");
     let held = hold_inheritable_descriptor(&opened);
 
+    let bash = ["/bin/bash", "/usr/bin/bash"]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+        .expect("inherited-descriptor probe needs bash; dash rejects <& above 9");
     let read_script =
-        |fd: RawFd| format!("cat <&{fd} 2>/dev/null && echo FD-READ || echo FD-DENIED");
+        |fd: RawFd| format!("{bash} -c 'cat <&{fd} 2>/dev/null && echo FD-READ || echo FD-DENIED'");
 
     // Positive control: containment is applied by the real helper, but the
     // daemon never had a chance to close what it hands down.
