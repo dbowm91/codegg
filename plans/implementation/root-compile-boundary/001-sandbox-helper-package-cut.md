@@ -1,6 +1,6 @@
 # Root Compile Boundary Milestone 001 — Sandbox-helper package cut
 
-Status: active — ADR-0064 accepted 2026-11-21 by the project maintainer
+Status: implemented — conditionally closed pending a hosted helper-step run id. See `plans/closure/root-compile-boundary/001-status.md`. ADR-0064 accepted 2026-11-21 by the project maintainer
 
 Repository baseline: `b8a6215c885289654d5a8ee951bcccde401a529e`
 

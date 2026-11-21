@@ -30,7 +30,7 @@ review that never mutates files.
 | Sensitive path matching | `src/security/mod.rs` (`matches_sensitive_path`) |
 | Re-exports of eggsentry types for backward compat | `src/security/mod.rs` |
 | Deterministic security scanning (secrets, commands, deps) | `crates/eggsentry/src/` |
-| `codegg-sandbox-helper` binary (backend dispatch + Seatbelt FFI) | `src/bin/codegg-sandbox-helper.rs` |
+| `codegg-sandbox-helper` binary (backend dispatch + Seatbelt FFI) | `crates/codegg-sandbox-helper/src/main.rs`; contract library `crates/codegg-sandbox`. The installed stem is unchanged, and the helper package does not compile package `codegg`. |
 
 ## How It Works
 
@@ -1406,6 +1406,8 @@ unsupported-host `Unavailable` path.
 - [preflight.md](preflight.md) — The advisory command preflight
 
 ## Source Verification
+
+The helper bin now lives in `crates/codegg-sandbox-helper` and the contract library in `crates/codegg-sandbox`. The installed stem is still `codegg-sandbox-helper`. The 2026-10-23 note below names the path that existed then.
 
 Verified 2026-10-23 against `src/security/` (all of it), `src/bin/codegg-sandbox-helper.rs`,
 `crates/eggsentry/src/`, `crates/codegg-config/src/schema.rs`, and

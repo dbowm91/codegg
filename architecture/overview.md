@@ -1202,7 +1202,6 @@ codegg/
 ├── src/                        # Root crate (application)
 │   ├── agent/                  # Agent loop, compaction, routing, run control
 │   ├── auth/                   # Authentication
-│   ├── bin/                    # Auxiliary binaries (sandbox helper)
 │   ├── client/                 # Remote TUI WebSocket client
 │   ├── command/                # Slash command registry
 │   ├── command_intent/         # Command classification + planning
@@ -1273,6 +1272,8 @@ codegg/
 │   ├── egggit/                 # Read-only git facts
 │   ├── eggsentry/              # Security scanning
 │   ├── eggcontext/             # Token counting
+│   ├── codegg-sandbox/         # Helper-facing sandbox contract; no dependency on package codegg
+│   ├── codegg-sandbox-helper/  # Installed helper bin; stem unchanged
 │   ├── egglsp-test-server/     # Fake LSP server (NOT a workspace member)
 │   └── eggwork-test-node/      # Standalone fixture workspace (NOT a member)
 ├── apps/desktop/               # Optional Tauri shell
