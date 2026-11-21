@@ -1072,6 +1072,7 @@ max_ratio = 0.1354
 "src/main.rs" = "an example path in Rust compiler-output fixtures, not a repository source file"
 "src/main.ts" = "an example TypeScript fixture in the egglsp real-server smoke test"
 "src/small.rs" = "an example file in the security workflow report's synthetic-header scenario"
+"src/tui" = "a synthetic workspace path in TUI file-tree fixtures and breadcrumb examples"
 "src/tui/app" = "a synthetic workspace path in TUI file-tree navigation fixtures"
 "src/widget.cpp" = "an example C++ fixture in the egglsp real-server smoke test"
 "tests/test_foo.py" = "an example of a pytest failure line in the shell projector"

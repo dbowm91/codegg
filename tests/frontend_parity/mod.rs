@@ -1,6 +1,6 @@
 //! Frontend parity: one canonical projection snapshot, two frontends.
 //!
-//! The desktop GUI (`apps/desktop/`) and the terminal UI (`src/tui/`) are two
+//! The desktop GUI (`apps/desktop/`) and the terminal UI (`crates/codegg-tui/`) are two
 //! clients of the same daemon over the same frontend-neutral protocol. The
 //! claim this family proves is mechanical: **given the same canonical
 //! `SessionProjectionSnapshot`, both frontends reconstruct the same state.**
