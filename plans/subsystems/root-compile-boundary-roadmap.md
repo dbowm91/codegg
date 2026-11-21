@@ -289,5 +289,5 @@ The roadmap is complete when both milestones have accepted closure records, ADR-
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | conditionally closed | `plans/implementation/root-compile-boundary/001-sandbox-helper-package-cut.md` | `plans/closure/root-compile-boundary/001-status.md` | hosted helper-step run id not yet recorded |
-| 2 | conditionally closed | `plans/implementation/root-compile-boundary/002-tui-dependency-inversion.md` | `plans/closure/root-compile-boundary/002-status.md` | hosted before/after `cfg(test)` run ids absent |
+| 1 | closed | `plans/implementation/root-compile-boundary/001-sandbox-helper-package-cut.md` | `plans/closure/root-compile-boundary/001-status.md` | hosted helper step `44937196668` did not compile package `codegg` |
+| 2 | conditionally closed | `plans/implementation/root-compile-boundary/002-tui-dependency-inversion.md` | `plans/closure/root-compile-boundary/002-status.md` | compile pair recorded; hosted confirmation of the `src/main.rs` path retarget absent |

@@ -22,9 +22,17 @@ Implementation commits:
 
 ## 1. Executive finding
 
-The root library no longer compiles the TUI, and it does not depend on `codegg-tui`. `codegg-tui` depends on the root library. The product bin `codegg` belongs to `codegg-cli`, which may depend on both. There is no `pub mod tui` and no re-export shim. The required local link, the whole `tui_render` family, `cargo build --locked --bin codegg`, and `scripts/verify.sh quick` have now been run on this worktree and passed. The milestone stays conditionally closed because the hosted before/after `cfg(test)` run ids are still absent. The branch was not pushed. That remaining gap is operational. It is not a license to split `agent`, `tool`, `core`, or `scheduler`, and it does not discharge the deferred binary-topology item.
+The root library no longer compiles the TUI, and it does not depend on `codegg-tui`. `codegg-tui` depends on the root library. The product bin `codegg` belongs to `codegg-cli`, which may depend on both. There is no `pub mod tui` and no re-export shim. The required local link, the whole `tui_render` family, `cargo build --locked --bin codegg`, and `scripts/verify.sh quick` have now been run on this worktree and passed. The hosted before/after `cfg(test)` observation is recorded below. The milestone stays conditionally closed because the after job failed at a move-caused test, and the local path retarget is not yet a hosted run id. That remaining gap is operational. It is not a license to split `agent`, `tool`, `core`, or `scheduler`, and it does not discharge the deferred binary-topology item.
 
-A null effect on the 7-minute `cfg(test)` compile, if that is what the hosted pair later shows, is not a failure and does not open a further split. This closure does not quote a line count as a minute count. The closed throughput roadmap was not amended.
+A null effect on the `cfg(test)` compile is not a failure and does not open a further split. This closure does not quote a line count as a minute count, and it does not treat one hosted pair as a precise effect size. The closed throughput roadmap was not amended.
+
+Before, hosted: run [44837892044](https://github.com/dbowm91/codegg/actions/runs/44837892044) on `827141e32`, job `136638744784`. In the workspace-tests step, `Compiling codegg v0.1.0 (/home/runner/work/codegg/codegg)` is at `2026-11-20T23:50:04.5473890Z`. The next log line is at `2026-11-20T23:57:28.4945855Z`, 7m 23.947s later. `Finished test profile [unoptimized + debuginfo] target(s) in 8m 34s` is at `2026-11-20T23:57:28.8539226Z`. That log has no `codegg-tui` compile line. The quiet span is the before unit observation because nothing else logged during it. It is not a TUI share, and it is not a promised saving.
+
+After, hosted: run [44937196668](https://github.com/dbowm91/codegg/actions/runs/44937196668) on `613cecd47`, job `136946316398`. The workspace-tests step compiled package `codegg` at `2026-11-21T18:55:57.1999510Z`, path `/home/runner/work/codegg/codegg`. The next log line is another crate, 1.031s later, so the before method does not isolate this unit. The same step compiled `codegg-tui v0.1.0 (/home/runner/work/codegg/codegg/crates/codegg-tui)` at `2026-11-21T18:58:05.3590760Z` and `codegg-cli` at `2026-11-21T18:59:34.3595419Z`. `Finished test profile [unoptimized + debuginfo] target(s) in 7m 23s` is at `2026-11-21T19:01:52.7158521Z`. That 7m 23s is the whole test profile, not the root unit. One pair is not a precise effect size. This record does not subtract the two profile times and call the difference a saving.
+
+The hosted log shows the root package and the TUI crate as separate compile units. The before job compiled package `codegg` and did not compile package `codegg-tui`. The after job compiled both. The workspace job still builds the TUI crate. The log does not list the root unit's source files, so this statement is the separate-unit observation, not a file inventory.
+
+The after job then failed. `codegg::ide_protocols lsp::callHierarchy_requires_file_path_line_column` panicked at `tests/ide_protocols/lsp.inc:1682`. It expected a line error and got a missing-path error for `src/main.rs`, which the move removed. Fail-fast stopped the suite at 6861 of 17674. Run `44937196668` is not a passing test run. It is the compile observation.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -48,7 +56,7 @@ A null effect on the 7-minute `cfg(test)` compile, if that is what the hosted pa
 | `cargo test -p codegg --lib --features server` | same flags, on `a6fa12efb` | pass | Local. 5174 passed, 0 failed, 5 ignored, 97.89s. An earlier link on a full volume failed with `ld: write() failed, errno=28`. That was not an assertion failure, and it is not the current result |
 | `cargo build --locked --bin codegg` | first attempt on `a6fa12efb` failed; re-run on `e2eb96727` | pass | The first attempt exited 101: no bin named `codegg` in the default-run packages. `e2eb96727` adds `crates/codegg-cli` to `default-members` and does not restore a root shim. The re-run, `cargo build --locked --offline --bin codegg`, exited 0. `target/debug/codegg` is present (454053072 bytes). The re-run was warm (0.53s) and did not rewrite those bytes. `cargo build --locked --offline -p codegg --bin codegg` still exits 101 |
 | `scripts/verify.sh quick` | first attempt on `a6fa12efb` failed; re-run on `e2eb96727` | pass | The first attempt failed in `scripts/scoped_selection.py --self-test`: it still named deleted `src/tui/app/mod.rs` and selected 0 targets. `e2eb96727` retargets that self-test to `src/server/mod.rs`. The re-run printed `Quick verification passed.` and exited 0. Its cargo step is `cargo check --workspace --all-targets --locked`, which selects `codegg-tui` and `codegg-cli`. This invocation finished warm in 0.97s and did not reprint unit names, so it is not a log of those crates compiling |
-| Hosted before/after `codegg` `cfg(test)` run ids | — | not run | Branch not pushed. Local `quick` is not this pair |
+| Hosted before/after `codegg` `cfg(test)` compile | runs `44837892044` and `44937196668` | recorded | Hosted. Before quiet span 7m 23.947s inside an 8m 34s test profile. After profile finished in 7m 23s; the root unit is not isolated by the before method. One pair is not a precise effect size. The after job failed afterwards |
 
 ## 3. Production implementation evidence
 
@@ -95,7 +103,9 @@ Results, all local:
 - `cargo build --locked --offline -p codegg --bin codegg`: exit 101, `no bin target named codegg in codegg package`. That failure is intended.
 - `scripts/verify.sh quick`: the `a6fa12efb` attempt failed because the scoped-selection self-test still named deleted `src/tui/app/mod.rs` and selected 0 targets. After `e2eb96727`, the re-run printed `Quick verification passed.` and exited 0. The cargo step finished warm in 0.97s and did not reprint unit names. The command still selects every workspace member, including `codegg-tui` and `codegg-cli`. This log does not show those crates compiling.
 
-Hosted before/after run ids are absent. The branch was not pushed. None of the commands above is a hosted `CI / verify` run.
+Hosted before/after compile observation is in §1. Run `44837892044` is the before measurement. Run `44937196668` is the after compile observation and a failed test run, not a passing suite. None of the local commands above is that hosted pair.
+
+Local, after the hosted failure: the 17 checkout `file_path` arguments in `tests/ide_protocols/lsp.inc` that still named deleted `src/main.rs` now name `src/lib.rs`. Synthetic `src/main.rs` strings, including patch headers, were left. `CARGO_BUILD_JOBS=2 cargo test -p codegg --test ide_protocols --locked --offline -- lsp:: -- --test-threads=4` exited 0: 158 passed, 0 failed. That is local. It is not a hosted run id.
 
 ## 5. Invariant review
 
@@ -125,18 +135,18 @@ The local link, family, bin, and `quick` condition in the previous revision of t
 
 | Severity | Finding | Future evidence |
 |---|---|---|
-| medium | Hosted before/after `cfg(test)` run ids are absent | One hosted `CI / verify` run id before the move and one after, with the runner note that one pair is not a precise effect size. State whether the root unit still contains the TUI (it must not) and whether the workspace job still builds the TUI crate (it must). Local `quick` does not discharge this |
+| medium | Hosted confirmation of the `src/main.rs` path retarget is absent | Run `44937196668` failed at `lsp::callHierarchy_requires_file_path_line_column` because `src/main.rs` is gone. The local `lsp::` member passed after the retarget. A hosted `CI / verify` run on that retarget must show the test no longer fails. The compile observation is already recorded and is not this row |
 | low | Forty-nine ratio ceilings rose with unchanged comment-line counts | No further action unless a later edit adds comment lines. Do not raise a comment-line ceiling to absorb it |
 
 No high-severity product defect was confirmed. The missing evidence is operational.
 
 ## 11. Roadmap disposition
 
-Milestone 002 is conditionally closed. The local link, family, bin, and `quick` evidence is recorded above. Milestone 001 stays conditionally closed on its own hosted helper-step run id. The roadmap stays active until both hosted conditions are met. A null compile effect does not add a third milestone. The deferred binary-topology item stays deferred.
+Milestone 002 is conditionally closed. The hosted compile pair is recorded. The root package and `codegg-tui` are separate units in the after log, and the workspace job still builds the TUI crate. The after job is not a passing test run. The remaining condition is a hosted run of the path retarget. Milestone 001 is closed on run `44937196668`'s helper step. A null or unisolated compile effect does not add a third milestone. The deferred binary-topology item stays deferred.
 
 ## 12. Registry updates
 
 - The active implementation-plan row for 002 stays removed.
-- 002 stays under recently closed or conditionally closed work. Its note now says the local conditions are discharged and the hosted run ids are not.
-- The subsystem row names both milestones as conditionally closed. 002's remaining condition is the hosted pair only.
-- Unblock audit, repeated after the local evidence: no registered plan in Blocked work listed 002 as a hard or interface dependency. 001's hosted-run condition is unchanged. The deferred binary-topology item is not discharged. This record unblocks nothing.
+- 002 stays conditionally closed. Its note now records the hosted compile pair and names the path-retarget hosted run as the remaining condition.
+- The subsystem row names 001 closed and 002 conditionally closed.
+- Unblock audit: no registered plan in Blocked work listed 001 or 002 as a hard or interface dependency. Nothing was moved to `ready`. The deferred binary-topology item is not discharged. This record unblocks nothing.

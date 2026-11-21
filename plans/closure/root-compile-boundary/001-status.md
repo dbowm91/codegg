@@ -1,6 +1,6 @@
 # Root Compile Boundary Milestone 001 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -12,7 +12,7 @@ Source subsystem roadmap:
 
 Repository baseline reviewed: `3b3c75cd9dbcbdca3af21e3008db5d34a2d5741a`
 
-Descendant re-reviewed: `a6fa12efb`, then `e2eb96727` (default-member and scoped-selection self-test only). `e2eb96727` does not change the helper package closure. The hosted condition is unchanged.
+Descendant re-reviewed: `a6fa12efb`, then `e2eb96727` (default-member and scoped-selection self-test only). Hosted helper step observed on `613cecd47` in run `44937196668`. That descendant does not change the helper package closure.
 
 Implementation commits:
 
@@ -21,7 +21,9 @@ Implementation commits:
 
 ## 1. Executive finding
 
-The helper-facing contract and the `codegg-sandbox-helper` bin are no longer part of package `codegg`. The helper package's dependency closure excludes package `codegg`. Launch bytes, the installed stem, and fail-closed missing-helper behavior were not changed. The milestone is conditionally closed because the named hosted helper-step run has not been observed. That gap is operational evidence, not a local correctness failure. A local warm build of the helper bin on `a6fa12efb` also did not compile package `codegg`. That log is local. It is not the hosted run id. This milestone was not expected to move the 7-minute `cfg(test)` compile, and a null effect on that compile is not a failure.
+The helper-facing contract and the `codegg-sandbox-helper` bin are no longer part of package `codegg`. The helper package's dependency closure excludes package `codegg`. Launch bytes, the installed stem, and fail-closed missing-helper behavior were not changed. The named hosted helper-step observation is now recorded. A local warm build of the helper bin on `a6fa12efb` also did not compile package `codegg`. That log is local. It is not the hosted run id. This milestone was not expected to move the 7-minute `cfg(test)` compile, and a null effect on that compile is not a failure.
+
+Hosted run [`44937196668`](https://github.com/dbowm91/codegg/actions/runs/44937196668) on `613cecd47`, job `136946316398`, step "Build trusted sandbox helper for integration tests". The logged command is `cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper`. The step started at `2026-11-21T18:52:44.5642807Z` and finished the dev profile in 1m 43s at `2026-11-21T18:54:28.3989809Z`. After stripping the log's caret-escaped ANSI (`^[` sequences, not raw ESC), the step has 289 `Compiling` lines and zero `Compiling codegg v` lines. Package `codegg` appears only as a manifest warning, not as a Compiling line. That is a manifest read, not a compile. The step did compile `codegg-config`, `codegg-core`, `codegg-git`, `codegg-providers`, `codegg-protocol`, `codegg-sandbox`, and `codegg-sandbox-helper`. It did not compile `codegg-tui`. The `codegg-tui` hits in that step are a manifest warning and a `Cargo.toml` path. The before helper step, run [`44837892044`](https://github.com/dbowm91/codegg/actions/runs/44837892044) on `827141e32`, compiled package `codegg` at `2026-11-20T23:45:40.7305382Z` and finished the dev profile in 4m 10s at `2026-11-20T23:48:51.6055083Z`. One pair is not a precise effect size. These durations are observed step times, not a promised saving. The containing job later failed at workspace tests. That failure is not a helper-step failure and does not reopen this observation.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -37,7 +39,7 @@ The helper-facing contract and the `codegg-sandbox-helper` bin are no longer par
 | Existing sandbox tests still pass | implementing-worker local run on `3b3c75cd9`; re-run on `a6fa12efb` | pass | Re-run local, `--locked --offline --test-threads=4`: library 69, root `sandbox::` 49, helper 4/4 |
 | `scripts/verify.sh quick` | implementing-worker local run on `3b3c75cd9`; descendant re-run recorded in milestone 002 | pass | The `3b3c75cd9` run exited 0. A later local `quick` on `e2eb96727` also exited 0. Neither is the hosted helper-step log |
 | Local helper build does not compile package `codegg` | `CARGO_BUILD_JOBS=2 cargo build --locked --offline -p codegg-sandbox-helper --bin codegg-sandbox-helper` on `a6fa12efb` | pass | Local, 1m 52s. The log compiles helper-closure crates, including `codegg-core` and `codegg-protocol`. It has no `Compiling codegg v` line. The bin was copied to `target/debug/deps/`. Not a hosted run id |
-| Hosted helper step does not compile package `codegg` | CI step is `cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper` plus the `target/debug/deps/` copy | not run | No hosted run id. Branch not pushed. The local build above does not discharge this row |
+| Hosted helper step does not compile package `codegg` | run `44937196668`, job `136946316398`, step "Build trusted sandbox helper for integration tests" | pass | Hosted. Command `cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper`. Zero `Compiling codegg v` lines after ANSI stripping. The job later failed at workspace tests. That later failure is not this row |
 | No test assertion removed | ownership-toml and security-filter diffs in `3b3c75cd9` retarget paths | pass | No fixture path changed. No deletion of a containment, writer-fence, hostile-Git, or queue-transaction assertion was required to land the cut |
 
 ## 3. Production implementation evidence
@@ -71,7 +73,7 @@ Local metadata: helper package closure excludes exact package `codegg`. Root dep
 
 Implementing-worker local results, not re-run here: sandbox library 69 passed; root sandbox tests 49 passed; helper macOS-applicable unit tests 4/4 passed; `scripts/verify.sh quick` exited 0, including `cargo check --workspace --all-targets --locked`. The worker's verbose locked helper build recorded zero package `codegg` build steps.
 
-Hosted: not run. No run id. This record does not label the local metadata, the descendant helper build, or either `quick` as CI.
+Hosted helper step: run `44937196668` on `613cecd47`, job `136946316398`. The step succeeded and did not compile package `codegg`. The job's later workspace-test failure is recorded on milestone 002. It is not a helper-step result. This record does not label the local metadata, the descendant helper build, or either `quick` as CI.
 
 ### Descendant re-run
 
@@ -119,20 +121,15 @@ The transition guard is an operator-facing check in `scripts/verify.sh quick` an
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| low | Hosted helper-step run id is absent | The local closure proof, including the `a6fa12efb` helper build, is not a hosted log. A workflow drift that reintroduced a root compile would be invisible until that run | One warm hosted run of `cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper` on `3b3c75cd9` or a descendant that does not change the helper closure. `e2eb96727` is such a descendant. Record the run id and whether package `codegg` was compiled. This is the condition on closure |
-| low | `AGENTS.md` still names the old helper path as the reason the root skips workspace lints | A reader of the agent guide can follow a deleted path | Correct that sentence in the milestone 002 `AGENTS.md` edit. Do not absorb the stashed drafts |
-
-No high or medium correctness finding remains. The hosted gap is named operational evidence, which is why the status is conditionally closed rather than closed.
+No unresolved finding remains. The hosted helper-step condition is discharged by run `44937196668`: the step did not compile package `codegg`. The `AGENTS.md` sentence that named `src/bin/codegg-sandbox-helper.rs` as the reason the root skips workspace lints is no longer in that file. The containing job's later workspace-test failure is milestone 002's finding, not a helper-step defect.
 
 ## 11. Roadmap disposition
 
-Milestone 001 is conditionally closed. Milestone 002 may proceed. It was never blocked on 001. A null effect on the 7-minute `cfg(test)` compile does not open a further split and does not fail this milestone. The deferred binary-topology item stays deferred. This closure does not discharge it.
+Milestone 001 is closed. The hosted helper step on `613cecd47` did not compile package `codegg`. Milestone 002 was never blocked on 001 and stays on its own condition. A null effect on the `cfg(test)` compile does not open a further split and does not fail this milestone. The deferred binary-topology item stays deferred. This closure does not discharge it.
 
 ## 12. Registry updates
 
-- Roadmap status table: milestone 1 conditionally closed, closure linked, hosted run id named as the remaining condition.
-- `plans/registry.md` active roadmap row: 001 conditionally closed, 002 active.
-- Active implementation-plan row for 001 removed. 002 remains active. Its pre-move fixture commit is `b05ba03a9`.
-- Recently closed row added for 001.
-- Unblock audit: no registered blocked plan listed milestone 001 as a hard or interface dependency. Nothing was moved to `ready`. The deferred binary-topology item remains deferred.
-- 2026-11-21 descendant re-run: the local helper build and sandbox tests passed and did not compile package `codegg`. The hosted-run condition is unchanged. Nothing newly unblocked.
+- Roadmap status table: milestone 1 closed. The hosted helper-step run id is `44937196668`.
+- `plans/registry.md` active roadmap row: 001 closed, 002 still conditionally closed on its own remaining condition.
+- Recently closed row for 001 now says closed. The hosted condition is discharged.
+- Unblock audit, repeated: no registered plan in Blocked work listed milestone 001 as a hard or interface dependency. Nothing was moved to `ready`. 002 was never blocked on 001. The deferred binary-topology item remains deferred. This record unblocks nothing.

@@ -171,7 +171,7 @@ async fn renamePreview_requires_new_name() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "renamePreview",
-            "file_path": "src/main.rs",
+            "file_path": "src/lib.rs",
             "line": 1,
             "column": 1
         }))
@@ -1056,7 +1056,7 @@ async fn sourceActionPreview_requires_action() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "sourceActionPreview",
-            "file_path": "src/main.rs"
+            "file_path": "src/lib.rs"
         }))
         .await
         .unwrap_err();
@@ -1090,7 +1090,7 @@ async fn sourceActionPreview_rejects_unsupported_action_without_lsp_request() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "sourceActionPreview",
-            "file_path": "src/main.rs",
+            "file_path": "src/lib.rs",
             "action": "source.fixAll"
         }))
         .await
@@ -1110,7 +1110,7 @@ async fn semanticCheckPreview_requires_content_or_patch() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "semanticCheckPreview",
-            "file_path": "src/main.rs"
+            "file_path": "src/lib.rs"
         }))
         .await
         .unwrap_err();
@@ -1144,7 +1144,7 @@ async fn semanticCheckPreview_rejects_content_and_patch() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "semanticCheckPreview",
-            "file_path": "src/main.rs",
+            "file_path": "src/lib.rs",
             "content": "fn main() {}",
             "patch": "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() {}\n"
         }))
@@ -1163,7 +1163,7 @@ async fn semanticCheckPreview_rejects_invalid_patch() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "semanticCheckPreview",
-            "file_path": "src/main.rs",
+            "file_path": "src/lib.rs",
             "patch": "@@ -1,1 +1,1 @@\n x\n"
         }))
         .await
@@ -1181,7 +1181,7 @@ async fn semanticCheckPreview_rejects_multi_file_patch() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "semanticCheckPreview",
-            "file_path": "src/main.rs",
+            "file_path": "src/lib.rs",
             "patch": "\
 diff --git a/src/main.rs b/src/main.rs
 --- a/src/main.rs
@@ -1313,7 +1313,7 @@ async fn semanticContext_requires_line_and_column_together() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "semanticContext",
-            "file_path": "src/main.rs",
+            "file_path": "src/lib.rs",
             "line": 1
         }))
         .await
@@ -1675,7 +1675,7 @@ fn callHierarchy_requires_file_path_line_column() {
         let err = tool
             .execute(serde_json::json!({
                 "operation": "callHierarchy",
-                "file_path": "src/main.rs"
+                "file_path": "src/lib.rs"
             }))
             .await
             .unwrap_err();
@@ -1719,7 +1719,7 @@ fn typeHierarchy_requires_file_path_line_column() {
         let err = tool
             .execute(serde_json::json!({
                 "operation": "typeHierarchy",
-                "file_path": "src/main.rs"
+                "file_path": "src/lib.rs"
             }))
             .await
             .unwrap_err();
@@ -2312,7 +2312,7 @@ async fn declaration_requires_file_path_line_column() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "declaration",
-            "file_path": "src/main.rs"
+            "file_path": "src/lib.rs"
         }))
         .await
         .unwrap_err();
@@ -2328,7 +2328,7 @@ async fn implementation_requires_file_path_line_column() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "implementation",
-            "file_path": "src/main.rs"
+            "file_path": "src/lib.rs"
         }))
         .await
         .unwrap_err();
@@ -2344,7 +2344,7 @@ async fn documentHighlights_requires_file_path_line_column() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "documentHighlights",
-            "file_path": "src/main.rs"
+            "file_path": "src/lib.rs"
         }))
         .await
         .unwrap_err();
@@ -2360,7 +2360,7 @@ async fn signatureHelp_requires_file_path_line_column() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "signatureHelp",
-            "file_path": "src/main.rs"
+            "file_path": "src/lib.rs"
         }))
         .await
         .unwrap_err();
@@ -2376,7 +2376,7 @@ async fn completion_requires_file_path_line_column() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "completion",
-            "file_path": "src/main.rs"
+            "file_path": "src/lib.rs"
         }))
         .await
         .unwrap_err();
@@ -2405,7 +2405,7 @@ async fn codeActionSummaries_requires_file_path_and_range() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "codeActionSummaries",
-            "file_path": "src/main.rs"
+            "file_path": "src/lib.rs"
         }))
         .await
         .unwrap_err();
@@ -2419,7 +2419,7 @@ async fn codeActionPreview_requires_action_index() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "codeActionPreview",
-            "file_path": "src/main.rs",
+            "file_path": "src/lib.rs",
             "start_line": 1,
             "start_column": 1,
             "end_line": 1,
