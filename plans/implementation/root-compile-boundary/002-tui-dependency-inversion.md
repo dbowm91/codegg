@@ -1,6 +1,6 @@
 # Root Compile Boundary Milestone 002 — TUI dependency inversion
 
-Status: implemented — conditionally closed. Hosted before/after `cfg(test)` observation recorded from runs `44837892044` and `44937196668`. The after job failed on a deleted `src/main.rs` path; hosted confirmation of the retarget is still absent. See `plans/closure/root-compile-boundary/002-status.md`. ADR-0064 accepted 2026-11-21 by the project maintainer
+Status: implemented — closed. Hosted before/after `cfg(test)` observation recorded from runs `44837892044` and `44937196668`. Hosted confirmation of the path retarget is run `44940955257` on `1686b9586`: `lsp::callHierarchy_requires_file_path_line_column` passed. See `plans/closure/root-compile-boundary/002-status.md`. ADR-0064 accepted 2026-11-21 by the project maintainer
 
 Repository baseline: `b8a6215c885289654d5a8ee951bcccde401a529e`
 

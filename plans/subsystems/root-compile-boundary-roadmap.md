@@ -1,6 +1,6 @@
 # Root Compile Boundary Roadmap
 
-Status: active
+Status: closed
 
 Long-term references:
 
@@ -20,7 +20,7 @@ Repository planning baseline: `b8a6215c885289654d5a8ee951bcccde401a529e`
 
 Primary class: infrastructure.
 
-This roadmap is not a continuation of the closed `ci-test-throughput-recovery` roadmap. That roadmap neither accepts nor rejects a root split. ADR-0064 was accepted on 2026-11-21, and implementation of both milestones is in progress.
+This roadmap is not a continuation of the closed `ci-test-throughput-recovery` roadmap. That roadmap neither accepts nor rejects a root split. ADR-0064 was accepted on 2026-11-21. Both milestones are closed. The hosted compile pair is recorded and is not a precise effect size. That record does not open a further split. The deferred binary-topology item is not this roadmap's work and is not discharged.
 
 ## 1. Purpose and ownership boundary
 
@@ -290,4 +290,4 @@ The roadmap is complete when both milestones have accepted closure records, ADR-
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/root-compile-boundary/001-sandbox-helper-package-cut.md` | `plans/closure/root-compile-boundary/001-status.md` | hosted helper step `44937196668` did not compile package `codegg` |
-| 2 | conditionally closed | `plans/implementation/root-compile-boundary/002-tui-dependency-inversion.md` | `plans/closure/root-compile-boundary/002-status.md` | compile pair recorded; hosted confirmation of the `src/main.rs` path retarget absent |
+| 2 | closed | `plans/implementation/root-compile-boundary/002-tui-dependency-inversion.md` | `plans/closure/root-compile-boundary/002-status.md` | hosted retarget run `44940955257` passed `lsp::callHierarchy_requires_file_path_line_column` |

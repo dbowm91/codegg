@@ -125,11 +125,11 @@ No unresolved finding remains. The hosted helper-step condition is discharged by
 
 ## 11. Roadmap disposition
 
-Milestone 001 is closed. The hosted helper step on `613cecd47` did not compile package `codegg`. Milestone 002 was never blocked on 001 and stays on its own condition. A null effect on the `cfg(test)` compile does not open a further split and does not fail this milestone. The deferred binary-topology item stays deferred. This closure does not discharge it.
+Milestone 001 is closed. The hosted helper step on `613cecd47` did not compile package `codegg`. Milestone 002 was never blocked on 001. Its remaining condition was later discharged by run `44940955257`, recorded on milestone 002. This sentence is not that run's evidence. A null effect on the `cfg(test)` compile does not open a further split and does not fail this milestone. The deferred binary-topology item stays deferred. This closure does not discharge it.
 
 ## 12. Registry updates
 
 - Roadmap status table: milestone 1 closed. The hosted helper-step run id is `44937196668`.
-- `plans/registry.md` active roadmap row: 001 closed, 002 still conditionally closed on its own remaining condition.
+- `plans/registry.md` active roadmap row at this milestone's close: 001 closed, 002 still conditionally closed on its own remaining condition. That row is historical. The current row is the registry; milestone 002's record is the authority for 002.
 - Recently closed row for 001 now says closed. The hosted condition is discharged.
 - Unblock audit, repeated: no registered plan in Blocked work listed milestone 001 as a hard or interface dependency. Nothing was moved to `ready`. 002 was never blocked on 001. The deferred binary-topology item remains deferred. This record unblocks nothing.
