@@ -290,4 +290,4 @@ The roadmap is complete when both milestones have accepted closure records, ADR-
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | conditionally closed | `plans/implementation/root-compile-boundary/001-sandbox-helper-package-cut.md` | `plans/closure/root-compile-boundary/001-status.md` | hosted helper-step run id not yet recorded |
-| 2 | active | `plans/implementation/root-compile-boundary/002-tui-dependency-inversion.md` | — | none — ADR-0064 accepted 2026-11-21; 001 is not a hard dependency |
+| 2 | conditionally closed | `plans/implementation/root-compile-boundary/002-tui-dependency-inversion.md` | `plans/closure/root-compile-boundary/002-status.md` | local link/`quick` not run; hosted before/after `cfg(test)` run ids absent |
