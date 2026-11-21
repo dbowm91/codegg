@@ -1758,4 +1758,91 @@ mod tests {
             "a second admissible backend makes the route invariant inexact: {admitted:?}"
         );
     }
+
+    /// Bytes captured from this encoder before the helper package cut.
+    ///
+    /// The launch-spec JSON is the existing `launch_spec` constructor's full
+    /// struct, with host-varying paths replaced by fixed sentinels after
+    /// construction. That keeps every serde field the constructor emits and
+    /// stays stable across hosts. Do not regenerate these files from a moved
+    /// encoder.
+    #[test]
+    fn baseline_helper_contract_bytes_match_the_frozen_fixtures() {
+        let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sandbox-helper-contract");
+
+        let enforced = encode_sandbox_status(SandboxLaunchOutcome::enforced(
+            BackendId::LANDLOCK,
+            BackendEnforcement::new(Some(9), &["guarantee"], &["limit"]),
+        ))
+        .expect("enforced frame");
+        let setup = encode_sandbox_status(SandboxLaunchOutcome::SetupError {
+            reason: "bad rule".to_string(),
+        })
+        .expect("setup frame");
+        let unavailable = encode_sandbox_status(SandboxLaunchOutcome::Unavailable {
+            reason: "helper missing".to_string(),
+        })
+        .expect("unavailable frame");
+        let exec_error = encode_sandbox_status(SandboxLaunchOutcome::ExecError {
+            reason: "exec failed".to_string(),
+        })
+        .expect("exec frame");
+        let seatbelt = encode_sandbox_status(SandboxLaunchOutcome::Enforced {
+            backend: BackendId::SEATBELT,
+            abi: None,
+            guarantees: Vec::new(),
+            limits: Vec::new(),
+        })
+        .expect("seatbelt frame");
+        let abi = encode_process_scope_abi_record(9);
+        let constants = format!(
+            "SANDBOX_STATUS_VERSION={SANDBOX_STATUS_VERSION}\nMAX_SANDBOX_STATUS_BYTES={MAX_SANDBOX_STATUS_BYTES}\nMAX_SANDBOX_SPEC_BYTES={MAX_SANDBOX_SPEC_BYTES}\n"
+        );
+
+        let host = tempfile::tempdir().expect("launch-spec fixture dir");
+        let constructed = SandboxConfig::new()
+            .with_enabled(true)
+            .launch_spec("/bin/echo", &["fixture".to_string()], Some(host.path()))
+            .expect("existing launch_spec constructor");
+        let mut spec = constructed;
+        spec.target = std::path::PathBuf::from("/fixture/target");
+        spec.args = vec!["fixture".to_string()];
+        spec.env = vec![("FIXTURE".to_string(), "1".to_string())];
+        spec.read_paths = vec![std::path::PathBuf::from("/fixture/read")];
+        spec.write_paths = vec![std::path::PathBuf::from("/fixture/write")];
+        spec.deny_paths = vec![std::path::PathBuf::from("/fixture/deny")];
+        spec.protected_readonly_paths.clear();
+        spec.path_identities.clear();
+        spec.expected_created_git_pointers.clear();
+        let spec_json = serde_json::to_vec_pretty(&spec).expect("launch spec json");
+        assert!(
+            !spec.linux_protected_mount_view
+                && !spec.linux_process_isolation
+                && !spec.linux_offline_network,
+            "the constructor's default flags are part of the frozen value"
+        );
+
+        let files: &[(&str, &[u8])] = &[
+            ("status-enforced-landlock.bin", &enforced),
+            ("status-setup-error.bin", &setup),
+            ("status-unavailable.bin", &unavailable),
+            ("status-exec-error.bin", &exec_error),
+            ("status-enforced-seatbelt.bin", &seatbelt),
+            ("process-scope-abi-9.txt", abi.as_bytes()),
+            ("constants.txt", constants.as_bytes()),
+            ("launch-spec.json", &spec_json),
+        ];
+        for (name, bytes) in files {
+            let frozen = std::fs::read(fixture_dir.join(name))
+                .unwrap_or_else(|error| panic!("frozen fixture {name} missing: {error}"));
+            assert_eq!(
+                &frozen, bytes,
+                "baseline encoder drifted from frozen {name}"
+            );
+        }
+        assert_eq!(SANDBOX_STATUS_VERSION, 1);
+        assert_eq!(MAX_SANDBOX_STATUS_BYTES, 16 * 1024);
+        assert_eq!(MAX_SANDBOX_SPEC_BYTES, 64 * 1024);
+    }
 }
