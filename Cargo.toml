@@ -1,5 +1,6 @@
 [workspace]
-members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-host-protocol", "crates/codegg-sdk", "crates/codegg-client", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp", "crates/codegg-git", "crates/codegg-document"]
+members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-host-protocol", "crates/codegg-sdk", "crates/codegg-client", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp", "crates/codegg-git", "crates/codegg-document", "crates/codegg-sandbox", "crates/codegg-sandbox-helper"]
+default-members = [".", "crates/codegg-sandbox-helper"]
 # `crates/eggwork-test-node` is a standalone test-fixture workspace (own
 # lockfile): it must resolve `eggwork-server` without this workspace's
 # `sqlx` sqlite linkage (see dev-dependencies comment above).
@@ -31,6 +32,7 @@ codegg-document = { version = "=0.1.0", path = "crates/codegg-document" }
 codegg-client = { version = "=0.1.0", path = "crates/codegg-client" }
 codegg-providers = { version = "=0.1.0", path = "crates/codegg-providers" }
 codegg-core = { version = "=0.1.0", path = "crates/codegg-core" }
+codegg-sandbox = { version = "=0.1.0", path = "crates/codegg-sandbox" }
 codegg-git = { version = "=0.1.0", path = "crates/codegg-git" }
 egggit = { version = "=0.1.0", path = "crates/egggit" }
 egglsp = { version = "=0.1.0", path = "crates/egglsp" }
@@ -80,10 +82,9 @@ bytes = "1"
 proptest = "1"
 
 [workspace.lints.rust]
-# Only `unsafe_code` is workspace-owned, and only for crates that already
-# enforce it (`codegg` root and `codegg-core`). Crates with deliberate,
-# reviewed unsafe-adjacent test helpers keep explicit local allows and do
-# not inherit this table.
+# Only `unsafe_code` is workspace-owned. `codegg-sandbox` and
+# `codegg-core` inherit it; the root package keeps its library deny without
+# inheriting the table. Crates with deliberate unsafe do not inherit it.
 unsafe_code = "deny"
 
 [package]
@@ -103,19 +104,13 @@ categories = ["command-line-utilities", "artificial-intelligence"]
 # the lab out of a published crate as well.
 exclude = ["dev/harness_lab", "dev/harness_lab/**"]
 
-# Note: the root package intentionally does NOT inherit `[workspace.lints]`.
-# `src/lib.rs` keeps `#![deny(unsafe_code)]` for the library, while
-# `src/bin/codegg-sandbox-helper.rs` contains deliberate, reviewed `unsafe`
-# (fd ownership + fcntl) and must remain outside a package-wide deny.
+# Note: the root package intentionally does NOT inherit `[workspace.lints]`;
+# `src/lib.rs` keeps `#![deny(unsafe_code)]` for the root library.
 
 [[bin]]
 name = "codegg-lsp-test-server"
 path = "crates/egglsp-test-server/src/main.rs"
 required-features = ["lsp-test-support"]
-
-[[bin]]
-name = "codegg-sandbox-helper"
-path = "src/bin/codegg-sandbox-helper.rs"
 
 [dependencies]
 vt100 = "=0.16.2"
@@ -285,6 +280,7 @@ eggcontext.workspace = true
 egggit.workspace = true
 egglsp.workspace = true
 codegg-core.workspace = true
+codegg-sandbox.workspace = true
 codegg-git.workspace = true
 eggsact = "1.2.5"
 
@@ -322,11 +318,6 @@ eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "81f34e0
 # Optional so default builds remain unchanged; no training dependency is imported.
 sdm-core = { git = "https://github.com/dbowm91/sdm.git", rev = "8139b064bdcf3212e8f6fd912e801a479b55751c", optional = true }
 sdm-runtime = { git = "https://github.com/dbowm91/sdm.git", rev = "8139b064bdcf3212e8f6fd912e801a479b55751c", optional = true }
-
-# Maintained Landlock bindings. The helper is only linked on Linux.
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = { version = "0.4.7", default-features = false }
-seccompiler = { version = "0.5.0", default-features = false }
 
 # Process group management (Unix only)
 [target.'cfg(unix)'.dependencies]

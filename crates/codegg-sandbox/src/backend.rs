@@ -273,12 +273,11 @@ mod tests {
     #[test]
     fn every_tier_names_the_inherited_descriptor_channel_with_the_same_words() {
         assert!(
-            crate::security::sandbox::landlock::LANDLOCK_LIMITS
-                .contains(&INHERITED_DESCRIPTOR_LIMIT),
+            crate::landlock::LANDLOCK_LIMITS.contains(&INHERITED_DESCRIPTOR_LIMIT),
             "Landlock must disclose the descriptor channel"
         );
         assert!(
-            crate::security::sandbox::seatbelt::enforcement()
+            crate::seatbelt::enforcement()
                 .limits
                 .iter()
                 .any(|limit| limit == INHERITED_DESCRIPTOR_LIMIT),
@@ -301,7 +300,7 @@ mod tests {
         };
         for isolated in [false, true] {
             spec.linux_process_isolation = isolated;
-            let limits = crate::managed_process::protected_mount_view_limits(&spec);
+            let limits = crate::protected_mount_view_limits(&spec);
             assert!(
                 limits
                     .iter()

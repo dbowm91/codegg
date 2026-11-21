@@ -289,7 +289,7 @@ def source_roots_for(command: str, root: Path | None = None) -> list[str]:
         # Neither layout: keep the standalone path so the guard reports the
         # filter as selecting nothing rather than resolving to nothing.
         return [standalone]
-    package = re.search(r"-p\s+([A-Za-z0-9_]+)", command)
+    package = re.search(r"-p\s+([A-Za-z0-9_-]+)", command)
     if package:
         candidate = f"crates/{package.group(1)}/src"
         if (base / candidate).is_dir():

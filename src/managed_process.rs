@@ -2743,7 +2743,7 @@ fn mount_view_enforcement(
                 .into(),
         );
     }
-    let mut limits = protected_mount_view_limits(spec);
+    let mut limits = crate::security::sandbox::protected_mount_view_limits(spec);
     if spec.linux_process_isolation {
         guarantees.extend([
             "PID namespace with a private procfs mounted after namespace creation".into(),
@@ -2770,43 +2770,6 @@ fn mount_view_enforcement(
         guarantees,
         limits,
     }
-}
-
-/// What the protected mount view did **not** obtain, for either tier.
-///
-/// One list for both mount-view shapes, so a channel cannot be disclosed on
-/// the process-isolation tier and omitted on the filesystem-only one. The
-/// descriptor entry is shared verbatim with the Landlock and Seatbelt lists
-/// (`backend::INHERITED_DESCRIPTOR_LIMIT`): the daemon closes what it hands
-/// down, but the helper's own descriptors cross the final `exec`, so every
-/// tier passes a descriptor channel and every tier must name it the same way.
-#[cfg(any(target_os = "linux", test))]
-pub(crate) fn protected_mount_view_limits(spec: &SandboxLaunchSpec) -> Vec<String> {
-    let mut limits = vec![
-        crate::security::sandbox::backend::INHERITED_DESCRIPTOR_LIMIT.to_string(),
-        "resource limits are not claimed by this launch".into(),
-    ];
-    if spec.linux_process_isolation {
-        limits.push(
-            "pathname Unix socket access is not qualified and must not be treated as denied".into(),
-        );
-        if !spec.linux_offline_network {
-            limits.push(
-                "network isolation not requested; outbound networking retains its existing policy"
-                    .into(),
-            );
-        }
-    } else {
-        limits.push("network isolation not requested".into());
-        // This tier applies no process scope, so it has no ABI to report; the
-        // words keep `abi: None` from reading as a scope that was lost.
-        limits.push(
-            "PID/IPC isolation and seccomp are not claimed by this launch, so no process-scope \
-             ABI is reported"
-                .into(),
-        );
-    }
-    limits
 }
 
 /// The network boundary a Bubblewrap launch **obtained**.

@@ -163,11 +163,11 @@ fn kernel_release() -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn linux_capabilities() -> Vec<HostCapability> {
-    use crate::security::sandbox::linux_launch::{probe_linux_host_features, ProbeState};
+    use crate::linux_launch::{probe_linux_host_features, ProbeState};
 
     let features = probe_linux_host_features();
     let mut out = Vec::new();
-    let mut push = |dimension: &str, fact: &crate::security::sandbox::linux_launch::ProbeFact| {
+    let mut push = |dimension: &str, fact: &crate::linux_launch::ProbeFact| {
         let state = match fact.state {
             ProbeState::Available => Capability::Available,
             ProbeState::Unavailable => Capability::Unavailable,
@@ -200,7 +200,7 @@ fn linux_capabilities() -> Vec<HostCapability> {
 }
 
 fn landlock_process_scopes_state() -> Capability {
-    match crate::security::sandbox::landlock::probe_process_scopes() {
+    match crate::landlock::probe_process_scopes() {
         Ok(()) => Capability::Available,
         Err(_) => Capability::Unavailable,
     }
@@ -226,7 +226,7 @@ fn derive_can_launch(discovered: &DiscoveredHost) -> CanLaunch {
 
     // Process isolation additionally needs the M004 Landlock ABI 6 signal
     // and abstract-socket scopes, plus a trusted helper to apply them.
-    let process_scopes = crate::security::sandbox::landlock::probe_process_scopes();
+    let process_scopes = crate::landlock::probe_process_scopes();
     let process_isolation = match (process_scopes.is_ok(), bubblewrap_state, userns_state) {
         (true, Capability::Available, Capability::Available) => Capability::Available,
         (false, _, _) => Capability::Unavailable,

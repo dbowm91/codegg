@@ -450,11 +450,11 @@ impl BashTool {
                     .as_ref()
                     .expect("contained path requires an enabled config");
                 let args = raw_shell_argv[1..].to_vec();
-                crate::managed_process::SandboxRequest::Required(config.launch_spec(
-                    &raw_shell_argv[0],
-                    &args,
-                    Some(&cwd),
-                )?)
+                crate::managed_process::SandboxRequest::Required(
+                    config
+                        .launch_spec(&raw_shell_argv[0], &args, Some(&cwd))
+                        .map_err(crate::security::sandbox::map_sandbox_error)?,
+                )
             }
             crate::security::sandbox::SandboxExecutionPath::Unavailable { reason } => {
                 return Err(ToolError::Execution(format!(

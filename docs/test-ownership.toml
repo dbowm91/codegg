@@ -46,11 +46,11 @@
 #
 #   lib-test-target = "<member's library test target name>"
 #       The name cargo gives the member's library unit-test harness (cargo
-#       names it after the crate, with underscores). An affected member
-#       ALWAYS contributes this target. A member with no integration test
-#       targets therefore needs no `[[groups]]` entry at all: its lib test
-#       target is owned by the member entry itself.
-#
+#       names it after the crate, with underscores). Set it to an empty string
+#       for a bin-only package; scoped verification then omits --lib and runs
+#       that package's default test targets. An affected member with a library
+#       ALWAYS contributes this target.
+
 # [[groups]]
 #     One coverage group per subject. A group names the member it belongs to,
 #     the source paths its subject covers, and the test targets that cover
@@ -115,8 +115,8 @@
 # A changed file that matches no group's `paths` widens the scope to its whole
 # member rather than being skipped. The `root_catch_all` group is the
 # documented catch-all for the root package: its `paths` name the root
-# package's remaining top-level source paths (`src/lib.rs`, `src/main.rs`,
-# `src/bin/**`), and its `targets` name the root package's library test
+# package's remaining top-level source paths (`src/lib.rs`, `src/main.rs`),
+# and its `targets` name the root package's library test
 # target. It exists so that the root package always contributes its lib test
 # target to a scoped run, and so that a change to a root source file that no
 # precise group claims is visibly attributed rather than silently dropped.
@@ -194,6 +194,16 @@ schema-version = 1
 name = "codegg"
 root = "src"
 lib-test-target = "codegg"
+
+[[members]]
+name = "codegg-sandbox"
+root = "crates/codegg-sandbox/src"
+lib-test-target = "codegg_sandbox"
+
+[[members]]
+name = "codegg-sandbox-helper"
+root = "crates/codegg-sandbox-helper/src"
+lib-test-target = ""
 
 [[members]]
 name = "codegg-host-protocol"
@@ -348,7 +358,6 @@ member = "codegg"
 paths = [
   "src/managed_process/windows.rs",
   "src/managed_process/windows_acl_lease.rs",
-  "src/security/sandbox/**",
 ]
 targets = ["windows_sandbox_test_support"]
 
@@ -613,7 +622,6 @@ id = "root_macos_shared_checkout_containment"
 member = "codegg"
 paths = [
   "src/security/sandbox.rs",
-  "src/security/sandbox/**",
   "src/managed_process.rs",
 ]
 targets = ["macos_native_shared_checkout_containment"]
@@ -699,7 +707,6 @@ member = "codegg"
 paths = [
   "src/lib.rs",
   "src/main.rs",
-  "src/bin/**",
 ]
 targets = ["codegg"]
 
@@ -1018,6 +1025,18 @@ dependent = "codegg"
 [[dependencies]]
 member = "codegg-providers"
 dependent = "codegg-core"
+
+[[dependencies]]
+member = "codegg-core"
+dependent = "codegg-sandbox"
+
+[[dependencies]]
+member = "codegg-sandbox"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-sandbox"
+dependent = "codegg-sandbox-helper"
 
 [[dependencies]]
 member = "eggcontext"

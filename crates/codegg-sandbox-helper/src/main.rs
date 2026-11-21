@@ -5,13 +5,13 @@
 //! containment policy, reports setup through that pipe, and execs the target.
 //!
 //! It carries the reviewable `unsafe` blocks: status-pipe plumbing, the
-//! `sandbox_init` FFI the root library cannot make (`#![deny(unsafe_code)]`),
+//! `sandbox_init` FFI the sandbox library cannot make (`#![deny(unsafe_code)]`),
 //! the Linux PTY bootstrap ioctls, and the seccomp filter descriptor. The shared
-//! exception, `security::sandbox::linux_mount_view::open_pinned`, owns the
+//! exception, `codegg_sandbox::linux_mount_view::open_pinned`, owns the
 //! `openat2` syscall under `#[allow(unsafe_code)]`.
 
 #[cfg(unix)]
-use codegg::security::sandbox::{
+use codegg_sandbox::{
     apply_backend, encode_sandbox_status, platform_sandbox_capability, SandboxCapability,
     SandboxLaunchOutcome, SandboxLaunchSpec, MAX_SANDBOX_SPEC_BYTES,
 };
@@ -123,9 +123,7 @@ fn parse_args() -> Result<(PathBuf, RawFd), String> {
 /// flags set, `profile` names a built-in Apple constant rather than being
 /// parsed as SBPL.
 #[cfg(target_os = "macos")]
-fn apply_seatbelt(
-    spec: &SandboxLaunchSpec,
-) -> Result<codegg::security::sandbox::BackendEnforcement, String> {
+fn apply_seatbelt(spec: &SandboxLaunchSpec) -> Result<codegg_sandbox::BackendEnforcement, String> {
     extern "C" {
         fn sandbox_init(
             profile: *const std::os::raw::c_char,
@@ -135,7 +133,7 @@ fn apply_seatbelt(
         fn sandbox_free_error(error: *mut std::os::raw::c_char);
     }
 
-    let profile = codegg::security::sandbox::seatbelt::profile_for(spec);
+    let profile = codegg_sandbox::seatbelt::profile_for(spec);
     let c_profile = CString::new(profile.clone())
         .map_err(|_| "generated SBPL profile contains an interior NUL".to_string())?;
 
@@ -153,7 +151,7 @@ fn apply_seatbelt(
         };
         return Err(reason);
     }
-    Ok(codegg::security::sandbox::seatbelt::enforcement())
+    Ok(codegg_sandbox::seatbelt::enforcement())
 }
 
 #[cfg(unix)]
@@ -164,7 +162,7 @@ fn main() {
     // Install the Seatbelt applier before any backend is resolved. On
     // non-macOS hosts this is a no-op the backend registry never reaches.
     #[cfg(target_os = "macos")]
-    codegg::security::sandbox::seatbelt::install_apply_hook(apply_seatbelt);
+    codegg_sandbox::seatbelt::install_apply_hook(apply_seatbelt);
 
     let (spec_path, status_fd) = parse_args().unwrap_or_else(|reason| {
         // There is no trustworthy channel until the fd argument itself has
@@ -366,8 +364,8 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
     } else {
         None
     };
-    let bubblewrap = codegg::security::sandbox::linux_launch::trusted_bubblewrap_path()
-        .unwrap_or_else(|reason| {
+    let bubblewrap =
+        codegg_sandbox::linux_launch::trusted_bubblewrap_path().unwrap_or_else(|reason| {
             fail(
                 status_fd,
                 SandboxLaunchOutcome::Unavailable {
@@ -387,7 +385,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
     });
     let mut pinned_sources = Vec::<File>::new();
     let (mount_args, mut inherited_fds) =
-        codegg::security::sandbox::linux_mount_view::compile(spec, &cwd, |path| {
+        codegg_sandbox::linux_mount_view::compile(spec, &cwd, |path| {
             let fd = open_mount_source(path, &spec.path_identities)?;
             let raw = fd.as_raw_fd();
             pinned_sources.push(fd);
@@ -407,7 +405,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
     }
 
     let seccomp_filter = if spec.linux_process_isolation {
-        let filter = codegg::security::sandbox::linux_seccomp::compile_filter()
+        let filter = codegg_sandbox::linux_seccomp::compile_filter()
             .and_then(|bytes| seccomp_filter_file(&bytes))
             .unwrap_or_else(|reason| {
                 fail(
@@ -428,7 +426,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
     // to carry; the filesystem-only tier applies none and reports none.
     let mut process_scope_abi = None;
     if spec.linux_process_isolation {
-        match codegg::security::sandbox::landlock::apply_process_scopes() {
+        match codegg_sandbox::landlock::apply_process_scopes() {
             Ok(abi) => process_scope_abi = Some(abi),
             Err(reason) => fail(
                 status_fd,
@@ -476,7 +474,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
     }
     command
         .arg("--block-fd")
-        .arg(codegg::security::sandbox::SANDBOX_ACK_FD.to_string())
+        .arg(codegg_sandbox::SANDBOX_ACK_FD.to_string())
         .arg("--json-status-fd")
         .arg(status_fd.to_string());
     let target_env = validated_target_environment(&spec.env).unwrap_or_else(|reason| {
@@ -512,7 +510,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
             if libc::fcntl(status_fd, libc::F_SETFD, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            if libc::fcntl(codegg::security::sandbox::SANDBOX_ACK_FD, libc::F_SETFD, 0) < 0 {
+            if libc::fcntl(codegg_sandbox::SANDBOX_ACK_FD, libc::F_SETFD, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -548,7 +546,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
 /// mark are needed: Bubblewrap writes one line after this one.
 #[cfg(target_os = "linux")]
 fn report_process_scope_abi(fd: RawFd, abi: u32) -> Result<(), String> {
-    let record = codegg::security::sandbox::encode_process_scope_abi_record(abi);
+    let record = codegg_sandbox::encode_process_scope_abi_record(abi);
     let mut writer = unsafe { File::from_raw_fd(fd) };
     writer
         .write_all(record.as_bytes())
@@ -684,14 +682,14 @@ fn seccomp_filter_file(bytes: &[u8]) -> Result<File, String> {
 /// device nodes and launch scratch are mounted without a captured snapshot, and
 /// a source that has one is verified against it.
 ///
-/// [`open_pinned`]: codegg::security::sandbox::linux_mount_view::open_pinned
+/// [`open_pinned`]: codegg_sandbox::linux_mount_view::open_pinned
 #[cfg(target_os = "linux")]
 fn open_mount_source(
     path: &std::path::Path,
-    identities: &[codegg::security::sandbox::SandboxPathIdentity],
+    identities: &[codegg_sandbox::SandboxPathIdentity],
 ) -> Result<File, String> {
     let identity = identities.iter().find(|identity| identity.path == path);
-    codegg::security::sandbox::linux_mount_view::open_pinned(path, identity)
+    codegg_sandbox::linux_mount_view::open_pinned(path, identity)
 }
 
 #[cfg(not(unix))]
@@ -703,7 +701,7 @@ fn main() {
 #[cfg(all(test, unix))]
 mod temporary_root_tests {
     use super::contained_temporary_directory;
-    use codegg::security::sandbox::SandboxLaunchSpec;
+    use codegg_sandbox::SandboxLaunchSpec;
     use std::path::PathBuf;
 
     fn spec(
@@ -812,7 +810,7 @@ mod temporary_root_tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_mount_source_tests {
     use super::{open_mount_source, validated_target_environment};
-    use codegg::security::sandbox::SandboxPathIdentity;
+    use codegg_sandbox::SandboxPathIdentity;
     use std::os::unix::fs::MetadataExt;
 
     #[test]

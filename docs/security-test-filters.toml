@@ -120,7 +120,7 @@ security = "The constrained language server must be owned by the M004 scope, not
 workflow = ".github/workflows/linux-m004-native.yml"
 job = "process-ipc"
 step = "Protected mount and Git regressions"
-command = "cargo test --locked --lib protected_mount_ -- --nocapture"
+command = "cargo test --locked -p codegg --lib protected_mount_ -- --nocapture"
 filter = "protected_mount_"
 gates = ["CODEGG_RUN_C006_BWRAP_NATIVE", "CODEGG_RUN_C009_BWRAP_NATIVE"]
 tests = [
@@ -134,9 +134,17 @@ tests = [
   "protected_mount_rejects_workspace_replacement_before_target_start",
   "protected_mount_view_linked_worktree_common_dir_is_read_only",
   "protected_mount_view_real_managed_process_handoff",
-  "protected_mount_refuses_bare_repository_as_workspace",
 ]
 security = "The protected-mount view must refuse a replaced workspace, a denied descendant and a writable-grant alias; the filter selects tests that self-skip when the host cannot run them."
+
+[[filter]]
+workflow = ".github/workflows/linux-m004-native.yml"
+job = "process-ipc"
+step = "Protected mount and Git regressions"
+command = "cargo test --locked -p codegg-sandbox --lib protected_mount_refuses_bare_repository_as_workspace -- --nocapture"
+filter = "protected_mount_refuses_bare_repository_as_workspace"
+tests = ["protected_mount_refuses_bare_repository_as_workspace"]
+security = "A bare repository cannot be accepted as a protected-mount workspace after the contract moved to the sandbox library."
 
 [[filter]]
 workflow = ".github/workflows/linux-m004-native.yml"
@@ -202,7 +210,7 @@ security = "The constrained language-server launch must refuse before the target
 workflow = ".github/workflows/linux-c006-native.yml"
 job = "protected-mount"
 step = "ManagedProcessService protected-mount qualification"
-command = "cargo test --locked --lib protected_mount_ -- --nocapture"
+command = "cargo test --locked -p codegg --lib protected_mount_ -- --nocapture"
 filter = "protected_mount_"
 gates = ["CODEGG_RUN_C006_BWRAP_NATIVE", "CODEGG_RUN_C009_BWRAP_NATIVE"]
 tests = [
@@ -216,9 +224,17 @@ tests = [
   "protected_mount_rejects_workspace_replacement_before_target_start",
   "protected_mount_view_linked_worktree_common_dir_is_read_only",
   "protected_mount_view_real_managed_process_handoff",
-  "protected_mount_refuses_bare_repository_as_workspace",
 ]
 security = "The C006 protected-mount qualification is the same boundary as the M004 regression step; both must select the same refusal tests."
+
+[[filter]]
+workflow = ".github/workflows/linux-c006-native.yml"
+job = "protected-mount"
+step = "ManagedProcessService protected-mount qualification"
+command = "cargo test --locked -p codegg-sandbox --lib protected_mount_refuses_bare_repository_as_workspace -- --nocapture"
+filter = "protected_mount_refuses_bare_repository_as_workspace"
+tests = ["protected_mount_refuses_bare_repository_as_workspace"]
+security = "A bare repository cannot be accepted as a protected-mount workspace after the contract moved to the sandbox library."
 
 [[filter]]
 workflow = ".github/workflows/linux-c006-native.yml"
@@ -308,7 +324,7 @@ security = "The WRITE_RESTRICTED token-flag differential must stay bounded and j
 workflow = ".github/workflows/windows-process-launcher.yml"
 job = "process-launcher"
 step = "Sandbox status frame rejection tests"
-command = "cargo test --locked -p codegg --lib status_decoder_rejects_malformed_duplicate_and_oversized_frames -- --nocapture"
+command = "cargo test --locked -p codegg-sandbox --lib status_decoder_rejects_malformed_duplicate_and_oversized_frames -- --nocapture"
 filter = "status_decoder_rejects_malformed_duplicate_and_oversized_frames"
 tests = ["status_decoder_rejects_malformed_duplicate_and_oversized_frames"]
 security = "The sandbox status decoder must reject malformed, duplicate and oversized frames."
@@ -348,10 +364,9 @@ security = "The AppContainer launch must keep the target suspended until the SID
 workflow = ".github/workflows/windows-process-launcher.yml"
 job = "process-launcher"
 step = "Windows native shell and policy inputs"
-command = "cargo test --locked -p codegg --lib windows_policy_tests -- --nocapture"
+command = "cargo test --locked -p codegg-sandbox --lib windows_policy_tests -- --nocapture"
 filter = "windows_policy_tests"
 tests = [
-  "windows_launch_spec_keeps_workspace_write_roots_distinct",
   "windows_policy_path_normalizes_case_aliases",
   "windows_policy_path_rejects_junction_components",
   "windows_policy_path_rejects_unc_device_ads_and_traversal",
@@ -359,6 +374,15 @@ tests = [
   "windows_roots_use_known_folders_and_retain_credential_denies",
 ]
 security = "The Windows launch policy must refuse junction components, UNC device paths and search-path-resolved roots."
+
+[[filter]]
+workflow = ".github/workflows/windows-process-launcher.yml"
+job = "process-launcher"
+step = "Windows native shell and policy inputs"
+command = "cargo test --locked -p codegg --lib windows_launch_spec_keeps_workspace_write_roots_distinct -- --nocapture"
+filter = "windows_launch_spec_keeps_workspace_write_roots_distinct"
+tests = ["windows_launch_spec_keeps_workspace_write_roots_distinct"]
+security = "Windows workspace-write launch specs must preserve separate workspace roots."
 
 # ---------------------------------------------------------------------
 # Linux sandbox grant qualification

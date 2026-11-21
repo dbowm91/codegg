@@ -830,7 +830,7 @@ pub fn verify_path_identity(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::security::sandbox::SandboxConfig;
+    use crate::SandboxConfig;
     use std::path::Path;
 
     fn exists(path: &Path) -> bool {
@@ -1082,7 +1082,7 @@ mod tests {
             deny_paths: sensitive_deny_paths(),
         };
         let policy = BackendPolicy::for_spec(&spec);
-        let profile = crate::security::sandbox::seatbelt::sbpl_profile(&policy);
+        let profile = crate::seatbelt::sbpl_profile(&policy);
         let last_reallow = profile
             .rfind("(allow file-write*")
             .expect("a writable root must be re-allowed");
@@ -1286,7 +1286,7 @@ mod tests {
         // than the one the tests describe.
         let mut config = SandboxConfig::new()
             .with_enabled(true)
-            .with_deny_paths(crate::security::sandbox::get_sensitive_paths());
+            .with_deny_paths(crate::get_sensitive_paths());
         let workspace = tempfile::tempdir().expect("workspace fixture");
         config.allowed_paths = vec![workspace.path().to_string_lossy().into_owned()];
         let spec = config
@@ -1449,34 +1449,6 @@ mod windows_policy_tests {
             resolve_policy_path(&lower).expect("lower-case path"),
             resolve_policy_path(&upper).expect("upper-case path")
         );
-    }
-
-    #[test]
-    fn windows_launch_spec_keeps_workspace_write_roots_distinct() {
-        let fixture = tempfile::tempdir().expect("workspace fixture root");
-        let first = fixture.path().join("worktree-one");
-        let second = fixture.path().join("worktree-two");
-        std::fs::create_dir(&first).expect("first worktree");
-        std::fs::create_dir(&second).expect("second worktree");
-        let argv =
-            crate::tool::bash::process::shell_argv("exit 0", None).expect("native shell argv");
-        let mut config = crate::security::sandbox::SandboxConfig::new()
-            .with_enabled(true)
-            .with_mode(crate::security::sandbox::SandboxMode::WorkspaceWrite);
-        config.allowed_paths = vec![
-            first.to_string_lossy().into_owned(),
-            second.to_string_lossy().into_owned(),
-        ];
-        let spec = config
-            .launch_spec(&argv[0], &argv[1..], Some(&first))
-            .expect("Windows policy inputs");
-        for root in [&first, &second] {
-            let resolved = resolve_policy_path(root).expect("resolved worktree");
-            assert!(
-                spec.write_paths.contains(&resolved),
-                "worktree root must remain a distinct write input: {resolved:?}"
-            );
-        }
     }
 
     #[test]

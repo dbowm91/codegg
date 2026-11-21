@@ -834,6 +834,7 @@ dependencies = [
  "codegg-host-protocol",
  "codegg-protocol",
  "codegg-providers",
+ "codegg-sandbox",
  "comrak",
  "crossterm",
  "dashmap",
@@ -863,7 +864,6 @@ dependencies = [
  "http",
  "ignore",
  "image",
- "landlock",
  "libc",
  "nix",
  "notify-rust",
@@ -879,7 +879,6 @@ dependencies = [
  "rustls",
  "sdm-core",
  "sdm-runtime",
- "seccompiler",
  "semver",
  "serde",
  "serde_json",
@@ -1064,6 +1063,31 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "codegg-sandbox"
+version = "0.1.0"
+dependencies = [
+ "codegg-core",
+ "dirs",
+ "landlock",
+ "libc",
+ "seccompiler",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "codegg-sandbox-helper"
+version = "0.1.0"
+dependencies = [
+ "codegg-sandbox",
+ "libc",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

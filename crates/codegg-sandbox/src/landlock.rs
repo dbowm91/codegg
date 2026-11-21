@@ -71,8 +71,7 @@ pub fn probe() -> Result<(), String> {
 /// Both routes that apply the scope state it with these words, so the two
 /// descriptors cannot disagree about the same scope. `abi` is the effective
 /// one, never a baseline the host need not have granted.
-#[cfg(any(target_os = "linux", test))]
-pub(crate) fn process_scope_guarantee(abi: u32) -> String {
+pub fn process_scope_guarantee(abi: u32) -> String {
     format!(
         "Landlock ABI {abi} process scope obtained: signals and abstract AF_UNIX sockets \
          outside the scoped process hierarchy are unreachable"
@@ -345,12 +344,12 @@ pub(super) fn landlock_access_for_path(
 mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
-    use crate::security::sandbox::linux_mount_view;
+    use crate::linux_mount_view;
 
     #[cfg(target_os = "linux")]
     #[test]
     fn a_metadata_staging_rename_is_permitted_under_the_production_spec() {
-        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+        use crate::{SandboxConfig, SandboxMode};
 
         let fixture = tempfile::tempdir().expect("fixture directory");
         let root = fixture.path().canonicalize().expect("canonical fixture");

@@ -367,7 +367,11 @@ def _member_targets() -> dict[str, dict]:
                 "integration": sorted(
                     t["name"] for t in package["targets"] if t["kind"] == ["test"]
                 ),
-                "lib-test-target": package["name"].replace("-", "_"),
+                "lib-test-target": (
+                    package["name"].replace("-", "_")
+                    if any(t["kind"] == ["lib"] for t in package["targets"])
+                    else None
+                ),
                 # A target gated behind `required-features` cannot be built
                 # without them, so the caller has to enable them rather than
                 # name a target that will not compile.
@@ -415,25 +419,18 @@ def _path_match(pattern: str, path: str) -> bool:
 
 
 def members_lines(selection: dict) -> list[str]:
-    """The `members` format: one tab-separated line per affected member.
+    """One tab-separated line per affected member.
 
-    The columns are `<package>\\t<target> <target> ...\\t<feature,feature>`.
-
-    The third column is the union of the cargo features the member's selected
-    targets are gated on. It is empty when no selected target needs a feature.
-    The caller (`scripts/verify.sh`) enables exactly those features, because
-    cargo refuses to build a gated target without them.
-
-    The column count is part of the contract: the caller reads the line with
-    `IFS=$'\t' read -r name targets features`, so a format change that drops
-    or adds a column silently changes what the caller runs.
+    Columns: package, selected targets, required features, and library-test
+    presence. The last column is true or false so the caller can omit --lib
+    for a binary-only package.
     """
     lines = []
     for member in selection["members"]:
         features = ",".join(member.get("required_features", []))
-        lines.append(f"{member['name']}\t{' '.join(member['targets'])}\t{features}")
+        has_lib = "true" if member.get("lib_test_target") else "false"
+        lines.append(f"{member['name']}\t{' '.join(member['targets'])}\t{features}\t{has_lib}")
     return lines
-
 
 def report_text(selection: dict) -> str:
     lines: list[str] = []
@@ -582,11 +579,10 @@ def _self_test() -> int:
     depends on:
 
     1. the dependency pull-in widens a dependent to its full surface;
-    2. the `members` line format has exactly three tab-separated columns, and
-       the third is the union of the selected targets' required features;
-    3. a member whose targets need no feature produces an **empty** third
-       column — the caller expands that array, and an empty expansion under
-       `set -u` in bash 3.2 is an error unless the caller guards it;
+    2. the `members` line format has four columns: package, targets, features,
+       and whether the package has a library test target;
+    3. a member with no required feature keeps an empty third column, and a
+       bin-only member reports false in the fourth so scoped mode omits --lib;
     4. the changed-file computation resolves a merge base and reports the
        right files — checked against a repository this test creates, so it
        holds in a shallow checkout as well as in a full one.
@@ -607,6 +603,7 @@ def _self_test() -> int:
             },
             {
                 "name": "codegg",
+                "lib_test_target": "codegg",
                 "targets": ["agent_loop", "tool_programs"],
                 "required_features": ["server"],
                 "pulled_in_by_dependency": ["eggsentry"],
@@ -617,23 +614,26 @@ def _self_test() -> int:
     if len(lines) != 2:
         failures.append(f"expected 2 member lines, got {len(lines)}")
     else:
-        name, targets, features = lines[1].split("\t")
+        name, targets, features, has_lib = lines[1].split("\t")
         if name != "codegg":
             failures.append(f"expected the dependent 'codegg', got {name!r}")
         if targets != "agent_loop tool_programs":
             failures.append(f"expected the dependent's targets, got {targets!r}")
         if features != "server":
             failures.append(f"expected the required feature 'server', got {features!r}")
+        if has_lib != "true":
+            failures.append(f"expected a library test target, got {has_lib!r}")
 
     # 2 and 3. The column contract, including the empty-feature case.
     for line in members_lines(selection):
         columns = line.split("\t")
-        if len(columns) != 3:
-            failures.append(f"member line has {len(columns)} columns, expected 3: {line!r}")
+        if len(columns) != 4:
+            failures.append(f"member line has {len(columns)} columns, expected 4: {line!r}")
     empty_features = members_lines({"members": [{"name": "eggsentry", "targets": [], "required_features": []}]})[0]
-    if not empty_features.endswith("\t"):
+    empty_columns = empty_features.split("\t")
+    if empty_columns[2] != "" or empty_columns[3] != "false":
         failures.append(
-            f"a member with no required feature must end with an empty third column: {empty_features!r}"
+            f"a bin-only member must keep an empty feature column and no library target: {empty_features!r}"
         )
 
     # The real tree's own selection must satisfy the same contract.
@@ -641,7 +641,7 @@ def _self_test() -> int:
     try:
         real = select(base, ["crates/eggsentry/src/command.rs"])
         for line in members_lines(real):
-            if len(line.split("\t")) != 3:
+            if len(line.split("\t")) != 4:
                 failures.append(f"real selection produced a malformed member line: {line!r}")
         names = {m["name"] for m in real["members"]}
         for expected in ("eggsentry", "codegg-core", "codegg"):
@@ -694,8 +694,8 @@ def _self_test() -> int:
         return 1
     print(f"  ok: the changed-file computation resolves a merge base and the right files")
     print("  ok: the dependency pull-in widens the dependent")
-    print("  ok: the `members` line format has exactly three columns")
-    print("  ok: a member with no required feature yields an empty third column")
+    print("  ok: the `members` line format has four columns, including library presence")
+    print("  ok: a member with no required feature keeps an empty third column")
     print("  ok: a member affected both directly and by dependency gets its full surface")
     print("  ok: a root-only change stays precise")
     print("  ok: the real tree's selection satisfies the same contract")

@@ -35,7 +35,7 @@ The exact audit tests are:
   `enforced:landlock:abi=4` filesystem result and `unrestricted` network.
 
 The constrained audit test requires the trusted sibling helper to be built
-first: `cargo build -p codegg --bin codegg-sandbox-helper`, then copy the
+first: `cargo build -p codegg-sandbox-helper --bin codegg-sandbox-helper`, then copy the
 trusted helper beside the integration-test executable with
 `cp target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper`.
 Without a trusted sibling the launch correctly fails closed before dispatch.

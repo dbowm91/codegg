@@ -60,7 +60,7 @@ TOOL_CONTEXT = Path("src/tool/tool_program_context.rs")
 EXECUTOR = Path("src/scheduler/tool_program_executor.rs")
 SCHEDULER_EXECUTORS = Path("src/scheduler/executors.rs")
 TEST_RUNNER = Path("src/test_runner/runner.rs")
-SANDBOX = Path("src/security/sandbox.rs")
+SANDBOX = Path("crates/codegg-sandbox/src/lib.rs")
 MANAGED_PROCESS = Path("src/managed_process.rs")
 M004_WORKFLOW = Path(".github/workflows/linux-m004-native.yml")
 

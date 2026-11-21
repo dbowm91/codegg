@@ -12,7 +12,7 @@ This guard ensures the wiring is not silently dropped:
 3. Child construction enforces the parent ceiling (resolve_child_sandbox)
    and threads the narrowed profile into the child registry/loop.
 4. Legacy DangerFullAccess is compat-only: no new production construction
-   outside src/security/sandbox.rs.
+   outside crates/codegg-sandbox/src/lib.rs.
 5. Effective credential denies survive broad roots and writable re-allows,
    and managed launches use private scoped scratch instead of shared temp/cache
    grants.
@@ -115,7 +115,7 @@ def check_backend_registry(root: Path) -> list[str]:
     next OS loses containment without anything looking broken.
     """
     errors: list[str] = []
-    sandbox_dir = root / "src/security/sandbox"
+    sandbox_dir = root / "crates/codegg-sandbox/src"
 
     # Required constrained commands cannot be routed around the helper when
     # a capability probe fails. Python uses the same backend registry on macOS
@@ -250,7 +250,7 @@ def check_backend_registry(root: Path) -> list[str]:
         errors.append(err)
 
     # Capability must come from the registry, never from a platform branch.
-    sandbox_rs = root / "src/security/sandbox.rs"
+    sandbox_rs = root / "crates/codegg-sandbox/src/lib.rs"
     err = check_contains(
         root,
         sandbox_rs,
@@ -266,18 +266,18 @@ def check_backend_registry(root: Path) -> list[str]:
         re.DOTALL,
     ):
         errors.append(
-            "src/security/sandbox.rs: platform_sandbox_capability branches on the "
+            "crates/codegg-sandbox/src/lib.rs: platform_sandbox_capability branches on the "
             "target OS instead of consulting the backend registry"
         )
 
     # The helper must dispatch through the registry, not one backend.
-    helper = root / "src/bin/codegg-sandbox-helper.rs"
+    helper = root / "crates/codegg-sandbox-helper/src/main.rs"
     err = check_contains(root, helper, r"apply_backend\(&spec\)", "helper backend dispatch")
     if err:
         errors.append(err)
     if re.search(r"apply_landlock\(&spec\)", helper.read_text()):
         errors.append(
-            "src/bin/codegg-sandbox-helper.rs: helper applies one backend directly; "
+            "crates/codegg-sandbox-helper/src/main.rs: helper applies one backend directly; "
             "it must dispatch through the registry"
         )
 
@@ -566,24 +566,25 @@ def run_checks(root: Path) -> list[str]:
             errors.append(err)
 
     # Legacy DangerFullAccess must not be constructed outside the compat
-    # owner (sandbox.rs), tests, docs, and architecture notes.
-    for rust_file in sorted((root / "src").rglob("*.rs")):
-        rel = str(rust_file.relative_to(root))
-        if rel == "src/security/sandbox.rs":
-            continue
-        try:
-            text = rust_file.read_text()
-        except Exception:
-            continue
-        if "DangerFullAccess" in text and "#[cfg(test)]" not in text:
-            # Allow comments/docs mentioning the name, but not construction.
-            for idx, line in enumerate(text.splitlines(), start=1):
-                s = line.strip()
-                if s.startswith("//") or s.startswith("///") or s.startswith("//!"):
-                    continue
-                if "DangerFullAccess" in line:
-                    errors.append(f"{rel}:{idx}: new DangerFullAccess use outside sandbox.rs compat")
-                    break
+    # owner (the sandbox library), tests, docs, and architecture notes.
+    for source_root in (root / "src", root / "crates/codegg-sandbox/src"):
+        for rust_file in sorted(source_root.rglob("*.rs")):
+            rel = str(rust_file.relative_to(root))
+            if rel in {"src/security/sandbox.rs", "crates/codegg-sandbox/src/lib.rs"}:
+                continue
+            try:
+                text = rust_file.read_text()
+            except Exception:
+                continue
+            if "DangerFullAccess" in text and "#[cfg(test)]" not in text:
+                # Allow comments/docs mentioning the name, but not construction.
+                for idx, line in enumerate(text.splitlines(), start=1):
+                    s = line.strip()
+                    if s.startswith("//") or s.startswith("///") or s.startswith("//!"):
+                        continue
+                    if "DangerFullAccess" in line:
+                        errors.append(f"{rel}:{idx}: new DangerFullAccess use outside sandbox compatibility owner")
+                        break
 
     # BashTool must expose the M005 helpers.
     bash_rs = root / "src/tool/bash.rs"
@@ -619,6 +620,8 @@ def run_checks(root: Path) -> list[str]:
 # guard does not read and a mutation can never touch the working tree.
 GUARD_PATHS = (
     Path("src"),
+    Path("crates/codegg-sandbox/src"),
+    Path("crates/codegg-sandbox-helper/src"),
     Path("crates/codegg-core/src/approval.rs"),
     Path("crates/codegg-core/src/jobs/mod.rs"),
     Path("tests/security_permission/sandbox_containment.inc"),
@@ -771,7 +774,7 @@ def self_test() -> int:
         return [
             mutate(
                 root,
-                Path("src/security/sandbox/backend.rs"),
+                Path("crates/codegg-sandbox/src/backend.rs"),
                 "        id: BackendId::SEATBELT,\n",
                 "        id: BackendId::LANDLOCK,\n",
             )
@@ -785,7 +788,7 @@ def self_test() -> int:
         return [
             mutate(
                 root,
-                Path("src/security/sandbox/seatbelt.rs"),
+                Path("crates/codegg-sandbox/src/seatbelt.rs"),
                 "        for path in &policy.write_roots {\n"
                 '            push_subpath(&mut profile, "allow", "file-write*", path);\n'
                 "        }\n"

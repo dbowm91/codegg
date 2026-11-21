@@ -116,6 +116,12 @@ jobs:
       # unregistered backend, Seatbelt deny order, hardlinked deny refusal,
       # durable-payload containment rebuild). Both run with their self-tests:
       # a guard that cannot fail on an injected defect is not evidence.
+      - name: Sandbox helper package cut guard (self-test)
+        run: python3 scripts/check_sandbox_helper_package_cut.py --self-test
+
+      - name: Sandbox helper package cut guard
+        run: python3 scripts/check_sandbox_helper_package_cut.py
+
       - name: Sandbox contract guard (self-test)
         run: python3 scripts/check_sandbox_contract.py --self-test
 
@@ -652,7 +658,7 @@ jobs:
       # Product builds still resolve only their installation-owned sibling.
       - name: Build trusted sandbox helper for integration tests
         run: |
-          cargo build --locked --bin codegg-sandbox-helper
+          cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper
           # A restored or pruned cache can leave the binary without the `deps`
           # directory the integration tests load it from.
           mkdir -p target/debug/deps

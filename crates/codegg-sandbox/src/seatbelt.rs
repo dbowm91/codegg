@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn read_only_profile_re_allows_only_the_device_nodes() {
         let dir = TempDir::new().expect("workspace fixture");
-        let devices = crate::security::sandbox::policy::device_write_allowances();
+        let devices = crate::policy::device_write_allowances();
         let profile = sbpl_profile(&BackendPolicy::new(
             vec![dir.path().to_path_buf()],
             devices.clone(),

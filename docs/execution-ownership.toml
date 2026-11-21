@@ -278,7 +278,7 @@ owner = "deferred_domain_executor"
 reason = "Registration probes repository lineage through the same bounded local git path as repository_lineage.rs; pending typed Git scheduler integration"
 
 [[site]]
-path = "src/bin/codegg-sandbox-helper.rs"
+path = "crates/codegg-sandbox-helper/src/main.rs"
 owner = "definition_or_adapter"
 reason = "ManagedProcessService-owned sandbox helper applies the host containment backend (Landlock on Linux, Seatbelt on macOS) and execs the already-validated target"
 
@@ -341,12 +341,12 @@ owner = "test_only"
 reason = "mod tests block uses git subprocess to set up test fixtures; not a production spawn site"
 
 [[site]]
-path = "src/security/sandbox/policy.rs"
+path = "crates/codegg-sandbox/src/policy.rs"
 owner = "test_only"
 reason = "Windows junction policy fixture invokes cmd.exe only inside a Windows-only unit test"
 
 [[site]]
-path = "src/security/sandbox.rs"
+path = "crates/codegg-sandbox/src/lib.rs"
 owner = "test_only"
 reason = "Bare-repository sandbox fixture invokes git init only inside a Linux-only unit test"
 

@@ -133,6 +133,12 @@ run_guards() {
     # tier request. Both run with their self-tests, because a guard that
     # cannot be shown to fail on an injected defect is not evidence — and
     # because this one was invoked by nothing until those self-tests existed.
+    echo "==> python3 scripts/check_sandbox_helper_package_cut.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_helper_package_cut.py --self-test)
+
+    echo "==> python3 scripts/check_sandbox_helper_package_cut.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_helper_package_cut.py)
+
     echo "==> python3 scripts/check_sandbox_contract.py --self-test"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py --self-test)
 
@@ -803,17 +809,20 @@ run_scoped() {
 
     # Otherwise: one Nextest invocation per affected member, so that a
     # `--test` name is only ever resolved against the package that owns it.
-    # The member's library test target is always included — an affected
-    # member contributes it even when no integration target matched.
+    # A member's library test target is included when it has one. A bin-only
+    # member gets no --lib selector, so Nextest uses its default test targets.
     #
     # A target gated behind `required-features` cannot be built without its
     # features, so the features the selected targets are gated on are
     # enabled for that member's invocation. Naming a gated target without
     # enabling its feature is a cargo error, not a silent skip.
-    local member_line name targets features
-    while IFS=$'\t' read -r name targets features; do
+    local member_line name targets features has_lib
+    while IFS=$'\t' read -r name targets features has_lib; do
         [ -n "$name" ] || continue
-        local -a args=(--lib)
+        local -a args=()
+        if [ "$has_lib" = "true" ]; then
+            args+=(--lib)
+        fi
         local -a feature_args=()
         local target
         for target in $targets; do
@@ -830,8 +839,8 @@ run_scoped() {
         # whenever the selected targets need no cargo feature, which is the
         # common case, so the plain expansion would break the scoped mode on
         # every unfeatured selection.
-        echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run -p $name --locked --profile ci ${feature_args[*]+"${feature_args[*]}"} ${args[*]}"
-        (cd "$REPO_ROOT" && cargo nextest run -p "$name" --locked --profile ci "${feature_args[@]+"${feature_args[@]}"}" "${args[@]}")
+        echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run -p $name --locked --profile ci ${feature_args[*]+"${feature_args[*]}"} ${args[*]+\"${args[*]}\"}"
+        (cd "$REPO_ROOT" && cargo nextest run -p "$name" --locked --profile ci "${feature_args[@]+"${feature_args[@]}"}" "${args[@]+\"${args[@]}\"}")
     done < <(python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format members)
 
     echo "==> Scoped verification passed."

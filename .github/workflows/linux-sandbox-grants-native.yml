@@ -16,7 +16,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/linux-sandbox-grants-native.yml'
-      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'crates/codegg-sandbox/**'
+      - 'crates/codegg-sandbox-helper/**'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'tests/security_permission/sandbox_landlock.inc'
@@ -28,7 +29,8 @@ on:
   push:
     paths:
       - '.github/workflows/linux-sandbox-grants-native.yml'
-      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'crates/codegg-sandbox/**'
+      - 'crates/codegg-sandbox-helper/**'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'tests/security_permission/sandbox_landlock.inc'
