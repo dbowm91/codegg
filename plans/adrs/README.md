@@ -226,3 +226,13 @@ deferred to a separate OS-isolation project; option C (advisory path claims)
 remains rejected. Accepted ADR-0002 and ADR-0032 are unmodified and the legacy
 isolated behavior is unchanged.
 Check concurrent branch ADR identity allocation before integration.
+
+## ADR-0064 root compile-unit ownership (accepted 2026-11-21)
+
+The project maintainer accepted
+`ADR-0064-root-compile-unit-ownership.md` on 2026-11-21. Acceptance authorizes
+milestones 001 and 002 at `plans/implementation/root-compile-boundary/`.
+ADR-0063 remains the embedding-host wire decision; the next free number is
+ADR-0065. Verify across active branches before allocating it. This decision
+does not amend ADR-0016, ADR-0046, or ADR-0061, and it does not discharge the
+deferred binary-topology item in `plans/registry.md`.
