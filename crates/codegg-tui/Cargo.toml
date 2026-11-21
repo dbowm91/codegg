@@ -1,0 +1,113 @@
+[package]
+name = "codegg-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+codegg = { path = "../.." }
+
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "underline-color", "unstable-rendered-line-info"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+unicode-width = "0.2"
+vt100 = "=0.16.2"
+notify-rust = "4"
+qrcode = { version = "0.14.1", default-features = false }
+rand.workspace = true
+anyhow.workspace = true
+egggit.workspace = true
+once_cell.workspace = true
+regex.workspace = true
+sha2.workspace = true
+
+# Runtime and serialization used by the frontend's state and async commands.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "io-std", "net", "process", "signal"] }
+tokio-util = { workspace = true, features = ["io", "rt"] }
+futures-util = { workspace = true, features = ["sink"] }
+futures-executor.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["serde"] }
+url.workspace = true
+dirs.workspace = true
+base64.workspace = true
+similar.workspace = true
+unicode-normalization.workspace = true
+
+# Frontend content and display helpers.
+comrak = { version = "0.35", default-features = false }
+syntect = { version = "5", features = ["metadata"] }
+strsim = "0.11"
+parking_lot.workspace = true
+
+# The TUI imports these workspace APIs directly in addition to using the root facade.
+codegg-core.workspace = true
+codegg-client.workspace = true
+codegg-protocol.workspace = true
+codegg-document.workspace = true
+egglsp.workspace = true
+eggsact = "1.2.5"
+
+arboard = { version = "3", default-features = false, optional = true }
+ratatui-image = { version = "10", default-features = false, features = ["crossterm"], optional = true }
+image = { version = "0.25", default-features = false, optional = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+[dev-dependencies]
+codegg = { path = "../..", features = ["tui-test-support"] }
+tempfile.workspace = true
+proptest.workspace = true
+toml.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "derive", "chrono", "json"] }
+
+[[test]]
+name = "tui_render"
+path = "tests/tui_render/mod.rs"
+
+[[test]]
+name = "interactive_process_attach_resume"
+path = "tests/interactive_process_attach_resume/mod.rs"
+
+[[test]]
+name = "frontend_parity"
+path = "tests/frontend_parity/mod.rs"
+
+[[test]]
+name = "security_permission"
+path = "tests/security_permission/mod.rs"
+
+[[test]]
+name = "core_daemon"
+path = "tests/core_daemon/mod.rs"
+
+[[test]]
+name = "server_feature"
+path = "tests/server_feature/mod.rs"
+required-features = ["server"]
+
+[[test]]
+name = "lsp_test_support"
+path = "tests/lsp_test_support/mod.rs"
+required-features = ["lsp-test-support"]
+
+[features]
+default = ["arboard"]
+arboard = ["dep:arboard"]
+image = ["dep:ratatui-image", "dep:image"]
+server = ["codegg/server"]
+plugins = ["codegg/plugins"]
+lsp-test-support = ["codegg/lsp-test-support"]
+lsp-real-server-tests = ["codegg/lsp-real-server-tests"]
+decision-runtime-sdm = ["codegg/decision-runtime-sdm"]
+debug-logging = ["codegg/debug-logging"]
+
+[lints]
+workspace = true

@@ -15,9 +15,9 @@ re-discovering them each session.
 - **Core types & store**: `crates/codegg-core/src/memory/mod.rs`
 - **Habit observation & candidate store**: `crates/codegg-core/src/memory/habit.rs`
 - **Pattern detection**: `crates/codegg-core/src/memory/patterns.rs`
-- **TUI commands**: registered in `src/tui/command.rs` (the `/memory`,
+- **TUI commands**: registered in `crates/codegg-tui/src/command.rs` (the `/memory`,
   `/memory-search`, `/memory-list`, `/memory-remember`, `/memory-forget`,
-  `/memory-consolidate` entries) and implemented in `src/tui/commands/memory.rs`
+  `/memory-consolidate` entries) and implemented in `crates/codegg-tui/src/commands/memory.rs`
 
 This is a **core crate** module — no UI, server, or plugin
 dependencies.
@@ -340,8 +340,8 @@ importance default `0.5`, and the habit bounds
 
 Re-verified 2026-10-23 against source. Corrected the command-location
 reference: the `/memory*` slash commands are **registered** in
-`src/tui/command.rs` (`:674`-`:684`), not in `src/tui/commands/`; that
-directory holds the *implementations* (`src/tui/commands/memory.rs`).
+`crates/codegg-tui/src/command.rs` (`:674`-`:684`), not in `crates/codegg-tui/src/commands/`; that
+directory holds the *implementations* (`crates/codegg-tui/src/commands/memory.rs`).
 
 Confirmed unchanged: the three core modules (`mod.rs`, `habit.rs`,
 `patterns.rs`); the storage root built from

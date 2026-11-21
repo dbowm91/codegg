@@ -1007,7 +1007,7 @@ impl DiagnosticsCollector {
 
 The native protocol gained an LSP **read** surface. Before this, the only LSP
 variant was `LspPreviewApply`, a write. The constraint that forced it is
-structural, not incidental: `src/main.rs:2894` builds the frontend's
+structural, not incidental: `crates/codegg-cli/src/main.rs:2894` builds the frontend's
 `LspTool` only under `if !is_socket_mode`, so a daemon-connected client had
 **no LSP at all**.
 
@@ -1066,7 +1066,7 @@ in a registry. That shape is forced by three facts:
 - `LspReadGet` registers nothing, and no protocol request lists or exports a
   preview, so there is no registry for the editor's preview to land in;
 - the frontend's own registry — `app.lsp_tool`'s — is `None` in socket/remote
-  mode (`src/main.rs:3454`) and empty in production, because nothing in the
+  mode (`crates/codegg-cli/src/main.rs:3454`) and empty in production, because nothing in the
   TUI calls a preview-producing operation on it. A path that needed it would
   not reach the apply at all in the transport a remote user is on;
 - `apply_preview` never resolves a preview id. It recomputes the digest over
@@ -1078,7 +1078,7 @@ So the daemon mints the candidate — the rename preview's per-file `patch` and
 `original_hash` were already computed by `egglsp` and **discarded** at
 `daemon_lsp.rs:664-667` — the editor carries it, and the review's accept
 builds the one request: `build_apply_request` in
-`src/tui/commands/change_review.rs`, the single place a
+`crates/codegg-tui/src/commands/change_review.rs`, the single place a
 `CoreRequest::LspPreviewApply` is constructed.
 `scripts/check_tui_editor_apply_path.py` makes that structural rather than
 conventional: the variant may appear in one file, with one construction,
@@ -1281,7 +1281,7 @@ view; `NotReady` preserves it. Neither frontend performs readiness work on a
 synchronous keystroke or render path.
 
 Verified 2026-10-27 against `crates/codegg-client/src/lsp.rs`,
-`src/tui/commands/editor.rs`, `src/tui/editor_lsp.rs`,
+`crates/codegg-tui/src/commands/editor.rs`, `crates/codegg-tui/src/editor_lsp.rs`,
 `apps/desktop/src-tauri/src/document.rs`, `apps/desktop/src-tauri/src/lib.rs`,
 and `apps/desktop/src/editor/session.ts`: both production clients receive
 events before subscribing, seed stream ordering from the status-free
@@ -1300,7 +1300,7 @@ The change publisher is driven by a daemon-owned cadence. M013 found
 tracker, the resync authority and the publisher all existed, and nothing ever
 ran them, so `LspDiagnosticsUpdated` was never emitted and every client read
 the stream as permanently cold. `start_lsp_diagnostics_driver` spawns it in the
-serving daemon (`src/main.rs`), ticking every `DIAGNOSTICS_POLL_INTERVAL`.
+serving daemon (`crates/codegg-cli/src/main.rs`), ticking every `DIAGNOSTICS_POLL_INTERVAL`.
 
 Three decisions inside the driver are load-bearing:
 
@@ -1699,7 +1699,7 @@ Hash revalidation ensures patches are only applied when the file content matches
 `crates/egglsp/src/tui_summary.rs`, which writes files with per-file
 SHA-256 recheck before each write. A `PreviewApplyWriteReport` tracks
 per-file successes and failures. The TUI handler at
-`src/tui/app/mod.rs:4222` correctly tracks successes/failures separately
+`crates/codegg-tui/src/app/mod.rs:4222` correctly tracks successes/failures separately
 and only calls `mark_preview_applied` when all writes succeed — partial
 failures are reported without marking applied. New types
 `PreviewApplyWriteError` and `PreviewApplyWriteReport` surface the
@@ -2345,7 +2345,7 @@ This pass closes the gap between "implemented by commit message" and "verified b
 | `crates/egglsp/src/workflow_recipes.rs` | 11 | Table-driven recipe coverage, invalid-input rejection, no-auto-apply invariant, tier-specific caps, sub-recipe provenance rendering |
 | `crates/egglsp/src/context_policy.rs` | 8 | `LspContextDiagnostics` from empty/truncated/cache-hit packets; stale-policy and unavailable-policy behavior |
 | `crates/egglsp/src/context_renderer.rs` | 4 | Renderer feature-flag propagation; render-compact output stability |
-| `src/tui/app/mod.rs` | 6 | `/lsp-doctor` and `/lsp-context-diagnostics` dispatch tests (missing arg, with path, no tool) |
+| `crates/codegg-tui/src/app/mod.rs` | 6 | `/lsp-doctor` and `/lsp-context-diagnostics` dispatch tests (missing arg, with path, no tool) |
 | `tests/ide_protocols/lsp.inc` | 15 | Tool-level integration tests for Phase 13-15 surface |
 
 ### Bug Fixes
@@ -2775,9 +2775,9 @@ Key types live in `src/security/workflow/` (split into submodules: `mod.rs`, `ty
 
 Failures, timeouts, and truncation are recorded as notes — they never fail the whole review. Dedicated note helpers handle enrichment status: `note_lsp_enrichment_unavailable` (enrichment requested but no executor available), `note_lsp_enrichment_no_eligible_targets` (no targets met escalation policy), and `note_lsp_enrichment_executed` (reports executed request count). The `SecurityContextExecutor` trait enables mockable testing via `NoopSecurityContextExecutor` (always errors) and `FixtureSecurityContextExecutor` (pre-configured responses). A real adapter `LspSecurityContextExecutor` (in `src/security/lsp_executor.rs`) wraps `LspTool` to delegate `securityContext` operations. It validates requests via `validate_security_context_request()`, injects the operation field, and parses the JSON string response. The `SecurityContextExecutorProvider` trait and `run_security_review_command_with_executor()` enable executor injection at the command level; `run_security_review_command()` delegates to the executor-aware runner with `None`. In local mode the TUI creates a shared `LspTool` at startup (`App.lsp_tool`) and passes a `LspSecurityContextExecutor` to the command handler for `--enrich`. In socket/remote mode `lsp_tool` is `None` and `--enrich` falls back to deterministic stage-1 with an unavailable note.
 
-The TUI dispatches `/security-review` asynchronously so the render thread is never blocked. The handler spawns a tokio task and publishes a `TuiCommand::SecurityReviewRun { id, root, args, lsp_tool }` variant (carrying a `SecurityReviewRunId` newtype and a cloned `Arc<LspTool>`) which is consumed in the `cmd_rx` arm of `run_event_loop` in `src/tui/mod.rs` by a new `async fn handle_security_review_run(...)`. That handler invokes the new `pub async fn run_security_review_background(root: PathBuf, args: SecurityReviewCommandArgs, lsp_tool: Option<Arc<LspTool>>) -> Result<SecurityReviewReceipt, String>` in `src/security/workflow/report.rs`, which owns its inputs (no borrowed `&self` across the await) and constructs the `LspSecurityContextExecutor` internally when `lsp_tool` is `Some`. In remote/socket mode `lsp_tool` is `None` and the call falls back to deterministic stage-1 with `note_lsp_enrichment_unavailable`. A reentrancy guard, `App.security_review_running: Option<SecurityReviewTaskState>` (holding `{ id, abort_handle }`, defined in `src/security/workflow/receipt.rs:301`), is set on dispatch and cleared in both success and failure paths; a second `/security-review` issued while the guard is set is rejected with a warning toast ("Security review already running. Wait for it to finish or cancel it."). On success the full report is pushed to the message timeline as a `UIMessage` with `MessageRole::Assistant` and a `[Security Review]` label, plus a brief success toast; the structured `SecurityReviewReceipt` is stored on `App.latest_security_review` via `App::set_latest_security_review` (`src/tui/app/mod.rs:914`) for later reopening. On failure an error toast is shown. The local-mode `LspSecurityContextExecutor` and the remote/socket deterministic fallback are both preserved.
+The TUI dispatches `/security-review` asynchronously so the render thread is never blocked. The handler spawns a tokio task and publishes a `TuiCommand::SecurityReviewRun { id, root, args, lsp_tool }` variant (carrying a `SecurityReviewRunId` newtype and a cloned `Arc<LspTool>`) which is consumed in the `cmd_rx` arm of `run_event_loop` in `crates/codegg-tui/src/mod.rs` by a new `async fn handle_security_review_run(...)`. That handler invokes the new `pub async fn run_security_review_background(root: PathBuf, args: SecurityReviewCommandArgs, lsp_tool: Option<Arc<LspTool>>) -> Result<SecurityReviewReceipt, String>` in `src/security/workflow/report.rs`, which owns its inputs (no borrowed `&self` across the await) and constructs the `LspSecurityContextExecutor` internally when `lsp_tool` is `Some`. In remote/socket mode `lsp_tool` is `None` and the call falls back to deterministic stage-1 with `note_lsp_enrichment_unavailable`. A reentrancy guard, `App.security_review_running: Option<SecurityReviewTaskState>` (holding `{ id, abort_handle }`, defined in `src/security/workflow/receipt.rs:301`), is set on dispatch and cleared in both success and failure paths; a second `/security-review` issued while the guard is set is rejected with a warning toast ("Security review already running. Wait for it to finish or cancel it."). On success the full report is pushed to the message timeline as a `UIMessage` with `MessageRole::Assistant` and a `[Security Review]` label, plus a brief success toast; the structured `SecurityReviewReceipt` is stored on `App.latest_security_review` via `App::set_latest_security_review` (`crates/codegg-tui/src/app/mod.rs:914`) for later reopening. On failure an error toast is shown. The local-mode `LspSecurityContextExecutor` and the remote/socket deterministic fallback are both preserved.
 
-The completion handler in `src/tui/commands/security.rs:89` (`handle_security_review_finished`) guards against stale completions by comparing the incoming `id` against `app.security_review_running.id` via `App::security_review_run_id`; mismatches are silently dropped. `/security-review-cancel` aborts the running task via `App::cancel_security_review` (`src/tui/app/mod.rs:1408`) which calls `AbortHandle::abort()` and clears the guard; cancellation is best-effort — if the spawned task is in a non-cancellable section (e.g. inside a blocking syscall), its completion may still arrive and is dropped by the id-mismatch guard. `/security-show` reopens `Dialog::SecurityReview` (a master/detail panel at `src/tui/components/dialogs/security_review.rs` with keybindings `j/k`, `PgUp/PgDn`, `f` cycle filter (including `HunkBacked` to show only items with hunk context), `n` notes, `p` prompts, `h` jump to hunk section, `H` copy hunk text to clipboard, `]`/`[` next/previous hunk-backed item, `Enter` opens a read-only source preview dialog for the finding's file (root-scoped via `resolve_security_review_item_path` in `receipt.rs`; shows "Security Review Finding/Prompt" origin label; falls back to clipboard if the file cannot be opened)), `Esc/q` close) from the in-memory receipt without rerunning the review. When a finding or prompt has a matching hunk (derived from the reviewed diff, not live files), the detail section renders hunk context with added/removed/context line styling. If no receipt exists yet, `/security-review-show` surfaces a "No security review result available yet." warning toast. Receipt persistence is in-memory only; the `--panel` flag on `/security-review` auto-opens the result panel on completion.
+The completion handler in `crates/codegg-tui/src/commands/security.rs:89` (`handle_security_review_finished`) guards against stale completions by comparing the incoming `id` against `app.security_review_running.id` via `App::security_review_run_id`; mismatches are silently dropped. `/security-review-cancel` aborts the running task via `App::cancel_security_review` (`crates/codegg-tui/src/app/mod.rs:1408`) which calls `AbortHandle::abort()` and clears the guard; cancellation is best-effort — if the spawned task is in a non-cancellable section (e.g. inside a blocking syscall), its completion may still arrive and is dropped by the id-mismatch guard. `/security-show` reopens `Dialog::SecurityReview` (a master/detail panel at `crates/codegg-tui/src/components/dialogs/security_review.rs` with keybindings `j/k`, `PgUp/PgDn`, `f` cycle filter (including `HunkBacked` to show only items with hunk context), `n` notes, `p` prompts, `h` jump to hunk section, `H` copy hunk text to clipboard, `]`/`[` next/previous hunk-backed item, `Enter` opens a read-only source preview dialog for the finding's file (root-scoped via `resolve_security_review_item_path` in `receipt.rs`; shows "Security Review Finding/Prompt" origin label; falls back to clipboard if the file cannot be opened)), `Esc/q` close) from the in-memory receipt without rerunning the review. When a finding or prompt has a matching hunk (derived from the reviewed diff, not live files), the detail section renders hunk context with added/removed/context line styling. If no receipt exists yet, `/security-review-show` surfaces a "No security review result available yet." warning toast. Receipt persistence is in-memory only; the `--panel` flag on `/security-review` auto-opens the result panel on completion.
 
 The `/security-review --enrich` command flag opts into enrichment. The `--panel` flag auto-opens the result panel on completion. Without these flags, behavior is unchanged (deterministic, no LSP execution; report goes to timeline only).
 
@@ -4842,7 +4842,7 @@ Confirmed accurate, no change needed:
   fallback semantics)" matches `src/tool/mod.rs`, including the
   `ConfiguredButUnavailable` → `unavailable` status mapping
   (`src/tool/mod.rs:1854`, rendered by the `Display` impl at `:1878`; the
-  CLI status path renders it at `src/main.rs:3253`).
+  CLI status path renders it at `crates/codegg-cli/src/main.rs:3253`).
 - **Cache**: `LspCacheMode` has only `Disabled` and `Memory`
   (`crates/egglsp/src/cache.rs:53`), consistent with the "0 active disk cache
   mode" bullet in the "Phase 3 Final Closure" checklist.
@@ -4853,10 +4853,10 @@ egglsp now has **1001** `#[test]`/`#[tokio::test]` functions under
 `crates/egglsp/src/` plus **107** under `crates/egglsp/tests/`.
 
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
-ownership migration and M006 closure"), which shrank `src/main.rs` by roughly 640
+ownership migration and M006 closure"), which shrank `crates/codegg-cli/src/main.rs` by roughly 640
 lines and rewrote `src/tool/mod.rs`. Corrected: the `if !is_socket_mode` guard
-that builds the frontend's `LspTool` `src/main.rs:3323`->`:2894`, the
-`ConfiguredButUnavailable` -> `unavailable` rendering `src/main.rs:2609`->`:2180`,
+that builds the frontend's `LspTool` `crates/codegg-cli/src/main.rs:3323`->`:2894`, the
+`ConfiguredButUnavailable` -> `unavailable` rendering `crates/codegg-cli/src/main.rs:2609`->`:2180`,
 the status mapping `src/tool/mod.rs:1337`->`:1405`, and the
 `RegistryBackendStatusKind` variant anchor `:1402`->`:1470`, each re-checked to
 land on the same construct. The daemon-connected client still gets no LSP, and
@@ -4866,7 +4866,7 @@ Verified 2026-10-23 (deep-dive pass) against `crates/egglsp/src/`
 (`server.rs`, `service.rs`, `capability.rs`, `compatibility.rs`,
 `context_policy.rs`, `workflow_recipes.rs`, `cache.rs`), the `src/lsp/` shim,
 `src/tool/lsp.rs`, `src/tool/lsp_read.rs`, `src/tool/mod.rs`,
-`src/tui/app/mod.rs`, `crates/codegg-config/src/schema.rs`, and `plans/`.
+`crates/codegg-tui/src/app/mod.rs`, `crates/codegg-config/src/schema.rs`, and `plans/`.
 This document is large (4600+ lines), so the load-bearing numeric,
 structural, and API-surface claims were verified rather than every line.
 
@@ -4899,8 +4899,8 @@ Corrected:
   `crates/codegg-config/src/schema.rs:3589` (not `:2885`-`:2888`);
   `RegistryBackendStatusKind` is at `src/tool/mod.rs:1846` with the
   `ConfiguredButUnavailable` variant at `:1854` (not `:1402`/`:1470`); the
-  CLI renders `unavailable` at `src/main.rs:3253` (not `:2180`); and the
-  frontend `LspTool` is built at `src/main.rs:4022`-`:4034` (not `:2894`).
+  CLI renders `unavailable` at `crates/codegg-cli/src/main.rs:3253` (not `:2180`); and the
+  frontend `LspTool` is built at `crates/codegg-cli/src/main.rs:4022`-`:4034` (not `:2894`).
 - **Wrong budget numbers**: the "Token Budget Integration" table claimed
   `max_symbols` 15 (Small) / 20 (Workhorse) and `max_references` 15
   (Workhorse). The real values come from
@@ -4954,7 +4954,7 @@ Confirmed accurate, no change needed:
   `findReferences`) matches `src/tool/lsp_read.rs:61`-`:66`.
 - `/lsp-start` and `/lsp-replay-docs` are correctly documented as **not
   registered**; the ten `/lsp-*` workflow commands in the Phase 14 table all
-  exist in `src/tui/app/mod.rs`.
+  exist in `crates/codegg-tui/src/app/mod.rs`.
 - The `LspOperationalState` variants and the `LspOperationalHealthSnapshot`
   fields match `crates/egglsp/src/health.rs`; the client key format
   `"{project_root}:{server_id}"` is built at
@@ -5002,7 +5002,7 @@ served rows, so **24** have no daemon request. And the claim that the TUI's
 configuration, and in local mode they work against the TUI's own second,
 non-authoritative server. The mode split is now stated where the arms are
 described, and the attachment site is cited as the guard it is
-(`src/main.rs:4021`) rather than as the assignment.
+(`crates/codegg-cli/src/main.rs:4021`) rather than as the assignment.
 
 **M007-D's decision, recorded here so the document and the closure agree:**
 `/lsp-status` and `/lsp-errors` are served by the daemon and are **not**

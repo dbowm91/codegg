@@ -154,11 +154,11 @@ code-count rows moved only when the advance actually changed code.
 
 - **2026-10-21 — merge with `main` at `2a0bae08f`.** `main`'s nine commits
   added and deleted **no** file under any directory a count is measured from —
-  `src/tool/`, `src/context/`, `src/tui/app/state/`, `crates/codegg-core/`,
+  `src/tool/`, `src/context/`, `crates/codegg-tui/src/app/state/`, `crates/codegg-core/`,
   `crates/egglsp/src/`, `tests/`, `scripts/`, `architecture/` — so no row could
   move. Every row was nonetheless re-measured against its own listed `Source`
   on the merged tree and none differed. The built-in slash-command row is
-  unchanged for a second reason: `src/tui/command.rs` is byte-identical to the
+  unchanged for a second reason: `crates/codegg-tui/src/command.rs` is byte-identical to the
   pre-merge tree.
 
 - **2026-10-21 — merge with `main` at `84aa47528`** (the M006 scratch usage
@@ -255,7 +255,7 @@ code-count rows moved only when the advance actually changed code.
   Four rows moved, each re-measured against its own listed `Source` in the
   merged tree rather than incremented from either parent. *Integration test
   files* 335 (main) / 337 (branch) → **338**, the union of the two sides'
-  members — `main` added `tests/tui_render/file_picker_surface_corrective.inc`.
+  members — `main` added `crates/codegg-tui/tests/tui_render/file_picker_surface_corrective.inc`.
   *Guard scripts (all)* 87 (main) / 90 (branch) → **91**, the union of the two
   guard sets — `main` added `scripts/check_tui_files_keymap_drift.py`. *CI
   guard scripts* 48 (main) / 53 (branch) → **54**, the union of the two
@@ -380,7 +380,7 @@ table row by row.
 
 | Row | Before | After | What moved it |
 |---|---|---|---|
-| Integration test files | 327 | 328 | `tests/tui_render/nested_runtime_command_dispatch.inc`, a new `.inc` member of the existing `tui_render` family. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; the family already existed, so no new family directory and no `tests/*.rs` was added. |
+| Integration test files | 327 | 328 | `crates/codegg-tui/tests/tui_render/nested_runtime_command_dispatch.inc`, a new `.inc` member of the existing `tui_render` family. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; the family already existed, so no new family directory and no `tests/*.rs` was added. |
 | Guard scripts (all) | 80 | 81 | `scripts/check_no_nested_runtime_block_on.py`. The measure (`scripts/check_*`) is unchanged. |
 | CI guard scripts | 40 | 41 | The same guard, wired into the hosted CI guard step. The measure (the distinct `scripts/check_*` names named in `.github/workflows/ci.yml`) is unchanged. |
 
@@ -403,7 +403,7 @@ decision is needed; the values were re-measured with
 
 | Row | Before | After | What moved it |
 |---|---|---|---|
-| Integration test files | 327 | 329 | C001's `tests/tui_render/nested_runtime_command_dispatch.inc` and C002's `tests/security_permission/destructive_delete_classification.inc` — a new `.inc` member of each of two existing families. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; neither family directory nor any `tests/*.rs` was added. |
+| Integration test files | 327 | 329 | C001's `crates/codegg-tui/tests/tui_render/nested_runtime_command_dispatch.inc` and C002's `tests/security_permission/destructive_delete_classification.inc` — a new `.inc` member of each of two existing families. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged; neither family directory nor any `tests/*.rs` was added. |
 | Guard scripts (all) | 80 | 82 | `scripts/check_no_nested_runtime_block_on.py` (C001) and `scripts/check_destructive_risk_signal_coverage.py` (C002). The measure (`scripts/check_*`) is unchanged. |
 | CI guard scripts | 40 | 42 | The same two guards, each wired into the hosted CI guard step. The measure (the distinct `scripts/check_*` names named in `.github/workflows/ci.yml`) is unchanged. |
 
@@ -468,7 +468,7 @@ rather than because a measure was wrong.
 | Row | Before | After | Why |
 |-----|--------|-------|-----|
 | CI guard scripts | 40 | **41** | `scripts/check_tool_broker_boundary.py` was repaired and wired into the CI guard step. The guard file already existed, so the *Guard scripts (all)* row (80) is unchanged — the row counts files, and this milestone changed a file's contents rather than adding one. |
-| Integration test files | 327 | **329** | Two new root integration family members: `tests/security_permission/reviewer_broker_boundary.inc` and `tests/tui_render/dialog_dispatch_coverage.inc`. The `tests/common/` helper tree is still excluded, and neither member adds a standalone target. |
+| Integration test files | 327 | **329** | Two new root integration family members: `tests/security_permission/reviewer_broker_boundary.inc` and `crates/codegg-tui/tests/tui_render/dialog_dispatch_coverage.inc`. The `tests/common/` helper tree is still excluded, and neither member adds a standalone target. |
 
 Both numbers were re-measured with `python3 scripts/measure_overview_counts.py`
 against this tree, each against its own listed `Source`; the measurement
@@ -492,7 +492,7 @@ against the pre-merge base. Its amendment is appended here as the **sixth**,
 after the C001, C002 and C004 amendments, and its row values were re-measured
 in the **merged** tree. C005 added **two** `.inc` members of existing families
 (`tests/security_permission/reviewer_broker_boundary.inc` and
-`tests/tui_render/dialog_dispatch_coverage.inc`) and repaired the existing
+`crates/codegg-tui/tests/tui_render/dialog_dispatch_coverage.inc`) and repaired the existing
 `scripts/check_tool_broker_boundary.py` in place — the row counts files, so
 the *Guard scripts (all)* row did not move, while the *CI guard scripts* row
 did, because the repaired guard is now wired into the CI guard step for the
@@ -507,7 +507,7 @@ C006 added one test member and one guard, so three rows of the
 
 | Row | Before | After | What moved it |
 |---|---|---|---|
-| Integration test files | 331 | 332 | `tests/tui_render/tui_render_cost.inc` — a new `.inc` member of an **existing** family, so the root package's **test-target** count did not move. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged. |
+| Integration test files | 331 | 332 | `crates/codegg-tui/tests/tui_render/tui_render_cost.inc` — a new `.inc` member of an **existing** family, so the root package's **test-target** count did not move. The measure (`tests/*.rs` + `tests/*/*.inc`) is unchanged. |
 | Guard scripts (all) | 84 | 85 | `scripts/check_tui_render_cost.py`. The measure (`scripts/check_*`) is unchanged. |
 | CI guard scripts | 44 | 45 | The same guard, wired into `scripts/verify.sh quick` and `.github/workflows/ci.yml`; a guard's two `ci.yml` steps — the guard and its `--self-test` — are one distinct script. The measure is unchanged. |
 
@@ -594,7 +594,7 @@ Both numbers were re-measured with `python3 scripts/measure_overview_counts.py`
 against this tree, each against its own listed `Source`. No other row moved:
 this milestone changed no schema, no tool registration, no module and no
 storage layout, and it added **no** integration test file — the new tests
-extend the M001 member `tests/tui_render/file_picker_surface_corrective.inc`,
+extend the M001 member `crates/codegg-tui/tests/tui_render/file_picker_surface_corrective.inc`,
 which the *Integration test files* row already counted at 335.
 
 The *quick runs 14 guards CI does not* note in the `CI guard scripts` row is
@@ -618,7 +618,7 @@ surface corrective). Four rows moved, each re-measured against its own listed
 
 | Row | Before | After | What moved it |
 |---|---|---|---|
-| Integration test files | 337 | **338** | The union of the two sides' `.inc` members: `main` added `tests/tui_render/file_picker_surface_corrective.inc`. The measure (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded) is unchanged. |
+| Integration test files | 337 | **338** | The union of the two sides' `.inc` members: `main` added `crates/codegg-tui/tests/tui_render/file_picker_surface_corrective.inc`. The measure (`tests/*.rs` + `tests/*/*.inc`, with the `tests/common/` helper tree excluded) is unchanged. |
 | Guard scripts (all) | 90 | **91** | The union of the two guard sets: `main` added `scripts/check_tui_files_keymap_drift.py`. The measure (`scripts/check_*`) is unchanged. |
 | CI guard scripts | 53 | **54** | The union of the two workflow files' distinct `scripts/check_*` names. The measure is unchanged, and CI remains a strict subset of `quick`. |
 | `AGENTS.md`'s published counts | 67 quick / 53 CI | **68 quick / 54 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. The *quick runs 14 guards CI does not* difference is unchanged at 14. |
@@ -656,8 +656,8 @@ registration that makes the row's CI half move with it.
 
 No other row moved: this milestone changed no schema, no tool registration, no
 module and no storage layout, and it added **no** integration test file — the
-new tests extend the existing members `tests/tui_render/tui_composer_claims.inc`
-and `tests/tui_render/tui_composer_motions.inc`, which the *Integration test
+new tests extend the existing members `crates/codegg-tui/tests/tui_render/tui_composer_claims.inc`
+and `crates/codegg-tui/tests/tui_render/tui_composer_motions.inc`, which the *Integration test
 files* row already counted at 335. The *Architecture docs* row stays at 92: this
 milestone edits existing documents and adds no new one under `architecture/`.
 
@@ -686,7 +686,7 @@ listed `Source` in the merged tree rather than incremented from either parent:
 | Guard scripts (all) | 91 | **92** | The union of the two guard sets: `main` added `scripts/check_tui_composer_keymap_drift.py`. The measure (`scripts/check_*`) is unchanged. |
 | CI guard scripts | 54 | **55** | The union of the two workflow files' distinct `scripts/check_*` names. The measure is unchanged, and CI remains a strict subset of `quick`. |
 | `AGENTS.md`'s published counts | 68 quick / 54 CI | **69 quick / 55 CI** | The same union, counted in `scripts/verify.sh quick`'s `run_guards` rather than in the two files directly. The *quick runs 14 guards CI does not* difference is unchanged at 14. |
-| Integration test files | 338 | **338** | Unchanged, and this is worth stating rather than leaving implicit: `main`'s composer corrective added **no** integration test file. It extended the existing members `tests/tui_render/tui_composer_claims.inc` and `tests/tui_render/tui_composer_motions.inc`, and it **rewrote** `tests/tui_render/tui_composer_selection.inc`, which already existed at the merge base — a new-file line in a diff stat is not a new file. The row was re-measured at 338 in the merged tree, not carried over from either parent, and the two sides' file sets were differenced to confirm the union. |
+| Integration test files | 338 | **338** | Unchanged, and this is worth stating rather than leaving implicit: `main`'s composer corrective added **no** integration test file. It extended the existing members `crates/codegg-tui/tests/tui_render/tui_composer_claims.inc` and `crates/codegg-tui/tests/tui_render/tui_composer_motions.inc`, and it **rewrote** `crates/codegg-tui/tests/tui_render/tui_composer_selection.inc`, which already existed at the merge base — a new-file line in a diff stat is not a new file. The row was re-measured at 338 in the merged tree, not carried over from either parent, and the two sides' file sets were differenced to confirm the union. |
 
 The remaining 21 rows were **confirmed unchanged** by measurement, not by
 assumption: architecture docs 92, distinct production tool names 75, tool

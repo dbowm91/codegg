@@ -65,6 +65,12 @@ run_guards() {
 
     echo "==> ./scripts/check-core-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-core-boundary.sh)
+
+    echo "==> python3 scripts/check_tui_dependency_direction.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_dependency_direction.py --self-test)
+    echo "==> python3 scripts/check_tui_dependency_direction.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_dependency_direction.py)
+
     echo "==> ./scripts/check-client-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-client-boundary.sh)
 

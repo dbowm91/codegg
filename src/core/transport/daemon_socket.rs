@@ -1888,7 +1888,3 @@ mod tests {
         ));
     }
 }
-
-#[cfg(all(test, unix))]
-#[path = "daemon_socket_integration_tests.rs"]
-mod daemon_socket_integration_tests;

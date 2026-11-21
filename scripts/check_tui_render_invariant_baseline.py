@@ -66,10 +66,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_REL = "docs/tui-render-invariant-baseline.toml"
-DIALOG_SOURCE = "src/tui/components/component.rs"
-PANEL_SOURCE = "src/tui/panels/mod.rs"
-HARNESS_SOURCE = "tests/tui_render/invariants/baseline.rs"
-FIXTURE_SOURCE = "tests/tui_render/invariants/fixtures.rs"
+DIALOG_SOURCE = "crates/codegg-tui/src/components/component.rs"
+PANEL_SOURCE = "crates/codegg-tui/src/panels/mod.rs"
+HARNESS_SOURCE = "crates/codegg-tui/tests/tui_render/invariants/baseline.rs"
+FIXTURE_SOURCE = "crates/codegg-tui/tests/tui_render/invariants/fixtures.rs"
 SCHEMA_SOURCE = "src/theme/schema.rs"
 REGISTRY_SOURCE = "src/theme/registry.rs"
 

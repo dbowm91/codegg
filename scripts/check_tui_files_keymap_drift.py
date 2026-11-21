@@ -20,7 +20,7 @@ from drifting.
 
 Three inputs, and no more:
 
-* `src/tui/components/dialogs/files.rs` — the widget's `HINT` constant. This
+* `crates/codegg-tui/src/components/dialogs/files.rs` — the widget's `HINT` constant. This
   is the **model**: it is the one string the panel host's composer status line
   and the help dialog read, so it is what the code believes the keys do. The
   guard reads that one string literal and nothing else in the Rust file — it
@@ -92,7 +92,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-WIDGET_RS = "src/tui/components/dialogs/files.rs"
+WIDGET_RS = "crates/codegg-tui/src/components/dialogs/files.rs"
 ARCHITECTURE_MD = "architecture/tui.md"
 DOCS_MD = "docs/tui.md"
 

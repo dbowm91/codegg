@@ -16,7 +16,7 @@
 //!   5. reconcile_git_index_publications (C007: unresolved index publications
 //!      -> committed / aborted / ambiguous, from the recorded evidence)
 //!
-//! Socket/daemon entry points (`src/main.rs`) currently run steps 2-4 without
+//! Socket/daemon entry points (`crates/codegg-cli/src/main.rs`) currently run steps 2-4 without
 //! step 1. Do not reorder startup merely because extraction makes it possible.
 //! ```
 

@@ -26,17 +26,19 @@ are allowed in tests (`clippy.toml`).
 
 ## Layout
 
-- Root crate `codegg` (`src/`): TUI, agent loop, tools, scheduler, server, auth.
-  `src/lib.rs` re-exports `codegg_protocol as protocol`, `codegg_providers as provider`,
+- Root package `codegg` (`src/`): agent loop, tools, scheduler, server, and auth.
+  The TUI library is `codegg-tui`; the product `codegg` executable and its
+  WebSocket attach adapter are in `codegg-cli`. `src/lib.rs` re-exports
+  `codegg_protocol as protocol`, `codegg_providers as provider`,
   and `codegg_config as config` — there is no `src/protocol/`, `src/provider/`,
   or `src/config/` implementation directory.
-- `crates/`: 11 crates (+ root = 12 workspace members in `Cargo.toml`) — `codegg-core` (domain types: bus, jobs, session,
-  storage, workspace; must stay UI/server/plugin/auth-free, enforced by
-  `scripts/check-core-boundary.sh`), `codegg-config`, `codegg-protocol`,
-  `codegg-providers`, `codegg-git` (typed git ops + risk), `codegg-document`
-  (text transaction core), `egglsp` (authoritative LSP;
-  `src/lsp/` is a thin shim), `egggit` (read-only git facts), `eggsentry` (security
-  scanning), `eggcontext` (tokens), `codegg-client` (frontend-side native client).
+- `crates/`: 17 crates (+ root = 18 workspace members in `Cargo.toml`):
+  `codegg-core` (domain types: bus, jobs, session, storage, workspace; UI/server/plugin/auth-free,
+  enforced by `scripts/check-core-boundary.sh`), `codegg-client`, `codegg-cli`,
+  `codegg-config`, `codegg-document`, `codegg-git`, `codegg-host-protocol`,
+  `codegg-protocol`, `codegg-providers`, `codegg-sandbox`,
+  `codegg-sandbox-helper`, `codegg-sdk`, `codegg-tui`, `eggcontext`, `egggit`,
+  `egglsp` (authoritative LSP; `src/lsp/` is a thin shim), `eggsentry`.
   `crates/egglsp-test-server/` has no `Cargo.toml` and is NOT a member; the root
   package builds it as the `codegg-lsp-test-server` bin target behind
   `lsp-test-support`. The `egglsp` package separately builds an
@@ -48,9 +50,10 @@ are allowed in tests (`clippy.toml`).
   including the optional `sdm-core`/`sdm-runtime` git deps, which only the root
   package uses behind `decision-runtime-sdm`.
   `[workspace.lints.rust] unsafe_code = "deny"` is inherited via `[lints] workspace = true`
-  (e.g. `codegg-core`); the root package intentionally does NOT inherit it because
-  `src/bin/codegg-sandbox-helper.rs` has deliberate reviewed `unsafe` — the lib
-  enforces `#![deny(unsafe_code)]` in `src/lib.rs` instead.
+  (e.g. `codegg-core`, `codegg-sandbox`); the root package intentionally does NOT inherit it.
+  `codegg-sandbox-helper` owns the deliberate reviewed `unsafe` and also does
+  not inherit workspace lints; the root library enforces `#![deny(unsafe_code)]`
+  in `src/lib.rs`.
 - Aliases (`.cargo/config.toml`): `cargo ck` (workspace check),
   `ckroot ckcore ckprotocol ckconfig ckproviders ckgit cksplit`.
 - Features: `server` (axum HTTP/WS), `plugins` (wasmtime), `image`,
@@ -75,7 +78,7 @@ Prefer the narrowest target covering the change; run `verify.sh quick` first.
 
 ```bash
 cargo test -p codegg-core                                            # single crate
-cargo test --test tui_render -- tui_render                           # one member of one family
+cargo test -p codegg-tui --test tui_render -- tui_render               # one member of one family
 cargo test -p egglsp --features lsp-test-support --test scenario_engine  # LSP (needs feature)
 cargo nextest run --workspace --locked --profile ci  # capped full suite (needs cargo-nextest)
                           # give the sweep a private cache root so its result is a
@@ -91,19 +94,20 @@ scripts/verify.sh scoped [base-ref]  # quick's guards + only the tests the chang
   `cargo test --config 'profile.dev.strip="none"' …`. **`RUSTFLAGS=-C debuginfo=2`
   does not work** — the profile's `strip` still applies, so the artifact comes
   out byte-identical with no DWARF sections.
-- The root package's integration tests are **families** (one executable per
-  subject area, under `tests/<family>/`). `cargo test --test <member>` no
-  longer selects a single member; use `cargo test --test <family> -- <member>`.
-  The `--test` name is the **family** (the Cargo target, declared in the root
-  `Cargo.toml`), and the trailing filter is the member. A member name can
-  coincide with a family name — `tui_render` is both — so `--test tui_render`
-  alone runs the whole 53-member family, and `--test tui_render -- tui_render`
-  runs just that member. A test id is `<family>::<member>::<test>`.
+- Integration tests are **families** (one executable per subject area); each
+  family belongs to its owning package. The moved TUI families, including
+  `tui_render`, live under `crates/codegg-tui/tests/`. Select a member with
+  `cargo test -p <package> --test <family> -- <member>`. A member name can
+  coincide with a family name — `tui_render` is both — so
+  `cargo test -p codegg-tui --test tui_render` runs the whole family, while
+  `cargo test -p codegg-tui --test tui_render -- tui_render` selects that
+  member. A test id is `<family>::<member>::<test>`.
 - `scripts/verify.sh scoped` selects tests from `docs/test-ownership.toml`. A
   change in a crate **another crate depends on** widens to every transitive
-  dependent's full surface — the root package depends on all eleven other
-  crates and re-exports several, so the coupling runs through the root's own
-  source and no path rule can see it.
+  dependent's full surface. The root package depends on 13 workspace crates
+  and re-exports several; `codegg-tui` and `codegg-cli` depend on the root,
+  and the CLI also depends on the TUI. Those reverse edges mean root changes
+  widen to the frontend packages, while TUI changes widen to the CLI.
 - Plugin SDKs test separately: `examples/plugins/sdk-rust` (cargo),
   `examples/plugins/sdk-python` (`python3 -m unittest discover`).
 - Full taxonomy, pool strategy, nextest profiles: `architecture/testing.md`.
@@ -512,10 +516,10 @@ is what says which.
   PTY bytes remain private local output. Remote prompt-only transport keeps an
   explicitly unsubmitted composer draft. See `architecture/human_shell.md`.
 - Slow TUI handlers use `spawn_tui_task` + `finish(request_id)`/`fail(request_id, err)`
-  guard with a stale-completion test (see `src/tui/async_cmd.rs`). Note
+  guard with a stale-completion test (see `crates/codegg-tui/src/async_cmd.rs`). Note
   `dispatch_tui_command` itself is `pub(crate) async` with five `.await` points in
   the durable-editor arms — dispatch is not purely synchronous
-  (`src/tui/runtime/command_dispatch.rs:87`). See `architecture/tui.md`.
+  (`crates/codegg-tui/src/runtime/command_dispatch.rs:87`). See `architecture/tui.md`.
 - Auth: `ExternalCommand` is unsupported; never log secrets. The config-first
   registration path explicitly registers all 17 built-ins, each resolving its
   own config then its conventional env var, so defining a provider in config
@@ -530,7 +534,7 @@ is what says which.
   already-joined `…/codegg/skills` path, which double-joins to
   `…/codegg/skills/codegg/skills`. Because `resolve_source_roots` skips a
   missing root with no diagnostic, that mistake silently drops every global
-  skill. Seven sites build their own registry (across six files — `src/tui/app/mod.rs`
+  skill. Seven sites build their own registry (across six files — `crates/codegg-tui/src/app/mod.rs`
   holds two); all are listed in `architecture/skills.md`.
 - New web-search providers belong in the external `eggsearch` project; CodeGG's
   retired `src/search/` provider tree must not be recreated — the live tree is

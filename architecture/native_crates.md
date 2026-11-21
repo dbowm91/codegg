@@ -26,8 +26,14 @@ crates/
                      CoreEvent, TuiMessage, UiNode, UiEffect
   codegg-client/     Frontend descriptor, local daemon paths, native
                      CoreFrame client, connect/reuse/start
+  codegg-cli/        Product `codegg` executable and WebSocket attach adapter
+  codegg-host-protocol/ Embedding-host protocol wire types
   codegg-providers/  LLM provider implementations, auth types,
                      CircuitBreaker
+  codegg-sandbox/    Sandbox policy and platform backends
+  codegg-sandbox-helper/ Sandboxed process helper binary
+  codegg-sdk/        Typed client for the embedding-host protocol
+  codegg-tui/        Ratatui terminal frontend and render/test families
   codegg-git/        Typed Git operation model, argv parser, risk
                      classification (pure data, no subprocess)
   codegg-document/   Frontend-neutral UTF-8 document snapshots and
@@ -51,10 +57,12 @@ Non-member / excluded directories:
                        sqlx sqlite linkage)
 ```
 
-Workspace members (12 entries): root `codegg` + 11 crates under `crates/`
-(`codegg-client`, `codegg-config`, `codegg-core`, `codegg-document`,
-`codegg-git`, `codegg-protocol`, `codegg-providers`, `eggcontext`, `egggit`,
-`egglsp`, `eggsentry`). `apps/desktop/src-tauri` is also excluded.
+Workspace members (18 entries): root `codegg` + 17 crates under `crates/`
+(`codegg-client`, `codegg-cli`, `codegg-config`, `codegg-core`,
+`codegg-document`, `codegg-git`, `codegg-host-protocol`, `codegg-protocol`,
+`codegg-providers`, `codegg-sandbox`, `codegg-sandbox-helper`, `codegg-sdk`,
+`codegg-tui`, `eggcontext`, `egggit`, `egglsp`, `eggsentry`).
+`apps/desktop/src-tauri` is also excluded.
 
 ## Workspace Dependency Ownership
 
@@ -71,9 +79,11 @@ crate-specific features stay local and minimal:
   `dep = { workspace = true, features = [...] }` and preserve
   optionality (`optional = true` stays in the member).
 - Single-consumer dependencies stay local and must not be hoisted.
-- `[workspace.lints.rust] unsafe_code = "deny"` is inherited only by
-  `codegg-core`. The root package remains outside because the
-  sandbox-helper binary contains deliberate, reviewed `unsafe`.
+- `[workspace.lints.rust] unsafe_code = "deny"` is inherited by
+  `codegg-core` and `codegg-sandbox`. The root package keeps its library
+  `#![deny(unsafe_code)]` without inheriting the table; the separate
+  `codegg-sandbox-helper` package contains deliberate reviewed `unsafe` and
+  does not inherit workspace lints.
 
 ## Codegg ↔ Crate Boundary
 
@@ -103,6 +113,8 @@ codegg (root)
   ├── codegg-client
   │     ├── codegg-protocol
   │     └── codegg-document
+  ├── codegg-host-protocol
+  ├── codegg-sandbox
   ├── codegg-config
   ├── codegg-protocol
   ├── codegg-providers
@@ -113,6 +125,11 @@ codegg (root)
   ├── eggsentry
   └── eggcontext
 ```
+
+`codegg-tui` depends on root `codegg`; `codegg-cli` depends on both root
+`codegg` and `codegg-tui`. The root package depends on neither frontend.
+`codegg-sdk` depends on `codegg-host-protocol`, and
+`codegg-sandbox-helper` depends on `codegg-sandbox`.
 
 Note: `codegg-core` depends on `codegg-git` (typed Git model), but
 `eggcontext` is NOT a dependency of `codegg-core` (consumed only by
@@ -414,7 +431,7 @@ Corrections made in this pass:
   dependency pinned in the root manifest, not a workspace member and not a
   `crates/` directory.
 
-Verified accurate, no change: the 12 workspace members and the
+Verified accurate, no change: the 18 workspace members and the
 `exclude` list (`crates/eggwork-test-node`, `apps/desktop/src-tauri`),
 `egglsp`'s 39 `pub mod` declarations and 26 `LspError` variants, the two
 distinct test-server binaries (`egglsp`'s own `egglsp-test-server` bin from

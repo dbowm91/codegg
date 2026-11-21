@@ -79,9 +79,6 @@ pub mod identity_m002_live_audit_hooks;
 #[path = "delegated_transcript_m002.inc"]
 pub mod delegated_transcript_m002;
 
-#[path = "identity_m003_daemon_authorization.inc"]
-pub mod identity_m003_daemon_authorization;
-
 #[path = "identity_m003_scheduler_job_complete.inc"]
 pub mod identity_m003_scheduler_job_complete;
 
@@ -100,8 +97,6 @@ pub mod launch_directory_bootstrap;
 #[path = "m007h_daemon_read_surfaces.inc"]
 pub mod m007h_daemon_read_surfaces;
 
-#[path = "m007i_daemon_diff.inc"]
-pub mod m007i_daemon_diff;
 #[path = "m007i_daemon_promotion.inc"]
 pub mod m007i_daemon_promotion;
 
@@ -110,9 +105,6 @@ pub mod model_preference_convergence;
 
 #[path = "presence_m001_leases.inc"]
 pub mod presence_m001_leases;
-
-#[path = "presence_m003_observation.inc"]
-pub mod presence_m003_observation;
 
 #[path = "project_activation.inc"]
 pub mod project_activation;
@@ -164,9 +156,6 @@ pub mod work_orders_m005_trigger;
 
 #[path = "work_orders_m006_agent_tool.inc"]
 pub mod work_orders_m006_agent_tool;
-
-#[path = "work_orders_m007_trajectory.inc"]
-pub mod work_orders_m007_trajectory;
 
 #[path = "workstream_claim_m003.inc"]
 pub mod workstream_claim_m003;

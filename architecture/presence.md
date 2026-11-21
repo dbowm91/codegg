@@ -44,7 +44,7 @@ src/core/transport/daemon_socket.rs       # disconnect expiry (Unix socket)
 src/server/ws.rs                          # disconnect expiry (WebSocket x3)
 tests/core_daemon/presence_m001_leases.inc             # service + daemon boundary tests
 tests/core_daemon/presence_m003_observation.inc         # M003 observation tests
-tests/tui_render/presence_m002_collaborators.inc        # M002 TUI collaborator tests
+crates/codegg-tui/tests/tui_render/presence_m002_collaborators.inc        # M002 TUI collaborator tests
 ```
 
 ## How It Works
@@ -186,14 +186,14 @@ The TUI renders daemon-owned presence as a bounded per-project
 projection. It owns no presence truth.
 
 ```
-src/tui/app/state/presence.rs      # reducer keyed by project_id + request/reconnect epoch
-src/tui/commands/presence.rs       # capability + snapshot fetch (spawn-and-complete)
-src/tui/app/mod.rs                 # App.presence, header count, /collaborators, reconnect/switch hooks
-src/tui/components/dialogs/info.rs # InfoType::Collaborators (scrollable panel)
-src/tui/components/component.rs    # DialogType::Collaborators (focus slot)
-src/tui/command.rs                 # /collaborators (/presence) registry; /team is the separate durable admin surface
-src/tui/input.rs                   # help entries
-tests/tui_render/presence_m002_collaborators.inc
+crates/codegg-tui/src/app/state/presence.rs      # reducer keyed by project_id + request/reconnect epoch
+crates/codegg-tui/src/commands/presence.rs       # capability + snapshot fetch (spawn-and-complete)
+crates/codegg-tui/src/app/mod.rs                 # App.presence, header count, /collaborators, reconnect/switch hooks
+crates/codegg-tui/src/components/dialogs/info.rs # InfoType::Collaborators (scrollable panel)
+crates/codegg-tui/src/components/component.rs    # DialogType::Collaborators (focus slot)
+crates/codegg-tui/src/command.rs                 # /collaborators (/presence) registry; /team is the separate durable admin surface
+crates/codegg-tui/src/input.rs                   # help entries
+crates/codegg-tui/tests/tui_render/presence_m002_collaborators.inc
 ```
 
 - **Reducer** (`PresenceState`): per-project entries with
@@ -260,13 +260,13 @@ crates/codegg-core/src/authorization/authority.rs     # team_capabilities_to_pro
                                                       # re-exported by the authorization facade
 src/core/daemon.rs                                    # canonical_observe_access_for_project, session_observe_allowed,
                                                       # subscribe/resume/artifact rechecks, denial shapes
-src/tui/app/state/observe.rs                          # ObserverState reducer + central read-only policy
-src/tui/commands/observe.rs                           # subscribe/resume/stop flow on CoreClient
-src/tui/app/mod.rs                                    # TuiCommand arms, /observe + /stop-observing, header banner,
+crates/codegg-tui/src/app/state/observe.rs                          # ObserverState reducer + central read-only policy
+crates/codegg-tui/src/commands/observe.rs                           # subscribe/resume/stop flow on CoreClient
+crates/codegg-tui/src/app/mod.rs                                    # TuiCommand arms, /observe + /stop-observing, header banner,
                                                       # execute_command/send_prompt/permission/question guards,
                                                       # on_projection_reconnect resume
-src/tui/runtime/command_dispatch.rs                   # StartObserve/ObserveSubscribed/ObserveResumed/StopObserving arms
-src/tui/command.rs + src/tui/input.rs                 # /observe (/watch), /stop-observing (/unwatch) registry + help
+crates/codegg-tui/src/runtime/command_dispatch.rs                   # StartObserve/ObserveSubscribed/ObserveResumed/StopObserving arms
+crates/codegg-tui/src/command.rs + crates/codegg-tui/src/input.rs                 # /observe (/watch), /stop-observing (/unwatch) registry + help
 tests/core_daemon/presence_m003_observation.inc                    # allow/deny, negatives, lifecycle, bounds, redaction, TUI state
 ```
 
@@ -377,11 +377,11 @@ Verified 2026-10-23 against `crates/codegg-core/src/presence.rs`,
 `crates/codegg-core/src/team.rs`, `src/core/daemon.rs`,
 `src/core/daemon_projection.rs`, `src/core/daemon_sessions.rs`,
 `src/core/daemon_turns.rs`, `src/core/transport/daemon_socket.rs`,
-`src/server/ws.rs`, `src/tui/app/state/presence.rs`,
-`src/tui/app/state/observe.rs`, `src/tui/commands/presence.rs`,
-`src/tui/commands/observe.rs`, `src/tui/runtime/command_dispatch.rs`,
-`src/tui/command.rs`, `src/tui/components/dialogs/info.rs`,
-`src/tui/components/component.rs`, and the three presence integration test
+`src/server/ws.rs`, `crates/codegg-tui/src/app/state/presence.rs`,
+`crates/codegg-tui/src/app/state/observe.rs`, `crates/codegg-tui/src/commands/presence.rs`,
+`crates/codegg-tui/src/commands/observe.rs`, `crates/codegg-tui/src/runtime/command_dispatch.rs`,
+`crates/codegg-tui/src/command.rs`, `crates/codegg-tui/src/components/dialogs/info.rs`,
+`crates/codegg-tui/src/components/component.rs`, and the three presence integration test
 files.
 - **Corrected a wrong module attribution**: the doc credited
   `src/core/daemon.rs` with the presence *handlers*. The handlers live in
@@ -402,7 +402,7 @@ files.
   `cargo test --test core_daemon -- presence_m001_leases` and
   `cargo test --test tui_render -- presence_m002_collaborators`. Added the
   family rule inline.
-- **Added the missing M002 test file**: `tests/tui_render/presence_m002_collaborators.inc`
+- **Added the missing M002 test file**: `crates/codegg-tui/tests/tui_render/presence_m002_collaborators.inc`
   (12 tests) was unlisted.
 - Verified accurate, no change: the 4-variant `PresenceActivity` and its
   rank order `Idle=0 < Observing=1 < Active=2 < AgentRunning=3`
@@ -420,19 +420,19 @@ files.
   `max_per_daemon: 256` (`subscription.rs:47-48`); the TUI bounds
   `MAX_PRESENCE_PROJECTS = 16` and
   `MAX_PRESENCE_DISPLAY_PRINCIPALS = 32`
-  (`src/tui/app/state/presence.rs:34,36`), `MAX_OBSERVE_LOCATOR_LEN = 128`
+  (`crates/codegg-tui/src/app/state/presence.rs:34,36`), `MAX_OBSERVE_LOCATOR_LEN = 128`
   (`observe.rs:37`), and `MAX_PRESENCE_ERROR_LEN = 256`
-  (`presence.rs:42`); `App.presence` (`src/tui/app/mod.rs:674`),
+  (`presence.rs:42`); `App.presence` (`crates/codegg-tui/src/app/mod.rs:674`),
   `header_summary` and `panel_lines`
-  (`src/tui/app/state/presence.rs:442,471`); `start_refresh_presence`
-  (`src/tui/commands/presence.rs:28`); `InfoType::Collaborators`
-  (`src/tui/components/dialogs/info.rs:49`) and
-  `DialogType::Collaborators` (`src/tui/components/component.rs:63`);
+  (`crates/codegg-tui/src/app/state/presence.rs:442,471`); `start_refresh_presence`
+  (`crates/codegg-tui/src/commands/presence.rs:28`); `InfoType::Collaborators`
+  (`crates/codegg-tui/src/components/dialogs/info.rs:49`) and
+  `DialogType::Collaborators` (`crates/codegg-tui/src/components/component.rs:63`);
   the `/collaborators` (`/presence`), `/observe` (`/watch`), and
   `/stop-observing` (`/unwatch`) registry entries
-  (`src/tui/command.rs:863,870,873`); the `StartObserve` /
+  (`crates/codegg-tui/src/command.rs:863,870,873`); the `StartObserve` /
   `ObserveSubscribed` / `ObserveResumed` / `StopObserving` dispatch arms
-  (`src/tui/runtime/command_dispatch.rs:343,349,375,395`); the three
+  (`crates/codegg-tui/src/runtime/command_dispatch.rs:343,349,375,395`); the three
   read-only policy messages; `authorize_scope`
   (`projection_replay/context.rs:397`) and
   `team_capabilities_to_projection`
@@ -452,7 +452,7 @@ files.
 Verified 2026-10-06 against `crates/codegg-core/src/presence.rs`,
 `crates/codegg-protocol/src/core.rs`,
 `crates/codegg-core/src/projection_replay/subscription.rs`,
-`src/tui/app/state/presence.rs`, `src/tui/app/state/observe.rs`,
+`crates/codegg-tui/src/app/state/presence.rs`, `crates/codegg-tui/src/app/state/observe.rs`,
 `crates/codegg-core/src/authorization/policy.rs`, and the three presence
 integration test files. **No corrections were required** — every numeric
 bound, enum listing, protocol variant, and path in this doc matches source.
@@ -469,7 +469,7 @@ protocol surface of exactly 3 `CoreRequest` Presence variants
 (`PresenceUpdated`); the subscription caps `max_per_client: 32` and
 `max_per_daemon: 256` (`subscription.rs:47-48`); the TUI bounds
 `MAX_PRESENCE_PROJECTS = 16` and `MAX_PRESENCE_DISPLAY_PRINCIPALS = 32`
-(`src/tui/app/state/presence.rs:34,36`), `MAX_OBSERVE_LOCATOR_LEN = 128`
+(`crates/codegg-tui/src/app/state/presence.rs:34,36`), `MAX_OBSERVE_LOCATOR_LEN = 128`
 (`observe.rs:37`), and `MAX_PRESENCE_ERROR_LEN = 256`; and the test counts
 — `tests/core_daemon/presence_m001_leases.inc` 15 tests (matching the documented "8
 service + 7 daemon"), `tests/core_daemon/presence_m003_observation.inc` 11 tests, and 11

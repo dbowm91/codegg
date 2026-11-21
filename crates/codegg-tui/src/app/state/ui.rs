@@ -1,0 +1,157 @@
+//! UI state module.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use ratatui::layout::Rect;
+use tokio::sync::broadcast;
+
+use crate::app::state::subagents::SubagentState;
+use crate::app::types::Dialog;
+use crate::input::{InputAction, InputMode, KeybindConfig};
+use crate::layout::TuiLayout;
+use crate::route::RouteManager;
+use crate::theme::Theme;
+use codegg::tts::Tts;
+
+/// Determines how the TUI operates with respect to resource ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppMode {
+    /// In-process mode: TUI owns DB, providers, scheduler, etc.
+    Embedded,
+    /// Socket/daemon mode: TUI connects to an external daemon via CoreClient.
+    /// Does NOT own local resources — gets everything from the daemon.
+    RemoteCore {
+        /// The daemon endpoint URL
+        endpoint: String,
+    },
+}
+
+/// UI state including theme, layout, routes, and dialog management.
+///
+/// This state manages things that are purely UI-related:
+/// - Theme and layout configuration
+/// - Current route (Home/Session)
+/// - Which dialog is open (if any)
+/// - Command mode (for slash commands)
+/// - Keybindings
+pub struct UiState {
+    /// Current color theme
+    pub theme: Arc<Theme>,
+    /// Layout manager
+    pub layout: TuiLayout,
+    /// Whether *any* panel edge is currently showing a panel.
+    ///
+    /// A derived mirror of `SidePanelHost::any_visible()`, written after every
+    /// change that can collapse or reveal an edge. It is **not** the
+    /// authority: with several edges independently collapsible, a single bool
+    /// cannot say *which* one is up, so anything that needs that must ask the
+    /// host. Kept as a field rather than a method only because the session
+    /// manifest persists a sidebar-visibility preference that predates
+    /// placements and still has to be written.
+    ///
+    /// Do not branch behavior on this: a read here is the bug this field's
+    /// existence invites, since it looks like the answer and silently answers
+    /// a coarser question than the one being asked.
+    pub sidebar_visible: bool,
+    /// M006-D: whether the file-tree pane holds keyboard focus.
+    ///
+    /// Separate from the editor's own buffer/composer focus so the
+    /// non-modal contract stays explicit: when the tree is focused its keys
+    /// navigate the tree and do not reach the composer.
+    pub tree_focused: bool,
+    /// Auto-scroll messages to bottom
+    pub auto_scroll: bool,
+    /// Show reasoning/thinking sections
+    pub show_thinking: bool,
+    /// The extended-thinking selection chosen with `/reasoning`.
+    ///
+    /// This is the **daemon-owned** selection, projected for display. The
+    /// daemon resolves the selection at every turn-admission path, so the
+    /// local value is never authoritative: it is corrected from the
+    /// daemon's response whenever the two differ.
+    ///
+    /// `Inherit` means "no explicit selection": the turn takes the agent /
+    /// model-profile default.
+    pub reasoning_mode: codegg::protocol::core::ReasoningMode,
+    /// The reasoning capability the daemon published for each model it has
+    /// resolved, keyed by model id.
+    ///
+    /// The daemon's model-resolution response is the only source. A model
+    /// with no entry here has **no published capability**, which reads as
+    /// "not established" — never as "this model accepts nothing". The
+    /// frontend then falls back to the known-label ladder and says so.
+    pub reasoning_capabilities: HashMap<String, codegg::protocol::provider::ReasoningCapabilityDto>,
+    /// The daemon's preference revision, used as the compare-and-set
+    /// revision for a reasoning write.
+    pub reasoning_preference_revision: Option<u64>,
+    /// Request generation for the reasoning read/write path. A stale
+    /// completion is dropped rather than applied.
+    pub reasoning_request: crate::app::state::AsyncUiRequestState,
+    /// Show message timestamps
+    pub show_timestamps: bool,
+    /// Route manager for Home/Session navigation
+    pub routes: RouteManager,
+    /// Currently open dialog (None if closed)
+    pub dialog: Dialog,
+    /// Whether in command mode (slash prefix entered)
+    pub command_mode: bool,
+    /// Input mode (Insert/Normal - vim-style)
+    pub input_mode: InputMode,
+    /// Shutdown signal sender
+    pub shutdown_tx: Option<broadcast::Sender<()>>,
+    /// Help dialog content lines
+    pub help_lines: Vec<String>,
+    /// Key bindings map
+    pub bindings: HashMap<(crossterm::event::KeyModifiers, crossterm::event::KeyCode), InputAction>,
+    /// Raw keybind config (for editing)
+    pub keybinds: Option<KeybindConfig>,
+    /// Whether vim mode is enabled (affects help text and normal mode bindings)
+    pub vim_mode: bool,
+    /// Operating mode (Embedded vs RemoteCore)
+    pub mode: AppMode,
+    pub remote_status: Option<String>,
+    /// Event loop running flag
+    pub running: bool,
+    /// Timeline visible
+    pub timeline_visible: bool,
+    pub timeline_selected: usize,
+    pub render_panic_count: usize,
+    pub last_render_error: Option<String>,
+    /// Text-to-speech engine
+    pub tts: Tts,
+    /// TTS enabled/disabled state
+    pub tts_enabled: bool,
+    /// Fullscreen mode (DEC 1049 alternate screen buffer)
+    pub fullscreen: bool,
+    /// Dirty region for partial redraw optimization
+    pub dirty_regions: Vec<Rect>,
+    /// Resize debounce timer
+    pub resize_debounce: Option<std::time::Instant>,
+    /// When true, TTS requests route through the daemon's NotificationRouter
+    /// instead of speaking locally. Set in RemoteCore mode.
+    pub tts_via_daemon: bool,
+    pub diagnostics: crate::app::state::diagnostics::TuiDiagnostics,
+    /// Advertised plugin UI capabilities. Checked before applying effects
+    /// to enforce policy/capability filtering at the TUI boundary.
+    pub plugin_ui_caps: codegg::protocol::ui::PluginUiCapabilities,
+    /// Active-subagent rows and the subagent buffer opened over the main one.
+    ///
+    /// View state: it is rebuilt from each projection snapshot, so an absent
+    /// snapshot empties it rather than leaving stale rows on screen.
+    pub subagents: SubagentState,
+}
+
+impl UiState {
+    pub fn add_dirty_region(&mut self, region: Rect) {
+        self.dirty_regions.push(region);
+    }
+
+    pub fn clear_dirty_regions(&mut self) {
+        self.dirty_regions.clear();
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        !self.dirty_regions.is_empty()
+    }
+}

@@ -22,7 +22,7 @@ precondition sets.
 
 ## What this guard reads
 
-Every `.rs` file under `src/tui/`, and nothing else. It looks for
+Every `.rs` file under `crates/codegg-tui/src/`, and nothing else. It looks for
 `CoreRequest::LspPreviewApply` — the request variant — and classifies each
 occurrence:
 
@@ -37,7 +37,7 @@ shape is not an apply path; a doc comment that *names* it is not one either.
 **Violations** (exit code 1):
 
 - **Rule 1 — the variant appears outside the one builder's file.** Any other
-  file under `src/tui/` that mentions `CoreRequest::LspPreviewApply` is
+  file under `crates/codegg-tui/src/` that mentions `CoreRequest::LspPreviewApply` is
   building or matching an apply request outside the builder. That is a second
   apply path, however small.
 - **Rule 2 — the builder's file does not contain exactly one construction.**
@@ -85,10 +85,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import rust_test_scan  # noqa: E402  (path is set above)
 
-TUI_ROOT = REPO_ROOT / "src" / "tui"
+TUI_ROOT = REPO_ROOT / "crates" / "codegg-tui" / "src"
 
 # The file that owns the one builder.
-THE_BUILDER_FILE = Path("src/tui/commands/change_review.rs")
+THE_BUILDER_FILE = Path("crates/codegg-tui/src/commands/change_review.rs")
 # The one builder's name.
 THE_BUILDER_FN = "build_apply_request"
 # The request variant. Matched exactly, so `LspPreviewApplyRequestDto` and
@@ -411,7 +411,7 @@ fn elsewhere(request: Request) -> CoreRequest {
         proves="a second file touching the variant is a second apply path",
         files={
             THE_BUILDER_FILE: BUILDER_BODY,
-            Path("src/tui/commands/editor.rs"): """
+            Path("crates/codegg-tui/src/commands/editor.rs"): """
 fn build_it(request: Request) -> CoreRequest {
     CoreRequest::LspPreviewApply { request }
 }

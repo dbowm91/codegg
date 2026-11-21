@@ -11,10 +11,10 @@ through the daemon's `NotificationRouter` / `AudioArbiter`.
 ## Where It Lives
 
 - `src/tts/mod.rs` — engine implementation
-- `src/tui/app/state/ui.rs:107, 109, 118` — TUI state fields (`tts`, `tts_enabled`, `tts_via_daemon`)
-- `src/tui/app/mod.rs:10952, 11009` — TUI integration (`toggle_tts`, `stop_tts`); daemon routing flag set at `:861`
-- `src/tui/runtime/app_events.rs:392-400` — auto-stop on agent finished
-- `src/tui/command.rs:652` — `/tts` slash command registration
+- `crates/codegg-tui/src/app/state/ui.rs:107, 109, 118` — TUI state fields (`tts`, `tts_enabled`, `tts_via_daemon`)
+- `crates/codegg-tui/src/app/mod.rs:10952, 11009` — TUI integration (`toggle_tts`, `stop_tts`); daemon routing flag set at `:861`
+- `crates/codegg-tui/src/runtime/app_events.rs:392-400` — auto-stop on agent finished
+- `crates/codegg-tui/src/command.rs:652` — `/tts` slash command registration
 
 ## How It Works
 
@@ -35,7 +35,7 @@ CodeGG is untouched.
 ### Remote-Core Mode
 
 When `AppMode::RemoteCore` is active, `tts_via_daemon` is set to `true`
-(`src/tui/app/mod.rs:861`). Toggle and stop operations route through
+(`crates/codegg-tui/src/app/mod.rs:861`). Toggle and stop operations route through
 `CoreClient` using `CoreRequest::NotificationSpeak` instead of local
 `say` invocation. The daemon's `AudioArbiter` handles playback.
 
@@ -43,7 +43,7 @@ When `AppMode::RemoteCore` is active, `tts_via_daemon` is set to `true`
 
 On `AgentFinished`, the TUI checks if TTS is speaking and (in embedded
 mode only) calls `tts.stop()` to prevent leftover speech
-(`src/tui/runtime/app_events.rs:333-345`).
+(`crates/codegg-tui/src/runtime/app_events.rs:333-345`).
 
 ## Key Types & APIs
 
@@ -117,7 +117,7 @@ configuration options. State is managed in-memory:
   mode; the TUI always speaks locally.
 - **Auto-stop skips remote mode**: the `AgentFinished` handler only calls
   local `tts.stop()` when NOT in `RemoteCore` mode
-  (`src/tui/runtime/app_events.rs:335-339`).
+  (`crates/codegg-tui/src/runtime/app_events.rs:335-339`).
 
 ## Keybindings
 
@@ -138,14 +138,14 @@ Slash command: `/tts` (alias `/voice`).
 Verified 2026-10-23 against `src/tts/mod.rs` (single module) and its TUI
 call sites. Corrected the line references, which had all drifted:
 
-- `UiState` fields `src/tui/app/state/ui.rs:88, 90, 99` → **`:107, 109, 118`**
+- `UiState` fields `crates/codegg-tui/src/app/state/ui.rs:88, 90, 99` → **`:107, 109, 118`**
   (`tts`, `tts_enabled`, `tts_via_daemon`).
-- `toggle_tts` / `stop_tts` `src/tui/app/mod.rs:8043, 8100` → **`:10952, 11009`**.
-- The `tts_via_daemon = true` assignment `src/tui/app/mod.rs:861` → **`:1335`**
+- `toggle_tts` / `stop_tts` `crates/codegg-tui/src/app/mod.rs:8043, 8100` → **`:10952, 11009`**.
+- The `tts_via_daemon = true` assignment `crates/codegg-tui/src/app/mod.rs:861` → **`:1335`**
   (the initialiser at `:1019` and `:1608` sets it `false`).
-- The `AgentFinished` auto-stop `src/tui/runtime/app_events.rs:333-345` →
+- The `AgentFinished` auto-stop `crates/codegg-tui/src/runtime/app_events.rs:333-345` →
   **`:392-400`**.
-- `/tts` registration `src/tui/command.rs:573` → **`:652`**.
+- `/tts` registration `crates/codegg-tui/src/command.rs:573` → **`:652`**.
 
 Confirmed unchanged: the `say` invocation and `process_group(0)` setup plus pid
 recording in `speak()`; the `killpg`-with-pid-fallback `stop()` that replaced
@@ -154,5 +154,5 @@ the old pattern kill — so the earlier `pkill say` caveat remains **resolved**
 `Arc`-shared `speaking`/`pid` state; `CoreRequest::NotificationSpeak`
 (`crates/codegg-protocol/src/core.rs:2944`); the daemon-side `AudioArbiter`
 (`src/core/notification.rs`, `src/core/daemon.rs`, `src/core/daemon_construct.rs`);
-the `ToggleTts` / `StopTts` bindings (`src/tui/input.rs:229-230, 331-332,
+the `ToggleTts` / `StopTts` bindings (`crates/codegg-tui/src/input.rs:229-230, 331-332,
 401-402`); and the 6 regression tests in `src/tts/mod.rs`.

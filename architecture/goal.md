@@ -17,7 +17,7 @@ work until the goal is complete or budget is exhausted.
 |-----------|----------|
 | Core types, store, runtime | `crates/codegg-core/src/goal/` |
 | Model-facing tools | `src/tool/goal.rs` |
-| TUI slash commands | `src/tui/commands/` (`/goal *`) |
+| TUI slash commands | `crates/codegg-tui/src/commands/` (`/goal *`) |
 | DB schema | `crates/codegg-core/src/session/schema.rs` (migration v16; revision CAS added in v45) |
 
 ### Module Structure

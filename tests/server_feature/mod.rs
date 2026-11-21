@@ -36,8 +36,5 @@ pub mod projection_transport_real;
 #[path = "team_collaboration_m001_http_auth.inc"]
 pub mod team_collaboration_m001_http_auth;
 
-#[path = "team_collaboration_m006_trajectory.inc"]
-pub mod team_collaboration_m006_trajectory;
-
 #[path = "team_collaboration_postclosure_m001_registration_auth.inc"]
 pub mod team_collaboration_postclosure_m001_registration_auth;

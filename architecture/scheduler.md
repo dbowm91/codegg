@@ -530,7 +530,7 @@ constructing TestRunner locally.
 | `src/tool/bash.rs` test translation | Test | TestRunner | Scheduler submission |
 | `src/tool/bash.rs` build/lint/format/managed routes | matching kind | ManagedProcessService | Scheduler submission |
 | `src/tool/bash.rs` explicit shell route | Shell | ManagedProcessService with sh -c payload | Scheduler submission |
-| `src/tui/commands/test.rs` | Test | daemon protocol + TestRunner | Scheduler submission |
+| `crates/codegg-tui/src/commands/test.rs` | Test | daemon protocol + TestRunner | Scheduler submission |
 | server `CoreRequest::JobSubmit` | typed caller kind | daemon submission facade | Scheduler submission |
 | scheduler subagent adapter | Subagent | SubAgentPool | Scheduler admission; pool is runtime/semantic adapter only |
 | `src/job_dispatcher.rs` | Subagent | SubAgentPool | Definition retained; no daemon production wiring |

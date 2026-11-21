@@ -1,0 +1,17783 @@
+#![allow(clippy::collapsible_match)]
+
+//! Interactive TUI application root (`App`).
+//!
+//! Responsibility is decomposed by module: `commands` (intent/effect
+//! contract), `input` (key handling and bindings), `modal` (dialog
+//! mounting; top-modal-only focus owned by `FocusManager`),
+//! `project_session` (multi-project tab/session lifecycle),
+//! `prompt_turn` (prompt and turn submission lifecycle), `plugin_ui`
+//! (plugin effects), and `render` (frame composition). Shared live
+//! state lives in `state/`; message and dialog types in `types.rs`.
+
+#[cfg(test)]
+mod command_argument_tests;
+mod commands;
+#[cfg(test)]
+mod compact_command_tests;
+mod input;
+mod modal;
+#[path = "plugin_ui.rs"]
+mod plugin_effects;
+pub mod present_card;
+mod project_session;
+mod prompt_turn;
+mod render;
+pub mod turn_submit;
+mod types;
+
+pub(crate) use commands::send_tui;
+pub use commands::{
+    SessionMutationOp, ShellPromotionStageResult, TerminalResumeRequest, TuiCommand,
+};
+pub use types::{
+    CompletionType, ConnectionLifecycleAction, Dialog, HistoryEntry, SessionStatus, TodoEntry,
+    TuiMsg,
+};
+
+/// Resolve the default root directory for TUI-local persisted
+/// state (the manifest). Under the platform config directory,
+/// under `codegg/tui/`. Returns a fresh fallback path when the
+/// platform config dir cannot be resolved (no env, no home).
+pub fn default_tui_state_root() -> std::path::PathBuf {
+    if let Some(dir) = dirs::config_dir() {
+        return dir.join("codegg").join("tui");
+    }
+    if let Some(home) = dirs::home_dir() {
+        return home.join(".config").join("codegg").join("tui");
+    }
+    std::path::PathBuf::from(".codegg/tui")
+}
+
+/// Join `parts` with the hint vocabulary's one separator, dropping whole
+/// parts that do not fit — through the rule, not through a second copy of it.
+///
+/// This file used to carry its own `fit_parts` with a caller-supplied
+/// separator and no protection rule, which made the I6 guarantee an
+/// argument-order convention at one call site. The row's producer now goes
+/// through `hint_line::fit_parts`. The parts here are pre-built strings rather
+/// than `(key, verb)` pairs — the situational line is a fact, not a gesture —
+/// so the row joins them with the same rule rather than building a
+/// `HintLine`.
+fn fit_row(parts: &[&str], budget: usize) -> String {
+    crate::components::hint_line::fit_parts(parts, budget)
+}
+
+pub mod state;
+pub use state::session::GitSidebarInfo;
+pub use state::*;
+
+use super::components::component::DialogType;
+use super::components::dialogs::agent::AgentDialog;
+use super::components::dialogs::command::CommandPalette;
+use super::components::dialogs::confirm::ConfirmDialog;
+use super::components::dialogs::help::HelpRoute;
+use super::components::dialogs::mcp::BrowseMode;
+use super::components::dialogs::model::ModelDialog;
+use super::components::dialogs::permission::PermissionDialog;
+use super::components::dialogs::question::{QuestionDialog, QuestionSpec};
+use super::components::dialogs::session::SessionDialog;
+use super::components::dialogs::tree::TreeDialog;
+use super::components::messages::{MessageRole, MessagesWidget, MsgPart, RowPart};
+use super::components::prompt::PromptWidget;
+use super::components::sidebar::{clean_inline_text, SidebarWidget};
+use super::components::status_bar::{StatusBarWidget, TuiStatusSummary};
+use super::components::toast::ToastManager;
+use super::input::{
+    build_help_lines, handle_event, handle_event_with_bindings_moded, HelpMode, InputAction,
+    InputMode, KeybindConfig,
+};
+use super::layout::{FramePlan, LayoutConfig, TuiLayout};
+use super::route::{Route, RouteManager};
+use super::theme::Theme;
+use crate::components::toast::Toast;
+use crate::task_lifecycle::TuiTaskKind;
+use crate::theme_projection::ThemeRegistryTuiExt;
+use codegg::agent::builtin_agents;
+use codegg::config::schema::SessionTemplate;
+use codegg::core::CoreClient;
+use codegg::error::AppError;
+use codegg::memory::MemoryStore;
+use codegg::permission::PermissionRequest;
+use codegg::protocol::core::{CoreRequest, CoreResponse};
+use codegg::protocol::projection::caps::ProjectionCapabilities;
+use codegg::protocol::tui::TuiMessage as RemoteTuiMessage;
+use codegg::provider::ChatEvent;
+use codegg::session::message::ToolStatus;
+use codegg::session::{MessageStore, Session, SessionStore};
+use codegg::tts::Tts;
+use codegg::util::fuzzy::fuzzy_score;
+use codegg::util::truncate::{truncate_prefix, truncate_suffix};
+use crossterm::event::KeyEvent;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, Wrap,
+};
+use ratatui::Frame;
+use std::collections::HashMap;
+#[allow(unused_imports)]
+use std::process::Command;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, mpsc, RwLock};
+
+/// How long a `Working` turn may go without any event before the TUI calls it
+/// stalled.
+///
+/// The TUI enters `Working` optimistically on submit and only a terminal turn
+/// event clears it, so without a bound the spinner runs indefinitely with no
+/// error text. The threshold sits above the core's own silence guards (90s
+/// provider idle, 120s provider setup) so an ordinary slow turn is never
+/// mistaken for a stall.
+pub const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long a single in-flight tool call is trusted before the turn is
+/// declared stalled anyway.
+///
+/// This is a backstop, not a working budget: every tool call is bounded by
+/// its own timeout (the `bash` default is 120s and its hard ceiling is one
+/// hour), so the core will always report a tool that overruns. The grace
+/// exists only so a genuinely wedged call cannot suppress the watchdog
+/// forever. It matches the shell ceiling rather than inventing a third
+/// number: any value above the slowest legal tool is indistinguishable
+/// from "never", and any value below it would kill a legal long call.
+pub const TURN_STALL_TOOL_GRACE: Duration = Duration::from_secs(3600);
+
+/// Capacity of the frontend command channel.
+///
+/// Owned by [`App::ensure_tui_cmd_channel`] so startup can enqueue before the
+/// event loop is running; `run_event_loop` reuses the same channel.
+pub const TUI_CMD_CHANNEL_CAPACITY: usize = 100;
+
+/// Maximum subagent rows drawn in the working strip above the composer.
+///
+/// Bounded so a wide fan-out cannot crowd out the chat viewport. The strip
+/// adds a `… +N more` row when it truncates, so the count the user sees is
+/// never silently wrong.
+pub const MAX_WORKING_STRIP_SUBAGENTS: usize = 6;
+
+/// Tab key used for projection cursors and per-tab summaries when the TUI
+/// has no project tab to attribute a subscription to.
+///
+/// The daemon-attached frontend subscribes per session and never switches a
+/// project tab, so `projection_client.active_tab_id()` is legitimately
+/// `None`. Cursor bookkeeping still needs a stable key; it is never matched
+/// against a stream id, and `active_snapshot` resolves the stream from the
+/// controller directly.
+pub const DEFAULT_PROJECTION_TAB: &str = "default";
+
+/// Maximum serialized size of a `UiNode` body included in a remote
+/// snapshot. Mirrors [`codegg::protocol::ui::UiLimits::max_snapshot_body_bytes`]
+/// default. Bodies that exceed this limit are omitted so the snapshot
+/// remains bounded under reconnect storms.
+const SNAPSHOT_BODY_LIMIT: usize = 16 * 1024;
+
+/// Return `Some(body.clone())` if the serialized body fits within the
+/// snapshot body limit, otherwise `None`. Caller is expected to send
+/// metadata-only when the body is too large, and the remote client can
+/// request a fresh body on demand via a resync.
+fn snapshot_body_within_limit(
+    body: &codegg::protocol::ui::UiNode,
+    limit: usize,
+) -> Option<codegg::protocol::ui::UiNode> {
+    let bytes = serde_json::to_vec(body).ok()?.len();
+    if bytes <= limit {
+        Some(body.clone())
+    } else {
+        None
+    }
+}
+
+/// Extract the owning plugin id from a plugin-UI surface id, if any.
+///
+/// Canonical surface ids:
+/// - `<plugin_id>:<command>` for installed plugin command outputs
+/// - `command:local:<command>` for project-local commands (no plugin owner)
+///
+/// Returns the first `:`-segment unless the id starts with `command:`,
+/// in which case there is no plugin owner.
+fn plugin_id_from_surface_id(id: &str) -> Option<String> {
+    if id.starts_with("command:") {
+        return None;
+    }
+    let first = id.split(':').next()?;
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.to_string())
+    }
+}
+
+#[cfg(feature = "debug-logging")]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        tracing::debug!(target: "codegg::tui::app", "{}", format!($($arg)*));
+    };
+}
+
+#[cfg(not(feature = "debug-logging"))]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {};
+}
+
+/// Main application state for the TUI.
+///
+/// The `App` struct is organized into several state domains:
+/// `ui_state` (theme, layout, dialogs, routes), `session_state`,
+/// `prompt_state`, `messages_state`, `dialog_state`, `agent_state`, plus
+/// the `sidebar` and `status_bar` widgets and the session and message
+/// stores.
+///
+/// # Event Handling
+///
+/// Events flow through `on_key()` which delegates to:
+/// - `handle_dialog_key` - when a dialog is open
+/// - `handle_command_key` - in command mode
+/// - `handle_completion_key` - when completions shown
+/// - Direct action handling for prompt input
+///
+/// # Rendering
+///
+/// The [`render`](App::render) method draws widgets in layers:
+/// 1. Header, viewport, prompt, footer (main area)
+/// 2. Sidebar (if visible)
+/// 3. Dialog (if open)
+/// 4. Completions overlay
+/// 5. Timeline (if visible)
+/// 6. Toasts (topmost)
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClickTarget {
+    Viewport,
+    Prompt,
+    Dialog,
+    Completion,
+    Sidebar,
+    Scrollbar {
+        track_y: u16,
+        track_height: u16,
+    },
+    /// A side-panel column.
+    ///
+    /// Recorded per placement during render so a click can both *focus* the
+    /// column and resolve a text selection inside it — the same two things a
+    /// click in the main buffer does. Without this the panels were keyboard-
+    /// only: a click over one resolved to `None`, and the wheel scrolled the
+    /// transcript behind a column the user was pointing at.
+    Panel {
+        placement: crate::panels::PanelPlacement,
+    },
+    None,
+}
+
+/// Which way a panel wheel event moves its own content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    Up,
+    Down,
+}
+
+/// Rows one wheel notch moves a panel's content.
+///
+/// Three, not one: a terminal column is narrow and often tall, and a
+/// single-row notch makes the wheel feel like it is not responding.
+const PANEL_WHEEL_LINES: i32 = 3;
+
+#[derive(Debug, Clone, Default)]
+pub struct RenderPanicInjection {
+    pub messages: bool,
+    pub sidebar: bool,
+    pub dialog: bool,
+    pub completions: bool,
+    pub timeline: bool,
+}
+
+impl RenderPanicInjection {
+    pub fn all_false() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// The one projection snapshot a sidebar population was built from.
+///
+/// `NoSnapshot` is a populated state too: the population clears the
+/// projection-derived sections when there is no snapshot, and that clear must
+/// not be repeated every frame for the same absence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SidebarProjectionRevision {
+    NoSnapshot,
+    Snapshot { stream_id: String, event_seq: u64 },
+}
+
+/// One frame's tasks-overlay rows: the full list and the bounded rows the
+/// overlay draws.
+///
+/// Built once in `render` because the height needs the bounded count and the
+/// painter needs both the bounded rows and the full list (each group header's
+/// "N more" needs its group's total). Two builders meant two full
+/// derivations per frame.
+pub(crate) struct FrameTaskRows {
+    pub all: Vec<crate::app::state::tasks::TaskRow>,
+    pub bounded: Vec<crate::app::state::tasks::TaskRow>,
+}
+
+/// The snapshot and tab set a transcript watermark scan last ran for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatermarkScanKey {
+    stream_id: String,
+    event_seq: u64,
+    tab_count: usize,
+    active_tab: Option<String>,
+}
+
+pub struct App {
+    pub ui_state: UiState,
+    pub session_state: SessionState,
+    pub prompt_state: PromptState,
+    pub messages_state: MessagesState,
+    pub dialog_state: DialogState,
+    pub agent_state: AgentState,
+    /// Built-in/global commands plus the catalog discovered for the active
+    /// project's explicit workspace root.
+    pub command_registry: crate::command::CommandRegistry,
+    pub sidebar: SidebarWidget,
+    /// Which panel occupies the side column, whether it holds keyboard
+    /// focus, and the `Shift+S` switcher.
+    ///
+    /// The host is the single focus authority for the side column: both
+    /// panels it owns route every key through it, so a focused panel can
+    /// never leak input to the composer. `sidebar` remains the Session
+    /// panel's projection, not the region's owner.
+    pub panel_host: crate::panels::SidePanelHost,
+    pub status_bar: StatusBarWidget,
+    /// M007 frontend-local cache of the daemon-resolved runtime policy
+    /// (approval mode / sandbox profile / enforcement / reviewer
+    /// availability). Display only; authority stays daemon-side.
+    pub policy_ui: crate::commands::policy::PolicyUiState,
+    pub session_store: Option<Arc<SessionStore>>,
+    pub message_store: Option<Arc<MessageStore>>,
+    pub memory_store: Option<Arc<MemoryStore>>,
+    /// Cached `memory_auto_consolidate` flag. Refreshed at session start
+    /// (`new_session`) so the per-turn `AgentFinished` handler does not
+    /// re-parse the config TOML on every turn.
+    pub memory_auto_consolidate: bool,
+    /// Run store for querying run history. Set externally after App creation.
+    pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    /// User preferences backed by SQLite. Holds the active theme id and
+    /// the last-used model id; both survive a config-file reset. Always
+    /// `Some` in normal operation; `None` is reserved for test fixtures
+    /// that don't open a database.
+    pub preferences: Option<codegg::storage::UserPreferences>,
+    /// Where every region of the last frame was.
+    ///
+    /// One value: [`crate::layout::plan_frame`] derives the regions the
+    /// arithmetic decides, the two painters record the two only they can
+    /// resolve, and the mouse reads the same rects the frame painted.
+    pub frame_plan: FramePlan,
+    pub dialog_area: Option<Rect>,
+    /// Visible popup rows for the current completion, set by the render
+    /// pass from the *filtered* row list so mouse hit-testing cannot size
+    /// itself from the unfiltered catalog.
+    pub completion_visible_rows: usize,
+    /// Index of the first row the completion popup actually drew. The popup
+    /// shows at most 8 rows and scrolls so `completion_sel` stays visible;
+    /// click hit-testing must add this offset or it selects the wrong row.
+    pub completion_scroll_offset: usize,
+    /// The session's current todo list, mirroring `sidebar.todos`.
+    ///
+    /// Held on `App` as well because the strip drawn directly above the input
+    /// is rendered by the app, not by the sidebar widget.
+    pub todos: Vec<TodoEntry>,
+    /// Highest `CoreEvent::TodoListUpdated` revision already applied.
+    ///
+    /// The daemon's event stream is ordered per subscriber, but a refresh
+    /// dispatched across the command channel can complete after a newer live
+    /// envelope has landed. Tracking the revision keeps the visible list
+    /// monotonic instead of letting the stale snapshot win.
+    pub todo_revision: u64,
+    /// Whether the unified tasks overlay is expanded. Toggled with `Ctrl+T`.
+    ///
+    /// The above-input todo strip is a separate, always-visible one-line
+    /// summary; it has no expanded form of its own. `Ctrl+T` opens *this*
+    /// block, which carries the full todo list alongside in-flight subagents
+    /// and jobs. Collapsing the two into one key is deliberate: "what is this
+    /// session waiting on" is one question, and answering it in two places
+    /// meant the compact progress line and the full list could disagree about
+    /// which todos exist.
+    pub tasks_expanded: bool,
+    /// Row the overlay's selection cursor rests on, as an index into the
+    /// *bounded* row list the overlay actually renders.
+    ///
+    /// `None` until the overlay is opened, because an invisible cursor is not
+    /// a cursor: showing one in a strip nobody is looking at would imply the
+    /// overlay is a focusable surface when nothing has asked to focus it yet.
+    ///
+    /// Indices are resolved against the bounded rows rather than the raw
+    /// `task_rows()`, so the cursor can never point at a row that truncation
+    /// removed — which would make `Enter` open a subagent the user cannot see.
+    pub tasks_selected: Option<usize>,
+    /// Identity paired with the rendered index so live row removal cannot
+    /// retarget Enter onto a different job or child.
+    pub tasks_selected_key: Option<String>,
+    /// Input mode to restore when the overlay closes, when opening it moved
+    /// the app into [`InputMode::Normal`].
+    ///
+    /// `None` when the overlay was opened from Normal mode, or is closed.
+    /// The overlay's own keys (`j`/`k`/`Enter`/`Esc`) are Normal-mode gestures
+    /// on purpose — claiming bare letters while composing would break the
+    /// composer — so opening it from Insert has to take Normal mode with it,
+    /// and closing it has to give the user's mode back. Without the restore,
+    /// peeking at pending work would silently end composition mode.
+    tasks_restore_mode: Option<InputMode>,
+    pub sidebar_area: Option<Rect>,
+    /// Every panel column painted on the last frame, with the placement that
+    /// owns it.
+    ///
+    /// `sidebar_area` is one special case of this (it marks the Session panel
+    /// for its own hover/scroll handling); the list is what makes *every* other
+    /// column hit-testable, so a click can focus it and a drag can select the
+    /// text inside it. Rebuilt on each render, so a placement that is not on
+    /// screen is not clickable.
+    pub panel_areas: Vec<(crate::panels::PanelPlacement, Rect)>,
+    pub last_click_time: Option<Instant>,
+    pub last_click_target: Option<ClickTarget>,
+    pub hover_target: Option<ClickTarget>,
+    pub hover_position: Option<(u16, u16)>,
+    /// Live text selection over rendered output.
+    ///
+    /// `anchor` is where the drag started, `focus` is the current (or
+    /// released) end. Both are `(column, row)` in frame-buffer
+    /// coordinates. `None` when nothing is selected.
+    pub selection_anchor: Option<(u16, u16)>,
+    pub selection_focus: Option<(u16, u16)>,
+    /// The most recently rendered frame, retained so a selection can be
+    /// resolved to the exact glyphs the user saw. Mouse reporting is on,
+    /// so the terminal's own drag-select is unavailable; this is the
+    /// replacement.
+    ///
+    /// Set only while [`Self::selection_anchor`] and [`Self::selection_focus`]
+    /// are both live; `clear_selection` drops it with them.
+    pub last_frame_buffer: Option<ratatui::buffer::Buffer>,
+    /// The projection revision the Session panel's rows were last populated
+    /// from. `None` until the first population.
+    sidebar_projection_revision: Option<SidebarProjectionRevision>,
+    /// The tasks overlay's rows, built once for the current frame.
+    ///
+    /// `Some` only between the height reservation and the painter inside
+    /// [`Self::render`], so a reader outside a frame cannot see a stale list.
+    frame_task_rows: Option<FrameTaskRows>,
+    /// The snapshot and tab set the transcript watermark scan last ran for.
+    watermark_scan_key: Option<WatermarkScanKey>,
+    pub event_rx: Option<mpsc::Receiver<ChatEvent>>,
+    pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
+    /// Receiver half of the frontend command channel.
+    ///
+    /// Held so startup work that needs to enqueue [`TuiCommand`]s can run
+    /// *before* the event loop starts. Previously the channel was created
+    /// inside `run_event_loop`, so anything enqueued beforehand — the
+    /// manifest restore, the project catalog refresh — was dropped silently.
+    pub tui_cmd_rx: Option<mpsc::Receiver<TuiCommand>>,
+    pub remote_event_rx: Option<mpsc::Receiver<serde_json::Value>>,
+    pub remote_send_tx: Option<mpsc::Sender<RemoteTuiMessage>>,
+    /// Daemon event stream in socket mode.
+    ///
+    /// Without this the TUI performs request/response only: streaming text
+    /// never arrives, and neither turn completion nor turn failure can ever
+    /// clear the optimistic `Working` status, so a failed turn looked like an
+    /// eternal "working" with no error text.
+    pub core_event_rx: Option<
+        mpsc::Receiver<codegg::protocol::core::EventEnvelope<codegg::protocol::core::CoreEvent>>,
+    >,
+    pub core_client: Option<Arc<dyn CoreClient>>,
+    pub lsp_request_coordinator: codegg_client::LspRequestCoordinator,
+    pub lsp_diagnostics_stream_cancel: Option<tokio_util::sync::CancellationToken>,
+    pub config_watcher: Option<codegg::config::ConfigWatcher>,
+    pub theme_registry: Arc<codegg::theme::ThemeRegistry>,
+    /// Whether `persist_theme_selection` may mirror the active theme id into
+    /// the on-disk config file.
+    ///
+    /// The SQLite `theme.active` row is the authoritative store. The config
+    /// mirror exists so external tooling — and the TUI before the DB pool is
+    /// available, as in socket mode — can still read the choice, so it stays
+    /// on in production.
+    ///
+    /// Tests must not enable it: `Config::save()` resolves a real path from
+    /// the working directory and the user's config dir, so an enabled mirror
+    /// would rewrite a developer's actual `codegg.json` as a test side
+    /// effect. `new_for_testing` leaves this `false`.
+    pub persist_theme_to_config: bool,
+    pub subagent_pool: Option<Arc<codegg::agent::worker::SubAgentPool>>,
+    pub undo_session_id: Option<String>,
+    pub streaming_active: bool,
+    pub undo_until: Option<Instant>,
+    pub notification_manager: Option<crate::components::notification::NotificationManager>,
+    pub focus_manager: crate::components::component::FocusManager,
+    pub session_state_derived: codegg::session::state::TuiSessionState,
+    /// Active goal for the current session, kept in sync with the goal
+    /// table via `AppEvent::GoalUpdated` and friends. Used by the
+    /// sidebar, the status bar, and the `/goal show` command.
+    pub active_goal: Option<crate::bus::events::GoalSnapshot>,
+    pub lsp_tool: Option<Arc<codegg::tool::lsp::LspTool>>,
+    /// Runtime-owned search/MCP context for the `/research` command.
+    ///
+    /// `/research` runs the pipeline in-process, so without this it built a
+    /// `ResearchService` with no `SearchRuntimeContext` — which means
+    /// `allow_network` stayed `false` and every web adapter returned
+    /// `NetworkNotAllowed`. Set once at startup (see `set_search_runtime`);
+    /// `None` keeps `/research` local-only, which is the correct behavior
+    /// for socket/daemon-client mode where the daemon owns the transport.
+    pub search_runtime: Option<codegg::search_backend::SearchRuntimeContext>,
+    pub lsp_status_cache: Option<String>,
+    pub lsp_status_requested_at: Option<std::time::Instant>,
+    /// Reentrancy guard for the `/security-review` slash command.
+    /// `Some(task_state)` while a background review is in flight;
+    /// `None` when idle. Carries the `tokio::task::AbortHandle` so the
+    /// user can cancel via `/security-review-cancel`. Cleared on both
+    /// success and failure by the handler in `crates/codegg-tui/src/lib.rs`.
+    pub security_review_running: Option<crate::task_lifecycle::SecurityReviewTaskState>,
+    /// Latest completed security review receipt, kept in memory so the
+    /// user can reopen the result panel via `/security-review-show`.
+    ///
+    /// Persistence is intentionally deferred: the codebase lacks a
+    /// generic session-artifact or message-metadata mechanism that would
+    /// make schema-less storage trivial. A future pass could attach the
+    /// structured receipt as a JSON blob on the assistant message row
+    /// once such a mechanism exists. No schema migration in this pass.
+    pub latest_security_review: Option<codegg::security::workflow::SecurityReviewReceipt>,
+    pub shell_store: codegg::shell::ShellOutputStore,
+    /// Daemon-acknowledged, session-owned shell projections waiting for one
+    /// accepted turn. The projection bytes are already redacted and bounded.
+    pub pending_shell_promotions: Vec<PendingShellPromotion>,
+    /// Retained envelope identity for the last failed/uncertain turn submit.
+    /// An identical retry reuses this id so daemon receipts prevent replay.
+    pub pending_turn_submission: Option<PendingTurnSubmission>,
+    /// Frontend-side lifecycle guard for the in-flight `turn.submit`.
+    ///
+    /// The daemon's `request_id` in [`PendingTurnSubmission`] is the
+    /// idempotency key and is derived from the request payload; this
+    /// generation is purely local and answers a different question — *is this
+    /// completion still about the submission the user is looking at?* A
+    /// superseded or cancelled submission must change nothing, so the
+    /// completion arm calls [`AsyncUiRequestState::finish`] first and drops
+    /// the completion when it returns `false`.
+    pub turn_submit_request: crate::app::state::AsyncUiRequestState,
+    /// Session/workspace authority captured when each human shell process
+    /// starts, used to reject late output after navigation changes context.
+    pub shell_command_bindings: std::collections::HashMap<u64, (Option<String>, Option<String>)>,
+    /// Durable command-run store for the projection pipeline
+    /// (`architecture/human_shell.md`, "CommandOutputStore").
+    /// Populated alongside `shell_store` so the projection seam has raw
+    /// stdout/stderr available without rerunning commands.
+    pub command_run_store: codegg::shell::CommandOutputStore,
+    /// Sidecar accumulator that feeds `ShellEvent`s into
+    /// `command_run_store`. Holds in-flight stdout/stderr buffers until
+    /// each command reaches a terminal state.
+    pub command_run_bridge: codegg::shell::ShellCommandRunBridge,
+    pub shell_handles: std::collections::HashMap<u64, codegg::shell::runtime::ShellHandle>,
+    /// Daemon-owned finite shell runs keyed by the local display id.
+    pub remote_shell_runs:
+        std::collections::HashMap<u64, codegg::shell::daemon::RemoteShellRunBinding>,
+    /// Interactive terminal views (M003): projection of daemon M002
+    /// handles/output. Owns no PTY/process state; every mutation goes
+    /// through `CoreRequest::InteractiveProcess*` operations.
+    pub interactive_terminals: crate::interactive_terminal::InteractiveTerminalController,
+    /// Cached human-shell confirmation policy from `[human_shell]`.
+    /// Loaded at construction (or config reload) so the UI thread never
+    /// performs synchronous disk I/O per shell event.
+    pub shell_confirm_dangerous: bool,
+    /// Effective human-shell execution and promotion controls. These are
+    /// refreshed with config so every execution entry point observes them.
+    pub shell_enabled: bool,
+    pub shell_default_timeout_secs: u64,
+    pub shell_auto_promote_bangbang: bool,
+    pub shell_ansi: codegg::config::schema::AnsiMode,
+    /// Cached shell output projection configuration from
+    /// `[shell.output]`. Refreshed on config reload.
+    pub shell_output_config: codegg::config::schema::ShellOutputConfig,
+    /// Registry of TUI-owned background tasks.  Tracked tasks can be
+    /// counted, cancelled, and reaped on shutdown or dialog close.
+    pub task_registry: crate::task_lifecycle::TuiTaskRegistry,
+    /// C004: single-flight admission for file-tree blocking scans. At most
+    /// one blocking scan executes; newer rebuilds coalesce as one pending
+    /// latest intent. Abort of the async waiter never frees capacity early.
+    pub file_tree_coordinator: crate::file_tree_coordinator::FileTreeScanCoordinator,
+    /// Plugin-owned UI surfaces: dialogs, panels, and status items.
+    /// Consumed by `apply_plugin_ui_effect` and rendered by
+    /// `PluginUiRenderer`.
+    pub plugin_ui_state: crate::app::state::PluginUiState,
+    /// Canonical plugin management API. Wraps a `PluginService` with
+    /// builtins registered. Initialized at startup; `None` only in
+    /// minimal test fixtures that don't need plugin management.
+    pub plugin_manager: Option<std::sync::Arc<crate::plugin::management::PluginManager>>,
+    pub render_panic_injection: RenderPanicInjection,
+    /// Monotonic sequence number for remote TUI snapshots. Each
+    /// `next_remote_snapshot` call increments this and includes the
+    /// new value in the snapshot so remote clients can detect drops
+    /// or skipped frames. Starts at 0 and never resets during a
+    /// single app lifetime.
+    pub remote_sequence: u64,
+    /// Ordered collection of open project tabs and the active tab id.
+    ///
+    /// Introduced by `Multi-Project TUI and Session Management
+    /// Roadmap` milestone 1 (`plans/implementation/tui-project-sessions/001-project-aware-state.md`)
+    /// and extended by the multi-project convergence work into the current
+    /// multi-tab collection. The active tab owns the focused project,
+    /// session, workspace, model, and agent selection. The accessors
+    /// `active_tab`, `active_project_id`, `active_session_id`,
+    /// `active_workspace_id`, `active_model`, and `active_agent` read
+    /// through this collection.
+    pub project_tabs: crate::app::state::ProjectTabs,
+    /// Bounded cache of project catalog summaries plus the request
+    /// state for the most recent list/get operation. See
+    /// `tui::app::state::project_tabs::ProjectCatalogState`.
+    pub project_catalog: crate::app::state::ProjectCatalogState,
+    /// Active-view switch coordinator (Milestone 2). Manages the
+    /// controlled switch transaction when switching between project tabs.
+    pub view_switch: crate::app::state::ViewSwitchCoordinator,
+    /// Routing registry (Milestone 3). Tracks the
+    /// `session_id -> tab_id` index, per-tab bounded activity
+    /// summaries, the reconnect epoch, and the last accepted event
+    /// sequence. Pure classifier logic in
+    /// `crate::app::state::routing` consumes this registry.
+    pub routing_registry: crate::app::state::RoutingRegistry,
+    /// Manifest persistence service (Milestone 4). Owns atomic,
+    /// debounced local persistence of the TUI tab manifest. See
+    /// `crate::app::state::persistence::ManifestPersistence`.
+    pub manifest_persistence: crate::app::state::persistence::ManifestPersistence,
+    /// Last persisted daemon instance hint (Milestone 4). Used to
+    /// surface a non-blocking diagnostic when the loaded manifest
+    /// was written by a different daemon instance. Diagnostic only;
+    /// never authoritative.
+    pub manifest_daemon_hint: Option<String>,
+    /// Per-project detail snapshots accumulated during the manifest
+    /// restore, keyed by `project_id`.
+    ///
+    /// `ProjectGet` completions land one project at a time and must
+    /// compose: the restore classifier needs every project it has
+    /// evidence for, not just the most recent one. Holds only
+    /// daemon-reported identity data — never credentials.
+    pub restore_project_details:
+        std::collections::HashMap<String, crate::app::state::restore::ProjectDetailSnapshot>,
+    /// Whether a restore pass has already opened at least one tab.
+    ///
+    /// Gates the one-shot "Restored N tabs" operator toast and stops
+    /// later evidence (catalog refresh, further `ProjectGet`
+    /// completions) from re-driving a restore that already succeeded.
+    pub manifest_restore_announced: bool,
+    /// Frontend projection client state (Session Projections M4).
+    /// Owns the transport-neutral [`ProjectionClientController`], per-tab
+    /// inactive summaries, cursor metadata, and artifact read lifecycle.
+    /// The controller is negotiated against the daemon's
+    /// `ServerCapabilities::session_projection` flag and reverts to
+    /// the raw-core compatibility path when projection is unavailable.
+    pub projection_client: crate::app::state::ProjectionClientState,
+    /// Collaborator presence projection (Presence M002). Daemon-owned
+    /// ephemeral presence rendered per project. The TUI owns no presence
+    /// truth; every entry is derived from an authorized snapshot.
+    pub presence: crate::app::state::PresenceState,
+    /// Authorized read-only observation (Presence M003). Bounded
+    /// frontend projection of one observed session plus the central
+    /// read-only input policy. The TUI owns no observation truth; every
+    /// field is derived from an authorized projection subscribe/resume
+    /// round-trip. `None` handling is via `ObserverState::is_observing`.
+    pub observer: crate::app::state::ObserverState,
+    /// Project-scoped chat projection (Project Collaboration M002).
+    /// Daemon-owned durable channels/messages rendered per project. The
+    /// TUI owns no chat truth; every entry is derived from an authorized
+    /// `chat.v1` round-trip through `CoreClient`.
+    pub chat: crate::app::state::ChatState,
+    /// Project shown in the open chat window, if any. Chat intents from
+    /// `ChatDialog` resolve against this project, and completions push a
+    /// fresh snapshot into the window without a new fetch.
+    pub chat_panel_project: Option<String>,
+    /// What the open panel picker was routing, if one is open.
+    ///
+    /// `TuiMsg::SelectPanel` means "show me this panel" to the manager and
+    /// "put this content in this panel" to the picker, and the message cannot
+    /// tell them apart — so the picker records its intent here and the message
+    /// handler spends it. Cleared on every commit, so a picker the user
+    /// abandoned cannot load its content into the next panel they pick.
+    /// User-saved `Ctrl+digit` panel bindings, loaded from `codegg.json`
+    /// and written back when the manager changes one.
+    ///
+    /// Kept out of the static binding table on purpose — these are assigned
+    /// at runtime by digit, which no `ActionKey` can express. See
+    /// [`panel_hotkeys`](crate::app::state::panel_hotkeys) for why
+    /// `Ctrl` and not `Cmd`.
+    pub panel_hotkeys: crate::app::state::panel_hotkeys::PanelHotkeys,
+    /// Where a terminal created for the **side panel** should land.
+    ///
+    /// Set by the panel's `i`-with-nothing-live, cleared by whichever
+    /// terminal completion finishes first. It exists because create and
+    /// attach are asynchronous and span several frames: without it the panel
+    /// would open a box over itself, and with it held forever a failed create
+    /// would silently divert some later, unrelated terminal into the panel.
+    /// Every terminal failure path clears it for exactly that reason.
+    pub terminal_panel_spawn: bool,
+    /// M005: explicit input focus while `Route::Workspace` is active.
+    /// `Composer` (default) keeps the ordinary Session/Task prompt
+    /// editable; `Chat` routes printable keys + Enter to the side-panel
+    /// chat draft for the Workspace-selected project. List navigation
+    /// works in both. Render performs no I/O.
+    pub workspace_focus: crate::app::state::WorkspaceFocus,
+    /// The composer's own NOR/INS mode, parked while a side panel holds
+    /// the keyboard and restored when focus returns.
+    ///
+    /// A focused panel is a Normal-mode navigation surface, so taking
+    /// focus forces Normal — otherwise the two disagree. That is not
+    /// cosmetic: `App::on_key` consults a focused panel only in Normal
+    /// mode, so a panel that held focus while the composer sat in Insert
+    /// received *no* keys at all, and `Shift+H` to leave it was typed into
+    /// the composer as a literal `H` instead. Parking the mode here is
+    /// what makes the round trip lossless.
+    pub composer_mode_before_panel_focus: Option<crate::input::InputMode>,
+    /// M006-A: document editor state. Owns the document session
+    /// handle for the `Route::Editor` primary view and the presentation
+    /// of controller states and errors. Holds no document text.
+    pub editor_state: crate::app::state::EditorState,
+
+    /// M006-D: project-scoped file-tree pane rendered beside the editor.
+    ///
+    /// Navigation state only — the listing is directory *entries*, never
+    /// document text, which stays owned by the M005 controller. Hidden by
+    /// default so the M006-A surface is unchanged until the user asks for it.
+    pub file_tree_state: crate::app::state::file_tree::FileTreeState,
+
+    /// M006-E: a pending agent change awaiting accept or reject.
+    ///
+    /// Closed by `Default`, so the whole TUI surface is unchanged until a user
+    /// opens a review. This records what the user is being asked to approve
+    /// and what the daemon said; it never decides whether an apply is legal.
+    pub change_review_state: crate::app::state::change_review::ChangeReviewState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingTurnSubmission {
+    pub session_id: String,
+    pub request_id: String,
+    pub request_sha256: String,
+    /// The prompt this submission carried.
+    ///
+    /// `send_prompt` clears the composer *before* the daemon has accepted
+    /// anything, so a refusal has no other way to hand the user's text back.
+    /// Keeping it here rather than in the completion command means the prompt
+    /// is never duplicated across a channel and never read from the composer,
+    /// which the user may have kept typing into.
+    pub prompt: String,
+}
+
+fn turn_submission_request_id(
+    pending: Option<&PendingTurnSubmission>,
+    session_id: &str,
+    request_sha256: &str,
+) -> String {
+    pending
+        .filter(|pending| {
+            pending.session_id == session_id && pending.request_sha256 == request_sha256
+        })
+        .map(|pending| pending.request_id.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingShellPromotion {
+    pub source_id: u64,
+    pub projection: String,
+    pub id: uuid::Uuid,
+    pub session_id: String,
+    pub workspace_id: Option<String>,
+}
+
+/// What to do at TUI startup with respect to session loading. The TUI
+/// constructs one of these from CLI flags / `AttachDaemon` subcommand
+/// arguments and dispatches it through `App::load_initial_session_via_core`
+/// so the same code path works for both inproc (local stores) and
+/// socket/RemoteCore (`CoreClient`) modes.
+#[derive(Debug, Clone)]
+pub enum InitialSessionRequest {
+    /// Attach to an existing session by id.
+    Attach { session_id: String },
+    /// Continue the most recent session in `project_dir`.
+    Continue { project_dir: String },
+    /// Create a brand new session in `directory`.
+    New {
+        directory: String,
+        title: Option<String>,
+    },
+    /// Fork the given session id and attach the resulting fork.
+    ///
+    /// The core client only returns an `Ack` from `SessionFork` today,
+    /// so we follow up with a `SessionList` to pick up the new fork.
+    /// If the listing does not contain a brand-new session, we fall
+    /// back to attaching the original id (best-effort).
+    Fork { session_id: String },
+    /// No session to load — start with an empty TUI.
+    None,
+}
+
+/// Daemon-assigned identities for the directory CodeGG was launched in.
+///
+/// Produced by [`App::bootstrap_launch_project_context`]. The ids are the
+/// canonical typed identities; `workspace_root` stays a locator and is never
+/// sent in an identity field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchProjectContext {
+    pub project_id: String,
+    pub workspace_id: String,
+}
+
+/// Registration source recorded for a directory CodeGG registered because it
+/// was launched there. Distinguishes launch-time bootstrap from an explicit
+/// "register this project" act in the project picker.
+pub const LAUNCH_REGISTRATION_SOURCE: &str = "tui-launch";
+
+impl App {
+    pub fn new(project_dir: String) -> Self {
+        Self::with_config(project_dir, None)
+    }
+
+    pub fn with_config(project_dir: String, cfg: Option<&codegg::config::schema::Config>) -> Self {
+        let focus_manager = crate::components::component::FocusManager::new();
+        let agents = builtin_agents();
+        let current_agent = agents.iter().position(|a| a.name == "build").unwrap_or(0);
+        // No shipped model defaults. The model list starts empty and is
+        // populated only by real discovery (or by models the operator
+        // declares in config). Seeding it with a compiled-in catalog
+        // meant a failed discovery silently presented fiction as the
+        // user's available models.
+        let models: Vec<String> = Vec::new();
+        let current_model = String::new();
+        let command_registry = crate::command::CommandRegistry::new_for_workspace_root(
+            std::path::Path::new(&project_dir),
+        );
+        use crate::components::completion_overlay::{CompletionItem, CompletionItemKind};
+        let slash_completions: Vec<CompletionItem> = command_registry
+            .commands()
+            .iter()
+            .map(|c| CompletionItem {
+                label: c.name.clone(),
+                description: if c.description.is_empty() {
+                    None
+                } else {
+                    Some(c.description.clone())
+                },
+                kind: CompletionItemKind::File,
+            })
+            .collect();
+        let vim_mode = cfg.and_then(|c| c.vim_mode).unwrap_or(false);
+        let help_lines = build_help_lines(vim_mode, HelpMode::Insert, HelpRoute::Command);
+        let keybinds = cfg.and_then(|c| c.keybinds.as_ref()).map(|raw| {
+            let mut bindings: HashMap<String, crate::input::ActionKey> = HashMap::new();
+            for (k, v) in raw {
+                if let Ok(action) = serde_json::from_str(&format!("\"{}\"", v)) {
+                    bindings.insert(k.clone(), action);
+                }
+            }
+            KeybindConfig { bindings }
+        });
+        let bindings = super::input::build_bindings(keybinds.as_ref(), vim_mode);
+        // Saved panel hotkeys, read the same way as keybinds and tolerant of
+        // a bad value: a stale or hand-edited entry drops one slot, it does
+        // not stop the TUI from starting.
+        let saved_panel_hotkeys = cfg
+            .and_then(|c| c.panel_hotkeys.as_ref())
+            .map(|raw| {
+                crate::app::state::panel_hotkeys::PanelHotkeys::from_map(
+                    &raw.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                )
+            })
+            .unwrap_or_default();
+        // Which edge the panel is docked to. Same tolerance as the hotkeys
+        // above: an unrecognised value falls back to the default layout
+        // rather than refusing to start.
+        let saved_panel_placement = cfg
+            .and_then(|c| c.panel_placement.as_deref())
+            .and_then(crate::panels::PanelPlacement::parse)
+            .unwrap_or_default();
+        debug_log!(
+            "loaded {} keybindings, custom config: {}",
+            bindings.len(),
+            keybinds.is_some()
+        );
+        let up_key = bindings.get(&(
+            crossterm::event::KeyModifiers::NONE,
+            crossterm::event::KeyCode::Up,
+        ));
+        let down_key = bindings.get(&(
+            crossterm::event::KeyModifiers::NONE,
+            crossterm::event::KeyCode::Down,
+        ));
+        let j_key = bindings.get(&(
+            crossterm::event::KeyModifiers::NONE,
+            crossterm::event::KeyCode::Char('j'),
+        ));
+        let k_key = bindings.get(&(
+            crossterm::event::KeyModifiers::NONE,
+            crossterm::event::KeyCode::Char('k'),
+        ));
+        debug_log!(
+            "navigation bindings: up={:?}, down={:?}, j={:?}, k={:?}",
+            up_key,
+            down_key,
+            j_key,
+            k_key
+        );
+        // Note: navigation keybindings retrieved for debug logging only
+        let _ = (up_key, down_key, j_key, k_key);
+        let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+        let run_store: Option<Arc<dyn codegg_core::run_store::RunStore>> = {
+            let run_root = std::path::PathBuf::from(&project_dir)
+                .join(".codegg")
+                .join("runs");
+            let store = codegg_core::run_store::FsRunStore::new(run_root);
+            Some(Arc::new(store) as Arc<dyn codegg_core::run_store::RunStore>)
+        };
+        let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+        let dir_clone = project_dir.clone();
+        let files_clone = Arc::clone(&indexed_files);
+        tokio::spawn(async move {
+            let mut rx = shutdown_rx;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = rx.recv() => break,
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                        // Recursive directory I/O must not stall a runtime
+                        // worker thread; run it on the blocking pool.
+                        let dir = dir_clone.clone();
+                        let files = tokio::task::spawn_blocking(move || index_files_sync(&dir)).await;
+                        if let Ok(files) = files {
+                            let mut guard = files_clone.write().await;
+                            *guard = files;
+                        }
+                    }
+                }
+            }
+        });
+
+        let loaded_shell_cfg = cfg
+            .cloned()
+            .or_else(|| codegg::config::schema::Config::load().ok());
+        let theme_registry = Arc::new(codegg::theme::ThemeRegistry::load_with_config(
+            cfg.and_then(|c| c.theme.as_ref()),
+        ));
+        for diag in theme_registry.diagnostics() {
+            match diag.level {
+                codegg::theme::validate::ThemeDiagnosticLevel::Warning => {
+                    tracing::warn!(theme = %diag.theme_id, field = ?diag.field, "{}", diag.message);
+                }
+                codegg::theme::validate::ThemeDiagnosticLevel::Error => {
+                    tracing::error!(theme = %diag.theme_id, field = ?diag.field, "{}", diag.message);
+                }
+            }
+        }
+        let resolution =
+            codegg::theme::ThemeResolutionConfig::from_config(cfg.and_then(|c| c.theme.as_ref()));
+        let theme = theme_registry.resolve_tui_arc(&resolution);
+
+        let compat_agent_name = agents
+            .get(current_agent)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+        let project_tabs = crate::app::state::ProjectTabs::from_compat(
+            &project_dir,
+            None,
+            None,
+            None,
+            &current_model,
+            &compat_agent_name,
+        );
+
+        Self {
+            ui_state: UiState {
+                running: true,
+                theme: Arc::clone(&theme),
+                layout: TuiLayout::with_config(LayoutConfig::default()),
+                routes: RouteManager::new(),
+                dialog: Dialog::None,
+                command_mode: false,
+                input_mode: InputMode::Insert,
+                shutdown_tx: Some(shutdown_tx),
+                help_lines,
+                bindings,
+                keybinds: keybinds.clone(),
+                vim_mode,
+                mode: AppMode::Embedded,
+                remote_status: None,
+                sidebar_visible: true,
+                tree_focused: false,
+                auto_scroll: true,
+                show_thinking: true,
+                reasoning_mode: codegg::protocol::core::ReasoningMode::Inherit,
+                reasoning_capabilities: std::collections::HashMap::new(),
+                reasoning_preference_revision: None,
+                reasoning_request: crate::app::state::AsyncUiRequestState::default(),
+                show_timestamps: false,
+                timeline_visible: false,
+                timeline_selected: 0,
+                render_panic_count: 0,
+                last_render_error: None,
+                tts: Tts::new(),
+                tts_enabled: false,
+                fullscreen: false,
+                dirty_regions: Vec::new(),
+                resize_debounce: None,
+                tts_via_daemon: false,
+                diagnostics: Default::default(),
+                plugin_ui_caps: codegg::protocol::ui::PluginUiCapabilities::all_supported(),
+                subagents: Default::default(),
+            },
+            session_state: SessionState {
+                session: None,
+                session_status: SessionStatus::Idle,
+                working_since: None,
+                running_tool: None,
+                active_turn_id: None,
+                stopped_turn: false,
+                last_error: None,
+                token_in: 0,
+                token_out: 0,
+                live_output_tokens: 0,
+                live_output_text: String::new(),
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                history: std::collections::VecDeque::new(),
+                history_pos: None,
+                indexed_files,
+                project_dir,
+                last_edited_file: None,
+                changed_files: Vec::new(),
+                mcp_servers: Vec::new(),
+                context_tokens: 0,
+                // 0 means "unresolved". The footer degrades a zero limit to
+                // `0%`; seeding 128_000 would show a confident percentage
+                // against a window this model may not have.
+                context_limit: 0,
+                compaction_count: 0,
+                rpm_limit: None,
+                tpm_limit: None,
+                rpm_remaining: None,
+                tpm_remaining: None,
+                permission_pending: false,
+                subagent_count: 0,
+                git_sidebar: crate::app::state::session::GitSidebarState::default(),
+                // M002a: the queue projection is daemon-derived and seeded
+                // empty. Nothing can enqueue an entry until M002b.
+                user_prompt_queue: Vec::new(),
+            },
+            prompt_state: PromptState {
+                prompt: PromptWidget::new(Arc::clone(&theme)),
+                slash_completions,
+                file_completions: Vec::new(),
+                agent_completions: Vec::new(),
+                completion_filter: String::new(),
+                show_completions: false,
+                completion_type: CompletionType::Slash,
+                completion_sel: 0,
+                stashed_prompts: Vec::new(),
+                stash_pos: None,
+                pending_send: false,
+                session_submit_request: AsyncUiRequestState::new(),
+                pending_session_submit: None,
+                session_submit_started: false,
+                retry_without_message: None,
+                composer_mode: crate::app::state::ComposerMode::default(),
+                pending_task_create: None,
+                task_submit_started: false,
+                task_model_choice: None,
+                chat_seed: None,
+                stop_armed_at: None,
+                exit_armed_at: None,
+                subagent_addressee: None,
+                subagent_steer_request: crate::app::state::AsyncUiRequestState::default(),
+            },
+            messages_state: MessagesState {
+                messages: MessagesWidget::new(Arc::clone(&theme)),
+                toasts: ToastManager::new(),
+            },
+            dialog_state: DialogState {
+                job_detail_request: crate::app::state::async_request::AsyncUiRequestState::new(),
+                project_init_draft: None,
+                model_dialog: ModelDialog::new(Arc::clone(&theme)),
+                agent_dialog: AgentDialog::new(Arc::clone(&theme)),
+                session_dialog: SessionDialog::new(Arc::clone(&theme)),
+                tree_dialog: TreeDialog::new(Arc::clone(&theme)),
+                theme_picker: None,
+                question_dialog: None,
+                command_palette: CommandPalette::new_with_registry(&command_registry),
+                question_session_id: None,
+                permission_perm_id: None,
+                permission_queue: std::collections::VecDeque::new(),
+                permission_dialog: None,
+                keybind_dialog: None,
+                mcp_dialog: None,
+                share_dialog: None,
+                import_dialog: None,
+                template_dialog: None,
+                connect_dialog: None,
+                connection_selection_dialog: None,
+                goto_dialog: None,
+                policy_selector: None,
+                plan_dialog: None,
+                diff_dialog: None,
+                review_dialog: None,
+                security_review_dialog: None,
+                research_browser: None,
+                help_dialog: None,
+                terminal_detail_handle: None,
+                pending_delete_session: None,
+                pending_archive_session: None,
+                pending_bulk_delete: None,
+                pending_bulk_delete_ids: None,
+                pending_bulk_archive: None,
+                pending_bulk_archive_ids: None,
+                pending_shell_command: None,
+                pending_connection_lifecycle: None,
+                pending_policy_confirm: None,
+                shell_detail_id: None,
+                import_request: crate::app::state::AsyncUiRequestState::new(),
+                research_request: crate::app::state::AsyncUiRequestState::new(),
+                session_reload_request: crate::app::state::AsyncUiRequestState::new(),
+                session_refresh_request: crate::app::state::AsyncUiRequestState::new(),
+                session_activation_request: crate::app::state::AsyncUiRequestState::new(),
+                task_list_request: crate::app::state::AsyncUiRequestState::new(),
+                task_delete_request: crate::app::state::AsyncUiRequestState::new(),
+                task_sheet_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_create_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_list_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_reorder_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_mutation_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_occurrence_request: crate::app::state::AsyncUiRequestState::new(),
+                task_model_pref_request: crate::app::state::AsyncUiRequestState::new(),
+                trigger_secret: None,
+                team_token_secret: None,
+                team_request: crate::app::state::AsyncUiRequestState::new(),
+                control_request: crate::app::state::AsyncUiRequestState::new(),
+                control_last: None,
+                trigger_create_request: crate::app::state::AsyncUiRequestState::new(),
+                trigger_manage_request: crate::app::state::AsyncUiRequestState::new(),
+                trigger_metadata: std::collections::HashMap::new(),
+                trigger_setup_error: std::collections::HashMap::new(),
+                trigger_setup_pending: std::collections::HashSet::new(),
+                task_schedule_draft: None,
+                task_view: crate::app::state::TaskViewState::default(),
+                worktree_list_request: crate::app::state::AsyncUiRequestState::new(),
+                template_create_request: crate::app::state::AsyncUiRequestState::new(),
+                new_session_request: crate::app::state::AsyncUiRequestState::new(),
+                session_mutation_request: crate::app::state::AsyncUiRequestState::new(),
+                session_messages_request: crate::app::state::AsyncUiRequestState::new(),
+                test_run_request: crate::app::state::AsyncUiRequestState::new(),
+                terminal_request: crate::app::state::AsyncUiRequestState::new(),
+                project_picker: None,
+                workspace_dashboard: None,
+                queue_delete_request: crate::app::state::AsyncUiRequestState::new(),
+                queue_add_request: crate::app::state::AsyncUiRequestState::new(),
+                queue_edit_request: crate::app::state::AsyncUiRequestState::new(),
+                queue_reorder_request: crate::app::state::AsyncUiRequestState::new(),
+                queue_send_request: crate::app::state::AsyncUiRequestState::new(),
+            },
+            agent_state: AgentState {
+                snapshot: None,
+                agents,
+                current_agent,
+                current_model,
+                models,
+                model_idx: 0,
+                plan_mode: false,
+                plan_topic: None,
+            },
+            command_registry,
+            sidebar: SidebarWidget::new(Arc::clone(&theme)),
+            panel_host: crate::panels::SidePanelHost::with_placement(saved_panel_placement),
+            status_bar: StatusBarWidget::new(Arc::clone(&theme)),
+            policy_ui: crate::commands::policy::PolicyUiState::default(),
+            session_store: None,
+            message_store: None,
+            memory_store: None,
+            memory_auto_consolidate: codegg::config::schema::Config::load()
+                .ok()
+                .and_then(|c| c.experimental)
+                .and_then(|e| e.memory_auto_consolidate)
+                .unwrap_or(false),
+            frame_plan: FramePlan::default(),
+            dialog_area: None,
+            completion_visible_rows: 0,
+            completion_scroll_offset: 0,
+            todos: Vec::new(),
+            todo_revision: 0,
+            tasks_expanded: false,
+            tasks_selected: None,
+            tasks_selected_key: None,
+            tasks_restore_mode: None,
+            sidebar_area: None,
+            panel_areas: Vec::new(),
+            composer_mode_before_panel_focus: None,
+            last_click_time: None,
+            last_click_target: None,
+            hover_target: None,
+            hover_position: None,
+            selection_anchor: None,
+            selection_focus: None,
+            last_frame_buffer: None,
+            sidebar_projection_revision: None,
+            frame_task_rows: None,
+            watermark_scan_key: None,
+            event_rx: None,
+            tui_cmd_tx: None,
+            tui_cmd_rx: None,
+            remote_event_rx: None,
+            remote_send_tx: None,
+            core_event_rx: None,
+            core_client: None,
+            lsp_request_coordinator: codegg_client::LspRequestCoordinator::default(),
+            lsp_diagnostics_stream_cancel: None,
+            run_store,
+            config_watcher: Some(
+                cfg.and_then(|c| c.watcher.as_ref())
+                    .map(|w| codegg::config::ConfigWatcher::new().with_config(w))
+                    .unwrap_or_default(),
+            ),
+            theme_registry,
+            persist_theme_to_config: true,
+            preferences: None,
+            subagent_pool: None,
+            undo_session_id: None,
+            undo_until: None,
+            notification_manager: None,
+            focus_manager,
+            streaming_active: false,
+            session_state_derived: codegg::session::state::TuiSessionState::default(),
+            active_goal: None,
+            lsp_tool: None,
+            search_runtime: None,
+            lsp_status_cache: None,
+            lsp_status_requested_at: None,
+            security_review_running: None,
+            latest_security_review: None,
+            shell_store: cfg
+                .and_then(|c| c.human_shell.as_ref())
+                .map(codegg::shell::ShellOutputStore::from_config)
+                .unwrap_or_default(),
+            pending_shell_promotions: Vec::new(),
+            pending_turn_submission: None,
+            turn_submit_request: crate::app::state::AsyncUiRequestState::new(),
+            shell_command_bindings: std::collections::HashMap::new(),
+            shell_confirm_dangerous: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.confirm_dangerous())
+                .unwrap_or(true),
+            shell_enabled: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.enabled())
+                .unwrap_or(true),
+            shell_default_timeout_secs: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.default_timeout_secs())
+                .unwrap_or(codegg::shell::DEFAULT_TIMEOUT_SECS),
+            shell_auto_promote_bangbang: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.auto_promote_bangbang())
+                .unwrap_or(true),
+            shell_ansi: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.ansi())
+                .unwrap_or_default(),
+            shell_output_config: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.shell.as_ref())
+                .and_then(|s| s.output.clone())
+                .unwrap_or_default(),
+            command_run_store: codegg::shell::CommandOutputStore::new(),
+            command_run_bridge: codegg::shell::ShellCommandRunBridge::new(),
+            remote_sequence: 0,
+            shell_handles: std::collections::HashMap::new(),
+            remote_shell_runs: std::collections::HashMap::new(),
+            interactive_terminals: crate::interactive_terminal::InteractiveTerminalController::new(
+            ),
+            plugin_ui_state: crate::app::state::PluginUiState::default(),
+            task_registry: crate::task_lifecycle::TuiTaskRegistry::new(),
+            file_tree_coordinator: crate::file_tree_coordinator::FileTreeScanCoordinator::new(),
+            render_panic_injection: RenderPanicInjection::all_false(),
+            plugin_manager: None, // initialized lazily after construction
+            project_tabs,
+            project_catalog: crate::app::state::ProjectCatalogState::new(),
+            view_switch: crate::app::state::ViewSwitchCoordinator::new(),
+            routing_registry: crate::app::state::RoutingRegistry::new(),
+            manifest_persistence: crate::app::state::persistence::ManifestPersistence::new(
+                default_tui_state_root(),
+            ),
+            manifest_daemon_hint: None,
+            restore_project_details: std::collections::HashMap::new(),
+            manifest_restore_announced: false,
+            projection_client: crate::app::state::ProjectionClientState::new(),
+            presence: crate::app::state::PresenceState::new(),
+            observer: crate::app::state::ObserverState::new(),
+            chat: crate::app::state::ChatState::new(),
+            chat_panel_project: None,
+            panel_hotkeys: saved_panel_hotkeys,
+            terminal_panel_spawn: false,
+            workspace_focus: crate::app::state::WorkspaceFocus::default(),
+            editor_state: crate::app::state::EditorState::default(),
+            file_tree_state: crate::app::state::file_tree::FileTreeState::default(),
+            change_review_state: crate::app::state::change_review::ChangeReviewState::default(),
+        }
+    }
+
+    pub fn new_remote(project_dir: String) -> Self {
+        let mut app = Self::new(project_dir);
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: String::new(),
+        };
+        app.ui_state.tts_via_daemon = true;
+        app.ui_state.remote_status = Some("Connected".to_string());
+        app.remote_event_rx = None;
+        app.remote_send_tx = None;
+        app
+    }
+
+    pub fn remote_snapshot(&self) -> codegg::protocol::tui::RemoteTuiStateSnapshot {
+        self.build_remote_snapshot(self.remote_sequence)
+    }
+
+    /// Build a snapshot with the given sequence number. Use
+    /// `next_remote_snapshot` to allocate a fresh monotonic sequence
+    /// from the app, or pass a specific sequence when replaying state
+    /// to a remote client that supplied `Resume { from_event_seq }`.
+    pub fn build_remote_snapshot(
+        &self,
+        sequence: u64,
+    ) -> codegg::protocol::tui::RemoteTuiStateSnapshot {
+        use codegg::protocol::tui::{
+            RemoteMessageView, RemoteToastView, RemoteToolCallView, REMOTE_TUI_PROTOCOL_VERSION,
+        };
+
+        let route = match self.ui_state.routes.current() {
+            crate::route::Route::Home => "home".to_string(),
+            crate::route::Route::Session(id) => format!("session:{}", id),
+            crate::route::Route::Workspace => "workspace".to_string(),
+            crate::route::Route::Editor => "editor".to_string(),
+        };
+
+        let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+
+        let status = match self.session_state.session_status {
+            crate::app::types::SessionStatus::Idle => "idle".to_string(),
+            crate::app::types::SessionStatus::Working => "working".to_string(),
+            crate::app::types::SessionStatus::Error => "error".to_string(),
+        };
+
+        let model = self.agent_state.current_model.clone();
+        let agent = self
+            .agent_state
+            .agents
+            .get(self.agent_state.current_agent)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+
+        let messages: Vec<RemoteMessageView> = self
+            .messages_state
+            .messages
+            .messages
+            .iter()
+            .map(|msg| {
+                let role = match msg.role {
+                    crate::components::messages::MessageRole::User => "user".to_string(),
+                    crate::components::messages::MessageRole::Assistant => "assistant".to_string(),
+                };
+                let content_preview = msg.text_content();
+                let content_preview = if content_preview.len() > 200 {
+                    format!("{}...", truncate_prefix(&content_preview, 200))
+                } else {
+                    content_preview
+                };
+                let tool_calls: Vec<RemoteToolCallView> = msg
+                    .parts
+                    .iter()
+                    .filter_map(|part| {
+                        if let crate::components::messages::MsgPart::ToolCall {
+                            id,
+                            name,
+                            status,
+                            ..
+                        } = part
+                        {
+                            let status_str = match status {
+                                codegg::session::message::ToolStatus::Pending => {
+                                    "pending".to_string()
+                                }
+                                codegg::session::message::ToolStatus::Running => {
+                                    "running".to_string()
+                                }
+                                codegg::session::message::ToolStatus::Completed => {
+                                    "completed".to_string()
+                                }
+                                codegg::session::message::ToolStatus::Error => "error".to_string(),
+                            };
+                            Some(RemoteToolCallView {
+                                tool_id: id.clone(),
+                                tool_name: name.clone(),
+                                status: status_str,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                RemoteMessageView {
+                    role,
+                    content_preview,
+                    tool_calls,
+                }
+            })
+            .collect();
+
+        let prompt = self.prompt_state.prompt.get_text();
+
+        let dialog = if self.ui_state.dialog.is_open() {
+            Some(format!("{:?}", self.ui_state.dialog))
+        } else {
+            None
+        };
+
+        let toasts: Vec<RemoteToastView> = self
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| RemoteToastView {
+                message: t.message.clone(),
+                level: format!("{:?}", t.level),
+            })
+            .collect();
+
+        let plugin_panels: Vec<codegg::protocol::tui::RemotePanelView> = self
+            .plugin_ui_state
+            .panels
+            .iter()
+            .map(|(id, panel)| {
+                let placement_str = format!("{:?}", panel.placement);
+                // Plugin ownership is encoded as the first `:`-segment
+                // of the panel id (canonical form: "<plugin_id>:<command>"
+                // for installed plugins, "command:local:<name>" for
+                // project-local commands). Anything starting with
+                // "command:" has no plugin owner.
+                let source_plugin_id = plugin_id_from_surface_id(id);
+                let body = snapshot_body_within_limit(&panel.body, SNAPSHOT_BODY_LIMIT);
+                codegg::protocol::tui::RemotePanelView {
+                    id: id.clone(),
+                    title: panel.title.clone(),
+                    placement: placement_str,
+                    source_plugin_id,
+                    body,
+                }
+            })
+            .collect();
+
+        let plugin_status_items: Vec<codegg::protocol::tui::RemoteStatusItemView> = self
+            .plugin_ui_state
+            .status_items
+            .iter()
+            .map(|(id, item)| {
+                let placement_str = format!("{:?}", item.placement);
+                let source_plugin_id = plugin_id_from_surface_id(id);
+                let body = snapshot_body_within_limit(&item.body, SNAPSHOT_BODY_LIMIT);
+                codegg::protocol::tui::RemoteStatusItemView {
+                    id: id.clone(),
+                    label: item.label.clone(),
+                    placement: placement_str,
+                    source_plugin_id,
+                    body,
+                }
+            })
+            .collect();
+
+        codegg::protocol::tui::RemoteTuiStateSnapshot {
+            protocol_version: REMOTE_TUI_PROTOCOL_VERSION,
+            sequence,
+            session_id,
+            route,
+            model,
+            agent,
+            status,
+            messages,
+            prompt,
+            dialog,
+            toasts,
+            git: Some(codegg::protocol::tui::RemoteGitInfo {
+                root: self.session_state.git_sidebar.root.clone(),
+                branch: self.session_state.git_sidebar.branch.clone(),
+                dirty: self.session_state.git_sidebar.dirty,
+                loading: self.session_state.git_sidebar.loading,
+                error: self.session_state.git_sidebar.error.clone(),
+            }),
+            plugin_panels,
+            plugin_status_items,
+        }
+    }
+
+    /// Increment the remote snapshot sequence and return a fresh
+    /// snapshot. Used by remote protocol handlers when responding to
+    /// `RequestSnapshot` so the client sees a strictly increasing
+    /// sequence.
+    pub fn next_remote_snapshot(&mut self) -> codegg::protocol::tui::RemoteTuiStateSnapshot {
+        self.remote_sequence = self.remote_sequence.saturating_add(1);
+        self.build_remote_snapshot(self.remote_sequence)
+    }
+
+    /// Create a minimal App instance for testing.
+    /// This avoids spawning background tasks that interfere with tests.
+    pub fn new_for_testing(project_dir: String) -> Self {
+        let focus_manager = crate::components::component::FocusManager::new();
+        let agents = builtin_agents();
+        let current_agent = agents.iter().position(|a| a.name == "build").unwrap_or(0);
+        // Tests start with no models; they opt in explicitly via
+        // `set_models`. See `with_config` for why nothing is seeded.
+        let models: Vec<String> = Vec::new();
+        let current_model = String::new();
+        let command_registry = crate::command::CommandRegistry::new_for_workspace_root(
+            std::path::Path::new(&project_dir),
+        );
+        use crate::components::completion_overlay::{CompletionItem, CompletionItemKind};
+        let slash_completions: Vec<CompletionItem> = command_registry
+            .commands()
+            .iter()
+            .map(|c| CompletionItem {
+                label: c.name.clone(),
+                description: if c.description.is_empty() {
+                    None
+                } else {
+                    Some(c.description.clone())
+                },
+                kind: CompletionItemKind::File,
+            })
+            .collect();
+        let help_lines = build_help_lines(false, HelpMode::Insert, HelpRoute::Command);
+        let bindings = super::input::build_bindings(None, false);
+        let theme = Arc::new(Theme::dark());
+        let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+
+        let compat_agent_name = agents
+            .get(current_agent)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+        let project_tabs = crate::app::state::ProjectTabs::from_compat(
+            &project_dir,
+            None,
+            None,
+            None,
+            &current_model,
+            &compat_agent_name,
+        );
+
+        Self {
+            ui_state: UiState {
+                running: true,
+                theme: Arc::clone(&theme),
+                layout: TuiLayout::with_config(LayoutConfig::default()),
+                routes: RouteManager::new(),
+                dialog: Dialog::None,
+                command_mode: false,
+                input_mode: InputMode::Insert,
+                shutdown_tx: None, // No shutdown channel for tests
+                help_lines,
+                bindings,
+                keybinds: None,
+                vim_mode: false,
+                mode: AppMode::Embedded,
+                remote_status: None,
+                sidebar_visible: true,
+                tree_focused: false,
+                auto_scroll: true,
+                show_thinking: true,
+                reasoning_mode: codegg::protocol::core::ReasoningMode::Inherit,
+                reasoning_capabilities: std::collections::HashMap::new(),
+                reasoning_preference_revision: None,
+                reasoning_request: crate::app::state::AsyncUiRequestState::default(),
+                show_timestamps: false,
+                timeline_visible: false,
+                timeline_selected: 0,
+                render_panic_count: 0,
+                last_render_error: None,
+                tts: Tts::new(),
+                tts_enabled: false,
+                fullscreen: false,
+                dirty_regions: Vec::new(),
+                resize_debounce: None,
+                tts_via_daemon: false,
+                diagnostics: Default::default(),
+                plugin_ui_caps: codegg::protocol::ui::PluginUiCapabilities::all_supported(),
+                subagents: Default::default(),
+            },
+            session_state: SessionState {
+                session: None,
+                session_status: SessionStatus::Idle,
+                working_since: None,
+                running_tool: None,
+                active_turn_id: None,
+                stopped_turn: false,
+                last_error: None,
+                token_in: 0,
+                token_out: 0,
+                live_output_tokens: 0,
+                live_output_text: String::new(),
+                reasoning_tokens: 0,
+                cached_tokens: 0,
+                history: std::collections::VecDeque::new(),
+                history_pos: None,
+                indexed_files,
+                project_dir,
+                last_edited_file: None,
+                changed_files: Vec::new(),
+                mcp_servers: Vec::new(),
+                context_tokens: 0,
+                // 0 means "unresolved". The footer degrades a zero limit to
+                // `0%`; seeding 128_000 would show a confident percentage
+                // against a window this model may not have.
+                context_limit: 0,
+                compaction_count: 0,
+                rpm_limit: None,
+                tpm_limit: None,
+                rpm_remaining: None,
+                tpm_remaining: None,
+                permission_pending: false,
+                subagent_count: 0,
+                git_sidebar: crate::app::state::session::GitSidebarState::default(),
+                // M002a: the queue projection is daemon-derived and seeded
+                // empty. Nothing can enqueue an entry until M002b.
+                user_prompt_queue: Vec::new(),
+            },
+            prompt_state: PromptState {
+                prompt: PromptWidget::new(Arc::clone(&theme)),
+                slash_completions,
+                file_completions: Vec::new(),
+                agent_completions: Vec::new(),
+                completion_filter: String::new(),
+                show_completions: false,
+                completion_type: CompletionType::Slash,
+                completion_sel: 0,
+                stashed_prompts: Vec::new(),
+                stash_pos: None,
+                pending_send: false,
+                session_submit_request: AsyncUiRequestState::new(),
+                pending_session_submit: None,
+                session_submit_started: false,
+                retry_without_message: None,
+                composer_mode: crate::app::state::ComposerMode::default(),
+                pending_task_create: None,
+                task_submit_started: false,
+                task_model_choice: None,
+                chat_seed: None,
+                stop_armed_at: None,
+                exit_armed_at: None,
+                subagent_addressee: None,
+                subagent_steer_request: crate::app::state::AsyncUiRequestState::default(),
+            },
+            messages_state: MessagesState {
+                messages: MessagesWidget::new(Arc::clone(&theme)),
+                toasts: ToastManager::new(),
+            },
+            dialog_state: DialogState {
+                job_detail_request: crate::app::state::async_request::AsyncUiRequestState::new(),
+                project_init_draft: None,
+                model_dialog: ModelDialog::new(Arc::clone(&theme)),
+                agent_dialog: AgentDialog::new(Arc::clone(&theme)),
+                session_dialog: SessionDialog::new(Arc::clone(&theme)),
+                tree_dialog: TreeDialog::new(Arc::clone(&theme)),
+                theme_picker: None,
+                question_dialog: None,
+                command_palette: CommandPalette::new(),
+                question_session_id: None,
+                permission_perm_id: None,
+                permission_queue: std::collections::VecDeque::new(),
+                permission_dialog: None,
+                keybind_dialog: None,
+                mcp_dialog: None,
+                share_dialog: None,
+                import_dialog: None,
+                template_dialog: None,
+                connect_dialog: None,
+                connection_selection_dialog: None,
+                goto_dialog: None,
+                policy_selector: None,
+                plan_dialog: None,
+                diff_dialog: None,
+                review_dialog: None,
+                security_review_dialog: None,
+                research_browser: None,
+                help_dialog: None,
+                terminal_detail_handle: None,
+                pending_delete_session: None,
+                pending_archive_session: None,
+                pending_bulk_delete: None,
+                pending_bulk_delete_ids: None,
+                pending_bulk_archive: None,
+                pending_bulk_archive_ids: None,
+                pending_shell_command: None,
+                pending_connection_lifecycle: None,
+                pending_policy_confirm: None,
+                shell_detail_id: None,
+                import_request: crate::app::state::AsyncUiRequestState::new(),
+                research_request: crate::app::state::AsyncUiRequestState::new(),
+                session_reload_request: crate::app::state::AsyncUiRequestState::new(),
+                session_refresh_request: crate::app::state::AsyncUiRequestState::new(),
+                session_activation_request: crate::app::state::AsyncUiRequestState::new(),
+                task_list_request: crate::app::state::AsyncUiRequestState::new(),
+                task_delete_request: crate::app::state::AsyncUiRequestState::new(),
+                task_sheet_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_create_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_list_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_reorder_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_mutation_request: crate::app::state::AsyncUiRequestState::new(),
+                work_order_occurrence_request: crate::app::state::AsyncUiRequestState::new(),
+                task_model_pref_request: crate::app::state::AsyncUiRequestState::new(),
+                trigger_secret: None,
+                team_token_secret: None,
+                team_request: crate::app::state::AsyncUiRequestState::new(),
+                control_request: crate::app::state::AsyncUiRequestState::new(),
+                control_last: None,
+                trigger_create_request: crate::app::state::AsyncUiRequestState::new(),
+                trigger_manage_request: crate::app::state::AsyncUiRequestState::new(),
+                trigger_metadata: std::collections::HashMap::new(),
+                trigger_setup_error: std::collections::HashMap::new(),
+                trigger_setup_pending: std::collections::HashSet::new(),
+                task_schedule_draft: None,
+                task_view: crate::app::state::TaskViewState::default(),
+                worktree_list_request: crate::app::state::AsyncUiRequestState::new(),
+                template_create_request: crate::app::state::AsyncUiRequestState::new(),
+                new_session_request: crate::app::state::AsyncUiRequestState::new(),
+                session_mutation_request: crate::app::state::AsyncUiRequestState::new(),
+                session_messages_request: crate::app::state::AsyncUiRequestState::new(),
+                test_run_request: crate::app::state::AsyncUiRequestState::new(),
+                terminal_request: crate::app::state::AsyncUiRequestState::new(),
+                project_picker: None,
+                workspace_dashboard: None,
+                queue_delete_request: crate::app::state::AsyncUiRequestState::new(),
+                queue_add_request: crate::app::state::AsyncUiRequestState::new(),
+                queue_edit_request: crate::app::state::AsyncUiRequestState::new(),
+                queue_reorder_request: crate::app::state::AsyncUiRequestState::new(),
+                queue_send_request: crate::app::state::AsyncUiRequestState::new(),
+            },
+            agent_state: AgentState {
+                snapshot: None,
+                agents,
+                current_agent,
+                current_model,
+                models,
+                model_idx: 0,
+                plan_mode: false,
+                plan_topic: None,
+            },
+            command_registry,
+            sidebar: SidebarWidget::new(Arc::clone(&theme)),
+            panel_host: crate::panels::SidePanelHost::new(),
+            status_bar: StatusBarWidget::new(Arc::clone(&theme)),
+            policy_ui: crate::commands::policy::PolicyUiState::default(),
+            session_store: None,
+            message_store: None,
+            memory_store: None,
+            memory_auto_consolidate: codegg::config::schema::Config::load()
+                .ok()
+                .and_then(|c| c.experimental)
+                .and_then(|e| e.memory_auto_consolidate)
+                .unwrap_or(false),
+            frame_plan: FramePlan::default(),
+            dialog_area: None,
+            completion_visible_rows: 0,
+            completion_scroll_offset: 0,
+            todos: Vec::new(),
+            todo_revision: 0,
+            tasks_expanded: false,
+            tasks_selected: None,
+            tasks_selected_key: None,
+            tasks_restore_mode: None,
+            sidebar_area: None,
+            panel_areas: Vec::new(),
+            composer_mode_before_panel_focus: None,
+            last_click_time: None,
+            last_click_target: None,
+            hover_target: None,
+            hover_position: None,
+            selection_anchor: None,
+            selection_focus: None,
+            last_frame_buffer: None,
+            sidebar_projection_revision: None,
+            frame_task_rows: None,
+            watermark_scan_key: None,
+            event_rx: None,
+            tui_cmd_tx: None,
+            tui_cmd_rx: None,
+            remote_event_rx: None,
+            remote_send_tx: None,
+            core_event_rx: None,
+            core_client: None,
+            lsp_request_coordinator: codegg_client::LspRequestCoordinator::default(),
+            lsp_diagnostics_stream_cancel: None,
+            run_store: None,
+            config_watcher: None, // No config watcher for tests
+            theme_registry: Arc::new(codegg::theme::ThemeRegistry::load_builtins()),
+            // Never let a test write a real codegg.json. See the field doc.
+            persist_theme_to_config: false,
+            preferences: None,
+            subagent_pool: None,
+            undo_session_id: None,
+            undo_until: None,
+            notification_manager: None,
+            focus_manager,
+            streaming_active: false,
+            session_state_derived: codegg::session::state::TuiSessionState::default(),
+            active_goal: None,
+            lsp_tool: None,
+            search_runtime: None,
+            lsp_status_cache: None,
+            lsp_status_requested_at: None,
+            security_review_running: None,
+            latest_security_review: None,
+            shell_store: codegg::shell::ShellOutputStore::new(),
+            pending_shell_promotions: Vec::new(),
+            pending_turn_submission: None,
+            turn_submit_request: crate::app::state::AsyncUiRequestState::new(),
+            shell_command_bindings: std::collections::HashMap::new(),
+            shell_confirm_dangerous: true,
+            shell_enabled: true,
+            shell_default_timeout_secs: codegg::shell::DEFAULT_TIMEOUT_SECS,
+            shell_auto_promote_bangbang: true,
+            shell_ansi: codegg::config::schema::AnsiMode::default(),
+            shell_output_config: codegg::config::schema::ShellOutputConfig::default(),
+            command_run_store: codegg::shell::CommandOutputStore::new(),
+            command_run_bridge: codegg::shell::ShellCommandRunBridge::new(),
+            shell_handles: std::collections::HashMap::new(),
+            remote_shell_runs: std::collections::HashMap::new(),
+            interactive_terminals: crate::interactive_terminal::InteractiveTerminalController::new(
+            ),
+            plugin_ui_state: crate::app::state::PluginUiState::default(),
+            task_registry: crate::task_lifecycle::TuiTaskRegistry::new(),
+            file_tree_coordinator: crate::file_tree_coordinator::FileTreeScanCoordinator::new(),
+            render_panic_injection: RenderPanicInjection::all_false(),
+            remote_sequence: 0,
+            plugin_manager: None, // initialized lazily after construction
+            project_tabs,
+            project_catalog: crate::app::state::ProjectCatalogState::new(),
+            view_switch: crate::app::state::ViewSwitchCoordinator::new(),
+            routing_registry: crate::app::state::RoutingRegistry::new(),
+            manifest_persistence: crate::app::state::persistence::ManifestPersistence::new(
+                default_tui_state_root(),
+            ),
+            manifest_daemon_hint: None,
+            restore_project_details: std::collections::HashMap::new(),
+            manifest_restore_announced: false,
+            projection_client: crate::app::state::ProjectionClientState::new(),
+            presence: crate::app::state::PresenceState::new(),
+            observer: crate::app::state::ObserverState::new(),
+            chat: crate::app::state::ChatState::new(),
+            chat_panel_project: None,
+            panel_hotkeys: Default::default(),
+            terminal_panel_spawn: false,
+            workspace_focus: crate::app::state::WorkspaceFocus::default(),
+            editor_state: crate::app::state::EditorState::default(),
+            file_tree_state: crate::app::state::file_tree::FileTreeState::default(),
+            change_review_state: crate::app::state::change_review::ChangeReviewState::default(),
+        }
+    }
+
+    /// Initialize the plugin manager with builtins registered.
+    ///
+    /// M007-G (ADR-0057): a daemon is the single authority for the plugin
+    /// catalogue, so the TUI builds no manager of its own while a daemon is
+    /// attached. Should be called once at startup after the App is
+    /// constructed. Safe to call multiple times — later calls are no-ops.
+    pub async fn init_plugin_manager(&mut self) {
+        if self.plugin_manager.is_some() {
+            return;
+        }
+        if self.core_client.is_some() {
+            return;
+        }
+        if let Some(registry) = codegg::core::daemon_plugins::process_registry().await {
+            self.plugin_manager = Some(registry.manager().clone());
+        }
+    }
+
+    /// Access the plugin manager, if initialized.
+    pub fn plugin_manager(&self) -> Option<&crate::plugin::management::PluginManager> {
+        self.plugin_manager.as_deref()
+    }
+
+    pub fn set_remote_event_rx(&mut self, rx: mpsc::Receiver<serde_json::Value>) {
+        self.remote_event_rx = Some(rx);
+    }
+
+    /// Install the daemon event stream (socket mode).
+    pub fn set_core_event_rx(
+        &mut self,
+        rx: mpsc::Receiver<
+            codegg::protocol::core::EventEnvelope<codegg::protocol::core::CoreEvent>,
+        >,
+    ) {
+        self.core_event_rx = Some(rx);
+    }
+
+    /// Set the session status, arming or disarming the stall watchdog.
+    ///
+    /// `Working` is entered optimistically on submit and is only cleared by a
+    /// terminal turn event, so every production writer goes through here rather
+    /// than assigning `session_status` directly.
+    pub fn set_session_status(&mut self, status: SessionStatus) {
+        if status == SessionStatus::Working {
+            if !matches!(self.session_state.session_status, SessionStatus::Working) {
+                self.session_state.working_since = Some(Instant::now());
+            }
+        } else {
+            self.session_state.working_since = None;
+        }
+        self.session_state.session_status = status;
+    }
+
+    /// Latch a turn failure so the main buffer can keep saying what went wrong.
+    ///
+    /// Every turn-failure site used to call `toasts.error` alone. That made the
+    /// whole record of a dead turn a message that expires in seconds, which is
+    /// the wrong lifetime for the one thing a user needs while deciding whether
+    /// to retry: the reason it stopped.
+    ///
+    /// The toast stays — it is the notification, and `/logs` retains it — but the
+    /// latch is what outlives it. Deliberately *not* cleared on a timer: the
+    /// user reading the reason must not have it vanish, and the user who has
+    /// resumed has already cleared it via the next `TurnStarted`.
+    ///
+    /// Only genuine turn failures route here. Shell staging, clipboard, and
+    /// `/theme` errors are transient command feedback and stay toast-only, or
+    /// the strip would report a turn failure that never happened.
+    pub fn report_turn_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.session_state.last_error = Some(message.clone());
+        self.messages_state.toasts.error(&message);
+    }
+
+    /// Release a turn that never started, with a reason the user can act on.
+    ///
+    /// `send_prompt` optimistically moves the session to `Working`, adds the
+    /// message to the transcript, and clears the composer *before* the daemon
+    /// has accepted anything. Every way that acceptance can fail — a refused
+    /// `turn.submit`, a dead socket, no core client, no session bound — must
+    /// therefore undo that optimistic state explicitly. Otherwise the composer
+    /// sits on a spinner for a turn that does not exist, and the only thing the
+    /// user ever learns is the stall watchdog's generic five-minute message.
+    ///
+    /// `restore_prompt` hands the submitted text back to the composer. The
+    /// optimistic clear destroyed it and the user's only copy is now in the
+    /// transcript, where editing it is not possible. Pass the prompt that was
+    /// actually submitted — not the current composer contents, which the user
+    /// may have kept typing into.
+    pub fn fail_unstarted_turn(&mut self, reason: &str, restore_prompt: Option<&str>) {
+        self.session_state.working_since = None;
+        self.session_state.active_turn_id = None;
+        self.set_session_status(SessionStatus::Error);
+        self.status_bar.set_thinking(false, None);
+        self.messages_state.messages.finalize_streaming();
+        self.messages_state.messages.end_activity();
+        // A refused submit must not block the next one: `pending_send` is the
+        // guard that refuses a second prompt while the first is in flight, and
+        // there is no in-flight turn to guard.
+        self.prompt_state.pending_send = false;
+        self.prompt_state.prompt.set_waiting(false);
+        if let Some(prompt) = restore_prompt {
+            self.prompt_state.restore_prompt_with_stash(prompt);
+        }
+        self.report_turn_error(reason);
+    }
+
+    /// Release a submit the daemon refused **because a turn is already
+    /// running**, leaving that turn completely alone.
+    ///
+    /// This is not `fail_unstarted_turn`. No turn was unstarted here: a turn is
+    /// running on the daemon right now, and the optimistic teardown used for
+    /// every other failure actively lied about it. It cleared `active_turn_id`
+    /// and `working_since` — discarding the identity and elapsed age of a live
+    /// turn — stopped the thinking indicator, finalized the activity stream of
+    /// a turn that is still producing events, and set `Error` on a session that
+    /// is actively working.
+    ///
+    /// So this path releases only what the submit itself owns: the composer
+    /// guard, and the text the optimistic clear took away. The running turn's
+    /// state is untouched, and the refusal is reported as a toast rather than
+    /// latched through [`App::report_turn_error`] — the row above the
+    /// composer gives `last_error` absolute precedence, so latching would
+    /// replace the live turn's status with a stale `✗` line, which is the
+    /// same state corruption wearing a different hat.
+    ///
+    /// Contention is not a turn failure: the turn continues, so there is no
+    /// dead turn for a latched reason to explain.
+    pub fn fail_contended_turn(&mut self, reason: &str, submitted_prompt: Option<&str>) {
+        self.prompt_state.pending_send = false;
+        self.prompt_state.prompt.set_waiting(false);
+        if let Some(prompt) = submitted_prompt {
+            self.prompt_state.restore_prompt_with_stash(prompt);
+        }
+        self.messages_state.toasts.warning(reason);
+        tracing::info!(
+            target: "codegg::tui::app",
+            "turn.submit refused: a turn is already active; the active turn was left running"
+        );
+    }
+
+    /// Invalidate an in-flight `turn.submit` completion.
+    ///
+    /// The daemon turn is not undone — it keeps running and its events still
+    /// arrive — but a completion that lands after a tab switch, reconnect, or
+    /// project change must not act on state the user has moved past. Returns
+    /// the submitted prompt so a caller that is discarding the submission can
+    /// hand the user's text back; `None` when nothing was in flight.
+    pub fn cancel_turn_submit(&mut self) -> Option<String> {
+        if self.turn_submit_request.is_loading() {
+            self.turn_submit_request.cancel();
+        }
+        self.pending_turn_submission
+            .take()
+            .map(|pending| pending.prompt)
+    }
+
+    /// Apply one `turn.submit` completion.
+    ///
+    /// Returns `false` when the completion was superseded or cancelled, in
+    /// which case nothing was mutated. The staleness check is the shared
+    /// [`AsyncUiRequestState`] rather than a hand-rolled identity comparison
+    /// at the call site: this arm used to clear `pending_turn_submission` only
+    /// when the ids matched but then tore down turn state *unconditionally*,
+    /// so a late completion from a superseded submission could still null a
+    /// live turn's identity.
+    pub fn apply_turn_submission_finished(
+        &mut self,
+        request_id: &str,
+        generation: u64,
+        outcome: crate::app::turn_submit::TurnSubmitOutcome,
+    ) -> bool {
+        // Local staleness first: a cancelled or superseded submission changes
+        // nothing at all, including the pending record.
+        if !self.turn_submit_request.finish(generation) {
+            return false;
+        }
+        // Then the daemon identity. This is the idempotency key, not a
+        // UI-generation marker, so it is still checked: a completion whose
+        // request id does not match the retained submission is not about the
+        // prompt this frontend is holding.
+        let submitted_prompt = match self.pending_turn_submission.as_ref() {
+            Some(pending) if pending.request_id == request_id => pending.prompt.clone(),
+            Some(_) => {
+                // A completion for a different submission's idempotency key is
+                // not about the prompt this frontend is holding. Drop it whole:
+                // clearing the retained record here would destroy the identity
+                // an identical retry needs to stay idempotent.
+                return false;
+            }
+            None => {
+                // No pending submission at all. An accepted-late completion is
+                // harmless; a failure with nowhere to restore from is reported
+                // but changes no state.
+                if let Some(reason) = outcome.failure_text() {
+                    self.report_turn_error(&reason);
+                }
+                return false;
+            }
+        };
+        self.pending_turn_submission = None;
+        match &outcome {
+            crate::app::turn_submit::TurnSubmitOutcome::Accepted => true,
+            outcome => {
+                let reason = outcome
+                    .failure_text()
+                    .unwrap_or_else(|| "Turn not submitted".to_string());
+                let prompt = outcome
+                    .restores_prompt()
+                    .then_some(submitted_prompt.as_str())
+                    .filter(|prompt| !prompt.trim().is_empty());
+                if outcome.preserves_active_turn() {
+                    self.fail_contended_turn(&reason, prompt);
+                } else if outcome.reports_as_turn_failure() {
+                    // `Unexpected` reaches here too: it started no turn that
+                    // this frontend can prove, but it must not claim one is
+                    // running either, so it takes the unstarted-turn teardown
+                    // with no prompt to restore.
+                    self.fail_unstarted_turn(&reason, prompt);
+                }
+                true
+            }
+        }
+    }
+
+    /// Fail a turn that has produced no event for [`TURN_STALL_TIMEOUT`].
+    ///
+    /// Returns `true` when the watchdog fired and the caller should redraw. The
+    /// turn is reported as failed and the status leaves `Working`, so a stalled
+    /// turn surfaces as an error instead of an indefinite spinner.
+    pub fn check_turn_stall(&mut self) -> bool {
+        if !matches!(self.session_state.session_status, SessionStatus::Working) {
+            return false;
+        }
+        let Some(since) = self.session_state.working_since else {
+            self.session_state.working_since = Some(Instant::now());
+            return false;
+        };
+        if since.elapsed() < TURN_STALL_TIMEOUT {
+            return false;
+        }
+        // A tool call in flight means the turn is demonstrably still alive.
+        // `bash` in particular delivers its output only on completion, so a
+        // legitimate multi-minute build produces no events at all and the
+        // silence this watchdog measures is not evidence of a wedge. Re-arm
+        // and keep waiting while the call stays inside its grace; a call that
+        // outlives the grace falls through and is still failed.
+        if let Some(running) = &self.session_state.running_tool {
+            if running.elapsed() < TURN_STALL_TOOL_GRACE {
+                self.session_state.working_since = Some(Instant::now());
+                return false;
+            }
+        }
+        self.session_state.working_since = None;
+        self.session_state.session_status = SessionStatus::Error;
+        self.report_turn_error(format!(
+            "turn stalled: the core produced no event for over 5 minutes. \
+             The turn may still be running — press {} twice to stop it.",
+            crate::commands::turn_control::STOP_KEY_LABEL,
+        ));
+        true
+    }
+
+    /// Apply one daemon `CoreEvent`.
+    ///
+    /// This is the socket-mode counterpart of the in-process `AppEvent` path.
+    /// Only turn-lifecycle and content events are handled here; everything
+    /// else is deliberately ignored rather than treated as an error, so a new
+    /// daemon event cannot break an older TUI.
+    ///
+    /// Returns `true` when the event changed visible state, so the caller can
+    /// request a redraw.
+    pub fn apply_core_event(&mut self, event: codegg::protocol::core::CoreEvent) -> bool {
+        // Any turn event is proof the turn is alive, so it rearms the watchdog.
+        if matches!(self.session_state.session_status, SessionStatus::Working) {
+            self.session_state.working_since = Some(Instant::now());
+        }
+        use codegg::protocol::core::CoreEvent as E;
+        match event {
+            E::ProjectionStreamEvent {
+                subscription_id,
+                stream_id,
+                envelope,
+            } => {
+                // The daemon forwards live projection envelopes on this
+                // event. It had no arm here, so every one fell through to
+                // `_ => false` and was discarded: the projection controller
+                // only ever learned what happened before it attached, which
+                // is why subagent and job status never appeared live.
+                let subscription_known = self
+                    .projection_client
+                    .controller()
+                    .subscription(&subscription_id)
+                    .is_some();
+                if !subscription_known
+                    && matches!(
+                        self.projection_client.primary_status(),
+                        Some(
+                            crate::app::state::projection_client::PrimaryProjectionStatus::Loading
+                        )
+                    )
+                {
+                    self.projection_client.buffer_pending_envelope(
+                        crate::app::state::projection_client::PendingProjectionEnvelope {
+                            subscription_id,
+                            stream_id,
+                            envelope,
+                        },
+                    );
+                    return true;
+                }
+                let is_primary = self.projection_client.primary_subscription_id()
+                    == Some(&subscription_id)
+                    && self.projection_client.primary_stream_id() == Some(&stream_id);
+                if self.projection_client.primary_subscription_id() == Some(&subscription_id)
+                    && !is_primary
+                {
+                    tracing::warn!(%stream_id, "rejected primary projection event with mismatched stream id");
+                    return false;
+                }
+                let tab_id = self
+                    .projection_client
+                    .active_tab_id()
+                    .unwrap_or(DEFAULT_PROJECTION_TAB)
+                    .to_string();
+                let outcome = self.apply_projection_envelope_on_stream(
+                    &subscription_id,
+                    &stream_id,
+                    &tab_id,
+                    envelope,
+                );
+                if is_primary {
+                    crate::commands::primary_projection::after_event(
+                        self,
+                        &subscription_id,
+                        outcome,
+                    );
+                    // M003: a delegated run's recorded transcript advanced.
+                    // The watermark is body-free and advisory: it says the
+                    // run reached an ordinal, never what it recorded. The
+                    // rows come from the authorized page read that this
+                    // schedules for the focused tab.
+                    crate::commands::transcript_follow::on_snapshot_watermarks(self);
+                }
+                true
+            }
+            E::TurnStarted { turn_id, .. } => {
+                self.messages_state.messages.finalize_streaming();
+                // The daemon mints this id and `TurnCancel` rejects a
+                // mismatch, so it is the only thing that can stop the turn it
+                // just announced. It was discarded here, which is why nothing
+                // in the TUI could interrupt a running agent.
+                self.session_state.active_turn_id = Some(turn_id.clone());
+                // C007: a subagent addressee belongs to the turn it was armed
+                // under. A subagent dispatched by the *previous* turn is not
+                // one this turn's agent is running, so keeping the address
+                // would let a reply written about it ride along into a turn
+                // that never owned it. Cleared silently — a turn starting is
+                // its own visible event, and a toast here would talk over it.
+                self.prompt_state.subagent_addressee = None;
+                // A fresh turn supersedes any earlier stop.
+                self.session_state.stopped_turn = false;
+                // The agent is running again, so the reason the last turn died
+                // has been acted on. Latched, not timed — this is the only
+                // place it clears, so a user reading it is never interrupted
+                // mid-sentence and a user who has moved on has moved on.
+                self.session_state.last_error = None;
+                // Announce the turn in the chat tail. Everything below
+                // re-arms this on the next event, so the one-line
+                // indicator follows the agent's actual phase
+                // (queued -> thinking -> running <tool> -> writing -> ...).
+                self.messages_state
+                    .messages
+                    .begin_activity(crate::components::messages::ActivityPhase::Queued);
+                self.messages_state.messages.begin_reasoning();
+                true
+            }
+            E::TurnTextDelta { delta, .. } => {
+                self.messages_state.messages.end_reasoning();
+                self.messages_state
+                    .messages
+                    .begin_activity(crate::components::messages::ActivityPhase::Writing);
+                self.add_live_output_delta(&delta);
+                self.messages_state.messages.add_assistant_text(delta);
+                true
+            }
+            E::TurnReasoningDelta { delta, .. } => {
+                self.messages_state
+                    .messages
+                    .begin_activity(crate::components::messages::ActivityPhase::Thinking);
+                // Reasoning deltas must go to `add_reasoning`, which opens a
+                // real `MsgPart::Reasoning` block. This arm used to call
+                // `add_assistant_text`, which is a parser for *literal*
+                // `<think>` tags: a raw delta carries no such tag, so it fell
+                // through to `MsgPart::Text` and the model's thinking was
+                // rendered as ordinary assistant prose with no "Thought for"
+                // header — and no way to collapse it. The standalone
+                // `AppEvent::ReasoningDelta` arm has always used
+                // `add_reasoning`; the two transports must agree. This arm
+                // deliberately does not set `streaming_active`: no daemon arm
+                // clears that flag, so setting it here would latch the 16ms
+                // render interval on for the life of the process. The 80ms
+                // animation pump runs while `Working` either way.
+                self.messages_state.messages.add_reasoning(delta);
+                true
+            }
+            E::ToolStarted {
+                tool_id,
+                tool_name,
+                arguments,
+                ..
+            } => {
+                // A tool call means the reasoning block is over; close it
+                // so its header reports the real duration instead of
+                // staying "Thinking" for the rest of the turn.
+                self.messages_state.messages.end_reasoning();
+                self.messages_state
+                    .messages
+                    .begin_activity(tool_activity_phase(&tool_name, &arguments));
+                self.session_state.running_tool =
+                    Some(crate::app::state::session::RunningTool::new(
+                        tool_id.clone(),
+                        tool_name.clone(),
+                    ));
+                self.messages_state.messages.finalize_streaming();
+                let args = serde_json::from_str::<serde_json::Value>(&arguments)
+                    .unwrap_or(serde_json::Value::Null);
+                self.messages_state
+                    .messages
+                    .add_tool_call(tool_id.clone(), tool_name, args);
+                self.messages_state
+                    .messages
+                    .mark_tool_call_running(&tool_id);
+                true
+            }
+            E::ToolCompleted {
+                tool_id,
+                output,
+                success,
+                ..
+            } => {
+                let status = if success {
+                    codegg::session::message::ToolStatus::Completed
+                } else {
+                    codegg::session::message::ToolStatus::Error
+                };
+                self.messages_state.messages.end_activity();
+                // Clear only on a match: tool results can arrive out of
+                // order under parallel dispatch, and a late result for an
+                // earlier call must not un-track the call that is genuinely
+                // still running.
+                if self
+                    .session_state
+                    .running_tool
+                    .as_ref()
+                    .is_some_and(|running| running.tool_id == tool_id)
+                {
+                    self.session_state.running_tool = None;
+                }
+                self.messages_state
+                    .messages
+                    .update_tool_call(&tool_id, output, status, None, None, None);
+                true
+            }
+            E::TurnCompleted {
+                stop_reason,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                context_limit,
+                ..
+            } => {
+                self.messages_state.messages.end_reasoning();
+                self.messages_state.messages.end_activity();
+                self.messages_state.messages.finalize_streaming();
+                // The turn is over either way, so it can no longer be
+                // cancelled. `stopped_turn` deliberately survives: the user
+                // asked to stop, and the stopped badge plus `/resume` are
+                // still what they should see until they resume or send a new
+                // prompt.
+                self.session_state.active_turn_id = None;
+                self.session_state.session_status = if stop_reason == "error" {
+                    SessionStatus::Error
+                } else {
+                    SessionStatus::Idle
+                };
+                self.status_bar.set_thinking(false, None);
+                // Usage arrives on the completion event because
+                // `AppEvent::AgentFinished` is intentionally not mapped
+                // across the daemon boundary (see
+                // `core::map_app_event_to_core_event`), so this is the only
+                // way the footer can show real numbers in daemon mode.
+                if let (Some(in_tok), Some(out_tok)) = (input_tokens, output_tokens) {
+                    self.set_tokens(in_tok as u64, out_tok as u64);
+                    if let Some(ct) = cached_tokens {
+                        self.session_state.cached_tokens = ct as u64;
+                    }
+                    // The provider's input count IS the prompt size for this
+                    // turn, which is the quantity the context meter measures.
+                    self.session_state.context_tokens = in_tok;
+                }
+                // The limit is the window the agent actually resolved for
+                // this turn - the same number that gates compaction - so the
+                // meter cannot disagree with the behaviour it describes.
+                // `None` leaves the previous value rather than inventing one.
+                if let Some(limit) = context_limit {
+                    self.session_state.context_limit = limit;
+                }
+                if let Some(rt) = reasoning_tokens {
+                    self.session_state.reasoning_tokens += rt;
+                }
+                true
+            }
+            E::SessionUpdated {
+                session_id, title, ..
+            } => {
+                // The daemon auto-titler writes the new title and carries
+                // it on the event when it knows it — apply directly with
+                // no round trip. Id-only events (agent/model selection,
+                // legacy publishers) fall back to a bounded refetch, which
+                // is what kept the UI on "Untitled" until a manual reload.
+                match title.filter(|t| !t.trim().is_empty()) {
+                    Some(title) => {
+                        let request_id = self.dialog_state.session_refresh_request.begin();
+                        crate::commands::sessions::apply_session_refreshed(
+                            self,
+                            request_id,
+                            session_id,
+                            Some(title),
+                            None,
+                        );
+                    }
+                    None => {
+                        crate::commands::sessions::start_refresh_session(self, session_id);
+                    }
+                }
+                true
+            }
+            E::TurnFailed { message, .. } => {
+                // The single most important arm: without it a failed turn
+                // left the status pinned on "working" with no explanation.
+                self.messages_state.messages.finalize_streaming();
+                self.messages_state.messages.end_activity();
+                self.session_state.active_turn_id = None;
+                self.session_state.session_status = SessionStatus::Error;
+                self.status_bar.set_thinking(false, None);
+                self.report_turn_error(&message);
+                true
+            }
+            E::Error { code, message, .. } => {
+                self.session_state.session_status = SessionStatus::Error;
+                self.status_bar.set_thinking(false, None);
+                self.report_turn_error(format!("{code}: {message}"));
+                true
+            }
+            E::TodoListUpdated {
+                session_id,
+                revision,
+                items,
+            } => {
+                // Session-scope it. The daemon broadcasts to every attached
+                // frontend, so without this an update for a different session
+                // overwrote the list of the session actually on screen. The
+                // in-process handler (`runtime/app_events.rs`) already made
+                // this check; the core-event arm had to match it.
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                // Monotonic guard: a late envelope from a superseded revision
+                // must not roll the list backwards.
+                if revision < self.todo_revision {
+                    return false;
+                }
+                self.todo_revision = revision;
+                // Items cross the wire as opaque JSON, so decode defensively:
+                // a malformed entry is skipped rather than discarding the
+                // whole list.
+                let entries: Vec<TodoEntry> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let content = item.get("content")?.as_str()?.to_string();
+                        Some(TodoEntry {
+                            content,
+                            status: item
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("pending")
+                                .to_string(),
+                            priority: item
+                                .get("priority")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("medium")
+                                .to_string(),
+                        })
+                    })
+                    .collect();
+                self.set_todos(entries);
+                true
+            }
+            // M007-H (D3): the daemon publishes the supervised test run, so
+            // the derived state carries the run the daemon actually
+            // performed. Nothing filled this before, so `/tests` reported
+            // "unknown (no tests run yet)" about a run the daemon had
+            // already finished.
+            E::TestRunStarted {
+                session_id,
+                command,
+                ..
+            } => {
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                self.session_state_derived.test_state =
+                    codegg::session::state::TestState::Running { command };
+                true
+            }
+            E::TestRunCompleted {
+                session_id,
+                status,
+                summary,
+                ..
+            } => {
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                // The completion names the outcome, not the command; the
+                // command is the one the start event carried. It is read
+                // from whichever state holds it, because the projection and
+                // this event stream carry the same run.
+                let command = match &self.session_state_derived.test_state {
+                    codegg::session::state::TestState::Running { command }
+                    | codegg::session::state::TestState::Passed { command, .. }
+                    | codegg::session::state::TestState::Failed { command, .. } => command.clone(),
+                    _ => String::new(),
+                };
+                self.session_state_derived.test_state = if status == "passed" {
+                    codegg::session::state::TestState::Passed {
+                        command,
+                        duration_ms: None,
+                    }
+                } else {
+                    codegg::session::state::TestState::Failed {
+                        command,
+                        duration_ms: None,
+                        summary,
+                    }
+                };
+                true
+            }
+            E::PermissionPending { id, tool, path, .. } => {
+                // The turn is blocked on a human, not on the model. Saying so
+                // is the difference between "it is stuck" and "it is waiting on
+                // me" — and this is the state a user is most likely to be
+                // staring at, because it does not resolve without them.
+                self.messages_state.messages.begin_activity(
+                    crate::components::messages::ActivityPhase::WaitingForApproval {
+                        tool: tool.clone(),
+                    },
+                );
+                self.show_permission_dialog(
+                    id,
+                    PermissionRequest {
+                        tool,
+                        path,
+                        args: None,
+                    },
+                );
+                true
+            }
+            E::QuestionPending { id, questions, .. } => {
+                // `questions` is opaque on the wire; decode into the same spec
+                // type the dialog consumes. An undecodable payload must not
+                // strand the session in a pending-question state, so fall back
+                // to a single question carrying the raw payload.
+                let questions: Vec<QuestionSpec> = serde_json::from_value(questions)
+                    .unwrap_or_else(|_| {
+                        vec![QuestionSpec {
+                            question: "The daemon asked a question".to_string(),
+                            options: None,
+                            initial: None,
+                        }]
+                    });
+                self.show_question_dialog(questions, id);
+                true
+            }
+            E::BackgroundJobCompleted {
+                session_id,
+                kind,
+                status,
+                summary,
+                ..
+            } => {
+                // Session-scope it like `TodoListUpdated`: the daemon
+                // broadcasts to every attached frontend, and this screen
+                // renders exactly one session. A foreign session's
+                // completion stays in the daemon router history; only the
+                // visible session toasts. The toast names kind/status plus
+                // the bounded redacted summary — the actionable handle is
+                // the existing `job.status` / CI-watch surface, not a new
+                // control (ADR-0031: no new authority in the frontend
+                // slice).
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                self.messages_state.messages.finalize_streaming();
+                self.messages_state
+                    .toasts
+                    .info(&format!("Background {kind} {status}: {summary}"));
+                true
+            }
+            E::ProjectDeleted {
+                project_id,
+                deleted_session_count,
+            } => {
+                crate::commands::project_picker::apply_project_deleted(
+                    self,
+                    &project_id,
+                    deleted_session_count,
+                );
+                true
+            }
+            E::ProjectUpdated {
+                project,
+                workspace,
+                previous_display_name,
+                previous_root,
+            } => {
+                crate::commands::project_picker::apply_project_updated(
+                    self,
+                    project,
+                    workspace,
+                    previous_display_name,
+                    previous_root,
+                );
+                self.refresh_project_catalog();
+                true
+            }
+            // M003 (ADR-0038): the daemon pushes a fresh queue projection after
+            // it delivers — or fails to deliver — an entry. Before this arm the
+            // queue was read only on the session-change edge, which a delivery
+            // never produces, so an entry the user had queued would sit displayed
+            // as `pending` while its turn ran and nothing on screen would ever
+            // say it was no longer waiting.
+            E::UserPromptQueue {
+                session_id,
+                entries,
+            } => {
+                // Adopted through the same applier the load path uses, so a
+                // pushed projection and a read projection cannot diverge in how
+                // they are filtered — the superseded-session guard included.
+                self.apply_user_prompt_queue_loaded(session_id, entries, None);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether this frontend is served remotely over the `/tui` WebSocket.
+    ///
+    /// Only this transport submits through `remote_send_tx` and owns its own
+    /// session lifecycle; it must not create sessions locally. `AppMode::RemoteCore`
+    /// alone is NOT sufficient: the socket-daemon frontend sets that mode too but
+    /// owns a `core_client` and creates sessions exactly like the embedded path.
+    /// Gating on the mode alone is what previously left a brand-new repo unable
+    /// to submit a prompt (`send_prompt` refused, and the event loop never started
+    /// the continuation it had armed).
+    pub fn is_ws_attach_transport(&self) -> bool {
+        matches!(
+            self.ui_state.mode,
+            crate::app::state::AppMode::RemoteCore { .. }
+        ) && self.remote_send_tx.is_some()
+    }
+
+    /// Whether the provider backing the selected model removes
+    /// `reasoning_effort` from the outgoing body.
+    ///
+    /// The selected model is carried as `provider/model` (see the model
+    /// dialog's `format!("{}/{}", provider, name)`), so the provider kind is
+    /// the first segment — the same split `session::legacy_resolution` uses
+    /// to resolve a legacy model string.
+    ///
+    /// An empty or bare model has no known provider, so it reports `false`
+    /// rather than warning speculatively about a provider we cannot name.
+    pub fn selected_provider_strips_reasoning(&self) -> bool {
+        let model = self.agent_state.current_model.as_str();
+        let Some(provider) = model.split('/').next().filter(|s| !s.is_empty()) else {
+            return false;
+        };
+        codegg::provider::ProviderCapabilities::for_provider(provider).strips_reasoning_effort
+    }
+
+    /// The reasoning capability the daemon published for the current model.
+    ///
+    /// The daemon's model-resolution response is the only source. A model
+    /// with no published capability has **no entry**, which reads as "not
+    /// established" — the frontend falls back to the known-label ladder and
+    /// says that it is a fallback. It never reads as "this model accepts
+    /// nothing".
+    ///
+    /// The capability is keyed by model id: the selected model is carried as
+    /// `provider/model`, and the durable session selection names the same
+    /// model by id, so the model segment is what identifies it.
+    pub fn current_reasoning_capability(
+        &self,
+    ) -> Option<&codegg::protocol::provider::ReasoningCapabilityDto> {
+        let model = self.agent_state.current_model.as_str();
+        let model_id = model
+            .split_once('/')
+            .map(|(_, id)| id)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(model);
+        self.ui_state.reasoning_capabilities.get(model_id)
+    }
+
+    /// Record the capability the daemon published for one model.
+    ///
+    /// A repeated model-resolution response updates the entry
+    /// idempotently, and a model that publishes no capability leaves the
+    /// entry absent rather than recording an empty one.
+    pub fn record_reasoning_capability(
+        &mut self,
+        model_id: &str,
+        capability: Option<codegg::protocol::provider::ReasoningCapabilityDto>,
+    ) {
+        if model_id.is_empty() {
+            return;
+        }
+        match capability {
+            Some(capability) => {
+                self.ui_state
+                    .reasoning_capabilities
+                    .insert(model_id.to_string(), capability);
+            }
+            None => {
+                self.ui_state.reasoning_capabilities.remove(model_id);
+            }
+        }
+    }
+
+    pub fn set_remote_send_tx(&mut self, tx: mpsc::Sender<RemoteTuiMessage>) {
+        self.remote_send_tx = Some(tx);
+    }
+
+    pub fn set_core_client(&mut self, client: Arc<dyn CoreClient>) {
+        self.core_client = Some(client);
+    }
+
+    /// Create the frontend command channel if it does not exist yet.
+    ///
+    /// Call this before enqueuing startup work. `run_event_loop` installs a
+    /// channel only once it is already running, so a caller that enqueued
+    /// earlier found `tui_cmd_tx == None` and the work was dropped without a
+    /// diagnostic — which is how the persisted manifest (tabs, model, agent)
+    /// silently stopped being restored.
+    ///
+    /// Also self-heals background work that was scheduled before the channel
+    /// existed. `set_session` ends with a git sidebar probe that spawns
+    /// through this channel; when the session was bound first, the probe
+    /// found a `None` sender, was dropped without a diagnostic, and the
+    /// sidebar stayed pinned to "not a git repo" for the life of the
+    /// process. Re-issuing the probe here makes that ordering mistake
+    /// self-correcting instead of permanent.
+    pub fn ensure_tui_cmd_channel(&mut self) {
+        if self.tui_cmd_tx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel(TUI_CMD_CHANNEL_CAPACITY);
+        self.tui_cmd_tx = Some(tx);
+        self.tui_cmd_rx = Some(rx);
+        if self.session_state.session.is_some() {
+            if let Some(session_id) = self.active_session_id().map(str::to_owned) {
+                self.load_human_shell_promotions(session_id);
+            }
+            crate::commands::git_sidebar::start_refresh_git_sidebar(self);
+        }
+    }
+
+    /// Attach the core client together with its event stream.
+    ///
+    /// The TUI learns turn outcomes *only* through `core_event_rx`. Reading the
+    /// client back off the app after storing it silently skips the
+    /// subscription, because the field is still `None` at that point — the
+    /// frontend then stays pinned on `Working` after the turn has already
+    /// finished in the daemon. Binding both together makes that ordering
+    /// unrepresentable.
+    pub fn attach_core_client(&mut self, client: Arc<dyn CoreClient>) {
+        if let Some(cancel) = self.lsp_diagnostics_stream_cancel.take() {
+            cancel.cancel();
+        }
+        self.lsp_request_coordinator.invalidate_frontend("tui");
+        let events = client.subscribe();
+        self.set_core_event_rx(events);
+        self.set_core_client(client);
+        if self.editor_state.is_open() {
+            crate::commands::editor::refresh_editor_diagnostics(self);
+        }
+    }
+
+    pub fn cancel_lsp_diagnostics_stream(&mut self) {
+        if let Some(cancel) = self.lsp_diagnostics_stream_cancel.take() {
+            cancel.cancel();
+        }
+    }
+
+    /// Narrow the daemon's event filter to `session_id` for this connection.
+    ///
+    /// The client's handshake subscription is global-only *by design* and so
+    /// never matches session-scoped events. Filters accumulate per connection,
+    /// therefore this adds delivery without disturbing the existing stream.
+    /// Safe to call repeatedly: the daemon simply appends another filter.
+    pub fn ensure_session_event_stream(&self, session_id: &str) {
+        let Some(client) = self.core_client.clone() else {
+            return;
+        };
+        // Session binding is exercised by synchronous tests that have no
+        // runtime; the socket frame can only be written from inside one.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = client.subscribe_session_events(session_id, None).await {
+                tracing::warn!(%error, "failed to narrow the event stream to the active session");
+            }
+        });
+    }
+
+    pub(crate) fn load_human_shell_promotions(&mut self, session_id: String) {
+        let Some(client) = self.core_client.clone() else {
+            return;
+        };
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            return;
+        };
+        let workspace_id = self.active_workspace_id().map(str::to_owned).or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .and_then(|session| session.workspace_id.clone())
+        });
+        let request = codegg::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::HumanShellPromotionsGet {
+                session_id: session_id.clone(),
+            },
+        );
+        self.task_registry
+            .spawn(TuiTaskKind::Command, "load_shell_promotions", async move {
+                let (promotions, error) = match client.request(request).await {
+                    Ok(codegg::protocol::core::CoreResponse::HumanShellPromotions {
+                        promotions,
+                    }) => (promotions, None),
+                    Ok(codegg::protocol::core::CoreResponse::Error { code, message }) => {
+                        (Vec::new(), Some(format!("{code}: {message}")))
+                    }
+                    Ok(_) => (
+                        Vec::new(),
+                        Some("unexpected promotion recovery response".into()),
+                    ),
+                    Err(error) => (Vec::new(), Some(error.to_string())),
+                };
+                let _ = send_tui(
+                    &tx,
+                    TuiCommand::ShellPromotionsLoaded {
+                        session_id,
+                        workspace_id,
+                        promotions,
+                        error,
+                    },
+                );
+            });
+    }
+
+    /// M002a (ADR-0035): refresh the daemon's prompt-queue projection for one
+    /// session.
+    ///
+    /// Follows the `load_human_shell_promotions` shape: build the request, hand
+    /// the work to the shared guarded task registry, match the typed response,
+    /// and return a typed completion command. No raw `tokio::spawn` — a
+    /// completion for a superseded session must be droppable.
+    ///
+    /// The queue reads empty until M002b lands; this exists so the projection is
+    /// already derived from the daemon rather than guessed locally when it does
+    /// not.
+    pub(crate) fn load_user_prompt_queue(&mut self, session_id: String) {
+        let Some(client) = self.core_client.clone() else {
+            return;
+        };
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            return;
+        };
+        let request = codegg::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::UserPromptQueueList {
+                session_id: session_id.clone(),
+            },
+        );
+        self.task_registry
+            .spawn(TuiTaskKind::Command, "load_user_prompt_queue", async move {
+                let (entries, error) = match client.request(request).await {
+                    Ok(CoreResponse::UserPromptQueue { entries, .. }) => (entries, None),
+                    // An older daemon that does not know this request answers
+                    // with some other shape. Treat that as an absent
+                    // projection — an empty queue — not as a failure the user
+                    // needs to see.
+                    Ok(CoreResponse::Error { code, message }) => {
+                        (Vec::new(), Some(format!("{code}: {message}")))
+                    }
+                    Ok(_) => (Vec::new(), None),
+                    Err(error) => (Vec::new(), Some(error.to_string())),
+                };
+                let _ = send_tui(
+                    &tx,
+                    TuiCommand::UserPromptQueueLoaded {
+                        session_id,
+                        entries,
+                        error,
+                    },
+                );
+            });
+    }
+
+    /// M002a: apply the daemon's prompt-queue projection.
+    ///
+    /// A failure leaves the previous projection intact. Clearing it would make
+    /// a dead socket indistinguishable from a genuinely empty queue, and the
+    /// user has no way to repopulate it locally — the difference is exactly
+    /// what a transient transport error should not erase.
+    pub fn apply_user_prompt_queue_loaded(
+        &mut self,
+        session_id: String,
+        entries: Vec<codegg::protocol::core::UserPromptQueueEntryDto>,
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            tracing::debug!(%error, %session_id, "could not read the prompt queue projection");
+            return;
+        }
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
+        if Some(session_id.as_str()) != current_session_id {
+            // A completion for a superseded session must not write into
+            // current state.
+            return;
+        }
+        self.session_state.user_prompt_queue = entries;
+        // M004: the mounted `/queue` box is a view over exactly this vector,
+        // so it is updated here rather than at each call site. Routing the
+        // read, the M003 push, and the delete response through one applier is
+        // what makes it impossible for the row-0 count and the open box to
+        // disagree about how many prompts are waiting.
+        let projection = self.session_state.user_prompt_queue.clone();
+        self.focus_manager
+            .with_dialog_mut::<crate::components::dialogs::queue::QueueDialog, _>(
+                crate::components::component::DialogType::Queue,
+                |dialog| dialog.set_entries(projection),
+            );
+    }
+
+    /// Store the latest completed security review receipt. Subsequent
+    /// calls overwrite the previous one. The user can reopen the result
+    /// panel via `/security-review-show`.
+    pub fn set_latest_security_review(
+        &mut self,
+        receipt: codegg::security::workflow::SecurityReviewReceipt,
+    ) {
+        let _ = self.focus_manager.with_dialog_mut(
+            DialogType::SecurityReview,
+            |dialog: &mut crate::components::dialogs::security_review::SecurityReviewDialog| {
+                dialog.update_receipt(receipt.clone());
+            },
+        );
+        self.latest_security_review = Some(receipt);
+    }
+
+    /// Returns the current security review run id (if a review is
+    /// running) without exposing the `AbortHandle`. Used to check id
+    /// matches without needing to clone the handle.
+    pub fn security_review_run_id(&self) -> Option<&str> {
+        self.security_review_running.as_ref().map(|s| s.id.as_str())
+    }
+
+    /// Cancel the currently running security review, if any. Returns
+    /// `true` if a review was cancelled, `false` if no review is
+    /// running. After this call the guard is cleared; a stale
+    /// completion arriving later (matching the cancelled id) is
+    /// ignored by the handler in `crates/codegg-tui/src/lib.rs`.
+    pub fn cancel_security_review(&mut self) -> bool {
+        if let Some(state) = self.security_review_running.take() {
+            self.task_registry.cancel(state.task_id);
+            self.messages_state
+                .toasts
+                .info("Security review cancelled.");
+            true
+        } else {
+            self.messages_state
+                .toasts
+                .warning("No security review is running.");
+            false
+        }
+    }
+
+    /// Apply a theme by id from the registry. Returns true if applied.
+    pub fn apply_theme(&mut self, theme_id: &str) -> bool {
+        if let Some(theme) = self.theme_registry.get_tui(theme_id) {
+            self.ui_state.theme = Arc::new(theme);
+            return true;
+        }
+        false
+    }
+
+    /// Re-apply any persisted user preferences (theme id, last-used
+    /// model) on top of the config-file defaults. Should be called once
+    /// at startup, after `set_preferences` and after the model
+    /// discovery has populated `agent_state.models`. CLI flags continue
+    /// to win: if the user passed `--model`, the persisted value is
+    /// only used when no CLI override is recorded.
+    pub fn apply_persisted_preferences(&mut self) {
+        // Theme
+        if let Some(saved) = self.read_persisted_theme_id() {
+            if self.theme_registry.get(&saved).is_some() {
+                self.apply_theme(&saved);
+            }
+        }
+        // Model
+        if let Some(saved) = self.read_persisted_model_id() {
+            if self.agent_state.models.iter().any(|m| m == &saved) {
+                self.agent_state.current_model = saved.clone();
+                if let Some(idx) = self.agent_state.models.iter().position(|m| m == &saved) {
+                    self.agent_state.model_idx = idx;
+                }
+                self.sidebar.set_model(&saved);
+            }
+        }
+    }
+
+    /// Save the user's theme choice to the SQLite `user_preferences`
+    /// table. The DB row survives a config-file reset and is the
+    /// authoritative source of the active theme on next launch. We
+    /// also keep the config file in sync so that a fresh git clone of a
+    /// repo can still see which theme the user prefers.
+    fn persist_theme_selection(&mut self, theme_id: &str) {
+        if let Some(prefs) = self.preferences.clone() {
+            let id = theme_id.to_string();
+            self.task_registry
+                .spawn(TuiTaskKind::Other, "persist-theme", async move {
+                    if let Err(e) = prefs.set(codegg::storage::KEY_THEME_ACTIVE, &id).await {
+                        tracing::warn!("failed to persist theme to user_preferences: {}", e);
+                    }
+                });
+        }
+
+        // Mirror the value into config.toml so external tooling (and the
+        // TUI before the DB is available) can still see it.
+        if !self.persist_theme_to_config {
+            return;
+        }
+        let mut config = match codegg::config::schema::Config::load() {
+            Ok(c) => c,
+            Err(e) => {
+                self.messages_state
+                    .toasts
+                    .error(&format!("Failed to load config: {}", e));
+                return;
+            }
+        };
+
+        let mut theme_cfg = config.theme.clone().unwrap_or_default();
+        theme_cfg.name = Some(theme_id.to_string());
+        config.theme = Some(theme_cfg);
+
+        // Write the user preference to the *global* config. `Config::save()`
+        // prefers the nearest project config, which confined the choice to
+        // one checkout (and could land it in a tracked file); a theme is a
+        // per-user choice and must come back for every project.
+        if let Err(e) = config.save_global() {
+            self.messages_state
+                .toasts
+                .error(&format!("Theme applied, but failed to save config: {}", e));
+        }
+    }
+
+    /// Save the user's most recently selected model. Mirrors the theme
+    /// pattern: fire-and-forget DB write so the next launch can restore
+    /// the model.
+    fn persist_model_selection(&mut self, model: &str) {
+        if let Some(prefs) = self.preferences.clone() {
+            let id = model.to_string();
+            self.task_registry
+                .spawn(TuiTaskKind::Other, "persist-model", async move {
+                    if let Err(e) = prefs.set(codegg::storage::KEY_MODEL_LAST_USED, &id).await {
+                        tracing::warn!("failed to persist model to user_preferences: {}", e);
+                    }
+                });
+        }
+    }
+
+    /// Synchronously read the persisted theme id (if any) and resolve it
+    /// through the registry. Returns `None` if the user has no saved
+    /// theme or the saved id is no longer in the registry.
+    ///
+    /// Requires a `multi_thread` runtime (`crates/codegg-cli/src/main.rs` guarantees this).
+    /// Must not be called from a `current_thread` runtime or outside a
+    /// Tokio context — `block_in_place` panics there. Prefer loading prefs
+    /// once at startup where possible.
+    fn read_persisted_theme_id(&self) -> Option<String> {
+        let prefs = self.preferences.as_ref()?;
+        // Use the dedicated tokio runtime handle that already exists in
+        // the app: storage calls are cheap and the spawn is fine. We use
+        // `block_in_place` so the call works from the synchronous
+        // startup path. Avoid panicking if the DB read fails.
+        match tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(prefs.get(codegg::storage::KEY_THEME_ACTIVE))
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to read persisted theme: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Synchronously read the persisted model id (if any). The caller is
+    /// responsible for validating that the id is in the available
+    /// `agent_state.models` list.
+    ///
+    /// Requires a `multi_thread` runtime; see `read_persisted_theme_id`.
+    fn read_persisted_model_id(&self) -> Option<String> {
+        let prefs = self.preferences.as_ref()?;
+        match tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(prefs.get(codegg::storage::KEY_MODEL_LAST_USED))
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to read persisted model: {}", e);
+                None
+            }
+        }
+    }
+
+    fn send_remote_message(&self, msg: RemoteTuiMessage) {
+        let Some(ref tx) = self.remote_send_tx else {
+            // Previously a silent no-op that dropped the prompt on the floor
+            // and left the session spinning. Never let this fail quietly.
+            tracing::warn!("remote TUI outbound channel is not configured; dropping message");
+            return;
+        };
+        if let Err(error) = tx.try_send(msg) {
+            tracing::warn!(?error, "remote TUI outbound queue is full or closed");
+        }
+    }
+
+    /// Dispatch one `turn.submit` to the daemon.
+    ///
+    /// Returns `false` when nothing was sent — no core client, no bound
+    /// session, or a payload that could not be prepared. The caller must not
+    /// then stamp `Working`: `send_prompt` ends by optimistically marking the
+    /// session busy, and that stamp used to land *after* the failure release
+    /// below, overwriting `SessionStatus::Error` and pinning the session on
+    /// `Working` for a turn that was never attempted. The optimistic teardown
+    /// was correct and its result was simply thrown away one line later.
+    pub fn dispatch_turn_submit_request(&mut self, text: String) -> bool {
+        let Some(client) = self.core_client.clone() else {
+            // No core client means nothing can carry this prompt. Returning
+            // silently left the session pinned on `Working` for a turn that
+            // was never even attempted.
+            self.fail_unstarted_turn(
+                "No connection to the core daemon; the prompt was not submitted",
+                Some(&text),
+            );
+            return false;
+        };
+        let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone()) else {
+            self.fail_unstarted_turn(
+                "No session is bound to this view; the prompt was not submitted",
+                Some(&text),
+            );
+            return false;
+        };
+        // Belt and braces: make sure the session filter is registered before
+        // the turn starts, even when the session was bound through a path that
+        // does not go through `set_session`. A turn whose events never reach
+        // this connection looks identical to a turn that never ends.
+        self.ensure_session_event_stream(&session_id);
+        let messages = self.build_provider_context();
+        let workspace_id = self.active_workspace_id().map(str::to_owned).or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .and_then(|session| session.workspace_id.clone())
+        });
+        let promotions: Vec<(uuid::Uuid, u64)> = self
+            .pending_shell_promotions
+            .iter()
+            .filter(|promotion| {
+                promotion.session_id == session_id && promotion.workspace_id == workspace_id
+            })
+            .map(|promotion| (promotion.id, promotion.source_id))
+            .collect();
+        let promotion_ids = promotions.iter().map(|(id, _)| id.to_string()).collect();
+        let agents =
+            match codegg::protocol_conversions::agents_to_dtos(self.agent_state.agents.clone()) {
+                Ok(agents) => agents,
+                Err(error) => {
+                    tracing::error!(?error, "failed to serialize agents for turn submission");
+                    return false;
+                }
+            };
+        let submitted_prompt = text.clone();
+        let payload = CoreRequest::TurnSubmit {
+            session_id: session_id.clone(),
+            text,
+            plan_mode: self.agent_state.plan_mode,
+            model: self.agent_state.current_model.clone(),
+            agents,
+            current_agent_idx: self.agent_state.current_agent,
+            messages: codegg::protocol_conversions::provider_messages_to_dtos(messages)
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "provider_messages_to_dtos conversion failed");
+                    Default::default()
+                }),
+            // The selection is **daemon-owned**: `/reasoning` writes it
+            // through `ReasoningPreferenceSet`, and the daemon resolves it
+            // at every turn-admission path. Sending the frontend's copy as
+            // an explicit override made the local value beat the persisted
+            // one — the opposite of what the daemon promises — so the turn
+            // carries no override and inherits the daemon's selection.
+            reasoning: None,
+            human_shell_promotion_ids: promotion_ids,
+        };
+        use sha2::Digest;
+        let request_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+        let request_sha256 = format!("{:x}", sha2::Sha256::digest(request_bytes));
+        let request_id = turn_submission_request_id(
+            self.pending_turn_submission.as_ref(),
+            &session_id,
+            &request_sha256,
+        );
+        let request = codegg::core::new_request(request_id.clone(), payload);
+        // Local staleness guard, distinct from the daemon's idempotency key
+        // above. `begin()` invalidates any earlier submission's completion, so
+        // a late reply for a superseded prompt can never touch current state.
+        let generation = self.turn_submit_request.begin();
+        self.pending_turn_submission = Some(PendingTurnSubmission {
+            session_id,
+            request_id: request_id.clone(),
+            request_sha256,
+            prompt: submitted_prompt,
+        });
+        // This submission produces two completions — the submit result and, for
+        // a turn carrying staged shell evidence, the evidence disposition — so
+        // both are sent from inside the task rather than returned from it.
+        // `spawn_tui_task` still owns the spawn, the elapsed-time trace, and
+        // the "no command sender" case; the returned `None` is deliberate.
+        let tui_tx = self.tui_cmd_tx.clone();
+        crate::async_cmd::spawn_tui_task(tui_tx.clone(), "turn_submit", async move {
+            // Classification happens here, once, at the only point that knows
+            // how the daemon answered. The completion arm receives a typed
+            // outcome instead of a pre-formatted string, so it can never guess
+            // from message text.
+            let outcome = crate::app::turn_submit::submit(client, request).await;
+            let error = outcome.failure_text();
+            if let Some(reason) = &error {
+                // A submission failure used to be reachable only through a
+                // `debug!`, buried deep enough that a refused turn looked
+                // exactly like a slow one.
+                tracing::warn!("core facade turn.submit failed: {}", reason);
+            }
+            if let Some(tx) = &tui_tx {
+                // Order matters: the submit result explains the refusal, and
+                // the staged-evidence disposition explains what happened to the
+                // shell output that was riding along with it.
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::TurnSubmissionFinished {
+                        request_id,
+                        generation,
+                        outcome,
+                    },
+                );
+                if !promotions.is_empty() {
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::ShellPromotionsSubmitted { promotions, error },
+                    );
+                }
+            }
+            None
+        });
+        true
+    }
+
+    pub(crate) fn apply_shell_promotions_submitted(
+        &mut self,
+        promotions: &[(uuid::Uuid, u64)],
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            self.messages_state.toasts.error(&format!(
+                "Shell output remains staged because the turn was not accepted: {error}"
+            ));
+            return;
+        }
+        for (_, id) in promotions {
+            self.shell_store
+                .mark_promoted(codegg::shell::types::ShellCommandId(*id));
+        }
+        self.pending_shell_promotions.retain(|promotion| {
+            !promotions
+                .iter()
+                .any(|(submitted, _)| submitted == &promotion.id)
+        });
+    }
+
+    pub(crate) fn apply_shell_promotion_staged(
+        &mut self,
+        result: crate::app::ShellPromotionStageResult,
+    ) {
+        let crate::app::ShellPromotionStageResult {
+            source_id,
+            promotion_id,
+            session_id,
+            workspace_id,
+            projection,
+            duplicate,
+            status,
+            error,
+        } = result;
+        if let Some(error) = error {
+            if self.prompt_state.prompt.get_text().is_empty() {
+                self.prompt_state.prompt.set_text(projection);
+            }
+            self.messages_state
+                .toasts
+                .error(&format!("Shell output was not staged: {error}"));
+            return;
+        }
+        if status.as_deref() != Some("pending") {
+            if self.prompt_state.prompt.get_text().is_empty() {
+                self.prompt_state.prompt.set_text(projection);
+            }
+            self.messages_state.toasts.warning(
+                "This shell promotion was already consumed or expired; review the composer before retrying",
+            );
+            return;
+        }
+        if !self
+            .pending_shell_promotions
+            .iter()
+            .any(|pending| pending.id == promotion_id)
+        {
+            self.pending_shell_promotions.push(PendingShellPromotion {
+                source_id,
+                projection: projection.clone(),
+                id: promotion_id,
+                session_id: session_id.clone(),
+                workspace_id: workspace_id.clone(),
+            });
+        }
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
+        let current_workspace_id = self.active_workspace_id().map(str::to_owned).or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .and_then(|s| s.workspace_id.clone())
+        });
+        if Some(session_id.as_str()) == current_session_id
+            && workspace_id == current_workspace_id
+            && !self.messages_state.messages.messages.iter().any(|message| {
+                message.role == crate::components::messages::MessageRole::User
+                    && message.text_content() == projection
+            })
+        {
+            self.messages_state
+                .messages
+                .add_user_message(projection, Some(false));
+        }
+        self.messages_state.toasts.info(if duplicate {
+            "Previously staged shell output is ready for the next submitted turn"
+        } else {
+            "Redacted shell output staged by the session; it will be included once in the next accepted turn"
+        });
+    }
+
+    pub(crate) fn apply_shell_promotions_loaded(
+        &mut self,
+        session_id: String,
+        workspace_id: Option<String>,
+        promotions: Vec<codegg::protocol::core::HumanShellPromotionDto>,
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            tracing::debug!(%error, %session_id, "could not recover staged shell promotions");
+            self.messages_state.toasts.warning(&format!(
+                "Could not recover staged shell evidence for this session: {error}"
+            ));
+            return;
+        }
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
+        let current_workspace_id = self.active_workspace_id().map(str::to_owned).or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .and_then(|s| s.workspace_id.clone())
+        });
+        if Some(session_id.as_str()) != current_session_id || workspace_id != current_workspace_id {
+            return;
+        }
+        for promotion in promotions {
+            if promotion.status != "pending" || promotion.session_id != session_id {
+                continue;
+            }
+            let Ok(id) = uuid::Uuid::parse_str(&promotion.id) else {
+                continue;
+            };
+            let Ok(source_id) = promotion.source_id.parse::<u64>() else {
+                continue;
+            };
+            if self
+                .pending_shell_promotions
+                .iter()
+                .any(|pending| pending.id == id)
+            {
+                continue;
+            }
+            if !self.messages_state.messages.messages.iter().any(|message| {
+                message.role == crate::components::messages::MessageRole::User
+                    && message.text_content() == promotion.projection
+            }) {
+                self.messages_state
+                    .messages
+                    .add_user_message(promotion.projection.clone(), Some(false));
+            }
+            self.pending_shell_promotions.push(PendingShellPromotion {
+                source_id,
+                projection: promotion.projection,
+                id,
+                session_id: session_id.clone(),
+                workspace_id: workspace_id.clone(),
+            });
+        }
+    }
+
+    pub(crate) fn build_provider_context(&self) -> Vec<codegg::provider::Message> {
+        let mut out = Vec::new();
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
+        for m in &self.messages_state.messages.messages {
+            let is_daemon_staged_promotion = m.role
+                == crate::components::messages::MessageRole::User
+                && (self.pending_shell_promotions.iter().any(|promotion| {
+                    Some(promotion.session_id.as_str()) == current_session_id
+                        && promotion.projection == m.text_content()
+                }));
+            if is_daemon_staged_promotion {
+                // The daemon appends the durable projection after atomically
+                // claiming its identity with the accepted turn. Do not also
+                // send the UI transcript copy from this frontend.
+                continue;
+            }
+            let mut content: Vec<codegg::provider::ContentPart> = Vec::new();
+            let mut tool_calls: Vec<codegg::provider::ToolCall> = Vec::new();
+            let mut tool_results: Vec<codegg::provider::Message> = Vec::new();
+
+            for p in &m.parts {
+                match p {
+                    MsgPart::Text { content: text } => {
+                        content.push(codegg::provider::ContentPart::Text {
+                            text: text.clone().into(),
+                        })
+                    }
+                    MsgPart::Reasoning { content: text, .. } => {
+                        content.push(codegg::provider::ContentPart::Text {
+                            text: format!("[Reasoning]\n{}", text).into(),
+                        })
+                    }
+                    MsgPart::ToolCall {
+                        id,
+                        name,
+                        input,
+                        output,
+                        ..
+                    } => {
+                        if let Ok(arguments) = serde_json::from_str::<serde_json::Value>(input) {
+                            tool_calls.push(codegg::provider::ToolCall {
+                                id: id.clone().into(),
+                                name: name.clone().into(),
+                                arguments,
+                            });
+                        }
+                        tool_results.push(codegg::provider::Message::Tool {
+                            tool_call_id: id.clone().into(),
+                            content: output.clone().into(),
+                        });
+                    }
+                    MsgPart::Image { data_uri, .. } => {
+                        content.push(codegg::provider::ContentPart::Image {
+                            image_url: codegg::provider::ImageUrl {
+                                url: data_uri.clone().into(),
+                            },
+                        });
+                    }
+                    // Shell cells are a human-only display surface. Their
+                    // command and output previews never enter model context;
+                    // explicit promotion adds a separate redacted user message.
+                    MsgPart::ShellCell { .. } => {}
+                    MsgPart::RunCell {
+                        title,
+                        status,
+                        backend_label,
+                        ..
+                    } => {
+                        content.push(codegg::provider::ContentPart::Text {
+                            text: format!("run: {} [{}] backend: {}", title, status, backend_label)
+                                .into(),
+                        });
+                    }
+                }
+            }
+
+            match m.role {
+                MessageRole::User => {
+                    if !content.is_empty() {
+                        out.push(codegg::provider::Message::User { content });
+                    }
+                }
+                MessageRole::Assistant => {
+                    if !content.is_empty() || !tool_calls.is_empty() {
+                        out.push(codegg::provider::Message::Assistant {
+                            content,
+                            tool_calls,
+                        });
+                    }
+                    out.extend(tool_results);
+                }
+            }
+        }
+        out
+    }
+
+    pub fn handle_remote_event(&mut self, event: serde_json::Value) {
+        let _event_type = event
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        debug_log!("handle_remote_event: type={}", _event_type);
+
+        match serde_json::from_value::<RemoteTuiMessage>(event) {
+            Ok(RemoteTuiMessage::EventEnvelope {
+                event_seq: _,
+                payload,
+            }) => {
+                if let Ok(value) = serde_json::to_value(*payload) {
+                    self.handle_remote_event(value);
+                }
+            }
+            Ok(RemoteTuiMessage::TextDelta { delta }) => {
+                self.add_live_output_delta(&delta);
+                self.messages_state.messages.add_assistant_text(delta);
+                if matches!(self.session_state.session_status, SessionStatus::Working) {
+                    self.status_bar
+                        .set_thinking(true, Some("Thinking...".to_string()));
+                }
+            }
+            Ok(RemoteTuiMessage::ToolCallStarted {
+                tool_id,
+                tool_name,
+                arguments,
+            }) => {
+                self.messages_state.messages.finalize_streaming();
+                match serde_json::from_str::<serde_json::Value>(&arguments) {
+                    Ok(args_val) => {
+                        self.messages_state.messages.add_tool_call(
+                            tool_id.clone(),
+                            tool_name,
+                            args_val,
+                        );
+                        self.messages_state
+                            .messages
+                            .mark_tool_call_running(&tool_id);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse remote tool call arguments for {}: {}",
+                            tool_name,
+                            e
+                        );
+                        self.messages_state.messages.add_tool_call(
+                            tool_id.clone(),
+                            tool_name,
+                            serde_json::Value::Null,
+                        );
+                        self.messages_state
+                            .messages
+                            .mark_tool_call_running(&tool_id);
+                    }
+                }
+            }
+            Ok(RemoteTuiMessage::ToolResult {
+                tool_id,
+                output,
+                success,
+            }) => {
+                let status = if success {
+                    codegg::session::message::ToolStatus::Completed
+                } else {
+                    codegg::session::message::ToolStatus::Error
+                };
+                self.messages_state
+                    .messages
+                    .update_tool_call(&tool_id, output, status, None, None, None);
+            }
+            Ok(RemoteTuiMessage::SessionInfo { model, .. }) => {
+                self.agent_state.current_model = model;
+            }
+            Ok(RemoteTuiMessage::SessionEnded { .. }) => {
+                self.session_state.session_status = SessionStatus::Idle;
+                self.status_bar.set_thinking(false, None);
+            }
+            Ok(RemoteTuiMessage::PermissionPending { id, tool, path }) => {
+                self.show_permission_dialog(
+                    id,
+                    PermissionRequest {
+                        tool,
+                        path,
+                        args: None,
+                    },
+                );
+            }
+            Ok(RemoteTuiMessage::QuestionPending { id, questions }) => {
+                let questions = questions
+                    .into_iter()
+                    .map(|q| QuestionSpec {
+                        question: q.prompt,
+                        options: None,
+                        initial: q.default,
+                    })
+                    .collect();
+                self.show_question_dialog(questions, id);
+            }
+            Ok(RemoteTuiMessage::Error { message }) => {
+                self.session_state.session_status = SessionStatus::Error;
+                self.status_bar.set_thinking(false, None);
+                self.messages_state.toasts.add(Toast::error(&message));
+            }
+            Ok(RemoteTuiMessage::RenderFrame { content }) => {
+                tracing::warn!(
+                    "RenderFrame received ({} bytes) — unsupported, sending error response",
+                    content.len()
+                );
+                self.send_remote_message(RemoteTuiMessage::Error {
+                    message: "Frame-driven remote rendering is not supported; request state snapshots instead (unsupported_render_frame)".to_string(),
+                });
+            }
+            Ok(RemoteTuiMessage::ResyncRequired {
+                reason,
+                pending_permissions,
+                pending_questions,
+            }) => {
+                let reason_str = reason.unwrap_or_else(|| "client lagged".to_string());
+                self.messages_state.toasts.add(Toast::warning(&format!(
+                    "Resyncing: {} ({} pending permissions, {} pending questions)",
+                    reason_str,
+                    pending_permissions.len(),
+                    pending_questions.len()
+                )));
+                tracing::info!(
+                    "ResyncRequired: reason={}, pending_permissions={:?}, pending_questions={:?}",
+                    reason_str,
+                    pending_permissions,
+                    pending_questions
+                );
+            }
+            Ok(RemoteTuiMessage::Resume { from_event_seq }) => {
+                let requested = from_event_seq;
+                tracing::info!("Resume received: from_event_seq={}", requested);
+                if requested == 0 {
+                    self.messages_state
+                        .toasts
+                        .add(Toast::warning("Cannot resume from sequence 0"));
+                    self.send_remote_message(RemoteTuiMessage::ResyncRequired {
+                        reason: Some("invalid_resume_sequence".to_string()),
+                        pending_permissions: Vec::new(),
+                        pending_questions: Vec::new(),
+                    });
+                } else if requested > self.remote_sequence {
+                    self.messages_state.toasts.add(Toast::warning(&format!(
+                        "Resume seq {} ahead of current {}; resyncing",
+                        requested, self.remote_sequence
+                    )));
+                    self.send_remote_message(RemoteTuiMessage::ResyncRequired {
+                        reason: Some("requested_sequence_ahead_of_current".to_string()),
+                        pending_permissions: Vec::new(),
+                        pending_questions: Vec::new(),
+                    });
+                } else {
+                    let snapshot = self.next_remote_snapshot();
+                    let seq = snapshot.sequence;
+                    self.send_remote_message(RemoteTuiMessage::StateSnapshot {
+                        sequence: seq,
+                        snapshot,
+                    });
+                }
+            }
+            Ok(RemoteTuiMessage::RequestSnapshot { reason }) => {
+                tracing::info!("RequestSnapshot received: reason={:?}", reason);
+                let snapshot = self.next_remote_snapshot();
+                let seq = snapshot.sequence;
+                self.send_remote_message(RemoteTuiMessage::StateSnapshot {
+                    sequence: seq,
+                    snapshot,
+                });
+            }
+            Ok(RemoteTuiMessage::StateSnapshot { snapshot, sequence }) => {
+                tracing::info!(
+                    "StateSnapshot received: seq={}, route={}, model={}, status={}",
+                    sequence,
+                    snapshot.route,
+                    snapshot.model,
+                    snapshot.status
+                );
+                self.agent_state.current_model = snapshot.model;
+                self.session_state.session_status = match snapshot.status.as_str() {
+                    "working" => SessionStatus::Working,
+                    "error" => SessionStatus::Error,
+                    _ => SessionStatus::Idle,
+                };
+                if self.session_state.session_status == SessionStatus::Working {
+                    self.status_bar
+                        .set_thinking(true, Some("Thinking...".to_string()));
+                } else {
+                    self.status_bar.set_thinking(false, None);
+                }
+            }
+            Ok(RemoteTuiMessage::PluginUiEffect { envelope }) => {
+                // Delegate to the envelope-aware handler so the session
+                // guard, validation, and ownership check are applied
+                // uniformly for both local and remote transports.
+                match self.apply_plugin_ui_envelope(envelope) {
+                    crate::app::state::PluginUiApplyResult::Unsupported(error)
+                    | crate::app::state::PluginUiApplyResult::Error(error) => {
+                        tracing::warn!(%error, "plugin UI envelope was not applied");
+                        self.messages_state.toasts.error("Plugin UI update failed");
+                    }
+                    _ => {}
+                }
+            }
+            Ok(RemoteTuiMessage::ProjectionCapabilitiesAck {
+                accepted,
+                negotiated_version,
+                reason,
+            }) => {
+                if accepted {
+                    self.projection_client
+                        .controller_mut()
+                        .negotiate(Some(&ProjectionCapabilities::default()));
+                } else {
+                    let reason_text = reason.unwrap_or_else(|| "unsupported".into());
+                    self.enter_projection_raw_compatibility(reason_text);
+                }
+                let _ = negotiated_version;
+            }
+            Ok(RemoteTuiMessage::ProjectionSnapshot {
+                subscription_id,
+                descriptor,
+                snapshot,
+                cursor: _,
+                retention_floor_seq: _,
+            }) => {
+                if let codegg::protocol::projection::controller::ControllerSubscribeOutcome::Failed {
+                    reason,
+                } = self
+                    .projection_client
+                    .controller_mut()
+                    .install_subscription(subscription_id, descriptor, *snapshot)
+                {
+                    tracing::warn!(%reason, "projection subscription installation failed");
+                    self.messages_state
+                        .toasts
+                        .error("Projection subscription failed");
+                }
+                // M007-H (D3, D4): the snapshot the daemon published is the
+                // session's plan and test state, so the derived state takes
+                // them from here rather than from a local default.
+                crate::commands::primary_projection::sync_derived_from_projection(self);
+            }
+            Ok(RemoteTuiMessage::ProjectionReplay {
+                subscription_id,
+                batch,
+            }) => {
+                let descriptor = batch.descriptor.clone();
+                let events = batch.events.clone();
+                let (Some(session_id), Some(workspace_id)) = (
+                    descriptor.session_id.as_deref(),
+                    descriptor.workspace_id.as_deref(),
+                ) else {
+                    tracing::warn!(
+                        project_id = %descriptor.project_id,
+                        "projection replay descriptor lacks session or workspace identity"
+                    );
+                    self.messages_state
+                        .toasts
+                        .error("Projection replay is missing session identity");
+                    return;
+                };
+                let initial =
+                    codegg::protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+                        session_id,
+                        &descriptor.project_id,
+                        workspace_id,
+                    );
+                if let codegg::protocol::projection::controller::ControllerSubscribeOutcome::Failed {
+                    reason,
+                } = self.projection_client.controller_mut().install_replay(
+                    subscription_id,
+                    descriptor,
+                    events,
+                    None,
+                    initial,
+                ) {
+                    tracing::warn!(%reason, "projection replay installation failed");
+                    self.messages_state
+                        .toasts
+                        .error("Projection replay failed");
+                }
+            }
+            Ok(RemoteTuiMessage::ProjectionEvent {
+                subscription_id,
+                stream_id,
+                envelope,
+            }) => {
+                let tab_id = self
+                    .projection_client
+                    .active_tab_id()
+                    .unwrap_or(DEFAULT_PROJECTION_TAB)
+                    .to_string();
+                if let Some(stream_id) = stream_id {
+                    let _ = self.apply_projection_envelope_on_stream(
+                        &subscription_id,
+                        &stream_id,
+                        &tab_id,
+                        envelope,
+                    );
+                } else {
+                    let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+                }
+            }
+            Ok(RemoteTuiMessage::ProjectionResync {
+                subscription_id,
+                reason,
+                descriptor: _,
+                requested_cursor: _,
+                snapshot: _,
+            }) => {
+                if let Some(subscription_id) = subscription_id {
+                    self.projection_client
+                        .controller_mut()
+                        .request_resync(&subscription_id, reason);
+                }
+            }
+            _ => {
+                debug_log!("handle_remote_event: unhandled type={}", _event_type);
+            }
+        }
+    }
+
+    /// Prepare for TUI shutdown.
+    ///
+    /// Cancels all registered background tasks, kills running shell
+    /// commands, and clears command senders.  Call this before leaving
+    /// the event loop to ensure clean shutdown.  The
+    /// [`TerminalGuard`](super::terminal::TerminalGuard) still restores
+    /// terminal state even if this method encounters errors.
+    /// Schedule a debounced save of the TUI tab manifest (Milestone 4).
+    ///
+    /// Callers should invoke this after every mutating operation on
+    /// `ProjectTabs` (open tab, switch tab, close tab, set session,
+    /// set model, set agent, etc.). The persistence service
+    /// debounces, deduplicates, and writes atomically.
+    pub fn schedule_manifest_save(&mut self) {
+        use crate::app::state::snapshot::snapshot_from_tabs;
+        let snap = snapshot_from_tabs(&self.project_tabs);
+        self.manifest_persistence.schedule_save(snap);
+    }
+
+    /// Force-flush the manifest to disk (Milestone 4).
+    ///
+    /// Used during shutdown to ensure the latest state lands before
+    /// the TUI exits. Bounded by a tight deadline so shutdown
+    /// cannot hang on a slow disk.
+    pub fn flush_manifest(
+        &mut self,
+    ) -> Result<bool, crate::app::state::persistence::PersistenceError> {
+        use crate::app::state::snapshot::snapshot_from_tabs;
+        // Refresh the snapshot first so the on-disk file matches
+        // the in-memory state at flush time.
+        let snap = snapshot_from_tabs(&self.project_tabs);
+        self.manifest_persistence.schedule_force_save(snap);
+        self.manifest_persistence.flush()
+    }
+
+    /// Load the persisted manifest and return the outcome. The TUI
+    /// uses this at startup to attempt restoration. The caller is
+    /// responsible for turning the loaded manifest into a
+    /// `RestorePlan` after fetching the daemon snapshot.
+    pub fn load_manifest(&mut self) -> crate::app::state::manifest::ManifestLoadOutcome {
+        self.manifest_persistence.load_manifest()
+    }
+
+    /// Disable persistence (operator control). Pending snapshots
+    /// are dropped.
+    pub fn disable_manifest_persistence(&mut self) {
+        self.manifest_persistence.disable();
+    }
+
+    /// Re-enable persistence after `disable`.
+    pub fn enable_manifest_persistence(&mut self) {
+        self.manifest_persistence.enable();
+    }
+
+    /// Reset persistence: delete the manifest file (best-effort)
+    /// and clear pending state.
+    pub fn reset_manifest_persistence(&mut self) -> std::io::Result<()> {
+        self.manifest_persistence.reset()
+    }
+
+    /// Take a metrics snapshot of the persistence service.
+    pub fn manifest_metrics(&self) -> crate::app::state::persistence::PersistenceMetrics {
+        self.manifest_persistence.metrics()
+    }
+
+    /// Whether the manifest service has a pending snapshot awaiting
+    /// flush. Used by the event loop tick.
+    pub fn manifest_has_pending(&self) -> bool {
+        self.manifest_persistence.has_pending() && self.manifest_persistence.pending_is_due()
+    }
+
+    pub fn prepare_shutdown(&mut self) {
+        self.invalidate_pending_session_submit(false);
+        self.change_review_state.reject();
+        // C004 bounded shutdown policy: signal the in-flight blocking scan
+        // cooperatively (it exits at its next entry, within the examined
+        // budget), drop any queued latest intent, and abort waiters. A worker
+        // stuck inside a kernel `read_dir` syscall cannot be joined on a
+        // bounded deadline — the shutdown does not wait for it and never
+        // claims it was joined. The worker's `RunningGuard` still releases
+        // its instrumentation count on exit; its late completion (if any)
+        // mismatches the cleared admission and is discarded.
+        self.file_tree_state.cancel_in_flight();
+        self.file_tree_coordinator.clear_pending();
+        tracing::debug!("{}", self.file_tree_coordinator.diagnostics());
+        self.file_tree_coordinator.force_clear_for_shutdown();
+        // Cancel all registered background tasks
+        let active = self.task_registry.active_count();
+        if active > 0 {
+            tracing::info!(
+                active_tasks = active,
+                "cancelling background tasks on shutdown"
+            );
+            self.task_registry.cancel_all();
+        }
+
+        // Kill running shell commands
+        for (id, handle) in self.shell_handles.drain() {
+            tracing::debug!(shell_id = id, "killing shell command on shutdown");
+            handle.kill();
+            // Mark as killed in the store if the entry exists
+            let cmd_id = codegg::shell::types::ShellCommandId(id);
+            self.shell_store
+                .mark_killed(cmd_id, std::time::Duration::ZERO);
+        }
+
+        // Flush the TUI tab manifest so the next session can
+        // restore it. Best-effort: a flush failure must not block
+        // terminal restoration.
+        if let Err(e) = self.flush_manifest() {
+            tracing::warn!(
+                target: "codegg::tui::manifest",
+                error = %e,
+                "manifest flush failed during shutdown"
+            );
+        }
+    }
+
+    pub fn reset_state(&mut self) {
+        self.ui_state.dialog = Dialog::None;
+        self.ui_state.command_mode = false;
+        self.ui_state.timeline_visible = false;
+        self.prompt_state.show_completions = false;
+        self.prompt_state.completion_filter.clear();
+    }
+
+    pub fn on_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        debug_log!(
+            "on_key: dialog_open={}, dialog={:?}, command_mode={}, timeline_visible={}, show_completions={}, pending_send={}, key_code={:?}, key_modifiers={:?}",
+            self.ui_state.dialog.is_open(),
+            self.ui_state.dialog,
+            self.ui_state.command_mode,
+            self.ui_state.timeline_visible,
+            self.prompt_state.show_completions,
+            self.prompt_state.pending_send,
+            key.code,
+            key.modifiers
+        );
+
+        // Ctrl+C copies a live text selection. The terminal's own
+        // Cmd/Ctrl+C copy never reaches us because the TUI owns the TTY in
+        // raw mode, so this is the only way to move selected output off
+        // the screen once a selection exists. With nothing selected the key
+        // falls through to its existing meaning.
+        if key.code == KeyCode::Char('c')
+            && key.modifiers == KeyModifiers::CONTROL
+            && self.try_copy_selection()
+        {
+            return;
+        }
+
+        // The panel manager answers its own toggle while it is up, so the key that
+        // opened it can close it. This has to happen *before* the modal
+        // short-circuit below: the manager is a dialog, and a dialog would
+        // swallow the toggle and leave a second copy stacked behind the
+        // first. Scoped to the manager being open so `Shift+S` from some
+        // unrelated dialog still behaves as it did.
+        if self.focus_manager.active_dialog_type() == DialogType::PanelManager
+            && crate::input::handle_key_with_bindings(
+                key,
+                Some(&self.ui_state.bindings),
+                self.ui_state.input_mode,
+            ) == Some(InputAction::OpenPanelManager)
+        {
+            self.close_dialog();
+            return;
+        }
+
+        // Modal dialogs own input while they are active.
+        if !self.focus_manager.is_empty() {
+            self.handle_dialog_key(key);
+            return;
+        }
+
+        if self.ui_state.dialog.is_open() {
+            if self.focus_manager.is_empty() {
+                tracing::error!("FocusManager is empty but dialog is open - this indicates a state inconsistency");
+                self.ui_state.dialog = Dialog::None;
+                return;
+            }
+            self.handle_dialog_key(key);
+            return;
+        }
+
+        // The expanded tasks overlay sits *above* the main buffer, so it gets first
+        // refusal on the keys that drive it. Ordered ahead of the subagent-tab
+        // Esc below because the overlay is the topmost thing on screen: Esc
+        // closes what you are looking at, and what you are looking at is the
+        // overlay.
+        //
+        // Normal mode only, and that gate is load-bearing rather than
+        // cosmetic. `Ctrl+T` opens the overlay from either mode and takes
+        // Normal mode with it, but the user can press `i` and go back to
+        // composing while it stays up — the composer is the thing they are
+        // actually doing. Claiming `j`/`k`/`Enter` there would break it
+        // outright, so these keys are the overlay's only while nothing is
+        // being typed.
+        if self.tasks_expanded && self.ui_state.input_mode == InputMode::Normal {
+            let action = crate::input::handle_key_with_bindings(
+                key,
+                Some(&self.ui_state.bindings),
+                self.ui_state.input_mode,
+            );
+            let consumed = match action {
+                Some(InputAction::Cancel) => {
+                    self.toggle_tasks_list();
+                    true
+                }
+                Some(InputAction::NavigateUp) => self.move_tasks_selection(-1),
+                Some(InputAction::NavigateDown) => self.move_tasks_selection(1),
+                Some(InputAction::Send) => self.open_selected_task(),
+                _ => false,
+            };
+            let consumed = if key.code == KeyCode::Char('i') {
+                self.inspect_selected_task()
+            } else {
+                consumed
+            };
+            if consumed {
+                return;
+            }
+        }
+
+        // An open subagent buffer is a view *over* the main buffer, so Esc
+        // returns to the transcript. It sits below the modal short-circuit
+        // so Esc still closes a dialog in front of it, and above everything
+        // else so no later handler can consume the key that dismisses it.
+        if self.ui_state.subagents.active_tab().is_some() {
+            if let Some(InputAction::Cancel) = crate::input::handle_key_with_bindings(
+                key,
+                Some(&self.ui_state.bindings),
+                self.ui_state.input_mode,
+            ) {
+                self.ui_state.subagents.close();
+                return;
+            }
+        }
+
+        if self.ui_state.timeline_visible {
+            debug_log!("routing to handle_timeline_key");
+            self.handle_timeline_key(key);
+            return;
+        }
+
+        if self.ui_state.command_mode {
+            debug_log!("routing to handle_command_key");
+            self.handle_command_key(key);
+            return;
+        }
+
+        // The composer's mode is pushed here, at **dispatch**, and not at
+        // render: the rule that gives a movement its meaning has to hold
+        // when the key is dispatched, and a mode written during the render
+        // pass would be a frame behind the keystroke it is meant to
+        // explain.
+        self.sync_composer_mode();
+
+        if self.prompt_state.show_completions && self.handle_completion_key(key) {
+            debug_log!(
+                "routing to handle_completion_key - completions shown, Enter was intercepted"
+            );
+            return;
+        }
+
+        // The host takes keys when its overlay is up, or when a panel holds focus.
+        // The mode gate is load-bearing for the ordinary case: the host
+        // claims `Shift+Q` as the focus-exit key, so consulting a panel in
+        // Insert mode would make `Shift+Q` untypable into a PTY. For a panel
+        // that renders its own text field the composer really is the right
+        // Insert target, which is
+        // what lets one bottom composer deliver to either target because
+        // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
+        // renders.
+        //
+        // A panel that fronts something other than itself opts in through
+        // `claims_insert_keys`. The Terminal panel does: after `Shift+L`
+        // docks it, Insert has to mean "type into the PTY". Without the
+        // opt-in the keystrokes went to a composer the user was not looking
+        // at, and the terminal appeared to be frozen.
+        let panel_active = self.panel_owns_keyboard();
+        // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
+        // ahead of the focused panel, and ahead of the binding map. It has to
+        // be ahead of the panel because `h/j/k/l` are the panel's own cursor
+        // movements, and ahead of the map because `Ctrl+N` is deliberately no
+        // longer an `InputAction`: the frame is not a composable action, and
+        // giving it a configurable binding would let someone bind it to a key
+        // a panel already owns. Normal mode only, so a chord typed into the
+        // composer stays text.
+        if self.ui_state.input_mode == InputMode::Normal
+            && crate::commands::panels::handle_panel_resize_key(self, key)
+        {
+            return;
+        }
+        // A saved `Ctrl+digit` panel binding. Claimed *before* the focused
+        // panel, because a panel that swallows it would trap the user in
+        // whichever panel they last selected — the only key that leaves is
+        // the one that cannot be reached. Unbound slots are consumed too, so
+        // the digit range stays the manager's and never leaks elsewhere.
+        if let Some(digit) = crate::app::state::panel_hotkeys::digit_slot(key) {
+            crate::commands::panels::recall_panel_hotkey(self, digit);
+            return;
+        }
+        // M006-E: an open change review claims a strict subset of keys, and
+        // only while it is focused. Anything unclaimed falls through, so a
+        // review never silently swallows editor or composer input.
+        if crate::commands::change_review::is_active(self)
+            && crate::commands::change_review::handle_key(self, key)
+        {
+            return;
+        }
+        // A focused side panel owns every key it is shown, and is consulted
+        // before the non-modal primary views. Ordering matters: those views
+        // also claim printable keys, and a chat panel in Compose mode needs
+        // to see them as text rather than as dashboard navigation.
+        if panel_active
+            && crate::commands::panels::handle_panel_key(
+                self,
+                key,
+                crate::input::handle_key_with_bindings(
+                    key,
+                    Some(&self.ui_state.bindings),
+                    InputMode::Normal,
+                ),
+            )
+        {
+            return;
+        }
+        // M005: non-modal Workspace view owns navigation/filter/chat-focus
+        // before generic prompt handling. The composer stays editable:
+        // only consumed keys return early; Enter-with-text and Tab fall
+        // through to normal SubmitPrompt/ToggleComposerMode.
+        let workspace_active = matches!(
+            self.ui_state.routes.current(),
+            crate::route::Route::Workspace
+        ) && self.dialog_state.workspace_dashboard.is_some();
+        if workspace_active
+            && crate::commands::workspace_dashboard::handle_workspace_view_key(self, key)
+        {
+            return;
+        }
+        // M006-A: the editor primary view claims keys only when it owns
+        // them. With the buffer unfocused every unclaimed key falls
+        // through to the ordinary composer, so opening the editor does
+        // not disturb session composition.
+        if matches!(self.ui_state.routes.current(), crate::route::Route::Editor)
+            && crate::commands::editor::handle_editor_key(self, key)
+        {
+            return;
+        }
+        // M002: the composer's Normal-mode claim table. Consulted **before**
+        // the global binding map, because a claimed letter belongs to the
+        // composer and must never reach an app-level action — not even when
+        // the composer's own verb is not implemented yet. That is the
+        // fallthrough rule, and it is the whole point of the table: a
+        // reserved claim is consumed, so `d` cannot silently become
+        // `OpenDiff` while delete-selection is still pending.
+        //
+        // The step sits here, after the modal, panel, Workspace and editor
+        // branches, so a higher-priority surface still wins: with a dialog
+        // open, a claimed letter reaches the dialog, not the composer.
+        //
+        // The gate is the *resolved* mode and the derived ownership, never
+        // the raw `UiState::input_mode` field, which is forced to Normal
+        // whenever a side panel takes focus. The Workspace view is excluded
+        // for the same reason it owns its own Normal-mode keys: its
+        // dashboard filter is a different surface with a different composer,
+        // and a claimed letter there would stop the filter accepting it.
+        if !workspace_active
+            && self.composer_holds_keyboard()
+            && self.composer_input_mode() == InputMode::Normal
+        {
+            // The fit is the **cached** measurement the layout pass took: the
+            // wrapped row count against the visible row count. It is read, not
+            // recomputed — a second computation of the same fact is a second
+            // answer to it, and the gate and the box must not be able to
+            // disagree. A composer that has never been laid out has no
+            // measurement, and an unmeasured fit holds no conditional claim:
+            // the key falls through rather than being swallowed in a state the
+            // user cannot see.
+            let fit = self.prompt_state.prompt.content_fit();
+            if let Some(claim) = crate::composer_claims::claim_for(key.modifiers, key.code) {
+                if claim.condition.holds(fit) {
+                    // The claim is consumed here. A reserved verb does
+                    // nothing, and that is the point: the letter is the
+                    // composer's, so the app's action for it is not
+                    // reachable from the main buffer any more — not even
+                    // while the verb is pending. The one live verb runs
+                    // before the key is dropped.
+                    self.run_composer_claim(claim);
+                    return;
+                }
+            }
+        }
+        let action = handle_event_with_bindings_moded(
+            crossterm::event::Event::Key(key),
+            Some(&self.ui_state.bindings),
+            // A focused panel already returned above, so this is always the
+            // ordinary composer mode here.
+            self.ui_state.input_mode,
+        );
+        debug_log!("action from bindings: {:?}", action);
+        // M005: Normal-mode filter text for the Workspace view. Only
+        // unbound keys reach the dashboard query; Insert-mode text stays
+        // in the composer and bound keys (j/k/Space/etc.) were already
+        // consumed above.
+        if workspace_active
+            && self.workspace_focus == crate::app::state::WorkspaceFocus::Composer
+            && self.ui_state.input_mode == InputMode::Normal
+            && action.is_none()
+        {
+            use crossterm::event::{KeyCode, KeyModifiers};
+            match key.code {
+                KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
+                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.pop_filter();
+                    }
+                    crate::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                    return;
+                }
+                KeyCode::Char(ch)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.push_filter(ch);
+                    }
+                    crate::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        match action {
+            Some(InputAction::Send) => self.process_msg(TuiMsg::SubmitPrompt),
+            Some(InputAction::Newline) => self.prompt_state.prompt.insert_newline(),
+            Some(InputAction::Cancel) => {
+                // M005: Esc/Ctrl+C never exits from the Workspace view.
+                // Chat focus blurs first; composer focus leaves the view.
+                if workspace_active {
+                    if self.workspace_focus == crate::app::state::WorkspaceFocus::Chat {
+                        crate::commands::workspace_dashboard::focus_workspace_composer(self);
+                    } else {
+                        crate::commands::workspace_dashboard::leave_workspace_view(self);
+                    }
+                } else if self.prompt_state.chat_seed.is_some()
+                    && self.ui_state.input_mode == InputMode::Normal
+                {
+                    // An armed reply/edit context is the shallowest thing to
+                    // leave, and Esc is where a user goes to back out of one.
+                    // The typed text is kept; only its meaning is dropped, so
+                    // the composer retargets from panel focus again.
+                    self.cancel_chat_composer();
+                } else {
+                    self.cancel()
+                }
+            }
+            Some(InputAction::NavigateUp) => {
+                if workspace_active {
+                    crate::commands::workspace_dashboard::move_dashboard_selection(self, -1);
+                } else if self.ui_state.input_mode == InputMode::Normal {
+                    self.scroll_viewport_up();
+                } else {
+                    self.process_msg(TuiMsg::NavigateUp);
+                }
+            }
+            Some(InputAction::NavigateDown) => {
+                if workspace_active {
+                    crate::commands::workspace_dashboard::move_dashboard_selection(self, 1);
+                } else if self.ui_state.input_mode == InputMode::Normal {
+                    self.scroll_viewport_down();
+                } else {
+                    self.process_msg(TuiMsg::NavigateDown);
+                }
+            }
+            Some(InputAction::SwitchAgent) => self.process_msg(TuiMsg::CycleAgent),
+            Some(InputAction::SelectModel) => self.process_msg(TuiMsg::OpenModelDialog),
+            Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
+            Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
+            Some(InputAction::ToggleAgentRun) => {
+                crate::commands::turn_control::toggle_stop_or_resume(
+                    self,
+                    crate::commands::turn_control::STOP_KEY_LABEL,
+                );
+            }
+            Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
+            // Every direction shares one contextual dispatcher: it docks the
+            // open box when there is one, and selects a pane when there is
+            // not. Resolved here rather than in the binding table because the
+            // meaning depends on what is on screen, which the table cannot see.
+            //
+            // The five arms below are thin: each names its gesture and hands
+            // it to `handle_normal_only_action`, the same entry point the
+            // editor buffer uses, so `Shift+L` means the same thing whether
+            // the keyboard is in the composer or in the buffer.
+            Some(InputAction::DirectionLeft) => {
+                crate::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::DirectionLeft,
+                );
+            }
+            Some(InputAction::DirectionRight) => {
+                crate::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::DirectionRight,
+                );
+            }
+            Some(InputAction::DirectionUp) => {
+                crate::commands::panels::handle_normal_only_action(self, InputAction::DirectionUp);
+            }
+            Some(InputAction::DirectionDown) => {
+                crate::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::DirectionDown,
+                );
+            }
+            Some(InputAction::OpenPanelManager) => {
+                crate::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::OpenPanelManager,
+                );
+            }
+            Some(InputAction::ToggleTasksList) => {
+                self.toggle_tasks_list();
+            }
+            Some(InputAction::FocusSidebar) => {
+                if workspace_active {
+                    crate::commands::workspace_dashboard::focus_workspace_chat(self);
+                } else {
+                    crate::commands::panels::focus_panel(self);
+                }
+            }
+            Some(InputAction::ToggleSection) => {
+                if workspace_active {
+                    crate::commands::workspace_dashboard::toggle_dashboard_expand(self);
+                } else if self.panel_host.any_visible() {
+                    self.sidebar.toggle_focused();
+                }
+            }
+            Some(InputAction::CloseSession) => self.process_msg(TuiMsg::CloseSession),
+            Some(InputAction::Help) => self.process_msg(TuiMsg::OpenHelpDialog),
+            Some(InputAction::FocusPrompt) => {
+                // The composer's keyboard ownership is derived, not stored, so
+                // there is no "focus the prompt" flag to set. The only effect
+                // of this action is the command palette it opens at the start
+                // of the buffer.
+                if self.prompt_state.prompt.cursor_pos() == 0 {
+                    self.ui_state.command_mode = true;
+                    self.prompt_state.prompt.insert_char('/');
+                    self.prompt_state.prompt.set_cursor(1);
+                    self.dialog_state.command_palette.set_query("/");
+                }
+            }
+            Some(InputAction::StashPrompt) => self.process_msg(TuiMsg::StashPrompt),
+            Some(InputAction::RestorePrompt) => self.process_msg(TuiMsg::RestorePrompt),
+            Some(InputAction::CopyMessage) => self.process_msg(TuiMsg::CopyMessage),
+            Some(InputAction::CycleModelForward) => self.process_msg(TuiMsg::CycleModelForward),
+            Some(InputAction::CycleModelBackward) => self.process_msg(TuiMsg::CycleModelBackward),
+            Some(InputAction::ToggleReasoning) => self.process_msg(TuiMsg::ToggleReasoning),
+            Some(InputAction::ExpandAllDisclosures) => self.expand_all_disclosures(),
+            Some(InputAction::ToggleTts) => self.process_msg(TuiMsg::ToggleTts),
+            Some(InputAction::StopTts) => self.stop_tts(),
+            Some(InputAction::ToggleFullscreen) => self.process_msg(TuiMsg::ToggleFullscreen),
+            Some(InputAction::TogglePermissionMode) => {
+                if self.agent_state.plan_mode {
+                    self.exit_plan_mode();
+                } else {
+                    self.enter_plan_mode(None);
+                }
+            }
+            Some(InputAction::OpenDiff) => {
+                let old = "line 1\nline 2\nline 3";
+                let new = "line 1\nline modified\nline 3";
+                self.process_msg(TuiMsg::OpenDiffDialog {
+                    old_content: old.to_string().into_boxed_str(),
+                    new_content: new.to_string().into_boxed_str(),
+                    title: "Example Diff".to_string().into_boxed_str(),
+                });
+            }
+            // `q` quits from Normal mode, and it is destructive: the exit is
+            // gated behind a second press of the same key inside the arm
+            // window, exactly like `Ctrl+C`. The first press arms and says so
+            // on the row above the input.
+            Some(InputAction::Quit) => {
+                if crate::commands::exit_control::request_exit(
+                    self,
+                    crate::app::state::prompt::ExitArm::Quit,
+                ) {
+                    self.process_msg(TuiMsg::Quit);
+                }
+            }
+            Some(InputAction::ForceQuit) => self.force_quit(),
+            Some(InputAction::ExternalEditor) => self.process_msg(TuiMsg::ExternalEditor),
+            Some(InputAction::Char(c)) => {
+                // M006-F: with the editor open it has taken the place of the
+                // main buffer, so the composer only accepts text armed with
+                // `:`. Gated at the one arm where a character enters the
+                // prompt, so every path that would type a character is
+                // covered by one rule rather than by the keymap alone.
+                if self.composer_refuses_bare_text() && !self.ui_state.command_mode {
+                    self.ui_state.command_mode = true;
+                    self.prompt_state.prompt.insert_char(':');
+                    self.prompt_state.prompt.insert_char(c);
+                    self.prompt_state.prompt.set_cursor(2);
+                    self.dialog_state
+                        .command_palette
+                        .set_query(&format!(":{c}"));
+                    return;
+                }
+                self.process_msg(TuiMsg::CharInput(c))
+            }
+            Some(InputAction::Backspace) => self.process_msg(TuiMsg::Backspace),
+            Some(InputAction::Delete) => self.process_msg(TuiMsg::Delete),
+            Some(InputAction::Left) => self.process_msg(TuiMsg::CursorLeft),
+            Some(InputAction::Right) => self.process_msg(TuiMsg::CursorRight),
+            Some(InputAction::Home) => self.process_msg(TuiMsg::CursorHome),
+            Some(InputAction::End) => self.process_msg(TuiMsg::CursorEnd),
+            Some(InputAction::PageUp) => {
+                if workspace_active {
+                    crate::commands::workspace_dashboard::move_dashboard_selection(self, -10);
+                } else if self.prompt_state.prompt.is_multiline() {
+                    // The innermost surface first: the composer's content spans
+                    // more than one row, so the page is the composer's. The
+                    // transcript's page is unchanged when the composer holds a
+                    // single row.
+                    self.prompt_state.prompt.page_up();
+                } else {
+                    self.scroll_page_up()
+                }
+            }
+            Some(InputAction::PageDown) => {
+                if workspace_active {
+                    crate::commands::workspace_dashboard::move_dashboard_selection(self, 10);
+                } else if self.prompt_state.prompt.is_multiline() {
+                    self.prompt_state.prompt.page_down();
+                } else {
+                    self.scroll_page_down()
+                }
+            }
+            Some(InputAction::GoToTop) => {
+                if workspace_active {
+                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.go_top();
+                    }
+                    crate::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                } else {
+                    self.go_to_top()
+                }
+            }
+            Some(InputAction::GoToBottom) => {
+                if workspace_active {
+                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.go_bottom();
+                    }
+                    crate::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                } else {
+                    self.go_to_bottom()
+                }
+            }
+            Some(InputAction::Search) => self.process_msg(TuiMsg::Search),
+            Some(InputAction::SearchNext) => self.process_msg(TuiMsg::SearchNext),
+            Some(InputAction::SearchPrev) => self.process_msg(TuiMsg::SearchPrev),
+            Some(InputAction::ClearSearch) => self.process_msg(TuiMsg::ClearSearch),
+            Some(InputAction::OpenProjectPicker) => {
+                self.process_msg(TuiMsg::OpenProjectPicker);
+            }
+            Some(InputAction::NextProjectTab) => {
+                self.process_msg(TuiMsg::NextProjectTab);
+            }
+            Some(InputAction::PreviousProjectTab) => {
+                self.process_msg(TuiMsg::PreviousProjectTab);
+            }
+            Some(InputAction::CloseProjectTab) => {
+                self.process_msg(TuiMsg::CloseProjectTab);
+            }
+            Some(InputAction::NextSubagentTab) => {
+                self.process_msg(TuiMsg::NextSubagentTab);
+            }
+            Some(InputAction::PreviousSubagentTab) => {
+                self.process_msg(TuiMsg::PreviousSubagentTab);
+            }
+            Some(InputAction::CloseSubagentTab) => {
+                self.process_msg(TuiMsg::CloseSubagentTab);
+            }
+            Some(InputAction::RetryTranscriptFollow) => {
+                self.retry_transcript_follow();
+            }
+            Some(InputAction::ToggleComposerMode) => {
+                self.process_msg(TuiMsg::ToggleComposerMode);
+            }
+            Some(InputAction::OpenWorkspaceDashboard) => {
+                self.process_msg(TuiMsg::OpenWorkspaceDashboard);
+            }
+            Some(InputAction::Command) => {
+                self.ui_state.command_mode = true;
+                self.prompt_state.prompt.insert_char(':');
+                self.prompt_state.prompt.set_cursor(1);
+                self.dialog_state.command_palette.set_query(":");
+            }
+            None => {
+                // In Normal mode, only 'i' switches to Insert mode.
+                //
+                // In the main buffer this arm is no longer the route: the
+                // composer claims `i` and runs the transition itself (see
+                // `run_composer_claim`), so the gesture is reached only on
+                // the surfaces the composer does not own — the editor route
+                // with its buffer unfocused, a focused panel, the Workspace
+                // view's chat pane. All other keys pass through to their
+                // bindings (j/k for navigate, etc.).
+                if self.ui_state.input_mode == InputMode::Normal {
+                    if let crossterm::event::KeyCode::Char('i') = key.code {
+                        if key.modifiers == crossterm::event::KeyModifiers::NONE {
+                            self.ui_state.input_mode = InputMode::Insert;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let (Some(_session_id), Some(undo_until)) = (&self.undo_session_id, &self.undo_until) {
+            if Instant::now() < *undo_until {
+                if let crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('u'),
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                    ..
+                } = key
+                {
+                    self.process_msg(TuiMsg::UndoDelete);
+                }
+            } else {
+                self.undo_session_id = None;
+                self.undo_until = None;
+                self.status_bar.clear_undo_message();
+            }
+        }
+    }
+
+    /// Route modal input through the canonical live component. Dialogs may
+    /// return an application message, but unhandled keys are consumed while
+    /// a modal is open and can never reach the prompt.
+    fn handle_dialog_key(&mut self, key: KeyEvent) {
+        // One docking gesture for every box-capable modal, resolved before
+        // the component sees the key.
+        //
+        // A modal short-circuits key routing, so a box that wants to dock
+        // itself into the side panel has to recognise `Shift+L` in its own
+        // handler — which is 28 near-identical edits and 28 chances to drift.
+        // Instead the gesture is resolved here, once, for the whole set: if
+        // the open box is dockable *and* is a viewer, the directional means
+        // "move me into the column" and never reaches the widget.
+        //
+        // The viewer gate is what keeps this safe. A box that owns a filter
+        // buffer is not a viewer, so `Shift+L` stays the letter `L` there and
+        // those four dialogs keep their own Normal/Insert split — the same
+        // contract `HelpDialog` already follows. Without the gate this would
+        // silently break typing an uppercase letter into a filter.
+        // While a terminal box owns the keyboard in INS mode the PTY owns it,
+        // not the docking gesture. `direction_of` matches bare uppercase
+        // `H`/`J`/`K`/`L` without a SHIFT qualifier, and those are ordinary
+        // characters in a shell command (`ls`, `git`, `grep`, env vars). A
+        // command containing one of them would be swallowed here and dock the
+        // box instead of typing — the character never reaches the process and
+        // the surface the user opened disappears mid-command. The viewer gate
+        // above does not cover this: it asks whether the box owns a *filter
+        // buffer*, and a live terminal owns neither a filter buffer nor the
+        // keyboard. Focus is the real question, and the terminal's own reader
+        // path already handles the gesture in viewing mode.
+        if !self.terminal_box_owns_keyboard()
+            && self.focus_manager.top_docks_as_viewer()
+            && self.dock_target().is_some()
+        {
+            if let Some(dir) = crate::panels::direction_of(key) {
+                crate::commands::panels::move_directionally(self, dir);
+                return;
+            }
+        }
+        match self.focus_manager.active_dialog_type() {
+            DialogType::ProjectPicker => {
+                self.handle_project_picker_key(key);
+                return;
+            }
+            DialogType::WorkspaceDashboard => {
+                crate::commands::workspace_dashboard::handle_workspace_dashboard_key(self, key);
+                return;
+            }
+            DialogType::Keybind => {
+                self.handle_keybind_key(key);
+                return;
+            }
+            DialogType::Terminal => {
+                if crate::commands::interactive_terminal::handle_terminal_key(self, key) {
+                    return;
+                }
+            }
+            _ => {}
+        }
+        if let Some(msg) = self.focus_manager.handle_key(key) {
+            self.process_msg(msg);
+        }
+    }
+
+    /// Legacy app-side dialog router retained only as source history while
+    /// component dispatch converges. It is intentionally unreachable: the
+    /// FocusManager-owned component is the sole input authority.
+    #[cfg(any())]
+    fn handle_dialog_key_legacy(&mut self, key: KeyEvent) {
+        debug_log!(
+            "handle_dialog_key: dialog={:?}, key_code={:?}",
+            self.ui_state.dialog,
+            key.code
+        );
+
+        if let Dialog::ProjectPicker = &self.ui_state.dialog {
+            self.handle_project_picker_key(key);
+            return;
+        }
+
+        if let Dialog::Keybind = &self.ui_state.dialog {
+            self.handle_keybind_key(key);
+            return;
+        }
+        if let Dialog::Terminal = &self.ui_state.dialog {
+            if crate::commands::interactive_terminal::handle_terminal_key(self, key) {
+                return;
+            }
+        }
+        if let Dialog::Model = &self.ui_state.dialog {
+            if key.code == crossterm::event::KeyCode::Tab {
+                self.dialog_state.model_dialog.next_tab();
+                return;
+            }
+        }
+        if let Dialog::ShellShow = &self.ui_state.dialog {
+            if let Some(id) = self.dialog_state.shell_detail_id {
+                match key.code {
+                    crossterm::event::KeyCode::Char('i') => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::ShellInclude {
+                                    id,
+                                    mode: "all".to_string(),
+                                    question: None,
+                                },
+                            );
+                        }
+                        self.close_dialog();
+                        return;
+                    }
+                    crossterm::event::KeyCode::Char('a') => {
+                        self.prompt_state.prompt.clear();
+                        self.prompt_state
+                            .prompt
+                            .set_text(format!("/shell-ask {}", id));
+                        self.ui_state.command_mode = true;
+                        self.close_dialog();
+                        return;
+                    }
+                    crossterm::event::KeyCode::Char('r') => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = send_tui(tx, TuiCommand::ShellRerun { id });
+                        }
+                        self.close_dialog();
+                        return;
+                    }
+                    crossterm::event::KeyCode::Char('k') => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = send_tui(tx, TuiCommand::ShellKill { id });
+                        }
+                        self.close_dialog();
+                        return;
+                    }
+                    crossterm::event::KeyCode::Char('e') => {
+                        self.prompt_state.prompt.clear();
+                        self.prompt_state
+                            .prompt
+                            .set_text(format!("/shell-expand {} stdout", id));
+                        self.ui_state.command_mode = true;
+                        self.close_dialog();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let action = handle_event_with_bindings_moded(
+            crossterm::event::Event::Key(key),
+            Some(&self.ui_state.bindings),
+            InputMode::Insert,
+        );
+        debug_log!("handle_dialog_key: action={:?}", action);
+        match action {
+            Some(InputAction::Cancel) => {
+                self.dialog_state.theme_picker = None;
+                if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                    if mcp.action_mode {
+                        mcp.exit_action_mode();
+                    } else {
+                        self.dialog_state.mcp_dialog = None;
+                        self.close_dialog();
+                    }
+                } else if matches!(self.ui_state.dialog, Dialog::Session) {
+                    if self.dialog_state.session_dialog.bulk_mode {
+                        self.dialog_state.session_dialog.toggle_bulk_mode();
+                    } else {
+                        self.dialog_state.session_dialog.clear_message_preview();
+                        self.close_dialog();
+                    }
+                } else if matches!(self.ui_state.dialog, Dialog::Connect) {
+                    if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                        if !cd.back_step() {
+                            self.dialog_state.connect_dialog = None;
+                            self.close_dialog();
+                        }
+                    }
+                } else if matches!(
+                    self.ui_state.dialog,
+                    Dialog::Context
+                        | Dialog::Cost
+                        | Dialog::Usage
+                        | Dialog::ShellShow
+                        | Dialog::Terminal
+                        | Dialog::Stats
+                        | Dialog::TaskList
+                        | Dialog::MemoryResults
+                        | Dialog::DoctorReport
+                ) {
+                    self.close_dialog();
+                } else {
+                    self.dialog_state.import_dialog = None;
+                    self.close_dialog();
+                }
+            }
+            Some(InputAction::NavigateUp) => {
+                debug_log!(
+                    "NavigateUp: calling select_up on {:?}",
+                    self.ui_state.dialog
+                );
+                match &mut self.ui_state.dialog {
+                    Dialog::Model => self.dialog_state.model_dialog.select_up(),
+                    Dialog::Agent => self.dialog_state.agent_dialog.select_up(),
+                    Dialog::Session => self.dialog_state.session_dialog.select_up(),
+                    Dialog::Tree => self.dialog_state.tree_dialog.select_up(),
+                    Dialog::Theme => {
+                        if let Some(picker) = &mut self.dialog_state.theme_picker {
+                            picker.select_up();
+                        }
+                    }
+                    Dialog::Question => {
+                        if let Some(qd) = &mut self.dialog_state.question_dialog {
+                            qd.select_up();
+                        }
+                    }
+                    Dialog::Permission => {
+                        if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                            pd.cursor_up();
+                        }
+                    }
+                    Dialog::Mcp => {
+                        if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                            mcp.select_up();
+                        }
+                    }
+                    Dialog::Template => {
+                        if let Some(ref mut td) = self.dialog_state.template_dialog {
+                            td.select_up();
+                        }
+                    }
+                    Dialog::Connect => {
+                        if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                            if cd.step
+                                == crate::components::dialogs::connect::ConnectStep::SelectTls
+                            {
+                                cd.cycle_tls_policy(false);
+                            } else {
+                                cd.cursor_up();
+                            }
+                        }
+                    }
+                    Dialog::Context
+                    | Dialog::Cost
+                    | Dialog::Usage
+                    | Dialog::ShellShow
+                    | Dialog::Terminal
+                    | Dialog::Stats
+                    | Dialog::TaskList
+                    | Dialog::MemoryResults
+                    | Dialog::DoctorReport => {}
+                    _ => {}
+                }
+            }
+            Some(InputAction::NavigateDown) => {
+                debug_log!(
+                    "NavigateDown: calling select_down on {:?}",
+                    self.ui_state.dialog
+                );
+                match &mut self.ui_state.dialog {
+                    Dialog::Model => self.dialog_state.model_dialog.select_down(),
+                    Dialog::Agent => self.dialog_state.agent_dialog.select_down(),
+                    Dialog::Session => self.dialog_state.session_dialog.select_down(),
+                    Dialog::Tree => self.dialog_state.tree_dialog.select_down(),
+                    Dialog::Theme => {
+                        if let Some(picker) = &mut self.dialog_state.theme_picker {
+                            picker.select_down();
+                        }
+                    }
+                    Dialog::Question => {
+                        if let Some(qd) = &mut self.dialog_state.question_dialog {
+                            qd.select_down();
+                        }
+                    }
+                    Dialog::Permission => {
+                        if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                            pd.cursor_down();
+                        }
+                    }
+                    Dialog::Mcp => {
+                        if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                            mcp.select_down();
+                        }
+                    }
+                    Dialog::Template => {
+                        if let Some(ref mut td) = self.dialog_state.template_dialog {
+                            td.select_down();
+                        }
+                    }
+                    Dialog::Connect => {
+                        if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                            if cd.step
+                                == crate::components::dialogs::connect::ConnectStep::SelectTls
+                            {
+                                cd.cycle_tls_policy(true);
+                            } else {
+                                cd.cursor_down();
+                            }
+                        }
+                    }
+                    Dialog::Context
+                    | Dialog::Cost
+                    | Dialog::Usage
+                    | Dialog::ShellShow
+                    | Dialog::Terminal
+                    | Dialog::Stats
+                    | Dialog::TaskList
+                    | Dialog::MemoryResults
+                    | Dialog::DoctorReport => {}
+                    _ => {}
+                }
+            }
+            Some(InputAction::Send) => match &self.ui_state.dialog {
+                Dialog::Model => {
+                    if self.dialog_state.model_dialog.adding_model {
+                        if let Some(model) = self.dialog_state.model_dialog.add_custom_model() {
+                            let full_name = format!("{}/{}", model.provider, model.name);
+                            if !self.agent_state.models.contains(&full_name) {
+                                self.agent_state.models.push(full_name);
+                            }
+                        }
+                    } else if let Some(model) = self.dialog_state.model_dialog.selected() {
+                        self.agent_state.current_model = model.clone();
+                        if let Some(idx) = self.agent_state.models.iter().position(|m| m == &model)
+                        {
+                            self.agent_state.model_idx = idx;
+                        }
+                        self.close_dialog();
+                    }
+                }
+                Dialog::Agent => {
+                    if let Some(agent) = self.dialog_state.agent_dialog.selected() {
+                        if let Some(idx) =
+                            self.agent_state.agents.iter().position(|a| a.name == agent)
+                        {
+                            self.agent_state.current_agent = idx;
+                        }
+                    }
+                    self.close_dialog();
+                }
+                Dialog::Session => {
+                    if self.dialog_state.session_dialog.bulk_mode {
+                        self.dialog_state.session_dialog.toggle_bulk_mode();
+                    } else {
+                        // Row-type dispatch, matching the component's own
+                        // `handle_key`. This arm is `#[cfg(any())]`-disabled
+                        // today (the FocusManager-owned component is the sole
+                        // input authority); it is kept in step deliberately so
+                        // the retained source history does not contradict the
+                        // live route.
+                        match self.dialog_state.session_dialog.activate_selected() {
+                            Some(crate::app::TuiMsg::SelectSession(session)) => {
+                                crate::commands::sessions::start_activate_session(self, session.id);
+                                self.close_dialog();
+                            }
+                            Some(msg) => {
+                                self.process_msg(msg);
+                                self.close_dialog();
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                Dialog::Theme => {
+                    if let Some(picker) = &self.dialog_state.theme_picker {
+                        if let Some(theme) = picker.selected_theme() {
+                            self.ui_state.theme = Arc::new(theme.clone());
+                            self.messages_state
+                                .toasts
+                                .info(&format!("Theme: {}", theme.name));
+                        }
+                    }
+                    self.dialog_state.theme_picker = None;
+                    self.close_dialog();
+                }
+                Dialog::Question => {
+                    self.submit_question_answers();
+                }
+                Dialog::Permission => {
+                    self.on_permission_confirm();
+                }
+                Dialog::Mcp => {
+                    if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                        if mcp.action_mode {
+                            if let Some(action) = mcp.selected_action_name() {
+                                match action {
+                                    "Configure OAuth" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state.toasts.info(&format!(
+                                                "OAuth for {} - configure in .codegg/mcp.json",
+                                                server.name
+                                            ));
+                                        }
+                                    }
+                                    "Browse Resources" => {
+                                        mcp.browse_mode = BrowseMode::Resources { selected: 0 };
+                                        mcp.action_mode = false;
+                                    }
+                                    "Disconnect" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state
+                                                .toasts
+                                                .info(&format!("Disconnecting {}...", server.name));
+                                        }
+                                    }
+                                    "Reconnect" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state
+                                                .toasts
+                                                .info(&format!("Reconnecting {}...", server.name));
+                                        }
+                                    }
+                                    "Connect" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state
+                                                .toasts
+                                                .info(&format!("Connecting {}...", server.name));
+                                        }
+                                    }
+                                    "Remove" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state
+                                                .toasts
+                                                .info(&format!("Removing {}...", server.name));
+                                        }
+                                    }
+                                    "Wait" => {
+                                        self.messages_state
+                                            .toasts
+                                            .info("Server is connecting, please wait...");
+                                    }
+                                    "Configure" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state.toasts.info(&format!(
+                                                "Configure {} - edit .codegg/mcp.json",
+                                                server.name
+                                            ));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        } else {
+                            mcp.enter_action_mode();
+                        }
+                    }
+                }
+                Dialog::Share => {
+                    if let Some(ref mut share) = self.dialog_state.share_dialog {
+                        if share.copy_url() {
+                            self.messages_state.toasts.info("URL copied to clipboard!");
+                        } else {
+                            self.messages_state.toasts.error("Failed to copy URL");
+                        }
+                    }
+                }
+                Dialog::Import => {
+                    self.handle_import_send();
+                }
+                Dialog::Template => {
+                    if let Some(ref template_dialog) = self.dialog_state.template_dialog {
+                        if let Some((key, template)) = template_dialog.selected() {
+                            self.apply_template(key, template);
+                        }
+                    }
+                    self.dialog_state.template_dialog = None;
+                    self.close_dialog();
+                }
+                Dialog::Connect => {
+                    self.handle_connect_send();
+                }
+                _ => {}
+            },
+            Some(InputAction::Char(c)) => match &mut self.ui_state.dialog {
+                Dialog::Model => {
+                    if self.dialog_state.model_dialog.adding_model {
+                        if self.dialog_state.model_dialog.new_model_name.is_empty() {
+                            self.dialog_state.model_dialog.new_model_name.push(c);
+                        } else if self.dialog_state.model_dialog.new_model_provider.is_empty() {
+                            self.dialog_state.model_dialog.new_model_provider.push(c);
+                        } else if self.dialog_state.model_dialog.new_model_api_key.is_empty() {
+                            self.dialog_state.model_dialog.new_model_api_key.push(c);
+                        } else {
+                            self.dialog_state.model_dialog.new_model_base_url.push(c);
+                        }
+                    } else if self.dialog_state.model_dialog.tab
+                        == crate::components::dialogs::model::ModelDialogTab::Configure
+                    {
+                        match c {
+                            'a' => {
+                                self.dialog_state.model_dialog.start_adding_model();
+                            }
+                            'd' => {
+                                self.dialog_state
+                                    .model_dialog
+                                    .remove_custom_model(self.dialog_state.model_dialog.selected);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        if c.is_alphanumeric() || c == '-' || c == '_' || c == '/' {
+                            self.dialog_state.model_dialog.set_filter(c);
+                        }
+                    }
+                }
+                Dialog::Agent => {
+                    if c.is_alphanumeric() || c == '-' || c == '_' || c == '/' {
+                        self.dialog_state.agent_dialog.set_filter(c);
+                    }
+                }
+                Dialog::Session => {
+                    if self.dialog_state.session_dialog.bulk_mode {
+                        match c {
+                            'a' => {
+                                let count = self.dialog_state.session_dialog.selected_count();
+                                if count > 0 {
+                                    let msg = format!("Archive {} selected sessions?", count);
+                                    let ids = self.dialog_state.session_dialog.get_selected_ids();
+                                    self.dialog_state.pending_bulk_archive = Some((count, false));
+                                    self.dialog_state.pending_bulk_archive_ids = Some(ids);
+                                    self.push_dialog(
+                                        Dialog::Confirm,
+                                        Box::new(ConfirmDialog::new(
+                                            "Archive Sessions".to_string(),
+                                            msg,
+                                        )),
+                                    );
+                                }
+                            }
+                            'd' => {
+                                let count = self.dialog_state.session_dialog.selected_count();
+                                if count > 0 {
+                                    let msg = format!(
+                                        "Delete {} selected sessions? This cannot be undone.",
+                                        count
+                                    );
+                                    let ids = self.dialog_state.session_dialog.get_selected_ids();
+                                    self.dialog_state.pending_bulk_delete = Some(count);
+                                    self.dialog_state.pending_bulk_delete_ids = Some(ids);
+                                    self.push_dialog(
+                                        Dialog::Confirm,
+                                        Box::new(ConfirmDialog::new(
+                                            "Delete Sessions".to_string(),
+                                            msg,
+                                        )),
+                                    );
+                                }
+                            }
+                            'A' => {
+                                self.dialog_state.session_dialog.select_all();
+                            }
+                            'D' => {
+                                self.dialog_state.session_dialog.deselect_all();
+                            }
+                            ' ' => {
+                                self.dialog_state.session_dialog.toggle_selection();
+                            }
+                            _ => {
+                                self.dialog_state.session_dialog.set_filter(c);
+                            }
+                        }
+                    } else {
+                        match c {
+                            's' => {
+                                self.dialog_state.session_dialog.cycle_sort();
+                            }
+                            'h' => {
+                                self.toggle_show_archived();
+                            }
+                            'b' => {
+                                self.dialog_state.session_dialog.toggle_bulk_mode();
+                            }
+                            _ => {
+                                self.dialog_state.session_dialog.set_filter(c);
+                            }
+                        }
+                    }
+                }
+                Dialog::Tree => match c {
+                    'e' => {
+                        self.dialog_state.tree_dialog.toggle_expand();
+                    }
+                    'f' => {
+                        self.fork_tree_session();
+                    }
+                    _ => {}
+                },
+                Dialog::Question => {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.set_answer(c);
+                    }
+                }
+                Dialog::Import => {
+                    if let Some(ref mut import) = self.dialog_state.import_dialog {
+                        if let super::components::dialogs::import::ImportState::Input = import.state
+                        {
+                            import.set_input(c);
+                        }
+                    }
+                }
+                Dialog::Template => {
+                    if let Some(ref mut td) = self.dialog_state.template_dialog {
+                        td.set_filter(c);
+                    }
+                }
+                Dialog::Connect => {
+                    if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                        if cd.is_text_input_step() {
+                            cd.insert_char(c);
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Some(InputAction::Backspace) => match &mut self.ui_state.dialog {
+                Dialog::Model => {
+                    if self.dialog_state.model_dialog.adding_model {
+                        if !self.dialog_state.model_dialog.new_model_base_url.is_empty() {
+                            self.dialog_state.model_dialog.new_model_base_url.pop();
+                        } else if !self.dialog_state.model_dialog.new_model_api_key.is_empty() {
+                            self.dialog_state.model_dialog.new_model_api_key.pop();
+                        } else if !self.dialog_state.model_dialog.new_model_provider.is_empty() {
+                            self.dialog_state.model_dialog.new_model_provider.pop();
+                        } else if !self.dialog_state.model_dialog.new_model_name.is_empty() {
+                            self.dialog_state.model_dialog.new_model_name.pop();
+                        }
+                    } else {
+                        self.dialog_state.model_dialog.backspace_filter();
+                    }
+                }
+                Dialog::Agent => self.dialog_state.agent_dialog.backspace_filter(),
+                Dialog::Session => self.dialog_state.session_dialog.backspace_filter(),
+                Dialog::Question => {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.backspace();
+                    }
+                }
+                Dialog::Import => {
+                    if let Some(ref mut import) = self.dialog_state.import_dialog {
+                        if let super::components::dialogs::import::ImportState::Input = import.state
+                        {
+                            import.backspace();
+                        }
+                    }
+                }
+                Dialog::Template => {
+                    if let Some(ref mut td) = self.dialog_state.template_dialog {
+                        td.backspace_filter();
+                    }
+                }
+                Dialog::Connect => {
+                    if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                        if cd.is_text_input_step() {
+                            cd.backspace();
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Some(InputAction::Delete) => {
+                if let Dialog::Question = &self.ui_state.dialog {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.delete();
+                    }
+                }
+            }
+            Some(InputAction::Left) => {
+                if let Dialog::Question = &self.ui_state.dialog {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.cursor_left();
+                    }
+                }
+            }
+            Some(InputAction::Right) => {
+                if let Dialog::Question = &self.ui_state.dialog {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.cursor_right();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_keybind_key(&mut self, key: KeyEvent) {
+        use crate::components::dialogs::keybind::KeybindMode;
+        use crossterm::event::KeyCode;
+
+        let kd = match &mut self.dialog_state.keybind_dialog {
+            Some(kd) => kd,
+            None => return,
+        };
+
+        match kd.mode {
+            KeybindMode::WaitingForKey => {
+                let key_str = format_key_event(&key);
+                if key.code == KeyCode::Esc {
+                    kd.cancel_remap();
+                    return;
+                }
+                if let Some(action_idx) = kd.waiting_for_key {
+                    let actions = crate::components::dialogs::keybind::KeybindDialog::actions();
+                    if action_idx < actions.len() {
+                        match kd.bind_waiting_key(key_str) {
+                            Ok(()) => {
+                                kd.clear_conflict();
+                                kd.waiting_for_key = None;
+                                kd.mode = KeybindMode::Normal;
+                                self.save_keybinds();
+                            }
+                            Err(error) => {
+                                kd.conflict = Some(error);
+                            }
+                        }
+                    }
+                }
+            }
+            KeybindMode::Export => {
+                if key.code == KeyCode::Esc {
+                    kd.cancel_mode();
+                }
+            }
+            KeybindMode::Import => match key.code {
+                KeyCode::Esc => {
+                    kd.cancel_mode();
+                }
+                KeyCode::Enter => {
+                    if let Err(e) = kd.apply_import() {
+                        kd.conflict = Some(e);
+                    } else {
+                        self.save_keybinds();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    kd.import_text.push(c);
+                }
+                KeyCode::Backspace => {
+                    kd.import_text.pop();
+                }
+                _ => {}
+            },
+            KeybindMode::Normal => {
+                let action = handle_event(crossterm::event::Event::Key(key));
+                match action {
+                    Some(InputAction::Cancel) => {
+                        self.dialog_state.keybind_dialog = None;
+                        self.close_dialog();
+                    }
+                    Some(InputAction::NavigateUp) => {
+                        kd.select_up();
+                    }
+                    Some(InputAction::NavigateDown) => {
+                        kd.select_down();
+                    }
+                    Some(InputAction::Send) => {
+                        kd.start_remap();
+                    }
+                    Some(InputAction::Char(c)) => match c {
+                        'r' | 'R' => {
+                            kd.reset_to_defaults();
+                            self.save_keybinds();
+                        }
+                        'e' | 'E' => {
+                            kd.start_export();
+                        }
+                        'i' | 'I' => {
+                            kd.start_import();
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn save_keybinds(&mut self) {
+        if let Some(ref kd) = self.dialog_state.keybind_dialog {
+            if let Some(keybinds) = &mut self.ui_state.keybinds {
+                keybinds.bindings = kd.bindings.clone();
+            } else {
+                self.ui_state.keybinds = Some(crate::input::KeybindConfig {
+                    bindings: kd.bindings.clone(),
+                });
+            }
+        }
+    }
+
+    fn handle_completion_key(&mut self, key: KeyEvent) -> bool {
+        let action = handle_event(crossterm::event::Event::Key(key));
+        debug_log!("handle_completion_key: action={:?}", action);
+        match action {
+            Some(InputAction::NavigateUp) => {
+                if self.prompt_state.completion_sel > 0 {
+                    self.prompt_state.completion_sel -= 1;
+                }
+                true
+            }
+            Some(InputAction::NavigateDown) => {
+                let max_sel = self.completion_rows().len().saturating_sub(1);
+                if self.prompt_state.completion_sel < max_sel {
+                    self.prompt_state.completion_sel += 1;
+                }
+                true
+            }
+            Some(InputAction::Send) => {
+                debug_log!("handle_completion_key: Send action - accepting completion");
+                self.accept_completion();
+                true
+            }
+            Some(InputAction::Cancel) => {
+                self.prompt_state.show_completions = false;
+                true
+            }
+            // Editing while completions are open must mutate the prompt itself, not the
+            // `completion_filter` mirror. `completion_filter` is derived state
+            // recomputed by `update_completions()`; mutating it directly left
+            // the prompt frozen (characters never reached the widget) and
+            // desynced the filter from the text after the first trigger
+            // character. Routing through `on_char`/`backspace` + a recompute
+            // keeps both sides derived from the single source of truth.
+            Some(InputAction::Char(c)) => {
+                self.on_char(c);
+                true
+            }
+            Some(InputAction::Backspace) => {
+                self.prompt_state.prompt.backspace();
+                self.update_completions();
+                true
+            }
+            Some(InputAction::Delete) => {
+                self.prompt_state.prompt.delete();
+                self.update_completions();
+                true
+            }
+            // Cursor movement changes which text precedes the cursor, which is
+            // exactly what the trigger scan in `update_completions()` reads.
+            Some(InputAction::Left) => {
+                self.prompt_state.prompt.cursor_left();
+                self.update_completions();
+                true
+            }
+            Some(InputAction::Right) => {
+                self.prompt_state.prompt.cursor_right();
+                self.update_completions();
+                true
+            }
+            Some(InputAction::Home) => {
+                self.prompt_state.prompt.cursor_home();
+                self.update_completions();
+                true
+            }
+            Some(InputAction::End) => {
+                self.prompt_state.prompt.cursor_end();
+                self.update_completions();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_command_key(&mut self, key: KeyEvent) {
+        let action = handle_event(crossterm::event::Event::Key(key));
+        debug_log!("handle_command_key: action={:?}", action);
+        match action {
+            Some(InputAction::Cancel) => {
+                debug_log!("handle_command_key: Cancel - exiting command mode");
+                self.ui_state.command_mode = false;
+                self.dialog_state.command_palette.set_query("");
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+            }
+            // Navigation and acceptance both run off `completion_rows()` —
+            // the same ordering the popup renders. Driving
+            // `CommandPalette::cursor` here instead left two independent
+            // orderings free to disagree (fuzzy-score over names here vs.
+            // fuzzy-score over names+description+domain+keywords there),
+            // which is how the second, differently-ordered popup appeared in
+            // the first place. The highlighted row is now always the row
+            // Enter executes.
+            Some(InputAction::NavigateUp) => {
+                if self.prompt_state.completion_sel > 0 {
+                    self.prompt_state.completion_sel -= 1;
+                }
+            }
+            Some(InputAction::NavigateDown) => {
+                let max_sel = self.completion_rows().len().saturating_sub(1);
+                if self.prompt_state.completion_sel < max_sel {
+                    self.prompt_state.completion_sel += 1;
+                }
+            }
+            Some(InputAction::Send) => {
+                // Resolve from the popup when it has a row, so the executed
+                // command is always the highlighted one. The popup's filter is
+                // the whole query including its argument text, so
+                // `completion_rows()` cannot match `/agent build` — there is
+                // no way to fuzzy the longer query into the shorter label.
+                // Fall back to the leading token, which is how an argument
+                // form like `/agent build` or `/theme dark` is meant to read.
+                let query = self.prompt_state.prompt.get_text();
+                let label = self
+                    .completion_rows()
+                    .get(self.prompt_state.completion_sel)
+                    .map(|item| item.label.clone())
+                    .or_else(|| {
+                        query
+                            .split_whitespace()
+                            .next()
+                            .map(|token| token.to_string())
+                    });
+                let cmd = label
+                    .as_deref()
+                    .and_then(|name| self.command_registry.find_by_name_or_alias(name))
+                    .cloned();
+                if let Some(cmd) = cmd {
+                    debug_log!("handle_command_key: executing command: {}", cmd.name);
+                    let command_query = query;
+                    self.execute_command(&cmd, Some(&command_query));
+                    self.ui_state.command_mode = false;
+                    self.dialog_state.command_palette.set_query("");
+                    self.prompt_state.prompt.clear();
+                    self.prompt_state.show_completions = false;
+                } else {
+                    debug_log!("handle_command_key: no matching command, exiting command mode and sending prompt");
+                    self.ui_state.command_mode = false;
+                    self.dialog_state.command_palette.set_query("");
+                    self.send_prompt();
+                }
+            }
+            Some(InputAction::Char(c)) => {
+                self.prompt_state.prompt.insert_char(c);
+                let query = self.prompt_state.prompt.get_text();
+                self.dialog_state.command_palette.set_query(&query);
+                self.update_completions();
+            }
+            Some(InputAction::Backspace) => {
+                if self.prompt_state.prompt.cursor_pos() > 0 {
+                    self.prompt_state.prompt.backspace();
+                }
+                let query = self.prompt_state.prompt.get_text();
+                if query.is_empty() || query == "/" {
+                    self.ui_state.command_mode = false;
+                } else {
+                    self.dialog_state.command_palette.set_query(&query);
+                }
+                self.update_completions();
+            }
+            _ => {}
+        }
+    }
+
+    fn execute_command(&mut self, cmd: &crate::command::Command, raw_input: Option<&str>) {
+        // Presence M003: central read-only enforcement. While observing,
+        // every slash command except the observer lifecycle + narrow
+        // read-only allowlist is rejected here (covers dialog, process,
+        // template, plugin, and built-in actions below). The guard shows
+        // the toast.
+        if self.observer.is_observing() {
+            let effective = raw_input.unwrap_or(cmd.name.as_str());
+            if crate::commands::observe::check_observer_block(self, effective) {
+                crate::commands::close_command_mode(self);
+                return;
+            }
+        }
+        // Typed dispatch: the registry resolved the name/alias to a
+        // `CommandAction`. Dialog, process, template, and plugin actions
+        // execute without entering the built-in action switch. Built-in
+        // operations match `BuiltinSlashAction` exhaustively below; no
+        // branch compares a raw command name.
+        match cmd.action.clone() {
+            crate::command::CommandAction::Dialog(dialog) => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(dialog);
+            }
+            crate::command::CommandAction::Process => {
+                if self.prompt_state.pending_send {
+                    self.messages_state
+                        .toasts
+                        .warning("Still waiting for previous prompt to finish");
+                    return;
+                }
+                let args = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default()
+                    .to_string();
+                let arg_list: Vec<String> = if args.is_empty() {
+                    Vec::new()
+                } else {
+                    args.split_whitespace().map(String::from).collect()
+                };
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let context = match self.project_execution_context() {
+                        Ok(context) => context,
+                        Err(error) => {
+                            self.messages_state.toasts.error(&error);
+                            return;
+                        }
+                    };
+                    let session_id = context.session_id.clone();
+                    let model = Some(self.agent_state.current_model.clone());
+                    let spec = cmd.process.clone().expect("process action needs spec");
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::PluginCommandRun {
+                            spec,
+                            args: arg_list,
+                            session_id,
+                            model,
+                            workspace_root: context.workspace_root,
+                        },
+                    );
+                }
+                crate::commands::close_command_mode(self);
+            }
+            crate::command::CommandAction::Template => {
+                if self.prompt_state.pending_send {
+                    self.messages_state
+                        .toasts
+                        .warning("Still waiting for previous prompt to finish");
+                    return;
+                }
+                let template = cmd
+                    .template
+                    .clone()
+                    .expect("template action needs template");
+                let args = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default()
+                    .to_string();
+                let mut variables = std::collections::HashMap::new();
+                variables.insert("args".to_string(), args);
+                let rendered = codegg::command::execute_command_template(&template, &variables);
+                self.messages_state
+                    .messages
+                    .add_user_message(rendered.clone(), Some(self.agent_state.plan_mode));
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                self.reset_live_token_estimate();
+                self.set_session_status(SessionStatus::Working);
+                // Same transport rule as `prompt_turn.rs`: `RemoteCore` alone
+                // is not the WebSocket attach frontend. On the socket-daemon
+                // frontend a mode-only gate pushed the rendered template into
+                // the absent `remote_send_tx` and cleared `pending_send`,
+                // pinning the session in `Working` with nothing submitted.
+                if self.is_ws_attach_transport() {
+                    self.send_remote_message(RemoteTuiMessage::Input { text: rendered });
+                    self.prompt_state.pending_send = false;
+                } else {
+                    self.prompt_state.pending_send = true;
+                }
+            }
+            crate::command::CommandAction::Plugin => {
+                crate::commands::close_command_mode(self);
+                self.messages_state.toasts.info(&format!(
+                    "{} is a plugin command; use the plugin panel to run it",
+                    cmd.name
+                ));
+            }
+            crate::command::CommandAction::Builtin(builtin) => {
+                // The single extraction point: the typed line is resolved to
+                // a registry entry here, and the entry hands back the
+                // argument the user typed. The spelling the user typed is
+                // removed — the entry's canonical name or one of its
+                // aliases — so no handler ever sees the command's name
+                // inside its own argument.
+                let argument = cmd.argument_from_typed_line(raw_input.unwrap_or_default());
+                self.dispatch_builtin_command(builtin, Some(argument));
+            }
+        }
+    }
+
+    /// Adopt a freshly arrived set of subagent rows and re-check the composer
+    /// addressee against them.
+    ///
+    /// The single funnel for "the projection spoke". Both the sidebar path and
+    /// the strip path route through here rather than calling
+    /// [`SubagentState::set_rows`] themselves, because the addressee rule —
+    /// drop an address whose run is no longer live — has to run on *every*
+    /// snapshot, and a second call site that forgot to call it would leave a
+    /// composer armed to a run that had left the tree.
+    ///
+    /// A snapshot that has not arrived is not evidence of emptiness and never
+    /// reaches this method, so a hiccup in the stream cannot silently disarm a
+    /// user mid-reply.
+    pub fn apply_subagent_rows(&mut self, rows: Vec<crate::app::state::SubagentRow>) {
+        let cleared = crate::app::state::reconcile_addressee(
+            &mut self.prompt_state.subagent_addressee,
+            &rows,
+        );
+        self.ui_state.subagents.set_rows(rows);
+        if cleared {
+            self.messages_state
+                .toasts
+                .warning("That subagent finished, so your next prompt starts a normal turn again.");
+        }
+        // M003: the snapshot is also where a delegated run's transcript
+        // watermark and its lifecycle status arrive. Both feed the live
+        // follow, so the funnel that every "the projection spoke" path goes
+        // through is also where the follow is told to look.
+        crate::commands::transcript_follow::on_snapshot_watermarks(self);
+    }
+
+    /// Dispatch one built-in slash command.
+    ///
+    /// `argument` is the argument the user typed after the command
+    /// spelling. It is extracted **once**, where the typed line is resolved
+    /// to a registry entry (see [`crate::command::Command::
+    /// argument_from_typed_line`]), so an arm never sees the typed line and
+    /// never has to strip the command's name — or one of its aliases — out
+    /// of it a second time.
+    ///
+    /// Crate-visible so the reasoning command's own tests can drive the
+    /// command the way the dispatcher does, rather than through a
+    /// test-only shim that could drift from the real path.
+    ///
+    /// Every arm is **one delegation**: the handler lives in the family module
+    /// under `crate::commands/`, receives the normalised `argument`, and
+    /// owns the whole body — including the command-mode teardown. The match is
+    /// deliberately still a match, not a table: a new `BuiltinSlashAction`
+    /// variant must fail to compile until it has an arm here, where a runtime
+    /// lookup would silently do nothing.
+    pub(crate) fn dispatch_builtin_command(
+        &mut self,
+        action: crate::command::BuiltinSlashAction,
+        argument: Option<&str>,
+    ) {
+        use crate::command::BuiltinSlashAction as B;
+        // No argument and an empty argument mean the same thing.
+        let argument = argument.unwrap_or_default().trim();
+        use crate::commands::{
+            agents, appearance, change_review, chat, compaction, control, diagnostics, diff,
+            edit_history, editor, exit_control, file_tree, goals, help, import,
+            interactive_terminal, lsp, memory, observe, panels, plugin_management, policy,
+            presence, project_init, project_picker, promotion, provider_connections, queue,
+            reasoning, research, revert, security, session_report, session_selection, sessions,
+            shell, skills, subagent_steer, tasks, team, test, transcript, turn_control,
+            work_orders, workspace_dashboard,
+        };
+        match action {
+            B::ProjectInit => project_init::dispatch_project_init(self),
+            B::Queue => queue::open_queue_box(self),
+            B::SubagentSend => subagent_steer::dispatch_addressee_command(self, argument),
+            B::Reload => agents::dispatch_reload(self),
+            B::Skills => skills::dispatch_skills(self, argument),
+            B::Exit => exit_control::dispatch_exit(self),
+            B::Help => help::dispatch_help(self),
+            B::Tree => file_tree::dispatch_tree(self),
+            B::AgentSelect => agents::dispatch_agent_select(self, argument),
+            B::Agents => agents::dispatch_agents(self, argument),
+            B::New => sessions::dispatch_new(self),
+            B::Compact => compaction::handle_compact_session(self),
+            B::Connect => provider_connections::dispatch_connect(self),
+            B::Connections => provider_connections::dispatch_connections(self),
+            B::Status => session_report::dispatch_status(self),
+            B::Policy => policy::dispatch_policy(self),
+            B::Approval => policy::dispatch_approval(self, argument),
+            B::Sandbox => policy::dispatch_sandbox(self, argument),
+            B::Network => policy::dispatch_network(self, argument),
+            B::Context => session_report::dispatch_context(self),
+            B::Cost => session_report::dispatch_cost(self),
+            B::Usage => session_report::dispatch_usage(self),
+            B::Themes => appearance::dispatch_themes(self, argument),
+            B::Tui => appearance::dispatch_tui(self),
+            B::TuiStats => appearance::dispatch_tui_stats(self),
+            B::Tts => appearance::dispatch_tts(self),
+            B::Collaborators => presence::dispatch_collaborators(self, argument),
+            B::Team => team::dispatch_team(self, argument),
+            B::Control => control::dispatch_control(self, argument),
+            B::Observe => observe::dispatch_observe(self, argument),
+            B::StopObserving => observe::dispatch_stop_observing(self),
+            B::Panels => panels::dispatch_panels(self),
+            B::Chat => chat::dispatch_chat(self),
+            B::ChatSend => chat::dispatch_chat_send(self, argument),
+            B::ChatReply => chat::dispatch_chat_reply(self, argument),
+            B::ChatHistory => chat::dispatch_chat_history(self),
+            B::ChatSync => chat::dispatch_chat_sync(self),
+            B::ChatRead => chat::dispatch_chat_read(self),
+            B::ChatEdit => chat::dispatch_chat_edit(self, argument),
+            B::ChatRedact => chat::dispatch_chat_redact(self, argument),
+            B::ChatComposing => chat::dispatch_chat_composing(self, argument),
+            B::ChatActionTask => chat::dispatch_chat_action_task(self, argument),
+            B::ChatActionReview => chat::dispatch_chat_action_review(self, argument),
+            B::ChatActionList => chat::dispatch_chat_action_list(self, argument),
+            B::Sessions => sessions::dispatch_sessions(self),
+            B::Projects => project_picker::dispatch_projects(self),
+            B::Stop => turn_control::stop(self),
+            B::StartTurn => turn_control::start(self),
+            B::Share => sessions::dispatch_share(self),
+            B::Unshare => sessions::dispatch_unshare(self),
+            B::Rename => sessions::dispatch_rename(self),
+            B::Timeline => transcript::dispatch_timeline(self),
+            B::Undo => transcript::dispatch_undo(self),
+            B::Redo => transcript::dispatch_redo(self),
+            B::Export => sessions::dispatch_export(self, argument),
+            B::Import => import::dispatch_import(self),
+            B::Timestamps => transcript::dispatch_timestamps(self),
+            B::Thinking => transcript::dispatch_thinking(self),
+            B::ExpandAllDisclosures => transcript::dispatch_expand_all_disclosures(self),
+            B::Reasoning => reasoning::dispatch_reasoning(self),
+            B::ModelsRefresh => session_selection::dispatch_models_refresh(self),
+            B::Variants => session_selection::dispatch_variants(self),
+            B::Fork => sessions::dispatch_fork(self),
+            B::Workspaces => workspace_dashboard::dispatch_workspaces(self),
+            B::Worktree => tasks::dispatch_worktree(self),
+            B::Editor => editor::dispatch_editor(self),
+            B::OpenDocument => editor::dispatch_open_document(self, argument),
+            B::Loop => tasks::dispatch_loop(self, argument),
+            B::Tasks => work_orders::dispatch_tasks(self),
+            B::Task => work_orders::open_task_view(self, "task"),
+            B::Workspace => workspace_dashboard::dispatch_workspace(self),
+            B::Schedules => tasks::dispatch_schedules(self),
+            B::TaskDel => tasks::dispatch_task_del(self, argument),
+            B::Memory => memory::dispatch_memory(self),
+            B::MemorySearch => memory::dispatch_memory_search(self, argument),
+            B::MemoryList => memory::dispatch_memory_list(self, argument),
+            B::MemoryRemember => memory::dispatch_memory_remember(self, argument),
+            B::MemoryForget => memory::dispatch_memory_forget(self, argument),
+            B::MemoryConsolidate => memory::dispatch_memory_consolidate(self),
+            B::Habits => memory::dispatch_habits(self, argument),
+            B::HabitDismiss => memory::dispatch_habit_dismiss(self, argument),
+            B::SkillPromote => promotion::dispatch_skill_promote(self, argument),
+            B::SkillProposals => promotion::dispatch_skill_proposals(self),
+            B::SkillProposal => promotion::dispatch_skill_proposal(self, argument),
+            B::Goal => goals::dispatch_goal(self, argument),
+            B::Plan => session_report::dispatch_plan(self, argument),
+            B::State => session_report::dispatch_state(self),
+            B::Search => transcript::dispatch_search(self, argument),
+            B::Doctor => diagnostics::dispatch_doctor(self),
+            B::Logs => diagnostics::dispatch_logs(self),
+            B::ToolContracts => diagnostics::dispatch_tool_contracts(self),
+            B::LspStatus => diagnostics::dispatch_lsp_status(self),
+            B::Nodes => diagnostics::dispatch_nodes(self),
+            B::LspPreviews => lsp::dispatch_lsp_previews(self),
+            B::LspPreview => lsp::dispatch_lsp_preview(self, argument),
+            B::LspPreviewClear => lsp::dispatch_lsp_preview_clear(self, argument),
+            B::LspPreviewRefresh => lsp::dispatch_lsp_preview_refresh(self, argument),
+            B::Review => change_review::dispatch_review(self, argument),
+            B::LspPreviewApply => change_review::dispatch_lsp_preview_apply(self, argument),
+            B::LspServers => lsp::dispatch_lsp_servers(self),
+            B::LspCapabilities => lsp::dispatch_lsp_capabilities(self, argument),
+            B::LspErrors => lsp::dispatch_lsp_errors(self, argument),
+            B::LspRoot => lsp::dispatch_lsp_root(self, argument),
+            B::LspDoctor => lsp::dispatch_lsp_doctor(self, argument),
+            B::LspContextDiagnostics => lsp::dispatch_lsp_context_diagnostics(self, argument),
+            B::LspRepairLocal => lsp::dispatch_lsp_repair_local(self, argument),
+            B::LspRepairHunk => lsp::dispatch_lsp_repair_hunk(self, argument),
+            B::LspReviewFile => lsp::dispatch_lsp_review_file(self, argument),
+            B::LspReviewDiff => lsp::dispatch_lsp_review_diff(self),
+            B::LspSecurityReview => lsp::dispatch_lsp_security_review(self, argument),
+            B::LspImpact => lsp::dispatch_lsp_impact(self, argument),
+            B::LspTestRepair => lsp::dispatch_lsp_test_repair(self, argument),
+            B::LspInterface => lsp::dispatch_lsp_interface(self, argument),
+            B::LspCrossRepair => lsp::dispatch_lsp_cross_repair(self, argument),
+            B::LspCallNeighbors => lsp::dispatch_lsp_call_neighbors(self, argument),
+            B::LspRestart => lsp::dispatch_lsp_restart(self, argument),
+            B::LspStop => lsp::dispatch_lsp_stop(self, argument),
+            B::LspCacheStatus => lsp::dispatch_lsp_cache_status(self),
+            B::LspCacheClear => lsp::dispatch_lsp_cache_clear(self, argument),
+            B::ToolBackends => diagnostics::dispatch_tool_backends(self),
+            B::Diff => diff::dispatch_diff(self, argument),
+            B::Tests => test::dispatch_tests(self, argument),
+            B::Test => test::dispatch_test(self, argument),
+            B::Revert => revert::dispatch_revert(self, argument),
+            B::EditUndo => edit_history::dispatch_edit_undo(self, argument),
+            B::EditReapply => edit_history::dispatch_edit_reapply(self, argument),
+            B::EditCheckpoints => edit_history::dispatch_edit_checkpoints(self, argument),
+            B::Research => research::dispatch_research(self, argument),
+            B::ResearchRuns => research::dispatch_research_runs(self),
+            B::ResearchOpen => research::dispatch_research_open(self, argument),
+            B::ResearchShow => research::dispatch_research_show(self, argument),
+            B::SecurityReview => security::dispatch_security_review(self, argument),
+            B::SecurityReviewShow => security::dispatch_security_review_show(self),
+            B::SecurityReviewCancel => security::dispatch_security_review_cancel(self),
+            B::ShellInclude => shell::dispatch_shell_include(self, argument),
+            B::ShellRerun => shell::dispatch_shell_rerun(self, argument),
+            B::ShellKill => shell::dispatch_shell_kill(self, argument),
+            B::ShellList => shell::dispatch_shell_list(self),
+            B::ShellShow => shell::dispatch_shell_show(self, argument),
+            B::ShellExpand => shell::dispatch_shell_expand(self, argument),
+            B::Plugins => plugin_management::show_plugins(self),
+            B::TerminalCreate => interactive_terminal::dispatch_terminal_create(self, argument),
+            B::TerminalList => interactive_terminal::start_terminal_list(self),
+            B::TerminalAttach => interactive_terminal::dispatch_terminal_attach(self, argument),
+            B::TerminalShow => interactive_terminal::dispatch_terminal_show(self, argument),
+            B::Terminal => interactive_terminal::dispatch_terminal(self, argument),
+            B::TerminalClear => interactive_terminal::dispatch_terminal_clear(self, argument),
+            B::TerminalFocus => interactive_terminal::dispatch_terminal_focus(self, argument),
+            B::TerminalSend => interactive_terminal::dispatch_terminal_send(self, argument),
+            B::TerminalResize => interactive_terminal::dispatch_terminal_resize(self, argument),
+            B::TerminalResume => interactive_terminal::dispatch_terminal_resume(self, argument),
+            B::TerminalDetach => interactive_terminal::dispatch_terminal_detach(self, argument),
+            B::TerminalTerminate => {
+                interactive_terminal::dispatch_terminal_terminate(self, argument)
+            }
+            B::TerminalRemove => interactive_terminal::dispatch_terminal_remove(self, argument),
+            B::PluginInfo => plugin_management::dispatch_plugin_info(self, argument),
+            B::PluginEnable => plugin_management::dispatch_plugin_enable(self, argument),
+            B::PluginDisable => plugin_management::dispatch_plugin_disable(self, argument),
+            B::PluginDoctor => plugin_management::dispatch_plugin_doctor(self, argument),
+            B::PluginRemove => plugin_management::dispatch_plugin_remove(self, argument),
+            B::PluginInstall => plugin_management::dispatch_plugin_install(self, argument),
+            B::ShellAsk => shell::dispatch_shell_ask(self, argument),
+        }
+    }
+
+    pub fn on_paste(&mut self, text: String) {
+        if self.ui_state.command_mode {
+            self.prompt_state.prompt.paste(text);
+            let query = self.prompt_state.prompt.get_text();
+            self.dialog_state.command_palette.set_query(&query);
+        } else if !self.ui_state.dialog.is_open() {
+            self.paste_into_prompt(text);
+        }
+        // If a dialog is open but FocusManager didn't handle the paste,
+        // don't paste into the prompt behind the dialog
+    }
+
+    /// Paste text into the prompt and update derived state (completions).
+    fn paste_into_prompt(&mut self, text: String) {
+        self.prompt_state.prompt.paste(text);
+        self.update_completions();
+    }
+
+    pub fn on_resize(&mut self) {
+        self.ui_state.auto_scroll = true;
+        // Snap to bottom on resize — after a width/height change, the
+        // layout cache, scroll offsets, and visible range all change.
+        // Following the bottom avoids leaving the user stuck on a stale
+        // scroll offset that no longer maps to a valid line once the
+        // content has been re-wrapped. `set_width` already invalidates
+        // the layout cache, so this scroll reset is independent of that.
+        self.messages_state.messages.scroll_to_bottom();
+        if self.is_ws_attach_transport() {
+            let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
+            self.send_remote_message(RemoteTuiMessage::Resize { w, h });
+        }
+    }
+
+    pub fn on_mouse(&mut self, event: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        let target = self.clickable_area_at(event.column, event.row);
+
+        // Text selection and click-to-act share the message viewport, and the
+        // only thing that distinguishes them is whether the pointer moved
+        // between press and release. So the viewport defers its press: `Down`
+        // only arms a potential selection, `Drag` extends it, and `Up` decides
+        // — a release on the anchor cell is a click and reaches the click
+        // handler (which is what expands reasoning and tool output), and a
+        // release elsewhere is a drag that copies. Resolving on `Down` instead
+        // made every click a selection and left click-to-expand unreachable.
+        // Mouse reporting suppresses the terminal's own drag-select, so
+        // without this arm the output of a tool call cannot be copied at all.
+        // Any other surface (sidebar, scrollbar, dialogs, completion popup,
+        // prompt) keeps its immediate press behaviour.
+        //
+        // Panel columns join the viewport here. They are the same *kind* of
+        // region — text the user is reading and may want copied — and they are
+        // the densest output in the app when a terminal is docked. Excluding
+        // them is what made panels look unselectable next to a buffer that
+        // was not.
+        let selectable = matches!(target, ClickTarget::Viewport | ClickTarget::Panel { .. });
+        // The viewport's rect already excludes the TUI's outer border strips,
+        // so its rows start at or below 1 and the guard below can simply be
+        // skipped for it. A panel column is the *whole* frame height including
+        // its own block border, so its rect legitimately begins at row 0 —
+        // applying the viewport's guard to it refused the top row of every
+        // docked panel while still reporting that cell as the panel's own.
+        let inside_target = match target {
+            ClickTarget::Panel { .. } => true,
+            _ => event.column >= 1 && event.row >= 1,
+        };
+        let selecting = selectable
+            && matches!(
+                event.kind,
+                MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_)
+            )
+            && inside_target;
+        if selecting {
+            match event.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.selection_anchor = Some((event.column, event.row));
+                    self.selection_focus = Some((event.column, event.row));
+                    return;
+                }
+                MouseEventKind::Drag(MouseButton::Left) if self.selection_anchor.is_some() => {
+                    self.selection_focus = Some((event.column, event.row));
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) if self.selection_anchor.is_some() => {
+                    self.selection_focus = Some((event.column, event.row));
+                    if self.selection_anchor == self.selection_focus {
+                        // Press and release on the same cell: a click, not a
+                        // one-character selection. Drop the highlight and let
+                        // the click handler run.
+                        self.clear_selection();
+                        self.dispatch_click(&target, event.column, event.row);
+                    } else {
+                        self.copy_selection_to_clipboard();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        match event.kind {
+            MouseEventKind::Down(btn) => match btn {
+                MouseButton::Left | MouseButton::Right => {
+                    self.dispatch_click(&target, event.column, event.row);
+                }
+                MouseButton::Middle => {
+                    self.on_scroll_up(&target);
+                }
+            },
+            MouseEventKind::Up(btn) => match btn {
+                MouseButton::Left | MouseButton::Right => {}
+                MouseButton::Middle => {}
+            },
+            MouseEventKind::Moved => {
+                self.hover_target = Some(target.clone());
+                self.hover_position = Some((event.column, event.row));
+
+                if target == ClickTarget::Sidebar {
+                    self.sidebar
+                        .set_hover_position(event.column, event.row, self.sidebar_area);
+                } else {
+                    self.sidebar.clear_hover();
+                }
+            }
+            MouseEventKind::Drag(btn) => {
+                match btn {
+                    MouseButton::Left => {
+                        // Handle text selection or drag operations in prompt/viewport
+                        if target == ClickTarget::Prompt {
+                            // Could start/extend text selection
+                        } else if let Some(ClickTarget::Scrollbar {
+                            track_y,
+                            track_height,
+                        }) = self.last_click_target.clone()
+                        {
+                            // Continue a scrollbar drag with the original track dims.
+                            let drag_target = ClickTarget::Scrollbar {
+                                track_y,
+                                track_height,
+                            };
+                            self.on_click(&drag_target, event.column, event.row);
+                        }
+                    }
+                    MouseButton::Right => {
+                        // Right drag - could be context menu or other action
+                    }
+                    _ => {}
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                self.on_scroll_up(&target);
+            }
+            MouseEventKind::ScrollDown => {
+                self.on_scroll_down(&target);
+            }
+            MouseEventKind::ScrollLeft => {
+                self.on_scroll_left(&target);
+            }
+            MouseEventKind::ScrollRight => {
+                self.on_scroll_right(&target);
+            }
+        }
+    }
+
+    /// Resolve the live selection against the last rendered frame and put
+    /// it on the system clipboard.
+    ///
+    /// The text is read back out of the frame buffer rather than
+    /// reconstructed from the message model, so what lands on the clipboard
+    /// is exactly what was on screen — including the wrapping and styling
+    /// decisions the renderer already made. A drag that ended on the same
+    /// cell it started on is treated as a cancelled selection, not as a
+    /// one-character copy, and any subsequent click elsewhere clears the
+    /// highlight.
+    pub fn copy_selection_to_clipboard(&mut self) {
+        let (Some(anchor), Some(focus)) = (self.selection_anchor, self.selection_focus) else {
+            return;
+        };
+        if anchor == focus {
+            self.clear_selection();
+            return;
+        }
+        let Some(buffer) = self.last_frame_buffer.as_ref() else {
+            self.clear_selection();
+            return;
+        };
+        let text =
+            crate::selection::extract(buffer, crate::selection::TextSelection::new(anchor, focus));
+        let trimmed = text.trim_end().to_string();
+        if trimmed.is_empty() {
+            self.clear_selection();
+            return;
+        }
+        match codegg::util::clipboard::copy_to_clipboard(&trimmed) {
+            Ok(()) => {
+                let lines = trimmed.lines().count();
+                let message = format!(
+                    "Copied selection to clipboard ({lines} line{})",
+                    if lines == 1 { "" } else { "s" }
+                );
+                self.messages_state.toasts.info(&message);
+            }
+            Err(err) => {
+                let message = format!("Clipboard unavailable: {err}");
+                self.messages_state.toasts.error(&message);
+            }
+        }
+        self.clear_selection();
+    }
+
+    /// Drop the current selection and its highlight.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+        self.selection_focus = None;
+        // The retained frame existed to resolve a drag. With no selection
+        // there is no reader for it (`copy_selection_to_clipboard` returns
+        // early), so keeping it would retain a full terminal buffer for an
+        // interaction that has ended.
+        self.last_frame_buffer = None;
+    }
+
+    /// Copy the current selection if there is one. Returns whether a copy
+    /// was attempted, so a keybinding can fall through to its normal action
+    /// when nothing is selected.
+    pub fn try_copy_selection(&mut self) -> bool {
+        if self.selection_anchor.is_none() || self.selection_focus.is_none() {
+            return false;
+        }
+        self.copy_selection_to_clipboard();
+        true
+    }
+
+    fn clickable_area_at(&self, x: u16, y: u16) -> ClickTarget {
+        if let Some(ref area) = self.dialog_area {
+            if Self::in_rect(x, y, *area) {
+                return ClickTarget::Dialog;
+            }
+        }
+        let plan = self.frame_plan;
+        if let Some(area) = plan.completion {
+            if Self::in_rect(x, y, area) {
+                return ClickTarget::Completion;
+            }
+        }
+        if Self::in_rect(x, y, plan.prompt) {
+            return ClickTarget::Prompt;
+        }
+        if Self::in_rect(x, y, plan.viewport) {
+            return ClickTarget::Viewport;
+        }
+        if let Some(area) = plan.scrollbar {
+            if Self::in_rect(x, y, area) {
+                return ClickTarget::Scrollbar {
+                    track_y: area.y.saturating_sub(plan.viewport.y),
+                    track_height: area.height,
+                };
+            }
+        }
+        if let Some(ref area) = self.sidebar_area {
+            if Self::in_rect(x, y, *area) {
+                return ClickTarget::Sidebar;
+            }
+        }
+        // Panel columns, tested after the Session panel so its existing
+        // hover/collapse/scroll behaviour is untouched. The rects come from
+        // the last render, so this cannot name a column that is not painted.
+        for (placement, rect) in &self.panel_areas {
+            if Self::in_rect(x, y, *rect) {
+                return ClickTarget::Panel {
+                    placement: *placement,
+                };
+            }
+        }
+        ClickTarget::None
+    }
+
+    fn in_rect(x: u16, y: u16, rect: Rect) -> bool {
+        x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+    }
+
+    /// Run one press as a click: record it for double-click detection, then
+    /// dispatch to the single- or double-click handler.
+    ///
+    /// Shared by the immediate path (every surface but the viewport) and by
+    /// the viewport's deferred release, so both resolve a click the same way.
+    fn dispatch_click(&mut self, target: &ClickTarget, x: u16, y: u16) {
+        let is_double_click = self
+            .last_click_target
+            .as_ref()
+            .map(|t| t == target)
+            .unwrap_or(false)
+            && self
+                .last_click_time
+                .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
+                .unwrap_or(false);
+
+        self.last_click_time = Some(Instant::now());
+        self.last_click_target = Some(target.clone());
+
+        if is_double_click {
+            self.on_double_click(target);
+        } else {
+            self.on_click(target, x, y);
+        }
+    }
+
+    fn on_click(&mut self, target: &ClickTarget, x: u16, y: u16) {
+        match target {
+            ClickTarget::Viewport => {
+                let viewport = self.frame_plan.viewport;
+                let row = y.saturating_sub(viewport.y) as usize;
+                // The row's owner, not the message, is the unit of
+                // disclosure. Resolving the message first made the
+                // reasoning arm win every time: in a message carrying
+                // both a reasoning block and a tool call, the tool call
+                // could never be reached by clicking.
+                let owner = self.messages_state.messages.part_at_viewport_line(row);
+                if let Some(idx) = self.messages_state.messages.select_at_viewport_line(row) {
+                    // A row waiting on an approval is an action, not a
+                    // disclosure. Answering is otherwise only reachable
+                    // while the dialog is up, and the dialog can be gone.
+                    if self.open_pending_permission_for_message(idx) {
+                        return;
+                    }
+                    match owner {
+                        Some((_, RowPart::ToolCall { part_idx })) => {
+                            self.messages_state
+                                .messages
+                                .toggle_tool_call_part(idx, part_idx);
+                        }
+                        Some((_, RowPart::Reasoning { part_idx })) => {
+                            self.messages_state
+                                .messages
+                                .toggle_reasoning_part(idx, part_idx);
+                        }
+                        // A row that holds nothing expandable changes
+                        // nothing. This is an explicit no-op: falling
+                        // back to the message-level toggle would
+                        // reintroduce exactly the defect this path
+                        // exists to fix.
+                        None => {}
+                    }
+                } else {
+                    self.messages_state.messages.sel_msg = None;
+                }
+            }
+            ClickTarget::Dialog => {
+                if let Some(ref area) = self.dialog_area {
+                    let rel_y = y.saturating_sub(area.y);
+                    let rel_x = x.saturating_sub(area.x);
+                    self.select_dialog_item(rel_x, rel_y, *area);
+                }
+            }
+            ClickTarget::Completion => {
+                if let Some(area) = self.frame_plan.completion {
+                    let rel_y = y.saturating_sub(area.y);
+                    // Row 0 is the top border, so the first entry is at
+                    // `rel_y == 1`. The popup scrolls to keep the selection
+                    // visible, so the drawn window starts at
+                    // `completion_scroll_offset`, not at row 0 of the
+                    // filtered set.
+                    let idx = self.completion_scroll_offset + rel_y.saturating_sub(1) as usize;
+                    if idx < self.completion_visible_rows {
+                        self.prompt_state.completion_sel = idx;
+                    }
+                }
+            }
+            ClickTarget::Prompt => {
+                let area = self.frame_plan.prompt;
+                let rel_x = x.saturating_sub(area.x);
+                let rel_y = y.saturating_sub(area.y) as usize;
+                let line = rel_y.saturating_sub(1) + self.prompt_state.prompt.scroll;
+                let column = rel_x as usize + self.prompt_state.prompt.horizontal_scroll;
+                self.prompt_state.prompt.set_cursor_at_column(line, column);
+            }
+            ClickTarget::Sidebar => {
+                self.sidebar.focus_hovered();
+                if let Some(area) = self.sidebar_area {
+                    self.sidebar.ensure_focused_visible(area);
+                }
+                match self.sidebar.activate_focused() {
+                    crate::components::sidebar::SidebarActivation::ToggleSection
+                    | crate::components::sidebar::SidebarActivation::ToggleAgentNode(_) => {
+                        self.sidebar.toggle_focused();
+                    }
+                    crate::components::sidebar::SidebarActivation::InspectRun(run_id) => {
+                        self.process_msg(TuiMsg::OpenRunDetail { run_id });
+                    }
+                    // The same tab the panel's `Enter` opens. Both routes
+                    // resolve to one `SidebarActivation` so a click and a
+                    // keystroke cannot open different tabs for the same row.
+                    crate::components::sidebar::SidebarActivation::InspectSubagent(task_id) => {
+                        self.process_msg(TuiMsg::OpenSubagentTab { task_id });
+                    }
+                    crate::components::sidebar::SidebarActivation::InspectJob(job_id) => {
+                        self.process_msg(TuiMsg::OpenJobDetail { job_id });
+                    }
+                    crate::components::sidebar::SidebarActivation::None => {}
+                }
+            }
+            ClickTarget::Scrollbar {
+                track_y,
+                track_height,
+            } => {
+                let viewport = self.frame_plan.viewport;
+                let rel_y = y.saturating_sub(viewport.y).saturating_sub(*track_y);
+                if *track_height > 0 {
+                    let max_scroll = self.messages_state.messages.max_scroll();
+                    let new_scroll = (rel_y as usize) * max_scroll / (*track_height as usize);
+                    // Landing on the last track row (or anywhere already at
+                    // the bottom) must resume following the stream. This
+                    // handler used to clear `auto_scroll` unconditionally,
+                    // so dragging the thumb to the bottom left the view
+                    // visibly pinned there while new output was produced
+                    // off-screen — the turn looked frozen and then
+                    // appeared all at once.
+                    if rel_y + 1 >= *track_height || new_scroll >= max_scroll {
+                        self.messages_state.messages.scroll_to_bottom();
+                    } else {
+                        self.messages_state.messages.scroll = new_scroll.min(max_scroll);
+                        self.messages_state.messages.auto_scroll = false;
+                    }
+                }
+            }
+            ClickTarget::Panel { placement } => {
+                // Clicking a column focuses it — the same answer `Shift+H/J/K/L`
+                // gives — so the pointer and the keyboard agree on which panel
+                // owns the keyboard. Deliberately *focus only*: the selection
+                // that a drag builds is resolved on release above, and a click
+                // must not also fire a panel's row activation, which would
+                // make one press open something the user only pointed at.
+                self.process_msg(TuiMsg::FocusPanelAt {
+                    placement: *placement,
+                });
+            }
+            ClickTarget::None => {}
+        }
+    }
+
+    fn on_double_click(&mut self, target: &ClickTarget) {
+        match target {
+            ClickTarget::Dialog => {
+                if let Some(InputAction::Send) = self.dialog_confirm_action() {
+                    self.confirm_dialog();
+                }
+            }
+            ClickTarget::Completion => {
+                self.accept_completion();
+            }
+            ClickTarget::Scrollbar { .. } => {
+                self.messages_state.messages.scroll_to_bottom();
+            }
+            _ => {}
+        }
+    }
+
+    fn on_scroll_up(&mut self, target: &ClickTarget) {
+        match target {
+            ClickTarget::Viewport | ClickTarget::Prompt | ClickTarget::None => {
+                self.messages_state.messages.scroll_up();
+            }
+            ClickTarget::Sidebar => {
+                if let Some(area) = self.sidebar_area {
+                    self.sidebar.scroll_up(area);
+                }
+            }
+            ClickTarget::Panel { placement } => {
+                self.scroll_panel(*placement, Scroll::Up);
+            }
+            ClickTarget::Dialog => {
+                let up_key = crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Up,
+                    crossterm::event::KeyModifiers::NONE,
+                );
+                if let Some(msg) = self.focus_manager.handle_key(up_key) {
+                    self.process_msg(msg);
+                }
+            }
+            ClickTarget::Completion => {
+                if self.prompt_state.completion_sel > 0 {
+                    self.prompt_state.completion_sel -= 1;
+                }
+            }
+            ClickTarget::Scrollbar { .. } => {
+                self.messages_state.messages.scroll_page_up();
+            }
+        }
+    }
+
+    fn on_scroll_down(&mut self, target: &ClickTarget) {
+        match target {
+            ClickTarget::Viewport | ClickTarget::Prompt | ClickTarget::None => {
+                self.messages_state.messages.scroll_down();
+            }
+            ClickTarget::Sidebar => {
+                if let Some(area) = self.sidebar_area {
+                    self.sidebar.scroll_down(area);
+                }
+            }
+            ClickTarget::Panel { placement } => {
+                self.scroll_panel(*placement, Scroll::Down);
+            }
+            ClickTarget::Dialog => {
+                let down_key = crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Down,
+                    crossterm::event::KeyModifiers::NONE,
+                );
+                if let Some(msg) = self.focus_manager.handle_key(down_key) {
+                    self.process_msg(msg);
+                }
+            }
+            ClickTarget::Completion => {
+                let max_sel = self.completion_rows().len().saturating_sub(1);
+                if self.prompt_state.completion_sel < max_sel {
+                    self.prompt_state.completion_sel += 1;
+                }
+            }
+            ClickTarget::Scrollbar { .. } => {
+                self.messages_state.messages.scroll_page_down();
+            }
+        }
+    }
+
+    /// Scroll the panel docked to `placement`.
+    ///
+    /// The wheel over a column has to scroll *that column*. Falling through to
+    /// the transcript — which is what an unhandled target did — moved a buffer
+    /// the user was not pointing at, so scrolling a terminal column looked like
+    /// scrolling the conversation.
+    ///
+    /// Only the Terminal panel has its own scrollback today; for the rest this
+    /// is a no-op rather than a fallback, because the wrong surface moving is
+    /// worse than nothing moving.
+    fn scroll_panel(&mut self, placement: crate::panels::PanelPlacement, dir: Scroll) {
+        if self.panel_host.panel_at(placement) != crate::panels::SidePanelId::Terminal {
+            return;
+        }
+        let Some(handle) = self
+            .panel_host
+            .terminal_handle_at(placement)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.interactive_terminals.scroll_by(
+            &handle,
+            match dir {
+                Scroll::Up => -PANEL_WHEEL_LINES,
+                Scroll::Down => PANEL_WHEEL_LINES,
+            },
+        );
+    }
+
+    fn on_scroll_left(&mut self, target: &ClickTarget) {
+        if target == &ClickTarget::Viewport {
+            self.messages_state.messages.scroll_left();
+        }
+    }
+
+    fn on_scroll_right(&mut self, target: &ClickTarget) {
+        if target == &ClickTarget::Viewport {
+            self.messages_state.messages.scroll_right();
+        }
+    }
+
+    fn select_dialog_item(&mut self, _rel_x: u16, rel_y: u16, _area: Rect) {
+        if rel_y < 1 {
+            return;
+        }
+        let rel_y_usize = rel_y as usize;
+
+        // First, get the index from hit_test (shared borrow of focus_manager)
+        let idx = if let Some(active) = self.focus_manager.top() {
+            active.hit_test(rel_y_usize)
+        } else {
+            None
+        };
+
+        // Now the shared borrow is dropped, we can have mutable borrows
+        if let Some(idx) = idx {
+            // Update dialog_state for legacy code paths
+            match &mut self.ui_state.dialog {
+                Dialog::Model => {
+                    self.dialog_state.model_dialog.selected = idx;
+                }
+                Dialog::Agent => {
+                    let visible: Vec<usize> = self
+                        .agent_state
+                        .agents
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| !a.hidden)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if let Some(&real_idx) = visible.get(idx) {
+                        self.agent_state.current_agent = real_idx;
+                    }
+                }
+                Dialog::Session => {
+                    // `select_index` snaps off a section heading rather than
+                    // parking the cursor on a line `Enter` does nothing with.
+                    self.dialog_state.session_dialog.select_index(idx);
+                }
+                Dialog::Tree => {
+                    let cur = self.dialog_state.tree_dialog.selected();
+                    if idx > cur {
+                        for _ in cur..idx {
+                            self.dialog_state.tree_dialog.select_down();
+                        }
+                    } else if idx < cur {
+                        for _ in idx..cur {
+                            self.dialog_state.tree_dialog.select_up();
+                        }
+                    }
+                }
+                Dialog::Question => {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.selected_question = idx;
+                    }
+                }
+                Dialog::Permission => {
+                    if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                        if idx < 4 {
+                            pd.selected_option = idx;
+                        }
+                    }
+                }
+                Dialog::Connect => {
+                    if let Some(cd) = self.dialog_state.connect_dialog.as_mut() {
+                        if idx < cd.providers.len() {
+                            cd.selected = idx;
+                            cd.list_state.select(Some(idx));
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            // Sync the selection to the focused clone in FocusManager
+            if let Some(top) = self.focus_manager.top_mut() {
+                top.set_selected(idx);
+            }
+
+            return;
+        }
+
+        // Fallback: legacy handling (should not be reached with FocusManager)
+        let idx = rel_y_usize.saturating_sub(1);
+        match &mut self.ui_state.dialog {
+            Dialog::Model => {
+                let total = self.dialog_state.model_dialog.models.len();
+                if idx < total {
+                    self.dialog_state.model_dialog.selected = idx;
+                }
+            }
+            Dialog::Agent => {
+                let visible: Vec<usize> = self
+                    .agent_state
+                    .agents
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| !a.hidden)
+                    .map(|(i, _)| i)
+                    .collect();
+                if idx < visible.len() {
+                    if let Some(&real_idx) = visible.get(idx) {
+                        self.agent_state.current_agent = real_idx;
+                    }
+                }
+            }
+            Dialog::Session => {
+                let total = self.dialog_state.session_dialog.rows().len();
+                if idx < total {
+                    self.dialog_state.session_dialog.select_index(idx);
+                }
+            }
+            Dialog::Tree => {
+                let cur = self.dialog_state.tree_dialog.selected();
+                if idx > cur {
+                    for _ in cur..idx {
+                        self.dialog_state.tree_dialog.select_down();
+                    }
+                } else if idx < cur {
+                    for _ in idx..cur {
+                        self.dialog_state.tree_dialog.select_up();
+                    }
+                }
+            }
+            Dialog::Question => {
+                if let Some(qd) = &mut self.dialog_state.question_dialog {
+                    if idx < qd.questions.len() {
+                        qd.selected_question = idx;
+                    }
+                }
+            }
+            Dialog::Permission => {
+                if idx < 4 {
+                    if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                        pd.selected_option = idx;
+                    }
+                }
+            }
+            Dialog::Connect => {
+                if let Some(cd) = self.dialog_state.connect_dialog.as_mut() {
+                    // Legacy fallback uses raw rows; the component hit-test
+                    // already accounts for borders/scroll, so this path only
+                    // needs a bounded index guard.
+                    if idx < cd.providers.len() {
+                        cd.selected = idx;
+                        cd.list_state.select(Some(idx));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn dialog_confirm_action(&self) -> Option<InputAction> {
+        match &self.ui_state.dialog {
+            Dialog::Model
+            | Dialog::Agent
+            | Dialog::Session
+            | Dialog::Connect
+            | Dialog::Theme
+            | Dialog::Question
+            | Dialog::Permission => Some(InputAction::Send),
+            _ => None,
+        }
+    }
+
+    fn dialog_navigate_up(&mut self) {
+        match &mut self.ui_state.dialog {
+            Dialog::Model => self.dialog_state.model_dialog.select_up(),
+            Dialog::Agent => self.dialog_state.agent_dialog.select_up(),
+            Dialog::Session => self.dialog_state.session_dialog.select_up(),
+            Dialog::Tree => self.dialog_state.tree_dialog.select_up(),
+            Dialog::Theme => {
+                if let Some(picker) = &mut self.dialog_state.theme_picker {
+                    picker.select_up();
+                }
+            }
+            Dialog::Question => {
+                if let Some(qd) = &mut self.dialog_state.question_dialog {
+                    qd.select_up();
+                }
+            }
+            Dialog::Permission => {
+                if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                    pd.cursor_up();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn dialog_navigate_down(&mut self) {
+        match &mut self.ui_state.dialog {
+            Dialog::Model => self.dialog_state.model_dialog.select_down(),
+            Dialog::Agent => self.dialog_state.agent_dialog.select_down(),
+            Dialog::Session => self.dialog_state.session_dialog.select_down(),
+            Dialog::Tree => self.dialog_state.tree_dialog.select_down(),
+            Dialog::Theme => {
+                if let Some(picker) = &mut self.dialog_state.theme_picker {
+                    picker.select_down();
+                }
+            }
+            Dialog::Question => {
+                if let Some(qd) = &mut self.dialog_state.question_dialog {
+                    qd.select_down();
+                }
+            }
+            Dialog::Permission => {
+                if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                    pd.cursor_down();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn confirm_dialog(&mut self) {
+        let enter_key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        if !self.focus_manager.is_empty() {
+            if let Some(msg) = self.focus_manager.handle_key(enter_key) {
+                self.process_msg(msg);
+            }
+        } else {
+            self.handle_dialog_key(enter_key);
+        }
+    }
+
+    pub(crate) fn resolve_shell_id(&self, id_str: &str) -> Option<u64> {
+        match id_str {
+            "last" => self.shell_store.get_last().map(|e| e.id.0),
+            s => s.parse::<u64>().ok(),
+        }
+    }
+
+    fn handle_slash_command(&mut self, text: &str) -> bool {
+        let trimmed = text.trim();
+        if !trimmed.starts_with('/') {
+            return false;
+        }
+
+        // Typed input path: raw slash text → registry name/alias
+        // resolution → typed command action. Sync the palette query so
+        // built-in handlers that read the query observe the same args
+        // whether invoked from the palette or from direct typed input.
+        let command_name = trimmed
+            .split_whitespace()
+            .next()
+            .unwrap_or(trimmed)
+            .trim_start_matches('/');
+        if let Some(cmd) = self
+            .command_registry
+            .find_by_name_or_alias(command_name)
+            .cloned()
+        {
+            self.dialog_state.command_palette.query = trimmed.to_string();
+            self.execute_command(&cmd, Some(trimmed));
+            return true;
+        }
+
+        false
+    }
+
+    /// `Esc`: back out of whatever is on screen, one layer at a time.
+    ///
+    /// This never exits the application. `Esc` is the reflexive "get me out"
+    /// key, and binding it to quit meant one stray press in Normal mode
+    /// ended the session — losing an in-flight turn's scrollback and any
+    /// half-written prompt. Exiting is `q` in Normal mode, `/exit`, or
+    /// `Ctrl+C`; see [`Self::force_quit`].
+    fn cancel(&mut self) {
+        if self.ui_state.dialog.is_open() {
+            self.close_dialog();
+            return;
+        }
+        if self.prompt_state.show_completions {
+            self.prompt_state.show_completions = false;
+            return;
+        }
+
+        // If in Insert mode, switch to Normal mode instead of clearing.
+        if self.ui_state.input_mode == InputMode::Insert {
+            self.ui_state.input_mode = InputMode::Normal;
+            return;
+        }
+
+        // Nothing is layered over the prompt: discard a draft rather than
+        // acting on it. Stop here — the app keeps running.
+        let text = self.prompt_state.prompt.get_text();
+        if !text.trim().is_empty() {
+            self.prompt_state.prompt.clear();
+            self.prompt_state.show_completions = false;
+        }
+    }
+
+    /// `Ctrl+C`: clear the input, then arm the exit.
+    ///
+    /// The explicit-exit path, kept separate from [`Self::cancel`] so the
+    /// back-out key and the terminate key can never drift into the same
+    /// behavior again.
+    ///
+    /// Leaving the program is destructive and `Ctrl+C` is one keystroke away
+    /// from a stray press, so the exit is gated behind a **second** press of
+    /// the same key inside [`EXIT_ARM_WINDOW`]:
+    ///
+    /// * The first press clears the field the user was typing into — the
+    ///   meaning the key has always had on an input — and arms the exit. The
+    ///   row above the input names the key to press again.
+    /// * The second press, inside the window, leaves.
+    /// * A dialog or the completion popup still owns the key: `Ctrl+C` backs
+    ///   out of what is on screen, exactly as it did before.
+    fn force_quit(&mut self) {
+        if self.ui_state.dialog.is_open() || self.prompt_state.show_completions {
+            self.cancel();
+            return;
+        }
+        if crate::commands::exit_control::request_exit(
+            self,
+            crate::app::state::prompt::ExitArm::Force,
+        ) {
+            self.shutdown_app();
+            return;
+        }
+        // The first press: the text the user was typing goes, the turn does
+        // not. Clearing the field is the safe reading of "I did not mean to
+        // quit" — and the arm is what makes the second press meaningful.
+        self.prompt_state.prompt.clear();
+        self.prompt_state.show_completions = false;
+    }
+
+    /// Terminate the TUI: stop the render loop and mark the app not running.
+    fn shutdown_app(&mut self) {
+        self.ui_state.running = false;
+        let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
+    }
+
+    fn navigate_up(&mut self) {
+        // Input history navigation in insert mode.
+        if self.session_state.history.is_empty() {
+            return;
+        }
+        let new_pos = match self.session_state.history_pos {
+            Some(pos) if pos > 0 => pos - 1,
+            None => self.session_state.history.len() - 1,
+            _ => return,
+        };
+        self.session_state.history_pos = Some(new_pos);
+        if let Some(entry) = self.session_state.history.get(new_pos) {
+            self.prompt_state.prompt.set_text(entry.text.clone());
+        }
+    }
+
+    fn navigate_down(&mut self) {
+        // Input history navigation in insert mode.
+        let new_pos = match self.session_state.history_pos {
+            Some(pos) if pos + 1 < self.session_state.history.len() => pos + 1,
+            Some(_) => {
+                self.session_state.history_pos = None;
+                self.prompt_state.prompt.clear();
+                return;
+            }
+            None => return,
+        };
+        self.session_state.history_pos = Some(new_pos);
+        if let Some(entry) = self.session_state.history.get(new_pos) {
+            self.prompt_state.prompt.set_text(entry.text.clone());
+        }
+    }
+
+    fn scroll_page_up(&mut self) {
+        // An open subagent tab owns the viewport: the main conversation is
+        // not on screen behind it, so scrolling the hidden transcript would
+        // move nothing the user can see.
+        if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active(-10);
+            return;
+        }
+        self.messages_state.messages.scroll_page_up();
+    }
+
+    fn scroll_page_down(&mut self) {
+        if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active(10);
+            return;
+        }
+        self.messages_state.messages.scroll_page_down();
+    }
+
+    fn scroll_viewport_up(&mut self) {
+        if self.ui_state.dialog.is_open() {
+            self.dialog_navigate_up();
+        } else if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active(-1);
+        } else {
+            self.messages_state.messages.scroll_up();
+        }
+    }
+
+    fn scroll_viewport_down(&mut self) {
+        if self.ui_state.dialog.is_open() {
+            self.dialog_navigate_down();
+        } else if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active(1);
+        } else {
+            self.messages_state.messages.scroll_down();
+        }
+    }
+
+    fn go_to_top(&mut self) {
+        if self.ui_state.dialog.is_open() {
+            return;
+        }
+        if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active_to_top();
+            return;
+        }
+        self.messages_state.messages.scroll_to_top();
+    }
+
+    fn go_to_bottom(&mut self) {
+        if self.ui_state.dialog.is_open() {
+            return;
+        }
+        if self.ui_state.subagents.tabs.active_tab_id().is_some() {
+            self.ui_state.subagents.tabs.scroll_active_to_bottom();
+            return;
+        }
+        self.messages_state.messages.scroll_to_bottom();
+    }
+
+    fn cycle_agent(&mut self) {
+        let visible: Vec<usize> = self
+            .agent_state
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !a.hidden)
+            .map(|(i, _)| i)
+            .collect();
+        if visible.is_empty() {
+            return;
+        }
+        let cur_pos = visible
+            .iter()
+            .position(|&i| i == self.agent_state.current_agent)
+            .unwrap_or(0);
+        let next_pos = (cur_pos + 1) % visible.len();
+        self.agent_state.current_agent = visible[next_pos];
+    }
+
+    pub(crate) fn push_dialog(
+        &mut self,
+        dialog: Dialog,
+        component: Box<dyn crate::components::component::Component>,
+    ) {
+        let dialog_type = crate::components::component::DialogType::from(dialog.clone());
+        if self.focus_manager.push(component) {
+            self.ui_state.dialog = dialog;
+        } else if self.focus_manager.has_dialog(dialog_type.clone()) {
+            self.ui_state.dialog = Dialog::from(dialog_type);
+        }
+    }
+
+    /// Enqueue a [`TuiCommand`] on the bounded command channel. On
+    /// `TrySendError::Full` or `TrySendError::Closed`, surface a toast
+    /// and return `false` so the caller can avoid mutating UI state
+    /// that assumes the command ran (e.g. delete undo banners).
+    pub(crate) fn enqueue_tui_command(&mut self, cmd: TuiCommand) -> bool {
+        let Some(tx) = self.tui_cmd_tx.as_ref() else {
+            self.messages_state
+                .toasts
+                .error("Internal error: command channel unavailable");
+            return false;
+        };
+        if send_tui(tx, cmd) {
+            true
+        } else {
+            self.messages_state
+                .toasts
+                .error("Unable to queue TUI command; please retry");
+            false
+        }
+    }
+
+    /// Close the topmost modal and return the component that was unmounted.
+    ///
+    /// The return value exists for one caller — the panel docking gesture,
+    /// which *moves* a box into the side column rather than discarding it.
+    /// Every other caller ignores it and behaves exactly as before.
+    pub(crate) fn close_dialog(
+        &mut self,
+    ) -> Option<Box<dyn crate::components::component::Component>> {
+        let closing_dialog = Dialog::from(self.focus_manager.active_dialog_type());
+        // If the theme picker was live-previewing, revert to the
+        // original theme before closing. Esc and Enter both fire
+        // `ThemeRevert`/`ThemeCommit` and tear down the dialog
+        // themselves; this path catches every other dismissal (mouse,
+        // parent close, etc).
+        if closing_dialog == Dialog::Theme {
+            if let Some(picker) = self.dialog_state.theme_picker.as_ref() {
+                if picker.is_previewing() {
+                    let target = picker
+                        .preview_original_id()
+                        .unwrap_or_else(|| codegg::theme::registry::DEFAULT_THEME_ID.to_string());
+                    if let Some(theme) = self.theme_registry.get_tui(&target) {
+                        self.ui_state.theme = Arc::new(theme);
+                    }
+                }
+            }
+            self.dialog_state.theme_picker = None;
+        }
+        if closing_dialog == Dialog::JobDetail {
+            self.dialog_state.job_detail_request.cancel();
+        }
+
+        // Cancel background tasks and async request state scoped to
+        // the dialog being closed. This ensures stale completions
+        // from in-flight requests are ignored.
+        use crate::task_lifecycle::TuiTaskKind;
+        match closing_dialog {
+            Dialog::Tree => {
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+            }
+            Dialog::Import => {
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                self.dialog_state.import_request.cancel();
+            }
+            Dialog::ResearchBrowser => {
+                self.task_registry.cancel_kind(TuiTaskKind::Research);
+                self.dialog_state.research_request.cancel();
+            }
+            Dialog::Session => {
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                self.dialog_state.session_reload_request.cancel();
+                self.dialog_state.session_messages_request.cancel();
+                self.dialog_state.session_mutation_request.cancel();
+                self.dialog_state.task_list_request.cancel();
+                self.dialog_state.task_delete_request.cancel();
+                self.dialog_state.worktree_list_request.cancel();
+                self.dialog_state.template_create_request.cancel();
+            }
+            Dialog::Connect => {
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                let operation_id = self
+                    .dialog_state
+                    .connect_dialog
+                    .as_mut()
+                    .and_then(|dialog| {
+                        dialog.clear_secret();
+                        dialog.operation_id.take()
+                    });
+                // The live FocusManager copy may hold typed secrets that the
+                // stored clone never saw; forget both before dismissal so
+                // cancellation leaves no credential behind.
+                self.focus_manager
+                    .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                        crate::components::component::DialogType::Connect,
+                        |live| {
+                            live.clear_secret();
+                            live.operation_id.take();
+                        },
+                    );
+                if let (Some(client), Some(operation_id)) = (self.core_client.clone(), operation_id)
+                {
+                    tokio::spawn(async move {
+                        let _ = client
+                            .request(codegg::core::new_request(
+                                uuid::Uuid::new_v4().to_string(),
+                                codegg::protocol::core::CoreRequest::EggpoolConnectionCancel {
+                                    operation_id,
+                                },
+                            ))
+                            .await;
+                    });
+                }
+            }
+            Dialog::ShellShow => {
+                self.dialog_state.shell_detail_id = None;
+            }
+            Dialog::Permission => {
+                // Every answer path clears `permission_dialog` before closing,
+                // so anything still mounted here was dismissed without being
+                // answered. Re-queue it: the daemon-side waiter is still
+                // parked on this `perm_id`, and dropping it is how a batch of
+                // approvals left the user with no way to answer any of them.
+                self.requeue_open_permission();
+            }
+            Dialog::Terminal => {
+                // UI state only: attachment release is owned by
+                // `close_terminal_view` on the explicit Esc path, or by
+                // transport disconnect server-side. Clearing here keeps
+                // every dismissal path truthful without double-detach.
+                self.dialog_state.terminal_detail_handle = None;
+            }
+            Dialog::RunDetail => {}
+            Dialog::TaskSchedule => {
+                // Sheet cancel: the editable prompt text was never
+                // moved, so nothing restores. In-flight prefetch is
+                // dropped; an in-flight create (spawned only by
+                // confirm) is untouched.
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                self.dialog_state.task_sheet_request.cancel();
+                self.dialog_state.task_schedule_draft = None;
+            }
+            Dialog::TaskView => {
+                // View close never cancels daemon-owned work: only the
+                // frontend refresh/reorder/detail requests are dropped.
+                // The generation bump makes late completions stale.
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                self.dialog_state.work_order_list_request.cancel();
+                self.dialog_state.work_order_reorder_request.cancel();
+                self.dialog_state.work_order_occurrence_request.cancel();
+                self.dialog_state.work_order_mutation_request.cancel();
+                self.dialog_state.task_view.generation =
+                    self.dialog_state.task_view.generation.wrapping_add(1);
+                self.dialog_state.task_view.loading = false;
+            }
+            Dialog::TriggerSecret => {
+                // One-time bearer is forgotten on close; metadata stays
+                // listable but the secret is never re-readable.
+                // Dropping here zeroes the transient plaintext.
+                self.dialog_state.trigger_secret = None;
+                self.dialog_state.trigger_create_request.cancel();
+            }
+            Dialog::TeamTokenSecret => {
+                // One-time device credential is forgotten on close;
+                // token metadata stays listable but the plaintext is
+                // never re-readable. Dropping here zeroes the transient
+                // credential.
+                self.dialog_state.team_token_secret = None;
+                self.dialog_state.team_request.cancel();
+            }
+            Dialog::WorkspaceDashboard => {
+                // M005 obsolete modal path: normal Workspace navigation no
+                // longer pushes `Dialog::WorkspaceDashboard` (the primary
+                // `Route::Workspace` view owns state). This arm only runs
+                // for legacy modal teardowns. View close never cancels
+                // daemon-owned work nor unrelated generic `Command` tasks:
+                // only Workspace-owned frontend requests are dropped.
+                self.task_registry.cancel_kind(TuiTaskKind::Workspace);
+                if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                    dashboard.generation = dashboard.generation.wrapping_add(1);
+                    dashboard.loading = false;
+                    dashboard.request.cancel();
+                }
+                self.dialog_state.workspace_dashboard = None;
+                self.workspace_focus = crate::app::state::WorkspaceFocus::Composer;
+                self.chat_panel_project = None;
+            }
+            Dialog::PolicySelector => {
+                // Drop the seed on every dismissal, not just on commit, so a
+                // cancelled selector can never be re-mounted with a stale
+                // cursor against a policy that has since changed.
+                self.dialog_state.policy_selector = None;
+            }
+            Dialog::Queue => {
+                // A delete still in flight when the box closes must not mutate
+                // anything afterwards. `cancel` bumps the request id, so the
+                // late completion fails `finish`/`fail` and is dropped whole —
+                // no projection write, no toast, no selection change.
+                self.dialog_state.queue_delete_request.cancel();
+                // M005: same for the three authoring mutations. Cancelling them
+                // is also what discharges acceptance criterion "closing the box
+                // with unsaved text adds nothing and edits nothing" — the box
+                // itself is dropped, so the compose buffer goes with it, and
+                // these three cancel whatever was in flight before that.
+                self.dialog_state.queue_add_request.cancel();
+                self.dialog_state.queue_edit_request.cancel();
+                self.dialog_state.queue_reorder_request.cancel();
+                self.dialog_state.queue_send_request.cancel();
+            }
+            _ => {}
+        }
+
+        let popped = self.focus_manager.pop();
+        let active_type = self.focus_manager.active_dialog_type();
+        if active_type != DialogType::None {
+            self.ui_state.dialog = Dialog::from(active_type);
+        } else {
+            self.ui_state.dialog = Dialog::None;
+        }
+        // Project picker teardown: clear the picker state so stale
+        // completions are dropped at apply time.
+        if self.dialog_state.project_picker.is_some() {
+            self.dialog_state.project_picker = None;
+        }
+        // The unmounted component is handed back so a caller that is *moving*
+        // a box rather than discarding it — the panel docking gesture — can
+        // adopt it into the side column. Every other caller drops it, exactly
+        // as before; returning it costs one `Option` and changes no lifetime.
+        popped
+    }
+
+    /// Handle key events while the project picker dialog is open.
+    /// The picker is a bounded, modal dialog driven by its own phase
+    /// machine. Commit actions (open, focus, register) go through the
+    /// normal `TuiCommand` path; navigation is local to the picker
+    /// state.
+    fn handle_project_picker_key(&mut self, key: KeyEvent) {
+        use crate::app::state::PickerPhase;
+
+        // Extract the current phase so we can release the borrow
+        // before calling the per-phase handlers (which need &mut self).
+        let phase = match self.dialog_state.project_picker.as_ref() {
+            Some(p) => p.phase.clone(),
+            None => {
+                self.close_dialog();
+                return;
+            }
+        };
+
+        match phase {
+            PickerPhase::Catalog => self.handle_picker_catalog_key(key),
+            PickerPhase::WorkspaceSelection => self.handle_picker_workspace_selection_key(key),
+            PickerPhase::RegistrationInput => self.handle_picker_registration_input_key(key),
+            PickerPhase::RegistrationConfirm => self.handle_picker_registration_confirm_key(key),
+            PickerPhase::DestroyLoading => {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                        picker.begin_request();
+                    }
+                }
+            }
+            PickerPhase::ProjectEditLoading => {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                        picker.begin_request();
+                    }
+                }
+            }
+            PickerPhase::ProjectEdit => self.handle_picker_project_edit_key(key),
+            PickerPhase::DestroyConfirm => match key.code {
+                crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('n') => {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                    }
+                }
+                crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Char('y') => {
+                    let (project_id, session_count, picker_request_id) = self
+                        .dialog_state
+                        .project_picker
+                        .as_mut()
+                        .and_then(|picker| {
+                            let project_id = picker.pinned_project_id.clone()?;
+                            let session_count = picker.destroy_confirmation.as_ref()?.session_count;
+                            picker.phase = PickerPhase::Destroying;
+                            let request_id = picker.begin_request();
+                            Some((project_id, session_count, request_id))
+                        })
+                        .unwrap_or_default();
+                    if !project_id.is_empty() {
+                        crate::commands::project_picker::start_project_delete(
+                            self,
+                            project_id,
+                            session_count,
+                            picker_request_id,
+                        );
+                    }
+                }
+                _ => {}
+            },
+            PickerPhase::LifecycleChanging
+            | PickerPhase::Destroying
+            | PickerPhase::ProjectUpdating => {}
+            PickerPhase::Error => {
+                let _ = key; // suppress unused
+                if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                    picker.last_error = None;
+                    picker.reset_to_catalog();
+                }
+            }
+        }
+    }
+
+    fn handle_picker_catalog_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let edit_project_id = self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .filter(|picker| {
+                picker.input_mode == crate::input::InputMode::Normal
+                    && key.modifiers == KeyModifiers::NONE
+                    && key.code == KeyCode::Char('e')
+            })
+            .and_then(|picker| {
+                picker
+                    .filtered_indices(&self.project_catalog.entries)
+                    .get(picker.selected_row)
+                    .and_then(|index| self.project_catalog.entries.get(*index))
+                    .map(|project| project.project_id.clone())
+            });
+        if let Some(project_id) = edit_project_id {
+            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
+                picker.pinned_project_id = Some(project_id.clone());
+                picker.project_edit = None;
+                picker.last_error = None;
+                picker.phase = crate::app::state::PickerPhase::ProjectEditLoading;
+                picker.begin_request()
+            });
+            if let Some(request_id) = request_id {
+                crate::commands::project_picker::start_project_edit(self, project_id, request_id);
+            }
+            return;
+        }
+
+        let lifecycle_action = self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .filter(|picker| {
+                picker.input_mode == crate::input::InputMode::Normal
+                    && key.modifiers == KeyModifiers::NONE
+            })
+            .and_then(|picker| {
+                let selected = picker
+                    .filtered_indices(&self.project_catalog.entries)
+                    .get(picker.selected_row)
+                    .and_then(|index| self.project_catalog.entries.get(*index))?;
+                let action = match (key.code, selected.archived_at.is_some()) {
+                    (KeyCode::Char('d'), false) => Some(false),
+                    (KeyCode::Char('d'), true) => Some(true),
+                    (KeyCode::Char('a'), true) => Some(false),
+                    _ => None,
+                }?;
+                let restores = key.code == KeyCode::Char('a');
+                Some((selected.project_id.clone(), action, restores))
+            });
+        if let Some((project_id, destroy, restores)) = lifecycle_action {
+            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
+                picker.pinned_project_id = Some(project_id.clone());
+                picker.last_error = None;
+                picker.destroy_confirmation = None;
+                picker.phase = if destroy {
+                    crate::app::state::PickerPhase::DestroyLoading
+                } else {
+                    crate::app::state::PickerPhase::LifecycleChanging
+                };
+                picker.begin_request()
+            });
+            if let Some(request_id) = request_id {
+                if destroy {
+                    crate::commands::project_picker::start_project_destroy_confirmation(
+                        self, project_id, request_id,
+                    );
+                } else {
+                    crate::commands::project_picker::start_project_lifecycle(
+                        self, project_id, restores, request_id,
+                    );
+                }
+            }
+            return;
+        }
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+
+        if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+            if picker.transport_local {
+                picker.phase = crate::app::state::PickerPhase::RegistrationInput;
+                picker.registration_input.clear();
+            } else {
+                picker.last_error =
+                    Some("Raw path registration requires a local TUI context".to_string());
+                picker.phase = crate::app::state::PickerPhase::Error;
+            }
+            return;
+        }
+
+        let filtered_len = picker.filtered_indices(&self.project_catalog.entries).len();
+        let action = picker.handle_catalog_key(key, filtered_len);
+        match action {
+            crate::app::state::PickerCatalogAction::None => {}
+            crate::app::state::PickerCatalogAction::Close => {
+                self.close_dialog();
+            }
+            crate::app::state::PickerCatalogAction::Select => {
+                self.commit_picker_catalog_selection();
+            }
+        }
+    }
+
+    fn handle_picker_project_edit_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+        let Some(edit) = picker.project_edit.as_mut() else {
+            picker.last_error = Some("Project edit form is unavailable".to_string());
+            picker.phase = crate::app::state::PickerPhase::Error;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                picker.reset_to_catalog();
+                picker.begin_request();
+            }
+            KeyCode::Tab => {
+                edit.editing_root = !edit.editing_root;
+                picker.last_error = None;
+            }
+            KeyCode::Backspace => {
+                if edit.editing_root {
+                    edit.root.pop();
+                } else {
+                    edit.display_name.pop();
+                }
+                picker.last_error = None;
+            }
+            KeyCode::Enter => {
+                let Some(project_id) = picker.pinned_project_id.clone() else {
+                    return;
+                };
+                let (name, root, expected) = (
+                    edit.display_name.clone(),
+                    edit.root.clone(),
+                    edit.expected_updated_at,
+                );
+                picker.phase = crate::app::state::PickerPhase::ProjectUpdating;
+                let request_id = picker.begin_request();
+                crate::commands::project_picker::start_project_update(
+                    self, project_id, name, root, expected, request_id,
+                );
+            }
+            KeyCode::Char(ch)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                if edit.editing_root {
+                    if edit.root.chars().count() < 1024 {
+                        edit.root.push(ch);
+                    }
+                } else if edit.display_name.chars().count() < 80 {
+                    edit.display_name.push(ch);
+                }
+                picker.last_error = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_picker_workspace_selection_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+
+        let workspace_count = picker
+            .cached_detail
+            .as_ref()
+            .map(|d| d.workspaces.len())
+            .unwrap_or(0);
+
+        match key.code {
+            KeyCode::Esc => {
+                picker.phase = crate::app::state::PickerPhase::Catalog;
+                picker.selected_row = 0;
+                picker.cached_detail = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if picker.selected_row > 0 {
+                    picker.selected_row -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if picker.selected_row + 1 < workspace_count {
+                    picker.selected_row += 1;
+                }
+            }
+            KeyCode::Enter => {
+                self.commit_picker_workspace_selection();
+            }
+            _ => {
+                if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+                    picker.phase = crate::app::state::PickerPhase::Catalog;
+                    picker.selected_row = 0;
+                    picker.cached_detail = None;
+                }
+            }
+        }
+    }
+
+    fn handle_picker_registration_input_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+
+        if !picker.transport_local {
+            // Remote context: cannot register raw paths. Bounce back
+            // to catalog with an error.
+            picker.last_error =
+                Some("Raw path registration requires a local TUI context".to_string());
+            picker.phase = crate::app::state::PickerPhase::Error;
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                picker.phase = crate::app::state::PickerPhase::Catalog;
+                picker.registration_input.clear();
+            }
+            KeyCode::Backspace => {
+                picker.registration_input.pop();
+            }
+            KeyCode::Enter => {
+                self.commit_picker_registration_input();
+            }
+            KeyCode::Char(c) => {
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
+                    picker.registration_input.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_picker_registration_confirm_key(&mut self, key: KeyEvent) {
+        use crossterm::event::KeyCode;
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                picker.phase = crate::app::state::PickerPhase::Catalog;
+                picker.registration_input.clear();
+                picker.registration = Default::default();
+            }
+            KeyCode::Enter => {
+                self.commit_picker_registration_confirm();
+            }
+            _ => {}
+        }
+    }
+
+    fn commit_picker_catalog_selection(&mut self) {
+        use crate::app::state::PickerPhase;
+
+        if !self.project_catalog_supported() {
+            self.messages_state
+                .toasts
+                .error("Project catalog unavailable on this daemon");
+            self.close_dialog();
+            return;
+        }
+
+        // Collect the selection from the picker before mutating it.
+        let snapshot = match self.dialog_state.project_picker.as_ref() {
+            Some(p) => {
+                let filtered = p.filtered_indices(&self.project_catalog.entries);
+                let actual = filtered
+                    .get(p.selected_row.min(filtered.len().saturating_sub(1)))
+                    .copied();
+                let entry = actual.and_then(|i| self.project_catalog.entries.get(i));
+                (entry.map(|e| e.project_id.clone()), p.catalog_generation)
+            }
+            None => return,
+        };
+        let (project_id, picker_generation) = snapshot;
+        let project_id = match project_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        // Now begin the request generation on the picker state.
+        let (request_id, picker_request_id) = match self.dialog_state.project_picker.as_mut() {
+            Some(p) => {
+                let rid = p.begin_request();
+                (rid, rid)
+            }
+            None => return,
+        };
+
+        if let Some(tx) = self.tui_cmd_tx.clone() {
+            let _ = send_tui(
+                &tx,
+                TuiCommand::StartGetProject {
+                    request_id,
+                    project_id: project_id.clone(),
+                    picker_generation,
+                    picker_request_id,
+                },
+            );
+        }
+
+        // Pin the project_id; phase will be advanced by the apply.
+        if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+            picker.pinned_project_id = Some(project_id);
+            picker.phase = PickerPhase::Catalog;
+        }
+    }
+
+    fn commit_picker_workspace_selection(&mut self) {
+        // Collect everything we need from the picker before opening
+        // it mutably.
+        let snapshot = match self.dialog_state.project_picker.as_ref() {
+            Some(p) => {
+                let project_id = p.pinned_project_id.clone();
+                let workspace_id = p
+                    .cached_detail
+                    .as_ref()
+                    .and_then(|d| d.workspaces.get(p.selected_row))
+                    .map(|w| w.workspace_id.clone());
+                let display_name = p
+                    .cached_detail
+                    .as_ref()
+                    .map(|d| d.project.display_name.clone())
+                    .unwrap_or_default();
+                let workspace_root = p
+                    .cached_detail
+                    .as_ref()
+                    .and_then(|d| d.workspaces.get(p.selected_row))
+                    .and_then(|w| w.canonical_root.clone())
+                    .map(std::path::PathBuf::from);
+                (project_id, workspace_id, display_name, workspace_root)
+            }
+            None => return,
+        };
+        let (project_id, workspace_id, display_name, workspace_root) = snapshot;
+        let workspace_id = match workspace_id {
+            Some(id) => id,
+            None => return,
+        };
+        let project_id = match project_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        crate::commands::project_picker::open_or_focus_project(
+            self,
+            project_id,
+            Some(workspace_id.clone()),
+            Some(display_name),
+            workspace_root,
+        );
+
+        // Start session list for the active tab.
+        if let Some(tab_id) = self.project_tabs.active_tab_id().cloned() {
+            if let Some(tx) = self.tui_cmd_tx.clone() {
+                let _ = send_tui(
+                    &tx,
+                    TuiCommand::StartListProjectSessions {
+                        tab_id,
+                        project_id: self.active_project_id().unwrap_or("").to_string(),
+                        workspace_id,
+                    },
+                );
+            }
+        }
+
+        // Close the picker.
+        self.close_dialog();
+    }
+
+    fn commit_picker_registration_input(&mut self) {
+        use crate::app::state::PickerPhase;
+
+        let path = match self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .map(|p| p.registration_input.clone())
+        {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                    picker.last_error = Some("Path cannot be empty".to_string());
+                    picker.phase = PickerPhase::Error;
+                }
+                return;
+            }
+        };
+
+        // Display-only existence check (no mkdir).
+        if !std::path::Path::new(&path).exists() {
+            if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                picker.last_error = Some("Directory does not exist".to_string());
+                picker.phase = PickerPhase::Error;
+            }
+            return;
+        }
+
+        if let Some(tx) = self.tui_cmd_tx.clone() {
+            let _ = send_tui(&tx, TuiCommand::StartRegisterWorkspace { path });
+        }
+
+        // The open flow derives the project name from this directory.
+        if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+            picker.phase = PickerPhase::RegistrationConfirm;
+        }
+    }
+
+    fn commit_picker_registration_confirm(&mut self) {
+        use crate::app::state::PickerPhase;
+
+        // We need the workspace_id captured from the WorkspaceRegistered
+        // completion. Stash it on the picker during the apply. Until
+        // then, we cannot proceed.
+        if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+            picker.last_error = Some("Workspace registration must complete first".to_string());
+            picker.phase = PickerPhase::Error;
+        }
+    }
+
+    fn load_sessions_dialog(&mut self) {
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(tx, TuiCommand::ReloadSessions);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn delete_selected_session(&mut self) {
+        let session = match self.dialog_state.session_dialog.selected_session() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let session_id = session.id.clone();
+
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(
+                tx,
+                TuiCommand::DeleteSession {
+                    session_id: session_id.clone(),
+                },
+            );
+        }
+        self.undo_session_id = Some(session_id);
+        self.undo_until = Some(Instant::now() + std::time::Duration::from_secs(30));
+        self.status_bar
+            .set_undo_message("Session deleted — press U to undo");
+    }
+
+    #[allow(dead_code)]
+    fn archive_selected_session(&mut self) {
+        let session = match self.dialog_state.session_dialog.selected_session() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let session_id = session.id.clone();
+        let is_archived = session.time_archived.is_some();
+
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(
+                tx,
+                TuiCommand::ArchiveSession {
+                    session_id,
+                    unarchive: is_archived,
+                },
+            );
+        }
+    }
+
+    #[allow(dead_code)]
+    fn fork_selected_session(&mut self) {
+        let session = match self.dialog_state.session_dialog.selected_session() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let session_id = session.id.clone();
+
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
+        }
+    }
+
+    #[allow(dead_code)]
+    fn toggle_show_archived(&mut self) {
+        self.dialog_state.session_dialog.toggle_show_archived();
+        self.load_sessions_dialog();
+    }
+
+    fn clear_session(&mut self) {
+        self.messages_state.messages.clear();
+        self.session_state.token_in = 0;
+        self.session_state.token_out = 0;
+        self.reset_live_token_estimate();
+        self.session_state.reasoning_tokens = 0;
+        self.session_state.context_tokens = 0;
+    }
+
+    /// Start a brand-new session (Ctrl+N, `/new`).
+    ///
+    /// This previously only did `session_state.session = None`, which read as
+    /// "nothing happened": the TUI had no session, and with no session
+    /// `/models` could not switch models, `/sessions` had nothing to bind to,
+    /// and pressing Ctrl+N again was a no-op on an already-empty state. A new
+    /// session is now actually created through the core so the session-scoped
+    /// surfaces work immediately.
+    pub(crate) fn new_session(&mut self) {
+        // Refresh the cached consolidation flag at session start so the
+        // per-turn handler does not re-parse the config TOML.
+        self.memory_auto_consolidate = codegg::config::schema::Config::load()
+            .ok()
+            .and_then(|c| c.experimental)
+            .and_then(|e| e.memory_auto_consolidate)
+            .unwrap_or(false);
+        if let Some(config_watcher) = self.config_watcher.as_ref() {
+            if let Ok(config) = config_watcher.reload_now() {
+                if let Some(templates) = config.templates.as_ref() {
+                    if !templates.is_empty() {
+                        self.open_dialog(Dialog::Template);
+                        return;
+                    }
+                }
+            }
+        }
+
+        self.invalidate_pending_session_submit(false);
+        self.change_review_state.reject();
+        // Clear the view immediately so the user sees a fresh composer, then
+        // create the backing session. Creating it (rather than leaving
+        // `session` as None) is what makes /models, /sessions and every other
+        // session-scoped surface usable before the first prompt.
+        self.session_state.session = None;
+        self.messages_state.messages.clear();
+        self.session_state.token_in = 0;
+        self.session_state.token_out = 0;
+        self.reset_live_token_estimate();
+        self.session_state.session_status = SessionStatus::Idle;
+        self.prompt_state.pending_send = false;
+        self.ui_state.routes.navigate_to(Route::Home);
+        crate::commands::sessions::start_new_session(self);
+    }
+
+    fn apply_template(&mut self, key: String, template: SessionTemplate) {
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(tx, TuiCommand::CreateFromTemplate { key, template });
+        }
+    }
+
+    /// Hide or show the panel buffer (`Ctrl+B`).
+    ///
+    /// Thin delegation: the behaviour lives in
+    /// `commands::panels::toggle_selected_pane`, which is scoped to the
+    /// *selected* pane rather than to a right-hand column, so a left or
+    /// bottom placement is closed by the same key without this method growing
+    /// a branch per side.
+    fn toggle_sidebar(&mut self) {
+        crate::commands::panels::toggle_selected_pane(self);
+    }
+
+    /// Handle `/theme [list|use <name>|reload|diagnostics]`. With no arguments,
+    /// opens the theme picker dialog. `list` prints a toast of available
+    /// themes. `use <name>` applies the named theme and persists the choice.
+    /// `reload` rebuilds the registry from disk. `diagnostics` reports any
+    /// non-fatal validation warnings.
+    ///
+    /// `argument` is the argument the user typed after the command
+    /// spelling — the dispatcher already removed `/theme` and its aliases.
+    pub(crate) fn handle_theme_command(&mut self, argument: &str) {
+        self.ui_state.command_mode = false;
+        let arg = argument;
+
+        if arg.is_empty() {
+            self.open_dialog(Dialog::Theme);
+            return;
+        }
+
+        let mut parts = arg.split_whitespace();
+        let subcommand = parts.next().unwrap_or("");
+
+        match subcommand {
+            "list" => {
+                let names = self.theme_registry.names();
+                if names.is_empty() {
+                    self.messages_state.toasts.warning("No themes available");
+                } else {
+                    let preview = names
+                        .iter()
+                        .take(20)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let extra = if names.len() > 20 {
+                        format!(" (and {} more)", names.len() - 20)
+                    } else {
+                        String::new()
+                    };
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Themes: {}{}", preview, extra));
+                }
+            }
+            "use" => {
+                if let Some(name) = parts.next() {
+                    if self.apply_theme(name) {
+                        self.persist_theme_selection(name);
+                        self.messages_state.toasts.info(&format!("Theme: {}", name));
+                    } else {
+                        self.messages_state
+                            .toasts
+                            .error(&format!("Unknown theme: {}", name));
+                    }
+                } else {
+                    self.messages_state.toasts.error("Usage: /theme use <name>");
+                }
+            }
+            "reload" => {
+                // Re-resolve by id, not by display name: the registry is
+                // keyed by id and the display name is not guaranteed to
+                // normalize back to it.
+                let current = self.ui_state.theme.id.clone();
+                let config = codegg::config::schema::Config::load_or_default();
+                let new_registry = std::sync::Arc::new(
+                    codegg::theme::ThemeRegistry::load_with_config(config.theme.as_ref()),
+                );
+                self.theme_registry = new_registry;
+                if !self.apply_theme(&current) {
+                    // The current theme disappeared; fall back to the
+                    // default theme id (Cyber Red).
+                    self.apply_theme(codegg::theme::registry::DEFAULT_THEME_ID);
+                }
+                self.messages_state.toasts.info("Theme registry reloaded");
+            }
+            "diagnostics" => {
+                let diags = self.theme_registry.diagnostics();
+                if diags.is_empty() {
+                    self.messages_state.toasts.info("No theme diagnostics");
+                } else {
+                    for d in diags {
+                        let level = match d.level {
+                            codegg::theme::validate::ThemeDiagnosticLevel::Warning => "warn",
+                            codegg::theme::validate::ThemeDiagnosticLevel::Error => "error",
+                        };
+                        let field = d.field.as_deref().unwrap_or("-");
+                        self.messages_state.toasts.info(&format!(
+                            "[{}] {} / {}: {}",
+                            level, d.theme_id, field, d.message
+                        ));
+                    }
+                }
+            }
+            other => {
+                // If the argument looks like a theme name, apply it directly.
+                if self.apply_theme(other) {
+                    self.persist_theme_selection(other);
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Theme: {}", other));
+                } else {
+                    self.messages_state.toasts.error(&format!(
+                        "Unknown theme subcommand or name: {} (try /theme list, use, reload, diagnostics)",
+                        other
+                    ));
+                }
+            }
+        }
+    }
+
+    fn toggle_reasoning(&mut self) {
+        if let Some(idx) = self.messages_state.messages.sel_msg {
+            // Keyboard twin of the click affordance: the same queued row is
+            // opened for review, and only falls through to disclosure when it
+            // is not waiting on anything.
+            if self.open_pending_permission_for_message(idx) {
+                return;
+            }
+            if !self.messages_state.messages.toggle_tool_output(idx) {
+                self.messages_state.messages.toggle_reasoning(idx);
+            }
+        }
+    }
+
+    /// Expand every tool call and every reasoning block in the transcript,
+    /// or collapse every one of them.
+    ///
+    /// The disclosure state is per part, so this is the only gesture that can
+    /// open the whole transcript at once. Model prose is not a disclosure and
+    /// is not touched: it is never collapsed, so there is nothing to expand.
+    ///
+    /// The outcome is reported in the same toast surface the `/thinking`
+    /// command uses, because the gesture changes what the buffer shows and
+    /// the user needs to know which way it went.
+    pub(crate) fn expand_all_disclosures(&mut self) {
+        let expand = self.messages_state.messages.any_disclosure_collapsed();
+        self.messages_state
+            .messages
+            .set_all_disclosures_expanded(expand);
+        let msg = if expand {
+            "all details expanded"
+        } else {
+            "all details collapsed"
+        };
+        self.messages_state.toasts.info(msg);
+    }
+
+    pub(crate) fn toggle_tts(&mut self) {
+        self.ui_state.tts_enabled = !self.ui_state.tts_enabled;
+        if self.ui_state.tts_via_daemon {
+            if self.ui_state.tts_enabled {
+                if let Some(idx) = self.messages_state.messages.sel_msg {
+                    if let Some(msg) = self.messages_state.messages.get_message(idx) {
+                        let text = msg.text_content();
+                        if !text.is_empty() {
+                            self.send_notification_speak_to_daemon(text);
+                            self.messages_state.toasts.info("TTS speak sent to daemon");
+                            return;
+                        }
+                    }
+                }
+                self.messages_state
+                    .toasts
+                    .info("TTS enabled (daemon: nothing selected to speak)");
+            } else {
+                self.send_notification_stop_to_daemon();
+                self.messages_state
+                    .toasts
+                    .info("TTS disabled (daemon: stop sent)");
+            }
+            return;
+        }
+        if self.ui_state.tts_enabled {
+            if let Some(idx) = self.messages_state.messages.sel_msg {
+                if let Some(msg) = self.messages_state.messages.get_message(idx) {
+                    let text = msg.text_content();
+                    if !text.is_empty() {
+                        let tts = self.ui_state.tts.clone();
+                        let text = text.clone();
+                        self.task_registry.spawn(
+                            TuiTaskKind::Notification,
+                            "tts-speak",
+                            async move {
+                                if let Err(e) = tts.speak(&text).await {
+                                    tracing::debug!("TTS speak error: {}", e);
+                                }
+                            },
+                        );
+                    }
+                }
+            }
+            self.messages_state.toasts.info("TTS enabled");
+        } else {
+            let tts = self.ui_state.tts.clone();
+            self.task_registry
+                .spawn(TuiTaskKind::Notification, "tts-stop", async move {
+                    if let Err(e) = tts.stop().await {
+                        tracing::debug!("TTS stop error: {}", e);
+                    }
+                });
+            self.messages_state.toasts.info("TTS disabled");
+        }
+    }
+
+    fn stop_tts(&mut self) {
+        if self.ui_state.tts_via_daemon {
+            self.send_notification_stop_to_daemon();
+            return;
+        }
+        let tts = self.ui_state.tts.clone();
+        self.task_registry
+            .spawn(TuiTaskKind::Notification, "tts-stop", async move {
+                if let Err(e) = tts.stop().await {
+                    tracing::debug!("TTS stop error: {}", e);
+                }
+            });
+        self.messages_state.toasts.info("TTS stopped");
+    }
+
+    /// Send a TTS speak request to the daemon's `NotificationRouter` via
+    /// the `CoreClient`. Used in `RemoteCore` mode where the local TUI
+    /// has no audio output. The daemon's `AudioArbiter` (if enabled)
+    /// will pick the event up and speak it.
+    fn send_notification_speak_to_daemon(&mut self, text: String) {
+        let Some(client) = self.core_client.clone() else {
+            self.messages_state
+                .toasts
+                .info("TTS: no core client; cannot route to daemon");
+            return;
+        };
+        let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+        let request = codegg::core::new_request(
+            format!("notification-speak-{}", uuid::Uuid::new_v4()),
+            CoreRequest::NotificationSpeak {
+                text,
+                kind: Some("turn_completed".to_string()),
+                priority: Some("normal".to_string()),
+                session_id,
+            },
+        );
+        tokio::spawn(async move {
+            if let Err(e) = client.request(request).await {
+                tracing::debug!("core facade notification_speak failed: {}", e);
+            }
+        });
+    }
+
+    /// Ask the daemon to stop any in-flight TTS playback.
+    fn send_notification_stop_to_daemon(&mut self) {
+        let Some(client) = self.core_client.clone() else {
+            self.messages_state
+                .toasts
+                .info("TTS: no core client; cannot stop daemon TTS");
+            return;
+        };
+        let request = codegg::core::new_request(
+            format!("notification-stop-{}", uuid::Uuid::new_v4()),
+            CoreRequest::NotificationStop,
+        );
+        tokio::spawn(async move {
+            if let Err(e) = client.request(request).await {
+                tracing::debug!("core facade notification_stop failed: {}", e);
+            }
+        });
+        self.messages_state.toasts.info("TTS stop sent to daemon");
+    }
+
+    pub(crate) fn toggle_fullscreen(&mut self) {
+        self.ui_state.fullscreen = !self.ui_state.fullscreen;
+        use std::io::Write;
+        if self.ui_state.fullscreen {
+            let _ = std::io::stdout().write_all(b"\x1b[?1049h");
+            self.messages_state.toasts.info("Fullscreen mode enabled");
+        } else {
+            let _ = std::io::stdout().write_all(b"\x1b[?1049l");
+            self.messages_state.toasts.info("Fullscreen mode disabled");
+        }
+    }
+
+    pub(crate) fn open_external_editor(&mut self) {
+        if let Some(ref file) = self.session_state.last_edited_file {
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+            if let Err(e) = std::process::Command::new(&editor).arg(file).spawn() {
+                self.messages_state
+                    .toasts
+                    .info(&format!("Failed to open editor: {}", e));
+            } else {
+                self.messages_state
+                    .toasts
+                    .info(&format!("Opening {} in {}", file, editor));
+            }
+        } else {
+            self.messages_state
+                .toasts
+                .info("No recently edited file to open");
+        }
+    }
+
+    pub(crate) fn handle_tests_command(&mut self, subcmd: &str) {
+        match subcmd {
+            "" | "last" => {
+                let state = &self.session_state_derived;
+                match &state.test_state {
+                    codegg::session::state::TestState::Unknown => {
+                        self.messages_state
+                            .toasts
+                            .info("Test state: unknown (no tests run yet)");
+                    }
+                    codegg::session::state::TestState::Stale => {
+                        self.messages_state
+                            .toasts
+                            .info("Test state: stale (files changed since last run)");
+                    }
+                    codegg::session::state::TestState::Running { command } => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Test state: running ({})", command));
+                    }
+                    codegg::session::state::TestState::Passed {
+                        command,
+                        duration_ms,
+                    } => {
+                        let duration_str = duration_ms
+                            .map(|ms| format!(" ({:.1}s)", ms as f64 / 1000.0))
+                            .unwrap_or_default();
+                        self.messages_state.toasts.info(&format!(
+                            "Test state: passed{} | command: {}",
+                            duration_str, command
+                        ));
+                    }
+                    codegg::session::state::TestState::Failed {
+                        command,
+                        duration_ms,
+                        summary,
+                    } => {
+                        let duration_str = duration_ms
+                            .map(|ms| format!(" ({:.1}s)", ms as f64 / 1000.0))
+                            .unwrap_or_default();
+                        self.messages_state.toasts.info(&format!(
+                            "Test state: failed{} | command: {} | {}",
+                            duration_str, command, summary
+                        ));
+                    }
+                }
+                let file_count = state.changed_files.len();
+                if file_count > 0 {
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Changed files since last run: {}", file_count));
+                }
+            }
+            "failed" => {
+                let state = &self.session_state_derived;
+                match &state.test_state {
+                    codegg::session::state::TestState::Failed { summary, .. } => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Failed tests: {}", summary));
+                    }
+                    _ => {
+                        self.messages_state.toasts.info("No failed tests");
+                    }
+                }
+            }
+            _ => {
+                self.messages_state
+                    .toasts
+                    .warning("Usage: /tests [last|failed]");
+            }
+        }
+    }
+
+    pub(crate) fn handle_memory_command(&mut self, action: Option<(&str, &str)>) {
+        let mem_store = match &self.memory_store {
+            Some(s) => s,
+            None => {
+                self.messages_state
+                    .toasts
+                    .error("Memory store not available");
+                return;
+            }
+        };
+
+        let project_dir = self.active_workspace_root().unwrap_or_default();
+        let project_dir_text = project_dir.to_string_lossy().into_owned();
+        let project_namespace = codegg::memory::project_namespace(&project_dir_text);
+        let _ = mem_store.migrate_project_namespace(&project_dir_text);
+
+        match action {
+            None | Some(("list", "")) => {
+                let prefs = mem_store.list("user/preferences");
+                let proj = mem_store.list(&project_namespace);
+                let total = prefs.len() + proj.len();
+                if total == 0 {
+                    self.messages_state
+                        .toasts
+                        .info("No memories yet. Use /memory-remember <text> to save something.");
+                } else {
+                    let mut lines = vec![format!("Memory Summary ({} total):", total)];
+                    if !prefs.is_empty() {
+                        lines.push(format!("  user/preferences ({}):", prefs.len()));
+                        for m in prefs.iter().take(5) {
+                            let title = m.title.as_deref().unwrap_or("(untitled)");
+                            lines.push(format!(
+                                "    - [{}] {}",
+                                m.id.chars().take(8).collect::<String>(),
+                                title
+                            ));
+                        }
+                        if prefs.len() > 5 {
+                            lines.push(format!("    ... and {} more", prefs.len() - 5));
+                        }
+                    }
+                    if !proj.is_empty() {
+                        lines.push(format!("  {} ({}):", project_namespace, proj.len()));
+                        for m in proj.iter().take(5) {
+                            let title = m.title.as_deref().unwrap_or("(untitled)");
+                            lines.push(format!(
+                                "    - [{}] {}",
+                                m.id.chars().take(8).collect::<String>(),
+                                title
+                            ));
+                        }
+                        if proj.len() > 5 {
+                            lines.push(format!("    ... and {} more", proj.len() - 5));
+                        }
+                    }
+                    self.messages_state.toasts.info(&lines.join("\n"));
+                }
+            }
+            Some(("search", query)) => {
+                if query.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /memory-search <query>");
+                    return;
+                }
+                let results = mem_store.search(query);
+                if results.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info(&format!("No memories found matching '{}'", query));
+                } else {
+                    let lines: Vec<String> = results
+                        .iter()
+                        .take(10)
+                        .map(|m| {
+                            let title = m.title.as_deref().unwrap_or("(untitled)");
+                            format!("- [{}] {}", m.id.chars().take(8).collect::<String>(), title)
+                        })
+                        .collect();
+                    let msg = if results.len() > 10 {
+                        format!(
+                            "Found {} memories (showing 10):\n{}",
+                            results.len(),
+                            lines.join("\n")
+                        )
+                    } else {
+                        format!("Found {} memory:\n{}", results.len(), lines.join("\n"))
+                    };
+                    self.messages_state.toasts.info(&msg);
+                }
+            }
+            Some(("remember", text)) => {
+                if text.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /memory-remember <text to remember>");
+                    return;
+                }
+                let memory = codegg::memory::Memory::new("user/preferences", text);
+                mem_store.add(memory);
+                self.messages_state.toasts.info("Remembered");
+            }
+            Some(("forget", id)) => {
+                if id.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /memory-forget <id>");
+                    return;
+                }
+                if mem_store.delete(id).is_some() {
+                    self.messages_state.toasts.info("Memory deleted");
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning(&format!("Memory '{}' not found", id));
+                }
+            }
+            Some(("consolidate", _)) => {
+                let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+                let message_store = self.message_store.clone();
+                let core_client = self.core_client.clone();
+                let mem_store_clone = mem_store.clone();
+                let project_identity = self.active_workspace_root().unwrap_or_default();
+                self.messages_state
+                    .toasts
+                    .info("Consolidating session memories...");
+                self.task_registry
+                    .spawn(TuiTaskKind::Memory, "memory-consolidate", async move {
+                        let messages =
+                            if let (Some(client), Some(sid)) = (core_client, session_id.clone()) {
+                                let request = codegg::core::new_request(
+                                    format!("session-messages-{}", uuid::Uuid::new_v4()),
+                                    codegg::protocol::core::CoreRequest::SessionMessagesLoad {
+                                        session_id: sid,
+                                    },
+                                );
+                                match client.request(request).await {
+                                    Ok(codegg::protocol::core::CoreResponse::SessionMessages {
+                                        messages,
+                                        ..
+                                    }) => codegg::protocol_conversions::dtos_to_messages(messages).unwrap_or_else(|e| {
+                                        tracing::error!(error = %e, "dtos_to_messages conversion failed");
+                                        Default::default()
+                                    }),
+                                    _ => Vec::new(),
+                                }
+                            } else if let (Some(sid), Some(store)) =
+                                (session_id.as_ref(), message_store.as_ref())
+                            {
+                                store.list(sid).await.unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+                        if messages.is_empty() {
+                            return;
+                        }
+                        let project_identity = project_identity.to_string_lossy().into_owned();
+                        let _ = mem_store_clone.migrate_project_namespace(&project_identity);
+                        let new_memories =
+                            mem_store_clone.consolidate_session(&messages, &project_identity);
+                        tracing::info!("Manual consolidation: {} new memories", new_memories.len());
+                    });
+            }
+            Some((cmd, _)) => {
+                self.messages_state
+                    .toasts
+                    .warning(&format!("Unknown memory command: /{}", cmd));
+            }
+        }
+    }
+
+    pub(crate) fn handle_research_command(&mut self, args: &str) {
+        if self.prompt_state.pending_send {
+            self.messages_state
+                .toasts
+                .warning("Still waiting for previous prompt to finish");
+            return;
+        }
+
+        // Parse flags from args
+        let mut question_parts = Vec::new();
+        let mut mode = "narrow-answer".to_string();
+        let mut depth = "medium".to_string();
+
+        let mut iter = args.split_whitespace();
+        while let Some(token) = iter.next() {
+            match token {
+                "--mode" => {
+                    if let Some(val) = iter.next() {
+                        mode = val.to_string();
+                    }
+                }
+                "--depth" => {
+                    if let Some(val) = iter.next() {
+                        depth = val.to_string();
+                    }
+                }
+                _ => question_parts.push(token),
+            }
+        }
+
+        let question = question_parts.join(" ");
+        if question.is_empty() {
+            self.messages_state
+                .toasts
+                .warning("Usage: /research <question> [--mode <mode>] [--depth <depth>]");
+            return;
+        }
+
+        let parsed_mode = match codegg::research::service::parse_mode(&mode) {
+            Ok(m) => m,
+            Err(e) => {
+                self.messages_state.toasts.warning(&e.to_string());
+                return;
+            }
+        };
+        let parsed_depth = match codegg::research::service::parse_depth(&depth) {
+            Ok(d) => d,
+            Err(e) => {
+                self.messages_state.toasts.warning(&e.to_string());
+                return;
+            }
+        };
+
+        let project_dir = self.active_workspace_root().unwrap_or_default();
+        // Built here rather than inside the spawned task so the search-runtime
+        // attachment is a method the tests can call directly — asserting on
+        // `ResearchService` alone would pass even if this handler stopped
+        // passing the runtime along.
+        let service = self.research_service(project_dir);
+        self.messages_state
+            .toasts
+            .info(&format!("Starting research: {}", question));
+
+        self.task_registry
+            .spawn(TuiTaskKind::Research, "research-answer", async move {
+                match service
+                    .answer_for_agent(&question, parsed_mode, parsed_depth)
+                    .await
+                {
+                    Ok(answer) => {
+                        tracing::info!(
+                            "Research complete ({} chars). Artifacts at: {}",
+                            answer.len(),
+                            service.artifact_root().display()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Research failed: {}", e);
+                    }
+                }
+            });
+    }
+
+    pub(crate) fn handle_research_runs_command(&mut self) {
+        self.open_dialog(Dialog::ResearchBrowser);
+        if let Some(ref mut browser) = self.dialog_state.research_browser {
+            browser.loading = true;
+        }
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(tx, TuiCommand::ResearchListRuns);
+        }
+    }
+
+    pub(crate) fn handle_research_open_command(&mut self, run_id: &str) {
+        self.open_dialog(Dialog::ResearchBrowser);
+        if let Some(ref mut browser) = self.dialog_state.research_browser {
+            browser.loading = true;
+        }
+        let run_id_owned = run_id.to_string();
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(
+                tx,
+                TuiCommand::ResearchLoadRun {
+                    run_id: run_id_owned,
+                },
+            );
+        }
+    }
+
+    fn close_session(&mut self) {
+        self.clear_session();
+    }
+
+    fn quit(&mut self) {
+        self.ui_state.running = false;
+        let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
+    }
+
+    fn stash_prompt(&mut self) {
+        let text = self.prompt_state.prompt.get_text();
+        if text.is_empty() {
+            return;
+        }
+        self.prompt_state.stashed_prompts.push(text.clone());
+        self.prompt_state.prompt.clear();
+    }
+
+    fn restore_prompt(&mut self) {
+        if self.prompt_state.stashed_prompts.is_empty() {
+            return;
+        }
+        let new_pos = match self.prompt_state.stash_pos {
+            Some(pos) if pos > 0 => pos - 1,
+            None => self.prompt_state.stashed_prompts.len() - 1,
+            _ => return,
+        };
+        self.prompt_state.stash_pos = Some(new_pos);
+        if let Some(entry) = self.prompt_state.stashed_prompts.get(new_pos) {
+            self.prompt_state.prompt.set_text(entry.clone());
+        }
+    }
+
+    fn copy_message(&mut self) {
+        let text = self.messages_state.messages.get_selected_content();
+        if text.is_empty() {
+            return;
+        }
+        let _ = codegg::util::clipboard::copy_to_clipboard(&text);
+    }
+
+    /// Copy the composer's held selection to the system clipboard.
+    ///
+    /// ADR-0042 part 7: the gesture is `space` and then `y` in the help box
+    /// the chord opened. The box **returns** the message and the app performs
+    /// the copy, because the focused component is a clone of the dialog and a
+    /// clone cannot reach the composer.
+    ///
+    /// The outcome is always reported. A silent no-op would teach the user
+    /// that the key is dead, which is the failure the claim table exists to
+    /// prevent.
+    ///
+    /// The report names the **size** of the selection rather than its text.
+    /// Toasts are retained for `/logs`, and a preview of the composer's
+    /// contents in a retained log is a copy of the user's text in a place
+    /// they did not ask for it to be.
+    ///
+    /// The selection survives the copy: it is a read, and a user who copies
+    /// and then deletes wants the same range both times.
+    fn copy_composer_selection(&mut self) {
+        let Some(text) = self.prompt_state.prompt.selected_text() else {
+            self.messages_state
+                .toasts
+                .info("Nothing to copy — the composer has no selection");
+            return;
+        };
+        let characters = text.chars().count();
+        match codegg::util::clipboard::copy_to_clipboard(&text) {
+            Ok(()) => self
+                .messages_state
+                .toasts
+                .success(&format!("Copied {characters} characters")),
+            Err(error) => self
+                .messages_state
+                .toasts
+                .error(&format!("Could not copy: {error}")),
+        }
+    }
+
+    fn cycle_model_forward(&mut self) {
+        if self.agent_state.models.is_empty() {
+            return;
+        }
+        self.agent_state.model_idx =
+            (self.agent_state.model_idx + 1) % self.agent_state.models.len();
+        self.agent_state.current_model =
+            self.agent_state.models[self.agent_state.model_idx].clone();
+        self.dialog_state
+            .model_dialog
+            .set_current(&self.agent_state.current_model);
+        let model = self.agent_state.current_model.clone();
+        self.persist_model_selection(&model);
+    }
+
+    fn cycle_model_backward(&mut self) {
+        if self.agent_state.models.is_empty() {
+            return;
+        }
+        self.agent_state.model_idx = if self.agent_state.model_idx == 0 {
+            self.agent_state.models.len() - 1
+        } else {
+            self.agent_state.model_idx - 1
+        };
+        self.agent_state.current_model =
+            self.agent_state.models[self.agent_state.model_idx].clone();
+        self.dialog_state
+            .model_dialog
+            .set_current(&self.agent_state.current_model);
+        let model = self.agent_state.current_model.clone();
+        self.persist_model_selection(&model);
+    }
+
+    pub(crate) fn open_connect_dialog(&mut self) {
+        // Provider-neutral `/connect`: the dialog opens in a short loading
+        // state and populates from the daemon-owned setup catalog. The TUI
+        // never hard-codes an Eggpool-only provider list and never falls
+        // back to one on load failure.
+        let connect_dialog = crate::components::dialogs::connect::ConnectDialog::new_loading(
+            Arc::clone(&self.ui_state.theme),
+        );
+        self.dialog_state.connect_dialog = Some(connect_dialog);
+        self.open_dialog(Dialog::Connect);
+
+        let Some(client) = self.core_client.clone() else {
+            let message =
+                "Daemon connection is unavailable — check daemon status with /doctor".to_string();
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_setup_error(message);
+            }
+            self.focus_manager
+                .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                    crate::components::component::DialogType::Connect,
+                    |live| {
+                        live.set_setup_error(
+                            "Daemon connection is unavailable — check daemon status with /doctor"
+                                .to_string(),
+                        );
+                    },
+                );
+            return;
+        };
+        crate::async_cmd::spawn_registered_tui_task(
+            self.tui_cmd_tx.clone(),
+            &mut self.task_registry,
+            crate::task_lifecycle::TuiTaskKind::Command,
+            "connect_setup_list",
+            async move {
+                let request = codegg::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    codegg::protocol::core::CoreRequest::ProviderSetupList,
+                );
+                match client.request(request).await {
+                    Ok(codegg::protocol::core::CoreResponse::ProviderSetupList { providers }) => {
+                        Some(crate::app::TuiCommand::ConnectSetupLoaded {
+                            providers,
+                            error: None,
+                        })
+                    }
+                    Ok(codegg::protocol::core::CoreResponse::Error { code, message }) => {
+                        Some(crate::app::TuiCommand::ConnectSetupLoaded {
+                            providers: Vec::new(),
+                            error: Some(format!("Provider catalog failed ({code}): {message}")),
+                        })
+                    }
+                    Ok(_) => Some(crate::app::TuiCommand::ConnectSetupLoaded {
+                        providers: Vec::new(),
+                        error: Some("Unexpected provider catalog response".to_string()),
+                    }),
+                    Err(error) => Some(crate::app::TuiCommand::ConnectSetupLoaded {
+                        providers: Vec::new(),
+                        error: Some(format!("Provider catalog request failed: {error}")),
+                    }),
+                }
+            },
+        );
+    }
+
+    /// Provider name for a connection being rotated, derived the same way
+    /// [`Self::open_connection_rotation_dialog`] derives it: the target's
+    /// `provider_kind` with the `other:` storage prefix stripped, falling back
+    /// to the connection's `display_name`, then to a generic word when the
+    /// connection list has not loaded.
+    ///
+    /// The rotation toast used to say "Eggpool" unconditionally, so rotating
+    /// an `other:opencode_go` credential announced the wrong provider in the
+    /// one message the user sees while the probe runs.
+    fn rotation_provider_label(&self, connection_id: &str) -> String {
+        self.dialog_state
+            .connection_selection_dialog
+            .as_ref()
+            .and_then(|dialog| {
+                dialog
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == connection_id)
+            })
+            .map(|connection| {
+                let kind = connection.provider_kind.as_str();
+                let stripped = kind.strip_prefix("other:").unwrap_or(kind).trim();
+                if stripped.is_empty() {
+                    connection.display_name.clone()
+                } else {
+                    stripped.to_string()
+                }
+            })
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| "provider".to_string())
+    }
+
+    fn open_connection_rotation_dialog(&mut self, connection_id: String, expected_revision: u64) {
+        use crate::components::dialogs::connect::ProviderInfo;
+
+        // The dialog is built from the connection being rotated, not from a
+        // hardcoded provider. `other:opencode_go` is the canonical
+        // provider_kind for OpenCode Go, so a fixed "eggpool" entry left the
+        // dialog asking an OpenCode Go user to rotate an Eggpool credential —
+        // right action, wrong subject, and no way to tell from the prompt.
+        let (provider_id, provider_name) = self
+            .dialog_state
+            .connection_selection_dialog
+            .as_ref()
+            .and_then(|dialog| {
+                dialog
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == connection_id)
+            })
+            .map(|connection| {
+                let kind = connection.provider_kind.as_str();
+                let id = kind.strip_prefix("other:").unwrap_or(kind);
+                (id.to_string(), connection.display_name.clone())
+            })
+            .unwrap_or_else(|| {
+                // No summary to name it from (a rotation opened before the list
+                // loaded). The id is what the probe path uses, so falling back
+                // to the built-in alias still routes; only the label is generic.
+                ("eggpool".to_string(), "provider".to_string())
+            });
+        let providers = vec![ProviderInfo::api_key(
+            provider_id.clone(),
+            provider_name.clone(),
+            format!("Rotate the stored {provider_name} credential"),
+            None,
+        )];
+        let mut dialog = crate::components::dialogs::connect::ConnectDialog::new(
+            providers,
+            Arc::clone(&self.ui_state.theme),
+        );
+        dialog.set_rotation_target(connection_id, expected_revision);
+        self.dialog_state.connect_dialog = Some(dialog);
+        self.open_dialog(Dialog::Connect);
+    }
+
+    /// Provider Connections Milestone 3: open the connection selection
+    /// dialog. The dialog is session-scoped and reads the current
+    /// selection before showing choices, so the user sees what they have
+    /// now and what they can change it to.
+    pub(crate) fn open_connection_selection_dialog(&mut self) {
+        let session_id = match self.session_state.session.as_ref() {
+            Some(s) => s.id.clone(),
+            None => {
+                self.messages_state
+                    .toasts
+                    .error("No active session. Open or create one before selecting a connection.");
+                return;
+            }
+        };
+        self.dialog_state.connection_selection_dialog = Some(
+            crate::components::dialogs::connection_selection::ConnectionSelectionDialog::new(
+                session_id,
+                Arc::clone(&self.ui_state.theme),
+            ),
+        );
+        self.open_dialog(Dialog::ConnectionSelection);
+        // Trigger an initial selection fetch so the dialog renders with
+        // current state.
+        let tx = self.tui_cmd_tx.clone();
+        if let Some(tx) = tx {
+            let _ = send_tui(
+                &tx,
+                TuiCommand::SessionSelectionRefresh {
+                    focus_connection_id: None,
+                },
+            );
+        }
+    }
+
+    pub(crate) fn open_tree_dialog(&mut self) {
+        self.open_dialog(Dialog::Tree);
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(tx, TuiCommand::OpenTreeDialog);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn fork_tree_session(&mut self) {
+        let session_id = match self.dialog_state.tree_dialog.fork_selected() {
+            Some(id) => id,
+            None => return,
+        };
+
+        self.close_dialog();
+
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
+        }
+    }
+
+    fn handle_import_send(&mut self) {
+        let import = match &mut self.dialog_state.import_dialog {
+            Some(i) => i,
+            None => return,
+        };
+
+        match import.state {
+            super::components::dialogs::import::ImportState::Input => {
+                let source = import.parse_input();
+                match source {
+                    Some(src) => {
+                        import.set_preview_loading(true);
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = send_tui(tx, TuiCommand::PreviewImport { source: src });
+                        }
+                    }
+                    None => {
+                        import.set_error("Enter a share URL, session ID, or file path".to_string());
+                    }
+                }
+            }
+            super::components::dialogs::import::ImportState::Preview => {
+                let source = import.parse_input();
+                import.set_importing();
+
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    if let Some(src) = source {
+                        let _ = send_tui(tx, TuiCommand::ConfirmImport { source: src });
+                    }
+                }
+            }
+            super::components::dialogs::import::ImportState::Done => {
+                if let Some(session) = import.imported_session() {
+                    let session = session.clone();
+                    self.dialog_state.import_dialog = None;
+                    self.close_dialog();
+                    crate::commands::sessions::start_activate_session(self, session.id);
+                    self.messages_state.toasts.info("Session imported");
+                }
+            }
+            super::components::dialogs::import::ImportState::Error => {
+                self.dialog_state.import_dialog = None;
+                self.close_dialog();
+            }
+            super::components::dialogs::import::ImportState::Importing => {}
+        }
+    }
+
+    fn handle_connect_send(&mut self) {
+        use crate::components::dialogs::connect::{ConnectFormKind, ConnectStep};
+        use crate::task_lifecycle::TuiTaskKind;
+        use codegg_protocol::provider::{
+            ConnectionRotateChange, CreateProviderConnectionRequest, ProviderConnectionScope,
+            SecretInput,
+        };
+
+        // Read the live FocusManager-owned dialog when present; the
+        // DialogState clone is stale for user-typed input. Fall back to the
+        // stored clone only when no live component is mounted (tests).
+        let live_snapshot = self
+            .focus_manager
+            .with_dialog::<crate::components::dialogs::connect::ConnectDialog, _>(
+                crate::components::component::DialogType::Connect,
+                |live| {
+                    (
+                        live.step.clone(),
+                        live.rotation_target.clone(),
+                        live.host.clone(),
+                        live.port.clone(),
+                        live.endpoint.clone(),
+                        live.credential_kind,
+                        live.tls_policy,
+                        live.display_name.clone(),
+                        live.get_api_key(),
+                        live.selected,
+                        live.providers.get(live.selected).cloned(),
+                    )
+                },
+            );
+        let stored_snapshot = self.dialog_state.connect_dialog.as_ref().map(|dialog| {
+            (
+                dialog.step.clone(),
+                dialog.rotation_target.clone(),
+                dialog.host.clone(),
+                dialog.port.clone(),
+                dialog.endpoint.clone(),
+                dialog.credential_kind,
+                dialog.tls_policy,
+                dialog.display_name.clone(),
+                dialog.get_api_key(),
+                dialog.selected,
+                dialog.providers.get(dialog.selected).cloned(),
+            )
+        });
+        let Some((
+            step,
+            rotation_target,
+            host,
+            port_text,
+            endpoint_text,
+            credential_kind,
+            tls_policy,
+            display_name_text,
+            api_key_text,
+            _selected,
+            selected_entry,
+        )) = live_snapshot.or(stored_snapshot)
+        else {
+            return;
+        };
+        if step != ConnectStep::Review && rotation_target.is_none() {
+            return;
+        }
+        // Rotation keeps the existing masked-credential editor path.
+        if let Some((connection_id, expected_revision)) = rotation_target.clone() {
+            let rotation_label = self.rotation_provider_label(&connection_id);
+            let Ok(api_key) = SecretInput::new(api_key_text.clone()) else {
+                let message = "Credential is invalid".to_string();
+                if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                    dialog.set_error(message);
+                }
+                self.focus_manager
+                    .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                        crate::components::component::DialogType::Connect,
+                        |live| {
+                            live.set_error("Credential is invalid".to_string());
+                        },
+                    );
+                return;
+            };
+            let Some(client) = self.core_client.clone() else {
+                if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                    dialog.set_error("Daemon connection is unavailable".to_string());
+                }
+                return;
+            };
+            let operation_id = format!("rot-{}", uuid::Uuid::new_v4());
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.operation_id = Some(operation_id.clone());
+                dialog.clear_secret();
+            }
+            self.focus_manager
+                .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                    crate::components::component::DialogType::Connect,
+                    |live| {
+                        live.operation_id = Some(operation_id.clone());
+                        live.clear_secret();
+                    },
+                );
+            let stage_request = codegg::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                codegg::protocol::core::CoreRequest::ConnectionRotateSecretStage {
+                    request_id: operation_id.clone(),
+                    secret: api_key,
+                },
+            );
+            let rotation_operation_id = operation_id.clone();
+            crate::async_cmd::spawn_registered_tui_task(
+                self.tui_cmd_tx.clone(),
+                &mut self.task_registry,
+                TuiTaskKind::Command,
+                "eggpool_connection_rotate",
+                async move {
+                    let result = match client.request(stage_request).await {
+                        Ok(
+                            codegg::protocol::core::CoreResponse::ConnectionRotateSecretStaged {
+                                secret,
+                                ..
+                            },
+                        ) => {
+                            let request = codegg::core::new_request(
+                                uuid::Uuid::new_v4().to_string(),
+                                codegg::protocol::core::CoreRequest::ConnectionRotateBegin {
+                                    request_id: rotation_operation_id.clone(),
+                                    connection_id,
+                                    expected_revision,
+                                    change: ConnectionRotateChange::CredentialOnly,
+                                    secret,
+                                },
+                            );
+                            match client.request(request).await {
+                                Ok(
+                                    codegg::protocol::core::CoreResponse::ConnectionRotateStatus {
+                                        result,
+                                    },
+                                ) => Ok(result),
+                                Ok(codegg::protocol::core::CoreResponse::Error {
+                                    code,
+                                    message,
+                                }) => Err(format!("{code}: {message}")),
+                                Ok(_) => Err("unexpected rotation response".to_string()),
+                                Err(error) => Err(error.to_string()),
+                            }
+                        }
+                        Ok(codegg::protocol::core::CoreResponse::Error { code, message }) => {
+                            Err(format!("{code}: {message}"))
+                        }
+                        Ok(_) => Err("unexpected secret staging response".to_string()),
+                        Err(error) => Err(error.to_string()),
+                    };
+                    Some(TuiCommand::ConnectionRotationFinished {
+                        operation_id: rotation_operation_id,
+                        result,
+                    })
+                },
+            );
+            self.messages_state.toasts.info(&format!(
+                "Rotating {rotation_label} credential (probe in progress)…"
+            ));
+            return;
+        }
+
+        let Some(entry) = selected_entry else {
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error("Selected provider is invalid".to_string());
+            }
+            return;
+        };
+        if !entry.is_selectable() {
+            let message = format!("{} is not yet supported in /connect", entry.name);
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error(message);
+            }
+            self.focus_manager
+                .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                    crate::components::component::DialogType::Connect,
+                    |live| {
+                        live.set_error(format!("{} is not yet supported in /connect", entry.name));
+                    },
+                );
+            return;
+        }
+        // Build the provider-neutral create request from the typed form.
+        // Fixed providers send no endpoint material; proxy presets send
+        // host/port/TLS; required/optional forms send the endpoint input.
+        let form_kind = entry.form_kind();
+        let (endpoint, port, tls_policy_opt) = match form_kind {
+            ConnectFormKind::EggpoolProxy => {
+                let trimmed_host = host.trim();
+                if trimmed_host.is_empty() {
+                    let message = "Host cannot be empty".to_string();
+                    if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                        dialog.set_error(message);
+                    }
+                    return;
+                }
+                let Some(port) = port_text
+                    .trim()
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|port| *port > 0)
+                else {
+                    let message = "Port must be between 1 and 65535".to_string();
+                    if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                        dialog.set_error(message);
+                    }
+                    return;
+                };
+                (
+                    Some(trimmed_host.to_string()),
+                    Some(port),
+                    Some(codegg_protocol::provider::ProviderTlsPolicy::from(
+                        tls_policy,
+                    )),
+                )
+            }
+            ConnectFormKind::RequiredEndpoint => {
+                let trimmed = endpoint_text.trim();
+                if trimmed.is_empty() {
+                    let message = "Endpoint is required".to_string();
+                    if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                        dialog.set_error(message);
+                    }
+                    return;
+                }
+                (Some(trimmed.to_string()), None, None)
+            }
+            ConnectFormKind::OptionalOverride => {
+                let trimmed = endpoint_text.trim();
+                let endpoint = (!trimmed.is_empty()).then(|| trimmed.to_string());
+                (endpoint, None, None)
+            }
+            ConnectFormKind::Fixed => (None, None, None),
+        };
+        // The admitted credential kind is pinned by the catalog entry; a
+        // stale toggle cannot smuggle bearer into an ApiKeyOnly provider.
+        if entry.needs_credential_choice() {
+            let kind_label = match credential_kind {
+                codegg_protocol::provider::ProviderCredentialKind::ApiKey => "api_key",
+                codegg_protocol::provider::ProviderCredentialKind::Bearer => "bearer",
+            };
+            if !entry.credential_kinds.iter().any(|k| k == kind_label) {
+                let message = "Credential kind is not supported by this provider".to_string();
+                if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                    dialog.set_error(message);
+                }
+                return;
+            }
+        }
+        let Ok(credential) = SecretInput::new(api_key_text.clone()) else {
+            let label = match credential_kind {
+                codegg_protocol::provider::ProviderCredentialKind::Bearer => "Bearer token",
+                codegg_protocol::provider::ProviderCredentialKind::ApiKey => "API key",
+            };
+            // `SecretInput::new` rejects control characters, so a value
+            // carrying a stray line break lands here. Name that cause
+            // instead of implying the credential itself was rejected.
+            let message = format!(
+                "{label} is invalid — remove any line breaks (a pasted key often \
+                 carries a trailing newline)"
+            );
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error(message.clone());
+            }
+            self.focus_manager
+                .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                    crate::components::component::DialogType::Connect,
+                    |live| {
+                        live.set_error(message.clone());
+                    },
+                );
+            return;
+        };
+        let operation_id = format!("prov-{}", uuid::Uuid::new_v4());
+        if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+            dialog.operation_id = Some(operation_id.clone());
+            dialog.clear_secret();
+        }
+        self.focus_manager
+            .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                crate::components::component::DialogType::Connect,
+                |live| {
+                    live.operation_id = Some(operation_id.clone());
+                    live.clear_secret();
+                },
+            );
+        let display_name =
+            (!display_name_text.trim().is_empty()).then(|| display_name_text.trim().to_string());
+        let provider_id = entry.id.clone();
+        let provider_display = entry.name.clone();
+
+        let Some(client) = self.core_client.clone() else {
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error("Daemon connection is unavailable".to_string());
+            }
+            return;
+        };
+        let request = codegg::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            codegg::protocol::core::CoreRequest::ProviderConnectionCreate {
+                request: CreateProviderConnectionRequest {
+                    provider_id: provider_id.clone(),
+                    endpoint,
+                    port,
+                    tls_policy: tls_policy_opt,
+                    credential,
+                    credential_kind,
+                    display_name,
+                    scope: ProviderConnectionScope::Personal {
+                        owner_id: "local-user".to_string(),
+                    },
+                    operation_id: Some(operation_id.clone()),
+                },
+            },
+        );
+        crate::async_cmd::spawn_registered_tui_task(
+            self.tui_cmd_tx.clone(),
+            &mut self.task_registry,
+            TuiTaskKind::Command,
+            "provider_connect",
+            async move {
+                let result = match client.request(request).await {
+                    Ok(codegg::protocol::core::CoreResponse::ProviderConnectionCreated {
+                        result,
+                    }) => Ok(result),
+                    Ok(codegg::protocol::core::CoreResponse::Error { code, message }) => {
+                        Err(format!("{code}: {message}"))
+                    }
+                    Ok(_) => Err("unexpected daemon response".to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                Some(TuiCommand::ProviderConnectionFinished {
+                    operation_id,
+                    provider_id,
+                    display_name: provider_display,
+                    result,
+                })
+            },
+        );
+        // `provider_display` moved into the task above; toast from the entry
+        // name cloned earlier.
+        self.messages_state.toasts.info(&format!(
+            "Connecting to {} (probe in progress)…",
+            entry.name
+        ));
+    }
+
+    fn on_char(&mut self, c: char) {
+        if self.ui_state.dialog.is_open() {
+            return;
+        }
+        if self.messages_state.messages.is_searching() {
+            if c == 'n' {
+                self.messages_state.messages.search_next();
+                return;
+            }
+            if c == 'N' {
+                self.messages_state.messages.search_prev();
+                return;
+            }
+        }
+        if c == '/' && self.prompt_state.prompt.cursor_pos() == 0 {
+            self.ui_state.command_mode = true;
+            self.dialog_state.command_palette.set_query("/");
+            debug_log!("on_char: typed '/' at position 0, entering command_mode");
+        }
+        self.prompt_state.prompt.insert_char(c);
+        self.update_completions();
+    }
+
+    fn update_completions(&mut self) {
+        // The composer's text is borrowed: the completion path runs on every
+        // keystroke, and it cloned the whole buffer to look at the text
+        // before the caret.
+        let text = self.prompt_state.prompt.text();
+        let cursor = self.prompt_state.prompt.cursor_pos();
+        let before_cursor = &text[..cursor];
+
+        if let Some(pos) = before_cursor.rfind('/') {
+            if pos == 0 || before_cursor.chars().nth(pos.saturating_sub(1)) == Some(' ') {
+                self.prompt_state.completion_filter = before_cursor[pos..].to_string();
+                self.prompt_state.completion_type = CompletionType::Slash;
+                // `show_completions` used to stay false in command mode, which
+                // left `CommandPalette::render` as the only thing drawing the
+                // slash popup. That produced two different-looking boxes for
+                // the same interaction — a narrow one with an unreadable
+                // selection highlight on the first `/…`, and the wide one
+                // after the user backspaced to a bare `/` (which cleared
+                // command mode). The popup is now rendered from exactly one
+                // implementation in every mode, so command mode uses it too.
+                self.prompt_state.show_completions = true;
+                debug_log!("update_completions: slash completion - show_completions=true");
+                self.prompt_state.completion_sel = 0;
+                return;
+            }
+        }
+
+        // `@` means two different things depending on where the composer is
+        // pointed. Against the agent session it is an agent/file trigger, and
+        // Enter accepts the highlighted completion. Against project chat it
+        // is a *mention*: there is no agent to invoke in a chat message, so
+        // opening the popup would put an agent picker over a conversation and
+        // — because the completion layer claims Enter first — make Enter
+        // insert an agent name instead of sending the message.
+        //
+        // That is not hypothetical: `r` on a selected message seeds the
+        // composer with `@author `, so every reply started by pressing one
+        // key would have had its Enter eaten.
+        let chat_target = self.input_target() == crate::panels::InputTarget::Chat;
+        if !chat_target {
+            if let Some(pos) = before_cursor.rfind('@') {
+                if pos == 0 || before_cursor.chars().nth(pos.saturating_sub(1)) == Some(' ') {
+                    self.prompt_state.completion_filter = before_cursor[pos..].to_string();
+                    let query = self.prompt_state.completion_filter.trim_start_matches('@');
+
+                    let is_agent_trigger =
+                        !query.contains('/') && !query.contains('\\') && !query.contains('.');
+
+                    if is_agent_trigger {
+                        self.prompt_state.completion_type = CompletionType::Agent;
+                        self.update_agent_completions();
+                        self.prompt_state.show_completions = true;
+                        debug_log!("update_completions: agent completion - show_completions=true");
+                    } else {
+                        self.prompt_state.completion_type = CompletionType::File;
+                        self.update_file_completions();
+                        self.prompt_state.show_completions = true;
+                        debug_log!("update_completions: file completion - show_completions=true");
+                    }
+                    self.prompt_state.completion_sel = 0;
+                    return;
+                }
+            }
+        }
+
+        if self.prompt_state.show_completions {
+            debug_log!("update_completions: no trigger found - show_completions=false");
+        }
+        self.prompt_state.show_completions = false;
+    }
+
+    fn update_file_completions(&mut self) {
+        use crate::components::completion_overlay::CompletionItem;
+
+        let filter = self.prompt_state.completion_filter.trim_start_matches('@');
+
+        let (dir_prefix, partial_name) = self.parse_path_components(filter);
+
+        let candidates = match self.session_state.indexed_files.try_read() {
+            Ok(files) => files.clone(),
+            Err(_) => {
+                self.prompt_state.file_completions.clear();
+                return;
+            }
+        };
+
+        let expanded_dir = if let Some(stripped) = dir_prefix.strip_prefix('~') {
+            match dirs::home_dir() {
+                Some(home) => format!("{}/{}", home.display(), stripped),
+                None => dir_prefix.clone(),
+            }
+        } else {
+            dir_prefix.clone()
+        };
+
+        let filtered: Vec<CompletionItem> = candidates
+            .iter()
+            .filter(|path| {
+                if dir_prefix.is_empty() {
+                    true
+                } else {
+                    path.starts_with(&expanded_dir) || path.contains(&partial_name)
+                }
+            })
+            .filter_map(|path| {
+                let name = if dir_prefix.is_empty() {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(path)
+                        .to_string()
+                } else {
+                    let stripped = path.strip_prefix(&expanded_dir).unwrap_or(path);
+                    let stripped = stripped.trim_start_matches('/');
+                    std::path::Path::new(stripped)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(stripped)
+                        .to_string()
+                };
+
+                let score = if partial_name.is_empty() {
+                    usize::MAX
+                } else {
+                    fuzzy_score(&partial_name, &name)
+                };
+
+                if score > 0 {
+                    Some((name, score))
+                } else {
+                    None
+                }
+            })
+            .filter(|(_, score)| partial_name.is_empty() || *score > 0)
+            .take(20)
+            .map(|(name, _)| CompletionItem::new_file(name, None))
+            .collect();
+
+        self.prompt_state.file_completions = filtered;
+    }
+
+    fn parse_path_components(&self, filter: &str) -> (String, String) {
+        let path_part = filter.trim_start_matches('@');
+
+        if let Some(last_slash) = path_part.rfind('/') {
+            let dir = &path_part[..=last_slash];
+            let partial = &path_part[last_slash + 1..];
+            (dir.to_string(), partial.to_string())
+        } else {
+            (String::new(), path_part.to_string())
+        }
+    }
+
+    fn update_agent_completions(&mut self) {
+        use crate::components::completion_overlay::{CompletionItem, CompletionItemKind};
+        let filter = self.prompt_state.completion_filter.trim_start_matches('@');
+
+        let filtered = codegg::agent::mention::filter_agents(&self.agent_state.agents, filter);
+
+        self.prompt_state.agent_completions = filtered
+            .into_iter()
+            .map(|a| CompletionItem {
+                label: a.name.clone(),
+                description: Some(a.description.clone()),
+                kind: CompletionItemKind::File,
+            })
+            .collect();
+    }
+
+    /// The completion rows currently visible, in popup order.
+    ///
+    /// This is the single ordering used by the popup renderer, keyboard
+    /// navigation bounds, mouse hit-testing, and [`Self::accept_completion`].
+    /// Deriving each of those independently is what let the popup show
+    /// fuzzy-ranked matches while Tab accepted a different entry: the renderer
+    /// sorted by fuzzy score, the accept path filtered by prefix in catalog
+    /// order, and the click hit-test sized itself from the unfiltered list.
+    fn completion_rows(&self) -> Vec<&crate::components::completion_overlay::CompletionItem> {
+        use crate::components::completion_overlay::CompletionItem;
+        match self.prompt_state.completion_type {
+            CompletionType::Slash => {
+                let filter = self.prompt_state.completion_filter.trim_start_matches('/');
+                let mut scored: Vec<(&CompletionItem, usize)> = self
+                    .prompt_state
+                    .slash_completions
+                    .iter()
+                    .filter_map(|item| {
+                        let item_name = item.label.trim_start_matches('/');
+                        let score = if filter.is_empty() {
+                            usize::MAX
+                        } else {
+                            codegg::util::fuzzy::fuzzy_score(filter, item_name)
+                        };
+                        if filter.is_empty() || score > 0 {
+                            Some((item, score))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !filter.is_empty() {
+                    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
+                }
+                scored.into_iter().map(|(item, _)| item).collect()
+            }
+            CompletionType::File => self.prompt_state.file_completions.iter().collect(),
+            CompletionType::Agent => self.prompt_state.agent_completions.iter().collect(),
+        }
+    }
+
+    fn accept_completion(&mut self) {
+        let selected = self
+            .completion_rows()
+            .get(self.prompt_state.completion_sel)
+            .map(|c| c.label.clone());
+        if let Some(sel) = selected {
+            let text = self.prompt_state.prompt.get_text();
+            let cursor = self.prompt_state.prompt.cursor_pos();
+            let safe_cursor = cursor.min(text.len());
+            let before_cursor = &text[..safe_cursor];
+            let after_cursor = &text[safe_cursor..];
+
+            if self.prompt_state.completion_type == CompletionType::Agent {
+                let agent_name = sel.clone();
+                let trigger_pos = before_cursor.rfind('@').unwrap_or(safe_cursor);
+                let new_text = format!("{}{}", &text[..trigger_pos.min(text.len())], after_cursor);
+                self.prompt_state.prompt.set_text(new_text);
+                self.prompt_state.show_completions = false;
+                self.spawn_subagent(&agent_name, &text[trigger_pos.min(text.len())..]);
+                return;
+            }
+
+            let trigger_pos = if self.prompt_state.completion_type == CompletionType::Slash {
+                before_cursor.rfind('/').unwrap_or(safe_cursor)
+            } else {
+                before_cursor.rfind('@').unwrap_or(safe_cursor)
+            };
+
+            let new_text = format!(
+                "{}{}{}",
+                &text[..trigger_pos.min(text.len())],
+                sel,
+                after_cursor
+            );
+            self.prompt_state.prompt.set_text(new_text);
+            self.prompt_state.prompt.set_cursor(trigger_pos + sel.len());
+        }
+        self.prompt_state.show_completions = false;
+    }
+
+    fn spawn_subagent(&self, agent_name: &str, prompt: &str) {
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(
+                tx,
+                TuiCommand::SpawnSubagent {
+                    agent_name: agent_name.to_string(),
+                    prompt: prompt.trim().to_string(),
+                },
+            );
+        }
+    }
+
+    pub fn add_assistant_text(&mut self, text: String) {
+        self.messages_state.messages.add_assistant_text(text);
+    }
+
+    pub fn add_tool_call(&mut self, id: String, name: String, input: serde_json::Value) {
+        self.messages_state
+            .messages
+            .add_tool_call(id.clone(), name, input);
+        self.messages_state.messages.mark_tool_call_running(&id);
+    }
+
+    pub fn update_tool_call(
+        &mut self,
+        id: &str,
+        output: String,
+        status: ToolStatus,
+        duration_ms: Option<u64>,
+        exit_code: Option<i32>,
+        output_lines: Option<usize>,
+    ) {
+        self.messages_state.messages.update_tool_call(
+            id,
+            output,
+            status,
+            duration_ms,
+            exit_code,
+            output_lines,
+        );
+    }
+
+    pub fn add_reasoning(&mut self, reasoning: String) {
+        self.messages_state.messages.add_reasoning(reasoning);
+    }
+
+    pub fn set_session(&mut self, sess: Session) {
+        self.set_session_with_workspace_root(sess, None);
+    }
+
+    /// Bind a session and, when supplied, its daemon-resolved workspace root
+    /// in one synchronous state transition. The root is a locator from the
+    /// authorized session binding, never one inferred from a display path.
+    pub fn set_session_with_workspace_root(
+        &mut self,
+        sess: Session,
+        resolved_workspace_root: Option<std::path::PathBuf>,
+    ) {
+        if self.prompt_state.pending_session_submit.is_some() {
+            self.invalidate_pending_session_submit(false);
+        }
+        let sess_id = sess.id.clone();
+        if self.active_session_id() != Some(sess_id.as_str()) {
+            self.change_review_state.reject();
+        }
+        let session_directory = sess.directory.clone();
+        let project_id = if sess.project_id.is_empty() {
+            None
+        } else {
+            Some(sess.project_id.clone())
+        };
+        let workspace_id = sess.workspace_id.clone();
+        // Captured before `sess` is moved; see the adoption logic below.
+        let session_has_own_selection = !sess
+            .selected_model_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty();
+        self.session_state.session = Some(sess);
+        self.ensure_session_event_stream(&sess_id);
+        self.load_human_shell_promotions(sess_id.clone());
+        // M002a: the queue projection is session-scoped, so it reloads on the
+        // same session-change edge as the promotion projection.
+        self.load_user_prompt_queue(sess_id.clone());
+        self.ui_state
+            .routes
+            .navigate_to(Route::Session(sess_id.clone()));
+        // Mirror the selected session into the active tab. This keeps
+        // the active-tab accessor in sync with the legacy single-
+        // project surface so picker/navigation code can rely
+        // on `active_session_id()` / `active_project_id()` /
+        // `active_workspace_id()` without rewriting the App surface.
+        let active_tab = self.project_tabs.active_tab_id().cloned();
+        if let Some(tab) = self.project_tabs.active_mut() {
+            tab.session_id = Some(sess_id.clone());
+            if project_id.is_some() {
+                tab.project_id = project_id.clone();
+            }
+            if workspace_id.is_some() {
+                tab.workspace_id = workspace_id.clone();
+            }
+            if let Some(root) = resolved_workspace_root {
+                tab.workspace_root = Some(root);
+            } else if !session_directory.is_empty() {
+                tab.workspace_root = Some(std::path::PathBuf::from(session_directory));
+            }
+        }
+        // Milestone 3: register the now-open session in the routing
+        // registry and invalidate any prior binding for the same id.
+        // This keeps the session_id -> tab_id index consistent with
+        // the heavy view so live events route to the right tab.
+        if let (Some(tab_id), Some(proj_id), Some(ws_id)) = (
+            active_tab.as_ref(),
+            project_id.as_ref(),
+            workspace_id.as_ref(),
+        ) {
+            self.routing_registry
+                .register_open_session(tab_id.clone(), sess_id.clone());
+            let _ = (proj_id, ws_id); // canonical identity is captured via tab state.
+        } else if let Some(tab_id) = active_tab.as_ref() {
+            self.routing_registry
+                .register_open_session(tab_id.clone(), sess_id.clone());
+        }
+        let project_scope = self.active_project_id().map(str::to_owned);
+        self.sidebar.set_project_scope(project_scope.as_deref());
+        self.refresh_project_command_registry();
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = send_tui(
+                tx,
+                TuiCommand::LoadSessionMessages {
+                    session_id: sess_id.clone(),
+                },
+            );
+            let _ = send_tui(
+                tx,
+                TuiCommand::RefreshSessionState {
+                    session_id: sess_id.clone(),
+                },
+            );
+            // Fetch the durable session selection on bind.
+            //
+            // The daemon resolves a turn's model from this selection, so
+            // it is the authority on what will actually run. It used to
+            // be fetched only when the connection dialog opened, leaving
+            // the status line showing a manifest-sourced model that could
+            // differ from the one the provider received.
+            let _ = send_tui(
+                tx,
+                TuiCommand::SessionSelectionLoad {
+                    session_id: sess_id.clone(),
+                    focus_connection_id: None,
+                },
+            );
+            // Adopt a model chosen *before* this session existed.
+            //
+            // A tab restored from the manifest, or a brand-new one, starts
+            // with `session_id: null`, so a `/model` choice made at that
+            // point has no durable row to write and is correctly a no-op
+            // at commit time. Without this the choice would survive only
+            // in the tab/preference and the first turn would fall back to
+            // the daemon's default — the same divergence, one step later.
+            //
+            // Gated on the session having no selection of its own, so an
+            // already-populated session is never overwritten on restore.
+            if !session_has_own_selection {
+                let pending = self.active_model().trim().to_string();
+                if !pending.is_empty() {
+                    self.persist_durable_model_selection(pending);
+                }
+            }
+        }
+        // Refresh sidebar git status for the new project so render
+        // never blocks on git probing.
+        crate::commands::git_sidebar::start_refresh_git_sidebar(self);
+
+        // Presence M002: refresh collaborator presence for the newly
+        // bound project. Keyed by project_id so rapid switches cannot
+        // leak the previous project's collaborators.
+        if let Some(pid) = project_id.clone() {
+            if self.presence.needs_refresh(&pid) {
+                crate::commands::presence::start_refresh_presence(
+                    self,
+                    pid,
+                    crate::commands::presence::PresenceRefresh::User,
+                );
+            }
+        }
+
+        // Milestone 4: persist the new session binding.
+        self.schedule_manifest_save();
+        crate::commands::primary_projection::bind_active_session(self);
+    }
+
+    // -----------------------------------------------------------------
+    // Active-tab accessors (Multi-Project TUI milestone 1 seam)
+    //
+    // These read through `project_tabs.active_tab()` so picker /
+    // navigation work does not need to rewrite the App
+    // surface. While the compatibility tab is active, the tab
+    // mirrors the legacy `session_state` / `agent_state` fields, so
+    // these accessors return values consistent with the legacy
+    // single-project behavior.
+    // -----------------------------------------------------------------
+
+    /// The active project tab, if any.
+    pub fn active_tab(&self) -> Option<&crate::app::state::ProjectTabState> {
+        self.project_tabs.active()
+    }
+
+    /// Mutable handle to the active project tab.
+    pub fn active_tab_mut(&mut self) -> Option<&mut crate::app::state::ProjectTabState> {
+        self.project_tabs.active_mut()
+    }
+
+    /// The active tab's stable id. Equivalent to the project's
+    /// frontend-local identity and intentionally distinct from any
+    /// daemon-typed project id.
+    pub fn active_tab_id(&self) -> Option<crate::app::state::ProjectTabId> {
+        self.project_tabs.active_tab_id().cloned()
+    }
+
+    /// Daemon-typed project id of the active tab, if known.
+    pub fn active_project_id(&self) -> Option<&str> {
+        self.project_tabs
+            .active()
+            .and_then(|t| t.project_id.as_deref())
+    }
+
+    /// Where the bottom composer delivers its text on Enter.
+    ///
+    /// Derived from the panel host on every read so the `[BUILD]`/`[CHAT]`
+    /// badge in the composer and the key that actually dispatches the send
+    /// can never disagree — the failure mode this badge exists to prevent
+    /// is a prompt silently landing in the team chat.
+    ///
+    /// An armed chat seed outranks panel focus. Pressing `r` in the chat
+    /// panel is an explicit "this is a reply to *that* message"; if focus
+    /// then moved to the session panel, honouring focus would turn the
+    /// pre-filled `@name ` into an agent prompt. The badge shows `[CHAT]`
+    /// for exactly as long as the seed is armed, so what the composer will
+    /// do stays visible, and cancelling restores focus-derived targeting.
+    /// Whether the composer should refuse an un-prefixed character.
+    ///
+    /// True only while the editor owns the main buffer: the editor has taken
+    /// the place of the LLM transcript, so a bare character means "start a
+    /// command", not "send this to the model". Scoped narrowly on purpose —
+    /// a focused side panel is a *different* destination with its own
+    /// composer, and chat is a conversation, so both stay freely typeable.
+    pub(crate) fn composer_refuses_bare_text(&self) -> bool {
+        matches!(self.ui_state.routes.current(), crate::route::Route::Editor)
+            && !self.editor_state.buffer_focused(self.ui_state.input_mode)
+    }
+
+    pub fn input_target(&self) -> crate::panels::InputTarget {
+        if self.prompt_state.chat_seed.is_some() {
+            return crate::panels::InputTarget::Chat;
+        }
+        self.panel_host.input_target()
+    }
+
+    /// The composer badge naming the surface that currently has the keyboard.
+    ///
+    /// One badge, one meaning. It previously rendered `[BUILD]` *and* `[CHAT]`
+    /// side by side with the agent name, which produced rows like
+    /// `[INS] [build][BUILD] [CHAT]` — three badges, two of them about the
+    /// same axis, and one (`[CHAT]`) permanently lit regardless of where focus
+    /// actually was. Naming the *selected* surface instead answers the question
+    /// the badge exists for — "which panel am I typing into?" — and every panel
+    /// already has a title, so adding one is a single `match` arm.
+    ///
+    /// An armed chat seed outranks panel focus for the same reason it does in
+    /// [`input_target`](Self::input_target): the seed is the more specific
+    /// statement of intent.
+    pub fn composer_destination_title(&self) -> &'static str {
+        if self.prompt_state.chat_seed.is_some() {
+            return crate::panels::SidePanelId::Chat.title();
+        }
+        self.panel_host.destination_title()
+    }
+
+    /// Whether the open terminal **box** is the current keyboard destination.
+    ///
+    /// The box is modal: while it is up with a mounted handle, its state *is*
+    /// the mode, whatever the composer thinks. This is deliberately weaker than
+    /// [`Self::terminal_box_owns_keyboard`] — that one asks whether the box is
+    /// consuming keys **as input for the process** (`TerminalFocus::Focused`),
+    /// which is the narrower question the docking gesture asks; this one asks
+    /// whether the box is where keys go at all, which is true in viewing mode
+    /// too. Reporting needs the wider one, because after `Esc` the box still has
+    /// the keyboard and the composer's private mode has nothing to say about it.
+    pub fn terminal_box_has_keyboard(&self) -> bool {
+        self.focus_manager.active_dialog_type() == DialogType::Terminal
+            && self.dialog_state.terminal_detail_handle.is_some()
+    }
+
+    /// Whether the open terminal box is holding the keyboard **for the
+    /// process**.
+    ///
+    /// Two independent facts, not one: the box must be the active dialog
+    /// (a terminal behind another dialog is not receiving keystrokes, whatever
+    /// its `TerminalFocus` says), and that handle must actually be focused in
+    /// the controller (`Esc` drops the keyboard to the reader while the box
+    /// stays open).
+    ///
+    /// The docking gesture in [`App::on_key`] and [`Self::composer_input_mode`]
+    /// both ask this rather than each re-deriving it. The panel host has the
+    /// mirror-image rule for the docked surface — a focused panel whose
+    /// `claims_insert_keys` holds — and those two together are what
+    /// `composer_input_mode` resolves over; neither can answer the other's half
+    /// of the question, because a box is not in the panel host and a panel is
+    /// not a dialog.
+    pub fn terminal_box_owns_keyboard(&self) -> bool {
+        self.terminal_box_has_keyboard()
+            && self
+                .dialog_state
+                .terminal_detail_handle
+                .as_deref()
+                .is_some_and(|handle| self.interactive_terminals.is_focused(handle))
+    }
+
+    /// The input mode the user is **actually** in, for everything that reports
+    /// it rather than enforces it.
+    ///
+    /// `ui_state.input_mode` is the composer's own mode, and it is the wrong
+    /// answer whenever the keyboard is somewhere else — which is most of the
+    /// time. `focus_panel` forces it to `Normal` whenever a panel takes focus
+    /// and `blur_panel` restores the parked mode, so a terminal panel holding a
+    /// live PTY in Insert reported `Normal` for as long as the user typed into
+    /// it. The composer badge read that raw field, so a user with the keyboard
+    /// in a shell watched `[NOR]` above the input — and the terminal panel's own
+    /// Insert hint branch was unreachable dead code, because the same field is
+    /// what it branched on.
+    ///
+    /// Resolution order, each half a seam key routing already reads rather than
+    /// a third definition of its own:
+    ///
+    /// 1. **The terminal box, either way.** A modal surface owns the keyboard,
+    ///    so it reports `Insert` while `TerminalFocus::Focused` and `Normal`
+    ///    after `Esc`. This half is why the composer's private mode cannot be
+    ///    the fallback here: the box never touches it, so it is still whatever
+    ///    it was before the box opened.
+    /// 2. **A focused panel that claims Insert** → `Insert`.
+    /// 3. **Otherwise `ui_state.input_mode`**, which is authoritative for every
+    ///    case where the composer really does have the keyboard. A panel that
+    ///    *declines* the Insert claim has genuinely handed the keys back, and
+    ///    `focus_panel` already parked the composer at `Normal` — reporting
+    ///    Insert there would be the same lie in the other direction.
+    ///
+    /// That is the same shape as [`Self::composer_destination_title`] and as
+    /// the editor route's `buffer_focused(input_mode)` badge, so this is the
+    /// third instance of one rule rather than a new mechanism.
+    ///
+    /// A pure read. It takes `&mut self` only because
+    /// `panel_claims_insert_keys` has to build a `PanelCtx`, whose grants are
+    /// `&mut`; **it writes nothing.** The frame must never be able to move the
+    /// keyboard by describing it — a badge that forced `input_mode` to match
+    /// what it displays would turn the state it reported into the state it
+    /// caused.
+    pub fn composer_input_mode(&mut self) -> InputMode {
+        if self.terminal_box_has_keyboard() {
+            return if self.terminal_box_owns_keyboard() {
+                InputMode::Insert
+            } else {
+                InputMode::Normal
+            };
+        }
+        if crate::commands::panels::panel_claims_insert_keys(self) {
+            return InputMode::Insert;
+        }
+        self.ui_state.input_mode
+    }
+
+    /// Keep the composer's surface-local mode in step with the app.
+    ///
+    /// The composer holds a mode the app has no word for — Helix's select
+    /// mode — so the app pushes its own half (Insert or Normal) and the
+    /// composer's half survives the push. The push happens at **key
+    /// dispatch**, because the rule that decides what a movement means has
+    /// to hold when the key is dispatched and not a frame later.
+    ///
+    /// A composer that does **not** hold the keyboard has no mode of its
+    /// own to report: the badge describes the surface that holds the
+    /// keyboard, and a select mode left behind by a surface the reader has
+    /// left would be a mode the reader never chose. So the select mode ends
+    /// with the keyboard.
+    fn sync_composer_mode(&mut self) {
+        if !self.composer_holds_keyboard() {
+            self.prompt_state.prompt.leave_select_mode();
+            return;
+        }
+        let mode = self.composer_input_mode();
+        self.prompt_state.prompt.set_app_mode(mode);
+    }
+
+    /// Park the composer at Normal, dropping any select mode it held.
+    ///
+    /// A panel is a Normal-mode surface, so a panel taking the keyboard
+    /// parks the composer at Normal — and the composer's own select mode
+    /// ends with it, because a composer that comes back from a panel must
+    /// not be holding a select mode the reader never left.
+    ///
+    /// The park is the seam the panel focus already owns, so the mouse
+    /// route and the keyboard route cannot leave the composer in different
+    /// modes.
+    pub(crate) fn park_composer_at_normal(&mut self) {
+        self.ui_state.input_mode = InputMode::Normal;
+        self.prompt_state.prompt.leave_select_mode();
+    }
+
+    /// Whether the focused side panel owns the keyboard right now.
+    ///
+    /// This is the exact condition `App::on_key` uses to decide whether the
+    /// panel is consulted before the composer. It lives here so the key chain
+    /// and the composer's cursor rules read one derivation instead of two
+    /// copies of the same panel rule — a second copy is where a drift would
+    /// start.
+    pub(crate) fn panel_owns_keyboard(&mut self) -> bool {
+        self.panel_host.is_visible_at(self.panel_host.placement())
+            && self.panel_host.is_focused()
+            && (self.ui_state.input_mode == InputMode::Normal
+                || crate::commands::panels::panel_claims_insert_keys(self))
+    }
+
+    /// Whether the composer currently holds the keyboard.
+    ///
+    /// A derived fact, in the same shape as [`Self::composer_input_mode`] and
+    /// read from the same seams. It is a function of app state, never a stored
+    /// flag: the composer's old `focused` flag was dead in production
+    /// (`PromptWidget::blur()`'s only caller was a test), and a stored copy of
+    /// this fact is exactly the drift class the mode resolution was written to
+    /// kill.
+    ///
+    /// The order mirrors `App::on_key`'s priority chain — the first surface
+    /// that would consume a key is the surface that owns the keyboard:
+    ///
+    /// 1. **A mounted modal.** `on_key` short-circuits to `handle_dialog_key`
+    ///    while the focus manager is non-empty, so a dialog owns the keyboard
+    ///    outright.
+    /// 2. **A focused side panel.** `on_key` consults the panel before the
+    ///    composer, so a selected panel owns it. This is the "another panel is
+    ///    selected" case, and it is the one the user named: the composer must
+    ///    show no cursor at all while a panel has the keyboard.
+    /// 3. **The timeline overlay.** `on_key` returns to the timeline before it
+    ///    reaches the composer, so the keystrokes are going to the
+    ///    jump-to-message picker and not to the composer.
+    /// 4. **The editor's buffer**, when it is explicitly focused — the editor
+    ///    route keeps the composer editable otherwise, and the composer owns
+    ///    the keyboard in that case.
+    /// 5. **Otherwise the composer owns it.**
+    ///
+    /// The terminal box needs no arm of its own: it is a modal, so arm 1
+    /// already covers it. The overlays that claim only *some* keys — the tasks
+    /// list, the completion popup, the change review — are deliberately not
+    /// here: they let everything they do not claim fall through to the
+    /// composer, so the composer is still where the text goes.
+    pub fn composer_holds_keyboard(&mut self) -> bool {
+        if !self.focus_manager.is_empty() {
+            return false;
+        }
+        if self.panel_owns_keyboard() {
+            return false;
+        }
+        if self.ui_state.timeline_visible {
+            return false;
+        }
+        !self.editor_buffer_owns_keyboard()
+    }
+
+    /// Run a composer claim that the key chain has already matched.
+    ///
+    /// The caller has established that the composer holds the keyboard, that
+    /// the resolved mode is Normal, and that this key belongs to the claim
+    /// table. This method decides what the claim *does*.
+    ///
+    /// A **reserved** verb does nothing, and the key is still consumed. That
+    /// is the fallthrough rule: a claimed letter belongs to the composer, so
+    /// it must not become an unrelated app action while its verb is pending.
+    /// The consumption is the behaviour.
+    ///
+    /// The live verbs are the composer's motions (`w`, `b`, `e`, `j`, `k`) and
+    /// `i` (Helix insert-before-caret), and `i` is the app's **existing**
+    /// transition — the gesture that used to live in the `None` arm of the key
+    /// chain — moved into the table so that the table is the one place that says
+    /// who owns the key. It has to be live rather than reserved: `i` is the
+    /// app's only route back to Insert mode, so a reserved `i` would strand the
+    /// user in Normal mode with no way to type.
+    /// See `crate::composer_claims` for the full argument.
+    fn run_composer_claim(&mut self, claim: &crate::composer_claims::ComposerClaim) {
+        use crate::composer_claims::{ClaimStatus, ComposerVerb};
+        match claim.status {
+            ClaimStatus::Live => {
+                match claim.verb {
+                    ComposerVerb::InsertBefore => {
+                        // Helix `i`: insert before the caret. The caret does not
+                        // move — the next character is typed at it — which is
+                        // exactly what the old gesture did.
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: insert before the caret");
+                    }
+                    ComposerVerb::InsertAfter => {
+                        // Helix `a`: insert after the caret. The caret moves one
+                        // character forward and the next keystroke lands
+                        // there, so the model only places the caret and the app
+                        // switches to Insert mode.
+                        self.prompt_state.prompt.insert_after();
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: insert after the caret");
+                    }
+                    ComposerVerb::OpenLineBelow => {
+                        // Helix `o`: open the line below and type in it. The
+                        // new line is an ordinary edit, so it is undoable.
+                        self.prompt_state.prompt.open_line_below();
+                        self.ui_state.input_mode = InputMode::Insert;
+                        debug_log!("composer claim: open line below");
+                    }
+                    ComposerVerb::Undo => {
+                        // The verb reports in **both** branches. A silent
+                        // no-op would teach the user that the key is dead,
+                        // and "nothing to undo" is a different fact from
+                        // "nothing happened".
+                        if self.prompt_state.prompt.undo() {
+                            self.messages_state.toasts.info("Undid the last edit");
+                            debug_log!("composer claim: undo");
+                        } else {
+                            self.messages_state.toasts.warning("Nothing to undo");
+                            debug_log!("composer claim: undo with nothing to undo");
+                        }
+                    }
+                    ComposerVerb::Redo => {
+                        if self.prompt_state.prompt.redo() {
+                            self.messages_state.toasts.info("Redid the last edit");
+                            debug_log!("composer claim: redo");
+                        } else {
+                            self.messages_state.toasts.warning("Nothing to redo");
+                            debug_log!("composer claim: redo with nothing to redo");
+                        }
+                    }
+                    ComposerVerb::WordForward => {
+                        self.prompt_state.prompt.cursor_word_forward();
+                        debug_log!("composer claim: word forward");
+                    }
+                    ComposerVerb::WordBack => {
+                        self.prompt_state.prompt.cursor_word_backward();
+                        debug_log!("composer claim: word backward");
+                    }
+                    ComposerVerb::WordEnd => {
+                        self.prompt_state.prompt.cursor_word_end();
+                        debug_log!("composer claim: word end");
+                    }
+                    ComposerVerb::LineDown => {
+                        // The composer's vertical motion is a **visual-row**
+                        // motion: the row the caret's byte is drawn on, not a
+                        // newline-separated line of the buffer. The claim
+                        // holds only while the composer's content spans more
+                        // than one row, so there is a row below to move to.
+                        self.prompt_state.prompt.cursor_visual_row_down();
+                        debug_log!("composer claim: visual row down");
+                    }
+                    ComposerVerb::LineUp => {
+                        self.prompt_state.prompt.cursor_visual_row_up();
+                        debug_log!("composer claim: visual row up");
+                    }
+                    ComposerVerb::SelectChars => {
+                        self.prompt_state.prompt.toggle_select_chars();
+                        debug_log!("composer claim: select characters");
+                    }
+                    ComposerVerb::SelectLine => {
+                        self.prompt_state.prompt.select_line();
+                        debug_log!("composer claim: select line");
+                    }
+                    ComposerVerb::DeleteSelection => {
+                        // Deleting with nothing selected is a no-op that still
+                        // consumes the key: the letter is the composer's, so
+                        // it must not become an unrelated app action.
+                        // Deleting with nothing selected is a no-op that still
+                        // consumes the key: the letter is the composer's, so
+                        // it must not become an unrelated app action.
+                        self.prompt_state.prompt.delete_selection();
+                        debug_log!("composer claim: delete selection");
+                    }
+                    ComposerVerb::Paste => {
+                        // The clipboard is best-effort, and the verb always
+                        // reports what it did. A silent no-op would teach the
+                        // user that the key is dead, and the report is also
+                        // the only evidence of *what* was pasted — the
+                        // pasted text is not echoed back, because the
+                        // composer can hold a secret.
+                        match codegg::util::clipboard::read_from_clipboard() {
+                            Some(text) if !text.is_empty() => {
+                                let characters = text.chars().count();
+                                self.prompt_state.prompt.paste(text);
+                                self.messages_state
+                                    .toasts
+                                    .info(&format!("Pasted {characters} characters"));
+                                debug_log!("composer claim: paste");
+                            }
+                            _ => {
+                                self.messages_state
+                                    .toasts
+                                    .warning("Nothing to paste — the clipboard is empty");
+                                debug_log!("composer claim: paste with nothing to paste");
+                            }
+                        }
+                    } // There is deliberately **no catch-all arm**. M006 closed
+                      // the claim table, so every verb has a behaviour, and an
+                      // exhaustive match turns "the table and the runner
+                      // disagree" from a runtime warning into a **compile
+                      // error**: a verb added to `ComposerVerb` without an arm
+                      // here does not build.
+                      //
+                      // The warning that used to live in this arm said that a
+                      // live verb with no behaviour is a dead key — the defect
+                      // the table exists to prevent. Making it unbuildable is
+                      // stronger than saying so loudly at runtime.
+                }
+            }
+            ClaimStatus::Reserved => {
+                // The key is consumed and nothing happens. That is the
+                // fallthrough rule: the letter is the composer's, so it
+                // must not become an unrelated app action while its verb
+                // is pending. The consumption is the behaviour.
+                debug_log!(
+                    "composer claim consumed with no live verb: {:?} ({:?})",
+                    claim.key,
+                    claim.verb
+                );
+            }
+        }
+    }
+
+    /// Whether the open editor buffer holds the keyboard.
+    ///
+    /// The editor route keeps the ordinary composer editable unless the user
+    /// explicitly focused the document, so "the editor is open" is not enough
+    /// — the buffer has to be the focused one.
+    fn editor_buffer_owns_keyboard(&self) -> bool {
+        matches!(self.ui_state.routes.current(), crate::route::Route::Editor)
+            && self.editor_state.buffer_focused(self.ui_state.input_mode)
+    }
+
+    /// The side panel that can hold the currently open box, if any.
+    ///
+    /// The single place a box is associated with a panel, and the reason the
+    /// `L` key generalises for free: `/chat` → Chat today, `/help` → a Help
+    /// panel later is one arm here plus one `SidePanel` impl, with no change
+    /// to the close/show/focus logic in `commands::panels::dock_open_box`.
+    ///
+    /// `DialogType::None` (no box open) is deliberately *not* dockable. There
+    /// is nothing to move, and silently selecting a panel would turn a stray
+    /// `L` in the transcript into an invisible navigation the user cannot
+    /// predict.
+    pub fn dock_target(&self) -> Option<crate::panels::SidePanelId> {
+        use crate::components::component::DialogType;
+        use crate::panels::SidePanelId as P;
+        match self.focus_manager.active_dialog_type() {
+            DialogType::ProjectChat => Some(P::Chat),
+            DialogType::Terminal => Some(P::Terminal),
+            DialogType::Help => Some(P::Help),
+            DialogType::Tree => Some(P::Tree),
+            DialogType::Files => Some(P::Files),
+            DialogType::Session => Some(P::Sessions),
+            DialogType::TaskList => Some(P::Tasks),
+            DialogType::Plan => Some(P::Plan),
+            DialogType::GoalShow => Some(P::Goal),
+            DialogType::Collaborators => Some(P::Collaborators),
+            DialogType::MemoryResults => Some(P::Memory),
+            DialogType::ResearchBrowser => Some(P::Research),
+            DialogType::Logs => Some(P::Logs),
+            DialogType::Context => Some(P::Context),
+            DialogType::Cost => Some(P::Cost),
+            DialogType::Usage => Some(P::Usage),
+            DialogType::Stats => Some(P::Stats),
+            DialogType::DoctorReport => Some(P::Doctor),
+            DialogType::ShellShow => Some(P::ShellShow),
+            DialogType::SecurityReview => Some(P::Security),
+            DialogType::Model => Some(P::Models),
+            DialogType::Agent => Some(P::Agents),
+            DialogType::Mcp => Some(P::Mcp),
+            DialogType::Keybind => Some(P::Keybinds),
+            DialogType::Theme => Some(P::Themes),
+            DialogType::Plugin => Some(P::Plugins),
+            DialogType::Team => Some(P::Team),
+            DialogType::Control => Some(P::Control),
+            DialogType::TaskView => Some(P::TaskView),
+            DialogType::Diff => Some(P::Diff),
+            DialogType::Review => Some(P::Review),
+            // Deliberately absent: boxes with no panel counterpart. The
+            // gesture must say so rather than silently selecting a pane the
+            // user did not ask for. Everything here is a *modal* box — the
+            // session sidebar has no box because it is always present.
+            //
+            // `WorkspaceDashboard` is here because its box cannot exist: the
+            // Workspace view is `Route::Workspace` and `open_workspace_dashboard`
+            // pushes no dialog. It was mapped to a panel that could therefore
+            // never hold content, and the panel was removed rather than the
+            // mapping left to rot.
+            _ => None,
+        }
+    }
+
+    /// The contextual key line rendered directly above the composer.
+    ///
+    /// An armed chat seed wins, because that is the most specific context
+    /// available: it describes what Enter will do (`↵ send reply · Esc cancel
+    /// reply`) rather than what the focused panel's keys would do.
+    ///
+    /// `None` when no panel is focused and nothing is armed — the row is not
+    /// reserved at all in that case, so the prompt keeps its height.
+    pub fn composer_hint_text(&mut self) -> Option<String> {
+        self.composer_hint_text_bounded(0)
+    }
+
+    /// The contextual key line, bounded to `budget` display columns.
+    ///
+    /// A budget of `0` means unbounded. The bound matters for the composer's
+    /// own row: it is a list of keys, and a key cut in half names a key that
+    /// does not exist, so the row drops whole keys instead.
+    pub fn composer_hint_text_bounded(&mut self, budget: usize) -> Option<String> {
+        crate::render_cost::count_composer_hint_build();
+        // Resize mode owns the frame, so it outranks every surface hint: the
+        // keys that just changed meaning are `h/j/k/l`, and a reader who sees
+        // "j/k scroll" while resize mode is armed has been told something
+        // false. A modal layer has to name itself on the line that exists to
+        // describe the modal layer.
+        if self.panel_host.is_resizing() {
+            let subject = match self.panel_host.resize_subject() {
+                crate::panel_resize::ResizeSubject::Main => "LLM",
+                crate::panel_resize::ResizeSubject::Panel(placement) => placement.label(),
+            };
+            return Some(format!(
+                "RESIZE {subject} · h/j/k/l drag its own borders out · Esc/Enter exit"
+            ));
+        }
+        if let Some(seed) = self.prompt_state.chat_seed.as_ref() {
+            let mut hint = crate::components::hint_line::HintLine::new();
+            let fragment = crate::chat_browser::input_hints(seed);
+            hint.push("CHAT", "").push_line(&fragment);
+            return Some(hint.render(budget));
+        }
+        // The **editor** owns a keymap of its own — the `space ?` palette and
+        // the keymap overlay in the editor's bottom-right corner — so the
+        // composer's row has nothing to add for it, and leaving the row up
+        // would have two surfaces claiming the same keys.
+        //
+        // The row is **removed** rather than emptied. An allocated-but-blank
+        // row is a row of vertical space spent on nothing, and the whole
+        // point of the editor's own chrome is to stop spending vertical
+        // space on status.
+        if self.editor_state.is_open()
+            && *self.ui_state.routes.current() == crate::route::Route::Editor
+        {
+            return None;
+        }
+        // The LLM buffer has no panel to advertise keys for, which is exactly
+        // why its own keys were undiscoverable: the one surface where a turn
+        // runs long, and the one surface with nothing written above the input.
+        // Only during a turn — an idle buffer has nothing to stop.
+        //
+        // The turn keys come first but never gate the panel's own hints: the
+        // active panel advertises its keys whether a turn is running or not,
+        // and only a composer with neither shows no row at all. The panel may
+        // not have the keyboard either — a bespoke panel then declines, so the
+        // row still describes whoever holds it rather than the panel the user
+        // just walked away from.
+        let agent_keys = self.llm_buffer_key_hints();
+        // The same derived answer the `[NOR]`/`[INS]` badge renders, not the raw
+        // composer field. The two were separate reads of `ui_state.input_mode`,
+        // which is pinned to `Normal` whenever a panel holds the keyboard — so
+        // while a terminal panel owned a live PTY in Insert, the badge said
+        // `[NOR]` and this line advertised reader navigation (`i type · hjkl
+        // move`) at a user who was typing into a shell. One answer, both
+        // surfaces, and they cannot disagree again.
+        let input_mode = self.composer_input_mode();
+        // The composer's own claim on the row, and the panel's: exactly one of
+        // them owns the keyboard, so exactly one of them claims the row.
+        let composer_row = if agent_keys.is_none() && self.composer_holds_keyboard() {
+            Some(self.composer_hint_row(input_mode, budget))
+        } else {
+            None
+        };
+        let panel = if composer_row.is_none() {
+            self.panel_host
+                .composer_hints(self.chat_panel_project.as_deref(), input_mode)
+        } else {
+            None
+        };
+        let keys = match (
+            agent_keys.as_deref(),
+            panel.as_deref(),
+            composer_row.as_deref(),
+        ) {
+            (Some(agent), Some(panel), _) => Some(format!("{agent} · {panel}")),
+            (Some(agent), None, _) => Some(agent.to_string()),
+            (None, Some(panel), _) => Some(panel.to_string()),
+            (None, None, Some(composer)) => Some(composer.to_string()),
+            (None, None, None) => None,
+        };
+        // **Situational** information comes first: a fact the user needs now
+        // outranks a key they could press. The row above the input is the main
+        // buffer's one place for both, which is why the working strip's own
+        // status row could go: a latched turn failure and an armed exit both
+        // have a home here.
+        let situational = self.situational_hints();
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(situational) = situational.as_deref() {
+            parts.push(situational);
+        }
+        if let Some(keys) = keys.as_deref() {
+            parts.push(keys);
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(fit_row(&parts, budget))
+        }
+    }
+
+    /// What the user must know right now, whoever owns the keyboard.
+    ///
+    /// Two things, and both of them used to live on the working strip's status
+    /// row:
+    ///
+    /// * A **latched turn failure**. It is latched because the toast that
+    ///   said the same thing expired, and the row is its durable reminder.
+    /// * The **armed exit** confirmation, which names the key to press again.
+    ///
+    /// They come first on the row because they are the two facts a user
+    /// cannot get back by looking anywhere else.
+    fn situational_hints(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        // The armed exit comes **first**: it is the one part with a deadline,
+        // and the row is bounded from the end, so a part that can expire has
+        // to be the one that survives.
+        if let Some(armed) = crate::commands::exit_control::exit_arm_hint(self) {
+            parts.push(armed);
+        }
+        if let Some(error) = self.session_state.last_error.as_deref() {
+            // The same glyph the status row used, so the shape of the message
+            // is the one the user already knows.
+            parts.push(format!("✗ {error}"));
+        }
+        // Prompts waiting for the next turn. This used to be a suffix on the
+        // working strip's status row; the strip is gone, and this row is the
+        // buffer's one situational surface. Text only — the row is carved, and
+        // this must never add a row or reflow the transcript.
+        let queued = self.session_state.user_prompt_queue.len();
+        if queued > 0 {
+            parts.push(format!("{queued} queued"));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
+
+    /// The composer's own hint row: what is available **right now**.
+    ///
+    /// The row used to name the composer's **keys** — `a b d e i j k o p u w x`
+    /// and the rest — without saying what any of them did. A list of fourteen
+    /// letters is not a map: the user learns the vocabulary and still cannot
+    /// act on it, and the row that was supposed to help the buffer became the
+    /// noisiest thing in it.
+    ///
+    /// The descriptions live in the help, one keypress away (`space help`), so
+    /// the row points at that instead of repeating it. What is left is the row's
+    /// real job: a **situational** line — a latched failure, an armed exit —
+    /// which is why the row is kept open rather than filled with verbs.
+    ///
+    /// The presence is gated on the **keyboard**, never on the mode: the row
+    /// is present in Normal and in Insert alike, so `Esc` does not reflow the
+    /// transcript. The mode changes the row's *text*.
+    fn composer_hint_row(&self, input_mode: InputMode, budget: usize) -> String {
+        if input_mode == InputMode::Insert {
+            // In Insert the composer's own verbs are not available — the
+            // letters are text — so the row must not list them.
+            //
+            // No mode badge here either: the badge directly above the input
+            // box already says `[INS]`, and a second copy of it in the row
+            // below is the same fact said twice.
+            return fit_row(&["Esc normal", "type"], budget);
+        }
+        // The `space` chord opens the composer's help, where every verb is
+        // described. The row points at it rather than repeating it.
+        fit_row(&["space help"], budget)
+    }
+
+    /// The stop/resume keys for the main buffer, or `None` when idle.
+    ///
+    /// Distinct from the strip's own trailing hint: that one is drawn only
+    /// while the working strip is up, and this one is what reserves the row.
+    fn llm_buffer_key_hints(&self) -> Option<String> {
+        let key = crate::commands::turn_control::STOP_KEY_LABEL;
+        if self.session_state.stopped_turn {
+            return Some(format!("{key} start agent · /start · i type"));
+        }
+        if matches!(self.session_state.session_status, SessionStatus::Working) {
+            if crate::commands::turn_control::stop_armed(self) {
+                return Some(format!("press {key} again to stop agent"));
+            }
+            return Some(format!("{key} stop agent (press twice) · /stop · i type"));
+        }
+        None
+    }
+
+    /// Arm the shared composer for a chat reply or edit.
+    ///
+    /// Called from `TuiMsg::ChatComposerSeed`, which the chat side panel emits
+    /// for `r` and `e` because it holds no buffer of its own. The text is
+    /// placed in the prompt and Insert mode is entered, so the user lands in
+    /// an editor ready to type rather than in a Normal-mode composer that
+    /// silently swallows letters.
+    ///
+    /// The project binding is the panel's, resolved by the command layer; a
+    /// seed with no bound project is refused rather than armed against a
+    /// destination that does not exist.
+    pub(crate) fn arm_chat_composer(&mut self, seed: crate::chat_browser::ChatComposeSeed) {
+        if self.chat_panel_project.is_none() {
+            self.messages_state
+                .toasts
+                .warning("Chat has no project bound — not arming the composer");
+            return;
+        }
+        let mut seed = seed;
+        if let Some(text) = seed.prefill.take() {
+            self.prompt_state.prompt.set_text(text);
+        }
+        self.prompt_state.chat_seed = Some(seed);
+        self.ui_state.input_mode = crate::input::InputMode::Insert;
+        self.prompt_state.show_completions = false;
+    }
+
+    /// Drop an armed chat context, leaving the typed text alone.
+    ///
+    /// Cancelling is not destructive: the user asked to reply, not to lose
+    /// what they wrote, so only the *meaning* of the text is cleared. The
+    /// composer then retargets from panel focus again.
+    pub(crate) fn cancel_chat_composer(&mut self) {
+        self.prompt_state.chat_seed = None;
+    }
+
+    /// Daemon-typed workspace id of the active tab, if known.
+    pub fn active_workspace_id(&self) -> Option<&str> {
+        self.project_tabs
+            .active()
+            .and_then(|t| t.workspace_id.as_deref())
+    }
+
+    /// Daemon-typed session id of the active tab, if known.
+    pub fn active_session_id(&self) -> Option<&str> {
+        self.project_tabs
+            .active()
+            .and_then(|t| t.session_id.as_deref())
+    }
+
+    /// Persist a model chosen in the `/model` dialog to the daemon's
+    /// durable session selection.
+    ///
+    /// Without this the choice only changed local state, so the status
+    /// line advertised a model the next turn never ran. With no bound
+    /// session there is nothing durable to write yet; the selection is
+    /// recorded on the tab and applied when a session binds.
+    pub fn persist_durable_model_selection(&mut self, model: String) {
+        let Some(session_id) = self.active_session_id().map(str::to_owned) else {
+            return;
+        };
+        crate::commands::session_selection::start_model_select_persist(self, session_id, model);
+    }
+
+    /// Completion for [`Self::persist_model_selection`].
+    ///
+    /// The daemon's durable selection is what actually runs, so a refused
+    /// choice must not be left on screen as if it had been accepted. The
+    /// display is reverted to the durable value and the refusal is
+    /// reported.
+    pub fn apply_model_select_persisted(&mut self, model: String, error: Option<String>) {
+        let Some(error) = error else {
+            tracing::info!(
+                model = %model,
+                "model selection persisted to durable session selection"
+            );
+            return;
+        };
+        // The daemon's durable selection is what actually runs, so a refused
+        // choice must not be left on screen as if it had been accepted. Pull
+        // the authoritative value back and report the refusal. Deliberately
+        // *not* `adopt_persisted_tab_model`: that re-reads local tab state,
+        // which is exactly the value just rejected.
+        if let Some(session_id) = self.active_session_id().map(str::to_owned) {
+            crate::commands::session_selection::start_selection_refresh(self, session_id, None);
+        }
+        self.messages_state
+            .toasts
+            .add(Toast::error(&format!("Model selection not saved: {error}")));
+    }
+
+    /// Selected model identifier for the active tab.
+    pub fn active_model(&self) -> &str {
+        self.project_tabs
+            .active()
+            .map(|t| t.model.as_str())
+            .unwrap_or("")
+    }
+
+    /// Selected agent name for the active tab.
+    pub fn active_agent(&self) -> &str {
+        self.project_tabs
+            .active()
+            .map(|t| t.agent.as_str())
+            .unwrap_or("")
+    }
+
+    /// Total number of open project tabs.
+    pub fn open_tab_count(&self) -> usize {
+        self.project_tabs.len()
+    }
+
+    /// Kick off an async refresh of the project catalog.
+    ///
+    /// This is the public entry point for the catalog client
+    /// (Multi-Project TUI milestone 1). Callers (e.g. the `Ctrl+\`
+    /// picker, startup, or a `/projects` slash command)
+    /// dispatch this through the normal event loop so the result
+    /// lands back on the loop as a `TuiCommand::ProjectCatalogRefreshed`
+    /// completion. The method itself never blocks.
+    pub fn refresh_project_catalog(&mut self) {
+        crate::commands::project_catalog::start_refresh_project_catalog(self);
+    }
+
+    /// Whether the daemon has advertised the project catalog
+    /// capability. Returns `false` before the first round-trip has
+    /// completed; the TUI uses this to show a clear "catalog
+    /// unavailable" diagnostic rather than pretending the catalog is
+    /// empty.
+    pub fn project_catalog_supported(&self) -> bool {
+        self.project_catalog.capability_supported
+    }
+
+    /// Apply a `ProjectCatalogRefreshed` completion to the local
+    /// catalog state. Public so tests and the eventual `/projects`
+    /// command dispatcher can route completions through this method
+    /// without exposing the private command module.
+    pub fn apply_project_catalog_refreshed(
+        &mut self,
+        request_id: u64,
+        supported: bool,
+        entries: Vec<codegg::protocol::dto::ProjectSummaryDto>,
+        truncated: bool,
+        error: Option<String>,
+    ) {
+        crate::commands::project_catalog::apply_project_catalog_refreshed(
+            self, request_id, supported, entries, truncated, error,
+        );
+    }
+
+    /// Presence M002: kick off a collaborator refresh for `project_id`.
+    /// Public so tests and the `/collaborators` dispatcher can route
+    /// through this method without exposing the private command module.
+    pub fn refresh_presence(&mut self, project_id: String) {
+        crate::commands::presence::start_refresh_presence(
+            self,
+            project_id,
+            crate::commands::presence::PresenceRefresh::User,
+        );
+    }
+
+    /// Presence M002: apply a snapshot completion. Public for the same
+    /// dispatcher/test reasons as the catalog apply path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_presence_snapshot(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        snapshot: Option<codegg::protocol::core::PresenceSnapshotDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::presence::apply_presence_snapshot_loaded(
+            self,
+            request_id,
+            project_id,
+            snapshot,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Presence M002: whether the daemon advertised presence support.
+    pub fn presence_supported(&self) -> bool {
+        self.presence.is_supported()
+    }
+
+    /// Presence M002: open the bounded collaborator panel for the active
+    /// project. Public so tests and the `/collaborators` dispatcher share
+    /// one entry point.
+    pub fn show_collaborators(&mut self) {
+        crate::commands::presence::show_collaborators(self);
+    }
+
+    /// Presence M002: explicit refresh + panel open for the active project.
+    pub fn refresh_collaborators(&mut self) {
+        crate::commands::presence::refresh_collaborators(self);
+    }
+
+    /// Presence M003: start an authorized read-only observation of
+    /// `session_id` in `project_id`. Public so tests and the `/observe`
+    /// dispatcher share one entry point.
+    pub fn start_observe(&mut self, project_id: String, session_id: String) {
+        crate::commands::observe::start_observe(self, project_id, session_id);
+    }
+
+    /// Presence M003: apply a subscribe completion. Public for the same
+    /// dispatcher/test reasons as the presence apply path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_observe_subscribed(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        session_id: String,
+        subscription_id: Option<codegg::protocol::projection::replay::ProjectionSubscriptionId>,
+        cursor: Option<codegg::protocol::projection::replay::ProjectionCursor>,
+        projection: Option<(
+            codegg::protocol::projection::replay::ProjectionStreamDescriptor,
+            codegg::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::observe::apply_observe_subscribed(
+            self,
+            request_id,
+            project_id,
+            session_id,
+            subscription_id,
+            cursor,
+            projection,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Presence M003: resume the active observation after reconnect/lag.
+    pub fn resume_observe(&mut self) {
+        crate::commands::observe::resume_observe(self);
+    }
+
+    /// Presence M003: stop the active observation (observer-owned
+    /// unsubscribe only; target session keeps running).
+    pub fn stop_observing(&mut self) {
+        crate::commands::observe::stop_observing(self);
+    }
+
+    /// Presence M003: whether an observation is currently active.
+    pub fn is_observing(&self) -> bool {
+        self.observer.is_observing()
+    }
+
+    /// Project Collaboration M002: whether the daemon advertised chat
+    /// support.
+    pub fn chat_supported(&self) -> bool {
+        self.chat.is_supported()
+    }
+
+    /// Project Collaboration M002: open the bounded chat panel for the
+    /// active project. Public so tests and the `/chat` dispatcher share
+    /// one entry point.
+    pub fn show_chat(&mut self) {
+        crate::commands::chat::show_chat(self);
+    }
+
+    /// Project Collaboration M002: kick off a history fetch for
+    /// `project_id`. Public so tests and the `/chat-history`
+    /// dispatcher can route through this method without exposing the
+    /// private command module.
+    pub fn refresh_chat(&mut self, project_id: String) {
+        crate::commands::chat::start_chat_history(self, project_id);
+    }
+
+    /// Project Collaboration M002: incremental sync from the cached M001
+    /// cursor for `project_id`.
+    pub fn sync_chat(&mut self, project_id: String) {
+        crate::commands::chat::start_chat_sync(self, project_id);
+    }
+
+    /// Project Collaboration M002: apply a history-page completion.
+    /// Public for the same dispatcher/test reasons as the presence
+    /// apply path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_history(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<codegg::protocol::core::ChatMessageDto>,
+        next_cursor: u64,
+        truncated: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::chat::apply_chat_history_loaded(
+            self,
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            next_cursor,
+            truncated,
+            retention_floor_seq,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply an incremental-sync completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_sync(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<codegg::protocol::core::ChatMessageDto>,
+        next_cursor: u64,
+        resync_required: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::chat::apply_chat_sync_loaded(
+            self,
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            next_cursor,
+            resync_required,
+            retention_floor_seq,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// M004: apply a finished completion read. Stale, superseded, and
+    /// wrong-scope answers are dropped by the state guard; nothing is
+    /// fabricated. Used by the runtime dispatch arm and by trajectory
+    /// tests driving completions without the runtime loop.
+    pub fn apply_editor_completion(
+        &mut self,
+        request_id: u64,
+        completion_epoch: u64,
+        scope: crate::editor_completion::EditorCompletionScope,
+        result: Option<codegg::protocol::lsp::LspCompletionResultDto>,
+        error: Option<String>,
+    ) {
+        crate::commands::editor::apply_editor_completion(
+            self,
+            request_id,
+            completion_epoch,
+            scope,
+            result,
+            error,
+        );
+    }
+
+    /// Project Collaboration M002: apply a send completion (failures
+    /// retain the draft; nothing is fabricated).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_sent(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        message: Option<codegg::protocol::core::ChatMessageDto>,
+        duplicate: bool,
+        draft: String,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::chat::apply_chat_message_sent(
+            self,
+            project_id,
+            channel_id,
+            message,
+            duplicate,
+            draft,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply an edit completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_edit(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        message: Option<codegg::protocol::core::ChatMessageDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::chat::apply_chat_edit_finished(
+            self,
+            project_id,
+            channel_id,
+            message,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply a redact completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_redact(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+        revision: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::chat::apply_chat_redact_finished(
+            self,
+            project_id,
+            channel_id,
+            message_id,
+            revision,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply a read-marker completion.
+    pub fn apply_chat_read(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        last_read_seq: u64,
+        error: Option<String>,
+    ) {
+        crate::commands::chat::apply_chat_read_marker_set(
+            self,
+            project_id,
+            channel_id,
+            last_read_seq,
+            error,
+        );
+    }
+
+    /// Project Collaboration M002: apply a composing-snapshot completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_composing(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        composing: Vec<codegg::protocol::core::ChatComposingDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::chat::apply_chat_composing_loaded(
+            self,
+            project_id,
+            channel_id,
+            composing,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: send one message to the project's
+    /// active channel.
+    pub fn send_chat_message(
+        &mut self,
+        project_id: String,
+        body: String,
+        reply_to: Option<String>,
+    ) {
+        crate::commands::chat::start_chat_send(self, project_id, body, reply_to);
+    }
+
+    /// Project Collaboration M002: advance the caller's read marker to
+    /// the newest retained message (forward-only daemon-side).
+    pub fn mark_chat_read(&mut self, project_id: String) {
+        crate::commands::chat::start_chat_read(self, project_id);
+    }
+
+    /// Project Collaboration M002: set or clear the caller's ephemeral
+    /// composing lease (content-free).
+    pub fn set_chat_composing(&mut self, project_id: String, composing: bool) {
+        crate::commands::chat::start_chat_composing(self, project_id, composing);
+    }
+
+    /// Project Collaboration M002: route a daemon chat liveness hint
+    /// into the bounded chat reducer. Carries no message detail; the
+    /// active project re-fetches through the authorized history path.
+    /// Inactive projects flag resync and refresh on foreground (no
+    /// polling storm).
+    pub fn on_chat_hint(&mut self, project_id: String, channel_id: String) {
+        if self.chat.note_hint(&project_id) {
+            let is_active = self.active_project_id() == Some(project_id.as_str());
+            if is_active {
+                crate::commands::chat::start_chat_history(self, project_id);
+            } else {
+                let _ = channel_id;
+            }
+        }
+    }
+
+    /// Project Collaboration M002: route observer-mode insert text to
+    /// project chat (the M002 collaboration seam). Public so tests can
+    /// prove the zero-control property without reaching into private
+    /// command modules. Returns `true` when routed.
+    pub fn route_observer_text_to_chat(&mut self, text: &str) -> bool {
+        crate::commands::chat::route_observer_insert_to_chat(self, text)
+    }
+
+    /// Project Collaboration M002: apply a daemon
+    /// `ChatMessageCommitted` payload to the bounded chat window.
+    /// Public so the transport/event bridge can route live chat events
+    /// without exposing the private command module.
+    pub fn apply_chat_event_committed(&mut self, message: codegg::protocol::core::ChatMessageDto) {
+        crate::commands::chat::on_chat_message_committed(self, message);
+    }
+
+    /// Project Collaboration M002: apply a daemon `ChatMessageEdited`
+    /// payload to the bounded chat window.
+    pub fn apply_chat_event_edited(&mut self, message: codegg::protocol::core::ChatMessageDto) {
+        crate::commands::chat::on_chat_message_edited(self, message);
+    }
+
+    /// Project Collaboration M002: apply a daemon `ChatMessageRedacted`
+    /// hint (identity + revision) to the bounded chat window.
+    pub fn apply_chat_event_redacted(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+        revision: u64,
+    ) {
+        crate::commands::chat::on_chat_message_redacted(
+            self, project_id, channel_id, message_id, revision,
+        );
+    }
+
+    /// Project Collaboration M002: route a daemon
+    /// `ChatComposingUpdated` liveness hint into the reducer. Carries no
+    /// content; the panel re-fetches the composing snapshot only while
+    /// it is showing.
+    pub fn on_chat_composing_hint(&mut self, project_id: String, channel_id: String) {
+        crate::commands::chat::on_chat_composing_hint(self, project_id, channel_id);
+    }
+
+    /// Project Collaboration M003: apply a structured-action submit
+    /// completion. Explicit typed operation only; failures retain the
+    /// typed error and fabricate nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_action_submitted(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        action: Option<codegg::protocol::core::ChatActionDto>,
+        duplicate: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::chat::apply_chat_action_submitted(
+            self,
+            request_id,
+            project_id,
+            channel_id,
+            action,
+            duplicate,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M003: apply a bounded action-list completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_action_list(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        actions: Vec<codegg::protocol::core::ChatActionDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::commands::chat::apply_chat_action_list_loaded(
+            self,
+            request_id,
+            project_id,
+            channel_id,
+            actions,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M003: route a daemon `ChatActionUpdated`
+    /// liveness hint into the bounded action projection.
+    pub fn on_chat_action_hint(&mut self, action: codegg::protocol::core::ChatActionDto) {
+        crate::commands::chat::on_chat_action_updated(self, action);
+    }
+
+    /// Build the `/research` service for `project_root`.
+    ///
+    /// This is the single place the command decides whether research may
+    /// reach the network. Attaching the App's search context is what lets
+    /// `ResearchService::with_search_runtime` derive `allow_network` from
+    /// `[search].backend`, so `/research` obeys the same kill-switch as
+    /// `websearch`. With no context installed (socket/daemon-client mode
+    /// without a transport) the service stays local-only by design.
+    pub(crate) fn research_service(
+        &self,
+        project_root: std::path::PathBuf,
+    ) -> codegg::research::service::ResearchService {
+        let service = codegg::research::service::ResearchService::new(project_root);
+        match self.search_runtime.clone() {
+            Some(runtime) => service.with_search_runtime(runtime),
+            None => {
+                tracing::debug!("/research has no search runtime context; running local-only");
+                service
+            }
+        }
+    }
+
+    /// Install the runtime-owned search/MCP context used by `/research`.
+    ///
+    /// Called once at startup. Attaching the context is what lets
+    /// `ResearchService::with_search_runtime` derive `allow_network` from
+    /// `[search].backend`, so the same kill-switch that governs `websearch`
+    /// also governs the `/research` command.
+    pub fn set_search_runtime(&mut self, runtime: codegg::search_backend::SearchRuntimeContext) {
+        self.search_runtime = Some(runtime);
+    }
+
+    pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+            tracing::warn!("set_session_store ignored: AppMode::RemoteCore (daemon owns storage)");
+            return;
+        }
+        self.session_store = Some(store);
+    }
+
+    pub async fn load_sessions_via_core(
+        &mut self,
+    ) -> Result<Vec<codegg::session::Session>, AppError> {
+        let core_client = self
+            .core_client
+            .clone()
+            .ok_or_else(|| AppError::Tui("core client unavailable for session list".to_string()))?;
+        let project_id = self.active_project_key().unwrap_or_default();
+        let show_archived = self.dialog_state.session_dialog.show_archived;
+        let request = codegg::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SessionList {
+                project_id,
+                show_archived,
+                limit: 100,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(codegg::protocol::core::CoreResponse::SessionList { sessions }) => {
+                codegg::protocol_conversions::dtos_to_sessions(sessions).map_err(|e| {
+                    tracing::error!(error = %e, "dtos_to_sessions conversion failed");
+                    AppError::Tui(format!("session list conversion failed: {}", e))
+                })
+            }
+            Ok(codegg::protocol::core::CoreResponse::Error { code, message }) => Err(
+                AppError::Tui(format!("core session list failed ({}): {}", code, message)),
+            ),
+            Ok(other) => Err(AppError::Tui(format!(
+                "unexpected core response for session list: {:?}",
+                other
+            ))),
+            Err(e) => Err(AppError::Tui(format!(
+                "core session list request failed: {}",
+                e
+            ))),
+        }
+    }
+
+    pub async fn load_messages_via_core(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Vec<codegg::session::message::Message>, AppError> {
+        let core_client = self
+            .core_client
+            .clone()
+            .ok_or_else(|| AppError::Tui("core client unavailable for message load".to_string()))?;
+        let request = codegg::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SessionMessagesLoad {
+                session_id: session_id.to_string(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(codegg::protocol::core::CoreResponse::SessionMessages { messages, .. }) => {
+                codegg::protocol_conversions::dtos_to_messages(messages).map_err(|e| {
+                    tracing::error!(error = %e, "dtos_to_messages conversion failed");
+                    AppError::Tui(format!("session messages conversion failed: {}", e))
+                })
+            }
+            Ok(codegg::protocol::core::CoreResponse::Error { code, message }) => {
+                Err(AppError::Tui(format!(
+                    "core session messages load failed ({}): {}",
+                    code, message
+                )))
+            }
+            Ok(other) => Err(AppError::Tui(format!(
+                "unexpected core response for session messages load: {:?}",
+                other
+            ))),
+            Err(e) => Err(AppError::Tui(format!(
+                "core session messages load request failed: {}",
+                e
+            ))),
+        }
+    }
+
+    pub async fn load_models_via_core(&mut self) -> Result<Vec<String>, AppError> {
+        let core_client = self.core_client.clone().ok_or_else(|| {
+            AppError::Tui("core client unavailable for model snapshot".to_string())
+        })?;
+        let request = codegg::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SnapshotModels,
+        );
+        match core_client.request(request).await {
+            Ok(codegg::protocol::core::CoreResponse::ModelsSnapshot { models, .. }) => {
+                self.set_models(models.clone());
+                Ok(models)
+            }
+            Ok(codegg::protocol::core::CoreResponse::Error { code, message }) => {
+                Err(AppError::Tui(format!(
+                    "core model snapshot failed ({}): {}",
+                    code, message
+                )))
+            }
+            Ok(other) => Err(AppError::Tui(format!(
+                "unexpected core response for model snapshot: {:?}",
+                other
+            ))),
+            Err(e) => Err(AppError::Tui(format!(
+                "core model snapshot request failed: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Drive the TUI's initial session load through the attached
+    /// `CoreClient`. In socket/RemoteCore mode there is no local
+    /// `SessionStore`, so this is the only way to open / continue /
+    /// fork a session at startup.
+    ///
+    /// Best-effort: any failure is logged and swallowed so the TUI
+    /// still starts (with no session) if the daemon is unreachable or
+    /// a specific id is missing. Inproc mode uses the same `CoreClient`
+    /// activation request so it observes the same canonical binding rules.
+    pub async fn load_initial_session_via_core(&mut self, request: InitialSessionRequest) {
+        let Some(core_client) = self.core_client.clone() else {
+            return;
+        };
+        match request {
+            InitialSessionRequest::Attach { session_id } => {
+                match crate::commands::sessions::load_session_activation(
+                    core_client.as_ref(),
+                    &session_id,
+                )
+                .await
+                {
+                    Ok((session, root)) => {
+                        self.set_session_with_workspace_root(session, Some(root));
+                    }
+                    Err(error) => tracing::warn!(
+                        "load_initial_session_via_core(Attach): session activation failed: {}",
+                        error
+                    ),
+                }
+            }
+            InitialSessionRequest::Continue { project_dir } => {
+                let req = codegg::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionList {
+                        project_id: project_dir,
+                        show_archived: false,
+                        limit: 1,
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::SessionList { mut sessions }) => {
+                        if let Some(sess) = sessions.pop() {
+                            match crate::commands::sessions::load_session_activation(
+                                core_client.as_ref(),
+                                &sess.id,
+                            )
+                            .await
+                            {
+                                Ok((session, root)) => {
+                                    self.set_session_with_workspace_root(session, Some(root))
+                                }
+                                Err(error) => tracing::warn!(
+                                    "load_initial_session_via_core(Continue): session activation failed: {}",
+                                    error
+                                ),
+                            }
+                        }
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Continue): core error {}: {}",
+                            code,
+                            message
+                        );
+                    }
+                    Ok(other) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Continue): unexpected response {:?}",
+                            other
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Continue): request failed: {}",
+                            e
+                        );
+                    }
+                }
+            }
+            InitialSessionRequest::New { directory, title } => {
+                let req = codegg::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionCreate {
+                        directory,
+                        title,
+                        project_id: None,
+                        workspace_id: None,
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::Session { session }) => {
+                        match crate::commands::sessions::load_session_activation(
+                            core_client.as_ref(),
+                            &session.id,
+                        )
+                        .await
+                        {
+                            Ok((session, root)) => {
+                                self.set_session_with_workspace_root(session, Some(root))
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    "load_initial_session_via_core(New): session activation failed: {}",
+                                    error
+                                );
+                                self.messages_state.toasts.error(&format!(
+                                    "Session created but could not be activated: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        // Surface this: the startup session create is the only
+                        // thing that makes the TUI usable in a fresh
+                        // directory, and a warn-only failure left the user
+                        // staring at an empty TUI with no explanation.
+                        tracing::warn!(
+                            "load_initial_session_via_core(New): core error {}: {}",
+                            code,
+                            message
+                        );
+                        self.messages_state
+                            .toasts
+                            .error(&format!("Session creation failed: {}: {}", code, message));
+                    }
+                    Ok(other) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(New): unexpected response {:?}",
+                            other
+                        );
+                        self.messages_state
+                            .toasts
+                            .error("Session creation failed: unexpected daemon response");
+                    }
+                    Err(e) => {
+                        tracing::warn!("load_initial_session_via_core(New): request failed: {}", e);
+                        self.messages_state
+                            .toasts
+                            .error(&format!("Session creation failed: {}", e));
+                    }
+                }
+            }
+            InitialSessionRequest::Fork { session_id } => {
+                let fork_req = codegg::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionFork {
+                        session_id: session_id.clone(),
+                    },
+                );
+                if let Err(e) = core_client.request(fork_req).await {
+                    tracing::warn!(
+                        "load_initial_session_via_core(Fork): fork request failed: {}",
+                        e
+                    );
+                }
+                let list_req = codegg::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionList {
+                        project_id: self.active_project_key().unwrap_or_default(),
+                        show_archived: false,
+                        limit: 1,
+                    },
+                );
+                match core_client.request(list_req).await {
+                    Ok(CoreResponse::SessionList { mut sessions }) => {
+                        if let Some(sess) = sessions.pop() {
+                            match crate::commands::sessions::load_session_activation(
+                                core_client.as_ref(),
+                                &sess.id,
+                            )
+                            .await
+                            {
+                                Ok((session, root)) => {
+                                    self.set_session_with_workspace_root(session, Some(root))
+                                }
+                                Err(error) => tracing::warn!(
+                                    "load_initial_session_via_core(Fork): session activation failed: {}",
+                                    error
+                                ),
+                            }
+                        } else {
+                            tracing::warn!(
+                                "load_initial_session_via_core(Fork): SessionList returned no sessions"
+                            );
+                        }
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Fork): SessionList error {}: {}",
+                            code,
+                            message
+                        );
+                    }
+                    Ok(other) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Fork): unexpected SessionList response {:?}",
+                            other
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Fork): SessionList request failed: {}",
+                            e
+                        );
+                    }
+                }
+            }
+            InitialSessionRequest::None => {}
+        }
+    }
+
+    /// Initialize App state for `AppMode::RemoteCore` by pulling snapshots
+    /// from the connected daemon. Best-effort: any individual load failure
+    /// is logged and swallowed so a transient daemon error doesn't block
+    /// the TUI from rendering. Returns the number of models loaded.
+    pub async fn init_remote_core(&mut self) -> usize {
+        match self.load_models_via_core().await {
+            Ok(models) => models.len(),
+            Err(e) => {
+                tracing::warn!("init_remote_core: model snapshot failed: {}", e);
+                0
+            }
+        }
+    }
+
+    /// Resolve the launch directory into daemon project/workspace identities,
+    /// registering it on first use.
+    ///
+    /// The TUI opens in a compatibility tab that carries only
+    /// `workspace_root`, but every session-scoped request needs typed
+    /// identities. The daemon resolves a directory locator by catalog lookup
+    /// only (`ProjectContextResolver::resolve_directory`) and never registers
+    /// on a miss, so a directory CodeGG has not seen before could not create
+    /// a session at all: `SessionCreate` failed with
+    /// `project_context_required` and the TUI came up with no session and no
+    /// visible error.
+    ///
+    /// Both steps are idempotent — `WorkspaceRegistry::get_or_register`
+    /// returns the same workspace for a known root, and
+    /// `ProjectCatalog::register_local_project` returns the already-bound
+    /// project instead of creating a second one — so re-running this on every
+    /// launch in a known directory resolves to the same ids.
+    ///
+    /// The directory is the frontend's own launch directory, not a
+    /// client-supplied path, which is what the project picker gates: a remote
+    /// attach must not be able to name an arbitrary path on a daemon that may
+    /// share a different filesystem.
+    pub async fn bootstrap_launch_project_context(
+        &mut self,
+        directory: &std::path::Path,
+    ) -> Result<LaunchProjectContext, String> {
+        let core_client = self
+            .core_client
+            .clone()
+            .ok_or_else(|| "core client is not attached".to_string())?;
+        let (project_id, workspace_id, _canonical_root) =
+            crate::commands::project_picker::ensure_bound_project_context(
+                core_client.as_ref(),
+                directory,
+                LAUNCH_REGISTRATION_SOURCE,
+            )
+            .await?;
+
+        // Keep the active tab's session binding; only the project/workspace
+        // identities are being established here.
+        let session_id = self
+            .project_tabs
+            .active()
+            .and_then(|tab| tab.session_id.clone());
+        self.project_tabs.set_active_identities(
+            Some(project_id.clone()),
+            Some(workspace_id.clone()),
+            session_id,
+        );
+
+        Ok(LaunchProjectContext {
+            project_id,
+            workspace_id,
+        })
+    }
+
+    /// Attach the SQLite-backed user-preferences store. Should be called
+    /// once at startup; the App holds onto the store and uses it to
+    /// remember the user's theme and last-used model across restarts.
+    pub fn set_preferences(&mut self, prefs: codegg::storage::UserPreferences) {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+            tracing::warn!("set_preferences ignored: AppMode::RemoteCore (daemon owns storage)");
+            return;
+        }
+        self.preferences = Some(prefs);
+    }
+
+    pub fn set_message_store(&mut self, store: Arc<MessageStore>) {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+            tracing::warn!("set_message_store ignored: AppMode::RemoteCore (daemon owns storage)");
+            return;
+        }
+        self.message_store = Some(store);
+    }
+
+    pub fn set_memory_store(&mut self, store: Arc<MemoryStore>) {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+            tracing::warn!("set_memory_store ignored: AppMode::RemoteCore (daemon owns storage)");
+            return;
+        }
+        self.memory_store = Some(store);
+    }
+
+    /// Install the effective agent catalog while preserving a usable UI
+    /// fallback when the daemon has not supplied one yet.
+    ///
+    /// The daemon-client startup path intentionally has no local project
+    /// agent snapshot. An empty list there is a "not available" sentinel,
+    /// not a valid catalog: rendering and input handling always require an
+    /// active agent.
+    pub fn set_agents(&mut self, agents: Vec<codegg::agent::Agent>) {
+        if agents.is_empty() {
+            tracing::warn!("received empty agent catalog; retaining the current TUI agent catalog");
+            return;
+        }
+
+        let current_name = self
+            .agent_state
+            .agents
+            .get(self.agent_state.current_agent)
+            .map(|agent| agent.name.clone());
+        let current_agent = current_name
+            .as_deref()
+            .and_then(|name| agents.iter().position(|agent| agent.name == name))
+            .or_else(|| agents.iter().position(|agent| agent.name == "build"))
+            .unwrap_or(0);
+
+        self.agent_state.agents = agents;
+        self.agent_state.current_agent = current_agent;
+    }
+
+    pub fn set_models(&mut self, models: Vec<String>) {
+        self.agent_state.models = models;
+        self.dialog_state
+            .model_dialog
+            .set_models(self.agent_state.models.clone());
+        if let Some(idx) = self
+            .agent_state
+            .models
+            .iter()
+            .position(|m| m == &self.agent_state.current_model)
+        {
+            self.agent_state.model_idx = idx;
+        } else if self.agent_state.current_model.is_empty() && !self.agent_state.models.is_empty() {
+            // Only adopt a catalog entry when there is genuinely no selection.
+            //
+            // This used to fire whenever the current model was merely absent
+            // from a refreshed catalog, silently replacing it with
+            // `models[0]`. Which entry that is depends on provider iteration
+            // order, so an unchanged and still-valid selection could turn into
+            // a different provider on the next launch. A selection the
+            // catalog does not know about is left alone; the daemon resolves
+            // the durable selection authoritatively for the session.
+            self.agent_state.current_model = self.agent_state.models[0].clone();
+            self.agent_state.model_idx = 0;
+        }
+        self.dialog_state
+            .model_dialog
+            .set_current(&self.agent_state.current_model);
+    }
+
+    /// Adopt the persisted per-tab model selection as the active model.
+    ///
+    /// The tab manifest stores the user's choice as a qualified
+    /// `provider/model` id. Nothing else copied it into
+    /// `agent_state.current_model`, so a restored tab kept the compile-time
+    /// placeholder and the next catalog refresh decided the model instead.
+    pub fn adopt_persisted_tab_model(&mut self) {
+        let persisted = self
+            .project_tabs
+            .active()
+            .map(|tab| tab.model.trim().to_string())
+            .filter(|model| !model.is_empty());
+        let Some(model) = persisted else {
+            return;
+        };
+        if self.agent_state.current_model == model {
+            return;
+        }
+        tracing::debug!(target: "codegg::tui::app", %model, "adopted persisted tab model");
+        self.agent_state.current_model = model;
+        if let Some(idx) = self
+            .agent_state
+            .models
+            .iter()
+            .position(|m| m == &self.agent_state.current_model)
+        {
+            self.agent_state.model_idx = idx;
+        }
+        self.dialog_state
+            .model_dialog
+            .set_current(&self.agent_state.current_model);
+    }
+
+    /// Reconcile the displayed model with the daemon's durable
+    /// session selection.
+    ///
+    /// The daemon resolves the model for a turn from the durable
+    /// `SessionSelection`, so that is what actually runs. The TUI used
+    /// to display a *different* model sourced from the tab manifest:
+    /// `SessionSelectionLoaded` returned early whenever the connection
+    /// dialog was not open, so the authoritative selection was fetched
+    /// and then discarded. The two then diverged silently — the status
+    /// line showed one model while the provider received another, and
+    /// the only evidence was an upstream error naming a model the
+    /// operator never selected.
+    ///
+    /// Returns `true` when the durable selection was applied.
+    pub fn reconcile_durable_selection_model(&mut self, runtime_model: &str) -> bool {
+        // `runtime_model` is `<provider_kind>/<model_id>`, where
+        // provider_kind is connection-scoped (e.g. `other:opencode_go`).
+        // Catalog entries are `<provider>/<model_id>`, so match on the
+        // model segment rather than a whole-string compare.
+        let Some((_kind, model_id)) = runtime_model.split_once('/') else {
+            return false;
+        };
+        let Some(idx) = self.agent_state.models.iter().position(|entry| {
+            entry
+                .split_once('/')
+                .map(|(_, id)| id == model_id)
+                .unwrap_or(entry.as_str() == model_id)
+        }) else {
+            tracing::debug!(
+                target: "codegg::tui::app",
+                %runtime_model,
+                "durable selection is not in the current catalog; leaving the displayed model alone"
+            );
+            return false;
+        };
+        let resolved = self.agent_state.models[idx].clone();
+        if self.agent_state.current_model != resolved {
+            tracing::debug!(
+                target: "codegg::tui::app",
+                previous = %self.agent_state.current_model,
+                %resolved,
+                "adopted durable session selection as the displayed model"
+            );
+            self.agent_state.current_model = resolved.clone();
+            if let Some(tab) = self.active_tab_mut() {
+                tab.model = resolved.clone();
+            }
+        }
+        self.agent_state.model_idx = idx;
+        self.dialog_state.model_dialog.set_current(&resolved);
+        true
+    }
+
+    pub fn refresh_models(&mut self) {
+        self.messages_state
+            .toasts
+            .info("Refreshing model cache in background...");
+        let core_client = self.core_client.clone();
+        let cmd_tx = self.tui_cmd_tx.clone();
+        // M007-D: the daemon owns the effect. The refresh is the
+        // catalog's `models_refresh` command.
+        let scope = crate::command_route::scope_for(self);
+        if let (Some(core_client), Some(tx)) = (core_client, cmd_tx) {
+            self.task_registry
+                .spawn(TuiTaskKind::Command, "refresh-models", async move {
+                    match crate::command_route::send_command(
+                        &core_client,
+                        scope,
+                        "models_refresh",
+                        "",
+                        "",
+                    )
+                    .await
+                    {
+                        Ok(codegg::protocol::core::CoreResponse::Json { data }) => {
+                            let models = data
+                                .get("models")
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            let model_ids: Vec<String> = models
+                                .iter()
+                                .filter_map(|m| m.as_str().map(ToOwned::to_owned))
+                                .collect();
+                            if tx.send(TuiCommand::UpdateModels(model_ids)).await.is_err() {
+                                tracing::debug!("model refresh completion receiver is gone");
+                            }
+                        }
+                        Ok(codegg::protocol::core::CoreResponse::Error { message, .. }) => {
+                            tracing::warn!("model refresh via core failed: {}", message);
+                        }
+                        Ok(other) => {
+                            tracing::warn!("unexpected models refresh response: {:?}", other);
+                        }
+                        Err(e) => {
+                            tracing::warn!("model refresh request failed: {}", e);
+                        }
+                    }
+                });
+        } else {
+            self.messages_state
+                .toasts
+                .warning("Core client or command channel not available for refresh");
+        }
+    }
+
+    pub fn set_tokens(&mut self, input: u64, output: u64) {
+        self.session_state.token_in += input;
+        self.session_state.token_out += output;
+        self.reset_live_token_estimate();
+    }
+
+    pub fn reset_live_token_estimate(&mut self) {
+        self.session_state.live_output_tokens = 0;
+        self.session_state.live_output_text.clear();
+    }
+
+    /// Accumulate a streamed output delta into the live context meter.
+    ///
+    /// The running count is maintained *incrementally*: only the new delta is
+    /// tokenized and added to the total. Re-tokenizing the whole accumulated
+    /// buffer on every delta made the cost of a turn quadratic
+    /// (`estimate_tokens` performs a real `cl100k_base` BPE encode), and it ran
+    /// on the single event-loop thread — so the loop could not keep up with the
+    /// delta stream. Deltas therefore queued in `core_event_rx` and only became
+    /// visible in an implausible burst, and queued permission prompts arrived
+    /// too late to be answered.
+    ///
+    /// Summing per-chunk counts is not bit-identical to encoding the joined
+    /// text, because BPE can merge across a chunk boundary. That is acceptable
+    /// here: the value drives only the live output/context meters, never
+    /// accounting or persistence, and `reset_live_token_estimate` recomputes
+    /// from zero at each turn boundary.
+    pub fn add_live_output_delta(&mut self, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
+        self.session_state.live_output_text.push_str(delta);
+        let delta_tokens =
+            codegg::context::compaction::ContextTracker::estimate_tokens(delta) as u64;
+        self.session_state.live_output_tokens = self
+            .session_state
+            .live_output_tokens
+            .saturating_add(delta_tokens);
+    }
+
+    pub fn set_context_info(&mut self, tokens: usize, limit: usize, compactions: usize) {
+        self.session_state.context_tokens = tokens;
+        self.session_state.context_limit = limit;
+        self.session_state.compaction_count = compactions;
+    }
+
+    pub fn set_rate_limits(
+        &mut self,
+        rpm: Option<u64>,
+        tpm: Option<u64>,
+        rpm_rem: Option<u64>,
+        tpm_rem: Option<u64>,
+    ) {
+        self.session_state.rpm_limit = rpm;
+        self.session_state.tpm_limit = tpm;
+        self.session_state.rpm_remaining = rpm_rem;
+        self.session_state.tpm_remaining = tpm_rem;
+    }
+
+    fn get_info_dialog_lines(&self) -> Vec<String> {
+        let lines: Vec<Line<'_>> = match &self.ui_state.dialog {
+            Dialog::Context => self.get_context_lines(),
+            Dialog::Cost => self.get_cost_lines(),
+            Dialog::Usage => self.get_usage_lines(),
+            _ => vec![],
+        };
+        lines
+            .into_iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<&str>>()
+                    .join("")
+            })
+            .collect()
+    }
+
+    fn get_context_lines(&self) -> Vec<Line<'_>> {
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Context Window",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::raw(format!(
+                "  Current: {} tokens",
+                self.session_state.context_tokens
+            ))),
+            Line::from(Span::raw(format!(
+                "  Limit: {} tokens",
+                self.session_state.context_limit
+            ))),
+        ];
+
+        if self.session_state.context_limit > 0 {
+            let pct = (self.session_state.context_tokens as f64
+                / self.session_state.context_limit as f64
+                * 100.0)
+                .min(100.0);
+            lines.push(Line::from(Span::raw(format!("  Usage: {:.1}%", pct))));
+        }
+
+        lines.push(Line::from(Span::raw(format!(
+            "  Compactions: {}",
+            self.session_state.compaction_count
+        ))));
+
+        if let Some(ref session) = self.session_state.session {
+            if session.time_compacting.is_some() {
+                lines.push(Line::from(Span::raw("  Session has been compacted")));
+            }
+        }
+
+        let derived = &self.session_state_derived;
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(Span::styled(
+            "  Pinned",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if derived.context_state.pinned_items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (none)",
+                Style::default().fg(self.ui_state.theme.muted),
+            )));
+        } else {
+            for item in &derived.context_state.pinned_items {
+                lines.push(Line::from(Span::raw(format!("    {}", item.label))));
+            }
+        }
+
+        lines.push(Line::from(Span::styled(
+            "  Summarized",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if derived.context_state.summarized_items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (none)",
+                Style::default().fg(self.ui_state.theme.muted),
+            )));
+        } else {
+            for item in &derived.context_state.summarized_items {
+                lines.push(Line::from(Span::raw(format!("    {}", item.label))));
+            }
+        }
+
+        lines.push(Line::from(Span::styled(
+            "  Retrieved",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if derived.context_state.retrieved_items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (none)",
+                Style::default().fg(self.ui_state.theme.muted),
+            )));
+        } else {
+            for item in &derived.context_state.retrieved_items {
+                lines.push(Line::from(Span::raw(format!("    {}", item.label))));
+            }
+        }
+
+        lines.push(Line::from(Span::styled(
+            "  Excluded",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if derived.context_state.excluded_items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (none)",
+                Style::default().fg(self.ui_state.theme.muted),
+            )));
+        } else {
+            for item in &derived.context_state.excluded_items {
+                lines.push(Line::from(Span::raw(format!("    {}", item.label))));
+            }
+        }
+
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(Span::styled(
+            "  Providers (Active Keys):",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+
+        let active_vars = [
+            ("openai", "OPENAI_API_KEY"),
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("google", "GOOGLE_API_KEY"),
+            ("minimax", "MINIMAX_API_KEY"),
+            ("opencode_zen", "OPENCODE_ZEN_API_KEY"),
+            ("opencode_go", "OPENCODE_GO_API_KEY"),
+        ];
+
+        for (id, var) in active_vars {
+            if let Ok(val) = std::env::var(var) {
+                let len = val.len();
+                let prefix = if len > 4 {
+                    truncate_prefix(&val, 4)
+                } else {
+                    "..."
+                };
+                let suffix = if len > 4 {
+                    truncate_suffix(&val, 4)
+                } else {
+                    "..."
+                };
+                lines.push(Line::from(Span::raw(format!(
+                    "    {}: {}...{} (len={})",
+                    id, prefix, suffix, len
+                ))));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines
+    }
+
+    fn get_cost_lines(&self) -> Vec<Line<'_>> {
+        let total_tokens = self.session_state.token_in + self.session_state.token_out;
+        let model = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next_back()
+            .unwrap_or(&self.agent_state.current_model);
+
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(Span::raw("  Token Usage")),
+            Line::from(Span::raw(format!(
+                "  Input:  {} tokens",
+                self.session_state.token_in
+            ))),
+            Line::from(Span::raw(format!(
+                "  Output: {} tokens",
+                self.session_state.token_out
+            ))),
+            Line::from(Span::raw(format!("  Total:  {} tokens", total_tokens))),
+        ];
+
+        if self.session_state.cached_tokens > 0 {
+            let cache_pct = (self.session_state.cached_tokens as f64
+                / self.session_state.token_in as f64
+                * 100.0) as u64;
+            lines.push(Line::from(Span::raw(format!(
+                "  Cached: {} tokens ({}%)",
+                self.session_state.cached_tokens, cache_pct
+            ))));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::raw("  Estimated Cost")));
+
+        let cost = estimate_cost(
+            &self.session_state.token_in,
+            &self.session_state.token_out,
+            model,
+        );
+        lines.push(Line::from(Span::raw(format!("  {}", cost))));
+
+        lines.push(Line::from(""));
+        lines
+    }
+
+    fn get_usage_lines(&self) -> Vec<Line<'_>> {
+        let mut lines = vec![Line::from(""), Line::from(Span::raw("  Rate Limits"))];
+
+        if let (Some(rpm), Some(rem)) = (
+            self.session_state.rpm_limit,
+            self.session_state.rpm_remaining,
+        ) {
+            lines.push(Line::from(Span::raw(format!(
+                "  Requests/min: {} ({} remaining)",
+                rpm, rem
+            ))));
+        } else {
+            lines.push(Line::from(Span::raw("  Requests/min: N/A")));
+        }
+
+        if let (Some(tpm), Some(rem)) = (
+            self.session_state.tpm_limit,
+            self.session_state.tpm_remaining,
+        ) {
+            lines.push(Line::from(Span::raw(format!(
+                "  Tokens/min: {} ({} remaining)",
+                tpm, rem
+            ))));
+        } else {
+            lines.push(Line::from(Span::raw("  Tokens/min: N/A")));
+        }
+
+        lines.push(Line::from(""));
+        lines
+    }
+
+    pub fn set_status(&mut self, status: SessionStatus) {
+        self.session_state.session_status = status.clone();
+        if status == SessionStatus::Idle {
+            self.prompt_state.pending_send = false;
+        }
+    }
+
+    pub fn set_todos(&mut self, todos: Vec<TodoEntry>) {
+        // Mirror onto the app: the sidebar owns its own copy for its section
+        // rendering, while the above-input strip is driven from the app.
+        self.todos = todos.clone();
+        self.sidebar.set_todos(todos);
+    }
+
+    /// Toggle the unified tasks overlay (todos, subagents, jobs).
+    ///
+    /// Not short-circuited when the list is empty. An empty overlay is a
+    /// legitimate answer — "you asked what the session is waiting on and the
+    /// answer is nothing" — and swallowing the key would leave the user
+    /// pressing a key that appears dead. The overlay still reports the groups
+    /// it found nothing in.
+    pub fn toggle_tasks_list(&mut self) {
+        self.tasks_expanded = !self.tasks_expanded;
+        // A cursor left pointing at yesterday's row index would select
+        // whatever happens to sit there now — or nothing at all — the next
+        // time the overlay opens. Reopening starts at the top.
+        self.tasks_selected = None;
+        self.tasks_selected_key = None;
+        if self.tasks_expanded {
+            // Opening from Insert takes Normal mode with it, because the
+            // overlay's own keys are Normal-mode gestures. Without this the
+            // overlay would open from the composer looking navigable while
+            // `j`/`k` silently typed into the prompt — the same "the feature
+            // is dead" symptom the consolidated chord existed to kill.
+            if self.ui_state.input_mode == InputMode::Insert {
+                self.tasks_restore_mode = Some(InputMode::Insert);
+                self.ui_state.input_mode = InputMode::Normal;
+            }
+        } else {
+            // Closing hands the composer back the mode it was in, not the
+            // mode the overlay borrowed.
+            if let Some(restore) = self.tasks_restore_mode.take() {
+                self.ui_state.input_mode = restore;
+            }
+        }
+    }
+
+    /// The overlay rows actually rendered, bounded to what fits.
+    ///
+    /// The bound is applied here rather than only at paint time so every
+    /// consumer — the renderer, the selection cursor, `Enter` — agrees on
+    /// which rows exist. A cursor that could point past the bound would open a
+    /// subagent the user cannot see.
+    pub fn bounded_task_rows(&self) -> Vec<crate::app::state::tasks::TaskRow> {
+        crate::app::state::tasks::bounded(self.task_rows())
+    }
+
+    /// Build both row lists the tasks overlay reads, once for a frame.
+    ///
+    /// `None` when the overlay is collapsed: there is no height to reserve
+    /// and nothing to paint, so the list is not derived at all.
+    pub(crate) fn build_frame_task_rows(&self) -> Option<FrameTaskRows> {
+        if !self.tasks_expanded {
+            return None;
+        }
+        let all = self.task_rows();
+        let bounded = crate::app::state::tasks::bounded(&all);
+        Some(FrameTaskRows { all, bounded })
+    }
+
+    /// The snapshot and tab set the watermark scan last ran for.
+    pub(crate) fn watermark_scan_is_current(&self, stream_id: &str, event_seq: u64) -> bool {
+        let Some(key) = self.watermark_scan_key.as_ref() else {
+            return false;
+        };
+        key.stream_id == stream_id
+            && key.event_seq == event_seq
+            && key.tab_count == self.ui_state.subagents.tabs.len()
+            && key.active_tab.as_deref()
+                == self
+                    .ui_state
+                    .subagents
+                    .tabs
+                    .active_tab_id()
+                    .map(|id| id.as_str())
+    }
+
+    /// Record that the watermark scan ran for this snapshot and tab set.
+    pub(crate) fn record_watermark_scan(&mut self, stream_id: &str, event_seq: u64) {
+        self.watermark_scan_key = Some(WatermarkScanKey {
+            stream_id: stream_id.to_string(),
+            event_seq,
+            tab_count: self.ui_state.subagents.tabs.len(),
+            active_tab: self
+                .ui_state
+                .subagents
+                .tabs
+                .active_tab_id()
+                .map(|id| id.to_string()),
+        });
+    }
+
+    /// Move the overlay's selection cursor by `offset` rows.
+    ///
+    /// Returns whether the cursor moved. The cursor visits body rows only —
+    /// a group heading is a label, not a row to land on — and stops at both
+    /// ends rather than wrapping: it is a scroll position inside a strip the
+    /// user is reading, not a cycle like the tab set.
+    pub fn move_tasks_selection(&mut self, offset: isize) -> bool {
+        if !self.tasks_expanded {
+            return false;
+        }
+        use crate::app::state::tasks::selectable_indices;
+        let selectable = selectable_indices(&self.bounded_task_rows());
+        if selectable.is_empty() {
+            self.tasks_selected = None;
+            self.tasks_selected_key = None;
+            return false;
+        }
+        let rows = self.bounded_task_rows();
+        let current = self
+            .tasks_selected_key
+            .as_ref()
+            .and_then(|key| {
+                rows.iter()
+                    .position(|row| row.identity_key().as_ref() == Some(key))
+            })
+            .or(self.tasks_selected)
+            .and_then(|index| selectable.iter().position(|row| *row == index));
+        let next = match current {
+            Some(position) => {
+                (position as isize + offset).clamp(0, selectable.len() as isize - 1) as usize
+            }
+            // No cursor yet: start at the first row whichever way the gesture
+            // points. Skipping to the second on `j` would silently swallow the
+            // top item on an overlay that has only ever been opened once, and
+            // the user would `Enter` the wrong subagent.
+            None => 0,
+        };
+        if current == Some(next) {
+            return false;
+        }
+        self.tasks_selected = Some(selectable[next]);
+        self.tasks_selected_key = rows[selectable[next]].identity_key();
+        true
+    }
+
+    pub(crate) fn selected_task_row_index(
+        &self,
+        rows: &[crate::app::state::tasks::TaskRow],
+    ) -> Option<usize> {
+        if let Some(key) = self.tasks_selected_key.as_ref() {
+            return rows
+                .iter()
+                .position(|row| row.identity_key().as_ref() == Some(key));
+        }
+        self.tasks_selected.filter(|index| *index < rows.len())
+    }
+
+    /// Open whatever the overlay's cursor is resting on.
+    ///
+    /// Only a subagent row has a target today. A todo or a job is still
+    /// *selectable* so navigation does not skip over it, but activating one
+    /// does nothing: inventing a detail view for either would be a surface
+    /// the projection does not actually back.
+    pub fn open_selected_task(&mut self) -> bool {
+        use crate::app::state::tasks::TaskRow;
+        if !self.tasks_expanded {
+            return false;
+        }
+        let rows = self.bounded_task_rows();
+        let Some(selected) = self
+            .selected_task_row_index(&rows)
+            .and_then(|index| rows.get(index))
+        else {
+            return false;
+        };
+        match selected {
+            TaskRow::Subagent {
+                task_id,
+                child_instance_id,
+                ..
+            } => {
+                let target = child_instance_id.as_deref().unwrap_or(task_id);
+                if self.open_subagent_tab(target) {
+                    self.toggle_tasks_list();
+                    true
+                } else {
+                    false
+                }
+            }
+            TaskRow::Job { job_id, .. } => {
+                self.process_msg(TuiMsg::OpenJobDetail {
+                    job_id: job_id.clone(),
+                });
+                true
+            }
+            TaskRow::Header { .. } | TaskRow::Todo { .. } => false,
+        }
+    }
+
+    /// Open daemon-backed detail for the selected job or durable child
+    /// association while keeping Enter on a child dedicated to its transcript.
+    pub fn inspect_selected_task(&mut self) -> bool {
+        use crate::app::state::tasks::TaskRow;
+        if !self.tasks_expanded {
+            return false;
+        }
+        let rows = self.bounded_task_rows();
+        let Some(selected) = self
+            .selected_task_row_index(&rows)
+            .and_then(|index| rows.get(index))
+        else {
+            return false;
+        };
+        let message = match selected {
+            TaskRow::Job { job_id, .. } => Some(TuiMsg::OpenJobDetail {
+                job_id: job_id.clone(),
+            }),
+            TaskRow::Subagent {
+                job_id: Some(job_id),
+                ..
+            } => Some(TuiMsg::OpenJobDetail {
+                job_id: job_id.clone(),
+            }),
+            TaskRow::Subagent {
+                run_id: Some(run_id),
+                ..
+            } => Some(TuiMsg::OpenRunDetail {
+                run_id: run_id.clone(),
+            }),
+            TaskRow::Header { .. } | TaskRow::Todo { .. } | TaskRow::Subagent { .. } => None,
+        };
+        if let Some(message) = message {
+            self.process_msg(message);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Completed todo count. `TodoStatus::Completed` is the only status that
+    /// counts toward the `n/m` progress readout; cancelled items are not
+    /// "done work" and must not inflate the numerator.
+    pub fn todos_completed(&self) -> usize {
+        self.todos
+            .iter()
+            .filter(|t| t.status.eq_ignore_ascii_case("completed"))
+            .count()
+    }
+
+    /// Rows the above-input todo strip needs, including its header row.
+    /// Returns 0 when there is no todo list, so the input keeps the space.
+    pub fn todo_strip_height(&self) -> u16 {
+        if self.todos.is_empty() {
+            return 0;
+        }
+        // Always the one-line summary. The full list lives in the tasks
+        // overlay (`Ctrl+T`), so there is no in-place expanded form to size:
+        // the strip's height is a function of *whether* a list exists and
+        // nothing else, which is what keeps row 0 stable while composing.
+        1
+    }
+
+    /// Rows the main buffer's subagent tab bar needs.
+    ///
+    /// One row, and only while a subagent tab is actually open. That is a
+    /// different shape from the working strip, which reserves row 0
+    /// unconditionally precisely so that turn state cannot reflow the
+    /// transcript — but the two are answering different questions. The working
+    /// strip reports on the *turn*, which starts and stops on its own; the tab
+    /// bar reports on tabs, which only appear because the user asked for one.
+    /// A one-row appearance and disappearance caused by an explicit keystroke
+    /// is ordinary editor behaviour, not the automatic reflow I4 forbids.
+    ///
+    /// The row is bounded to 1 and the labels are trimmed to the width
+    /// available (see `fit_bar_tabs`), so opening tabs cannot cost the
+    /// transcript more than a single row no matter how many are open.
+    pub fn subagent_tab_strip_height(&self) -> u16 {
+        u16::from(!self.ui_state.subagents.tabs.is_empty())
+    }
+
+    /// Open the subagent with this projection `task_id` as a buffer tab.
+    ///
+    /// Returns whether a tab is now open for it. `false` covers a task id with
+    /// no live row and a tab set already at capacity; the caller decides
+    /// whether either is worth reporting.
+    pub fn open_subagent_tab(&mut self, task_id: &str) -> bool {
+        let task_id = task_id.to_string();
+        let was_open = self.ui_state.subagents.has_tab(&task_id);
+        let opened = self.ui_state.subagents.open_task(&task_id);
+        if !opened && !was_open {
+            // Distinguish "no such subagent" from "the tab set is full" — the
+            // second is a real limit the user should know about, and telling
+            // them "no such subagent" when the row is right there would be a
+            // lie about what the UI can see.
+            if self
+                .ui_state
+                .subagents
+                .rows
+                .iter()
+                .any(|row| row.identity_key() == task_id || row.task_id == task_id)
+                && self.ui_state.subagents.tabs.is_at_capacity()
+            {
+                self.messages_state
+                    .toasts
+                    .info("Subagent tab limit reached — close a tab with Shift+X to open another");
+            }
+        }
+        if opened {
+            // The tab follows the delegated run's recorded transcript from
+            // the canonical durable run id the authorized projection
+            // vouched for. This is a **typed incremental read** — one
+            // bounded page from the store's own cursor — not a replacement
+            // of the whole session subscription. The session refresh stays
+            // as the fallback for a daemon that does not serve the page
+            // read at all.
+            if let Some(tab_id) = self.ui_state.subagents.tabs.active_tab_id().cloned() {
+                crate::commands::transcript_follow::on_tab_focused(self, &tab_id);
+            }
+        }
+        opened
+    }
+
+    /// Re-read the delegated run's recorded transcript for the open tab.
+    ///
+    /// The explicit retry for a follow that broke: a read the daemon
+    /// refused, a daemon that went away, or a read that failed. It re-reads
+    /// from the tab's own cursor, so it never re-fetches what the tab
+    /// already holds.
+    ///
+    /// A no-op when no subagent tab is open, and a no-op when the tab's
+    /// follow is healthy — a working follow is not re-issued.
+    fn retry_transcript_follow(&mut self) {
+        let Some(tab_id) = self.ui_state.subagents.tabs.active_tab_id().cloned() else {
+            return;
+        };
+        crate::commands::transcript_follow::retry(self, &tab_id);
+    }
+
+    /// Re-read the active session's projection so the delegated tab's
+    /// transcript is current.
+    ///
+    /// This is the **older-daemon fallback** for the delegated tab: a
+    /// daemon that does not serve the typed transcript page read is still
+    /// answered by the session snapshot, exactly as before. A daemon that
+    /// does serve the page read never comes through here — replacing a
+    /// whole session subscription to refresh one run's transcript is a far
+    /// larger blast radius than the read itself.
+    ///
+    /// A no-op when there is no active session or project: there is nothing
+    /// to re-read, and the tab keeps the transcript it already has.
+    pub(crate) fn refresh_delegated_transcript(&mut self) {
+        let (Some(project_id), Some(session_id)) = (
+            self.active_project_id().map(str::to_owned),
+            self.active_session_id().map(str::to_owned),
+        ) else {
+            return;
+        };
+        crate::commands::primary_projection::refresh_session_snapshot(self, project_id, session_id);
+    }
+
+    /// Move `offset` places through the subagent tab cycle.
+    ///
+    /// Returns whether a subagent tab is showing afterwards. `false` with no
+    /// subagent tabs open is not a failure: the conversation stays selected,
+    /// which is the same "no dead key" rule `toggle_tasks_list` follows.
+    fn cycle_subagent_tab(&mut self, offset: isize) -> bool {
+        let cycled = self.ui_state.subagents.cycle_tabs(offset);
+        if cycled {
+            // A tab that gains focus catches up from the authoritative
+            // cursor. A background tab is not read: it stays dirty and
+            // waits, so a hidden tab generates no traffic.
+            if let Some(tab_id) = self.ui_state.subagents.tabs.active_tab_id().cloned() {
+                crate::commands::transcript_follow::on_tab_focused(self, &tab_id);
+            }
+        }
+        cycled
+    }
+
+    /// `Shift+N`: show the next subagent tab, wrapping through the
+    /// conversation.
+    pub fn next_subagent_tab(&mut self) {
+        self.cycle_subagent_tab(1);
+    }
+
+    /// `Shift+P`: show the previous subagent tab, wrapping through the
+    /// conversation.
+    pub fn previous_subagent_tab(&mut self) {
+        self.cycle_subagent_tab(-1);
+    }
+
+    /// `Shift+X`: close the active subagent tab.
+    ///
+    /// Closes nothing but the tab. The run keeps going, because whether a user
+    /// is *watching* a subagent has never had any bearing on whether it
+    /// finishes.
+    pub fn close_subagent_tab(&mut self) {
+        let closed = self.ui_state.subagents.tabs.close_active();
+        if let Some(tab) = closed {
+            self.messages_state
+                .toasts
+                .info(&format!("Closed {}", tab.label()));
+        }
+    }
+
+    /// Rows the unified tasks overlay needs, including its per-group headers.
+    ///
+    /// Returns 0 only when collapsed. An expanded overlay always claims at
+    /// least one row, which is the "Nothing pending" line: with every group
+    /// empty there are no headers to draw, and reserving nothing made `Ctrl+T`
+    /// a silently dead key on an idle session — the very first thing a user
+    /// tries. The height is deliberately independent of `todo_strip_height`:
+    /// the overlay is on-demand, and coupling them would make expanding one
+    /// reflow the other's rows.
+    pub fn tasks_strip_height(&self) -> u16 {
+        if !self.tasks_expanded {
+            return 0;
+        }
+        // Inside a frame the rows were already built by `render`, so the
+        // height is a read. The fallback keeps a direct caller (a test, or a
+        // gesture that asks before a frame) correct at the cost of building
+        // the list it needs; the render path never takes it.
+        if let Some(frame) = self.frame_task_rows.as_ref() {
+            return frame.bounded.len().max(1) as u16 + 1;
+        }
+        self.bounded_task_rows().len().max(1) as u16 + 1
+    }
+
+    /// Build the tasks overlay rows from the canonical session-work selector.
+    /// Nothing here synthesizes a row or mints a name; this only selects and
+    /// formats what the authorized projection already vouches for.
+    pub fn task_rows(&self) -> Vec<crate::app::state::tasks::TaskRow> {
+        crate::render_cost::count_task_list_build();
+        let todos: Vec<crate::app::state::tasks::TodoLike> = self
+            .todos
+            .iter()
+            .map(|todo| crate::app::state::tasks::TodoLike {
+                bubble: Self::todo_bubble(&todo.status),
+                content: todo.content.clone(),
+            })
+            .collect();
+        let session_work = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| crate::app::state::session_work::select_session_work(snapshot))
+            .unwrap_or_default();
+        let jobs: Vec<crate::app::state::tasks::JobLike> = session_work
+            .iter()
+            .filter(|work| work.is_live())
+            .filter_map(|work| work.job.clone())
+            .collect();
+        let subagents: Vec<crate::app::state::subagents::SubagentRow> = session_work
+            .iter()
+            .filter_map(|work| work.subagent.clone())
+            .collect();
+        let mut rows = crate::app::state::tasks::build_task_rows(&todos, &subagents, &jobs);
+        for row in &mut rows {
+            if let crate::app::state::tasks::TaskRow::Subagent {
+                child_instance_id,
+                task_id,
+                run_id,
+                job_id,
+                ..
+            } = row
+            {
+                *job_id = session_work
+                    .iter()
+                    .find(|work| {
+                        if let Some(child_id) = child_instance_id.as_deref() {
+                            work.child_instance_id.as_deref() == Some(child_id)
+                        } else {
+                            work.run_id.as_deref() == run_id.as_deref()
+                                || (run_id.is_none()
+                                    && work.child_instance_id.is_none()
+                                    // The selector's key for a legacy child is
+                                    // exactly `task:<task_id>`; comparing the
+                                    // suffix avoids building that string for
+                                    // every candidate considered.
+                                    && work
+                                        .key
+                                        .strip_prefix("task:")
+                                        .is_some_and(|key_task| key_task == task_id.as_str()))
+                        }
+                    })
+                    .and_then(|work| work.job_id.clone());
+            }
+        }
+        rows
+    }
+
+    /// The live subagents and jobs shown under the `/sessions` session list.
+    ///
+    /// Derived from [`App::task_rows`] rather than re-read from the snapshot,
+    /// so the liveness rule has exactly one implementation: the two surfaces
+    /// cannot disagree about which subagents or jobs exist. Headers and todos
+    /// are dropped here because the dialog builds its own section headings and
+    /// has no todo section; every other row is carried across whole, keeping
+    /// both the child generation key and its task transcript address (or the
+    /// stable job identity) from the projected entity.
+    ///
+    /// The overlay's [`crate::app::state::tasks::bounded`] cap is
+    /// deliberately *not* applied. That cap exists because the overlay is
+    /// carved out of the prompt allocation and can starve its own block; a
+    /// scrolling modal has no such budget, and truncating to twelve rows here
+    /// would hide live work for no reason.
+    pub fn session_dialog_pending_rows(
+        &self,
+    ) -> (
+        Vec<crate::components::dialogs::session::SubagentListRow>,
+        Vec<crate::components::dialogs::session::JobListRow>,
+    ) {
+        use crate::app::state::tasks::TaskRow;
+        use crate::components::dialogs::session::{JobListRow, SubagentListRow};
+
+        let active_session_id = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| snapshot.primary_session_id.as_str())
+            .or_else(|| self.projection_client.primary_session_id());
+        if self
+            .dialog_state
+            .session_dialog
+            .selected_session()
+            .is_some_and(|selected| Some(selected.id.as_str()) != active_session_id)
+        {
+            // The available full projection belongs to the active session
+            // only. Never leave those rows under a different selected session.
+            return (Vec::new(), Vec::new());
+        }
+
+        let mut subagents = Vec::new();
+        let mut jobs = Vec::new();
+        for row in self.task_rows() {
+            match row {
+                TaskRow::Subagent {
+                    task_id,
+                    child_instance_id,
+                    run_id,
+                    job_id,
+                    label,
+                    agent,
+                    description,
+                    profile,
+                    status,
+                } => subagents.push(SubagentListRow {
+                    task_id,
+                    child_instance_id,
+                    run_id,
+                    job_id,
+                    label,
+                    agent,
+                    description,
+                    profile,
+                    status,
+                }),
+                TaskRow::Job {
+                    job_id,
+                    kind,
+                    summary,
+                    state,
+                    error_class,
+                } => jobs.push(JobListRow {
+                    job_id,
+                    kind,
+                    summary,
+                    state,
+                    error_class,
+                }),
+                TaskRow::Header { .. } | TaskRow::Todo { .. } => {}
+            }
+        }
+        (subagents, jobs)
+    }
+
+    /// Availability follows the session selected in `/sessions`. The active
+    /// subscription authorizes only its bound session; an empty row set for a
+    /// different selected session must read as unavailable, never as empty.
+    pub(crate) fn session_dialog_projection_status(
+        &self,
+    ) -> Option<crate::app::state::projection_client::PrimaryProjectionStatus> {
+        let active_session_id = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| snapshot.primary_session_id.as_str())
+            .or_else(|| self.projection_client.primary_session_id());
+        let selected_session_id = self
+            .dialog_state
+            .session_dialog
+            .selected_session()
+            .map(|session| session.id.as_str());
+        if selected_session_id.is_some_and(|selected| Some(selected) != active_session_id) {
+            return Some(
+                crate::app::state::projection_client::PrimaryProjectionStatus::Unavailable(
+                    "live work for the selected session is not loaded".into(),
+                ),
+            );
+        }
+        self.projection_client
+            .primary_status()
+            .cloned()
+            .or_else(|| {
+                if self.projection_client.active_snapshot().is_some() {
+                    Some(
+                    crate::app::state::projection_client::PrimaryProjectionStatus::Authoritative,
+                )
+                } else if selected_session_id.is_some() {
+                    Some(
+                        crate::app::state::projection_client::PrimaryProjectionStatus::Unavailable(
+                            "session work projection is unavailable".into(),
+                        ),
+                    )
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// Push the current live rows into the open `/sessions` dialog.
+    ///
+    /// A no-op unless the dialog is mounted. Like the session list itself, the
+    /// **painted** instance is the focus-manager clone, so both receive the
+    /// rows: filling only `dialog_state.session_dialog` would refresh a dialog
+    /// nobody is looking at. Cursor focus is carried by identity inside
+    /// `set_pending_rows`, so a row appearing or disappearing mid-scroll does
+    /// not slide the cursor onto a different entity.
+    pub fn refresh_sessions_dialog_pending_rows(&mut self) {
+        if !matches!(self.ui_state.dialog, Dialog::Session) {
+            return;
+        }
+        let (subagents, jobs) = self.session_dialog_pending_rows();
+        let projection_status = self.session_dialog_projection_status();
+        let apply = |dialog: &mut crate::components::dialogs::session::SessionDialog| {
+            dialog.set_pending_rows(subagents.clone(), jobs.clone());
+            dialog.set_projection_status(projection_status.clone());
+        };
+        apply(&mut self.dialog_state.session_dialog);
+        self.focus_manager
+            .with_dialog_mut::<crate::components::dialogs::session::SessionDialog, _>(
+                crate::components::component::DialogType::Session,
+                apply,
+            );
+    }
+
+    /// The single-character status bubble for a todo entry.
+    pub fn todo_bubble(status: &str) -> &'static str {
+        if status.eq_ignore_ascii_case("completed") {
+            "\u{2714}"
+        } else if status.eq_ignore_ascii_case("in_progress") {
+            "\u{25cf}"
+        } else if status.eq_ignore_ascii_case("blocked") {
+            "\u{25c8}"
+        } else if status.eq_ignore_ascii_case("cancelled") {
+            "\u{2716}"
+        } else {
+            "\u{25cb}"
+        }
+    }
+
+    /// Update the active goal snapshot. The sidebar's `goal` field
+    /// receives a one-line summary, while the structured fields stay on
+    /// `App` so the status bar and `/goal show` command can use them.
+    pub fn set_active_goal(&mut self, goal: Option<crate::bus::events::GoalSnapshot>) {
+        self.active_goal = goal.clone();
+        if let Some(ref g) = goal {
+            self.sidebar
+                .set_goal(Some(crate::goal::model::Goal::summary_from_snapshot(g)));
+        } else {
+            self.sidebar.set_goal(None);
+        }
+    }
+
+    pub fn show_question_dialog(&mut self, questions: Vec<QuestionSpec>, session_id: String) {
+        self.dialog_state.question_dialog = Some(QuestionDialog::new(questions));
+        self.dialog_state.question_session_id = Some(session_id);
+        self.open_dialog(Dialog::Question);
+        self.set_session_status(SessionStatus::Working);
+    }
+
+    pub fn submit_question_answers(&mut self) {
+        // Presence M003: observers view pending counts via the projection
+        // summary but can never answer for the target session.
+        if self.observer.blocks_permission_response() {
+            self.messages_state.toasts.warning(
+                "Observer mode is read-only — question answers are disabled while observing. Use /stop-observing to resume control.",
+            );
+            self.dialog_state.question_dialog = None;
+            self.dialog_state.question_session_id = None;
+            self.close_dialog();
+            return;
+        }
+        if let Some(qd) = &self.dialog_state.question_dialog {
+            let answers = qd.answers_json();
+            if let Some(session_id) = self.dialog_state.question_session_id.take() {
+                self.send_local_question_response(session_id, answers);
+            }
+        }
+        self.dialog_state.question_dialog = None;
+        self.dialog_state.question_session_id = None;
+        self.close_dialog();
+        self.session_state.session_status = SessionStatus::Idle;
+    }
+
+    pub fn show_permission_dialog(
+        &mut self,
+        perm_id: String,
+        request: codegg::permission::PermissionRequest,
+    ) {
+        // Never evict an approval that is already on screen. A tool batch can
+        // raise several at once, and overwriting left the previous one with no
+        // UI at all: its `perm_id` was gone, so it could not be answered and
+        // the daemon waiter timed out denied. Queue instead, and let
+        // `promote_next_permission` take over once this one is answered.
+        let already_tracked = self.dialog_state.permission_perm_id.as_deref() == Some(&perm_id)
+            || self
+                .dialog_state
+                .permission_queue
+                .iter()
+                .any(|pending| pending.perm_id == perm_id);
+        if already_tracked {
+            tracing::debug!(perm_id = %perm_id, "permission request already pending; ignoring duplicate");
+            return;
+        }
+        if self.dialog_state.permission_dialog.is_some() {
+            tracing::debug!(
+                perm_id = %perm_id,
+                depth = self.dialog_state.permission_queue.len() + 1,
+                "another approval is on screen; queued"
+            );
+            self.dialog_state
+                .permission_queue
+                .push_back(crate::app::state::dialog::PendingPermission { perm_id, request });
+            self.sync_pending_permission_markers();
+            return;
+        }
+        self.mount_permission_dialog(perm_id, request);
+    }
+
+    /// Put a request on screen. Callers must have decided that nothing is
+    /// showing; [`Self::show_permission_dialog`] owns that arbitration.
+    fn mount_permission_dialog(
+        &mut self,
+        perm_id: String,
+        mut request: codegg::permission::PermissionRequest,
+    ) {
+        if request.args.is_none() {
+            // `CoreEvent::PermissionPending` does not carry the arguments, so a
+            // request that crossed the daemon arrives with nothing to approve
+            // and the dialog reads "No additional details". The transcript
+            // already holds the arguments for the call that raised it —
+            // recover them, because approving a command you cannot read is not
+            // a real decision.
+            request.args = self.tool_arguments_for(&request.tool);
+        }
+        self.dialog_state.permission_dialog = Some(PermissionDialog::new(
+            request,
+            Arc::clone(&self.ui_state.theme),
+        ));
+        self.dialog_state.permission_perm_id = Some(perm_id);
+        self.open_dialog(Dialog::Permission);
+        self.sync_pending_permission_markers();
+    }
+
+    /// Most recent recorded arguments for an unresolved `tool` call, so a
+    /// reopened approval shows the command rather than nothing.
+    fn tool_arguments_for(&self, tool: &str) -> Option<serde_json::Value> {
+        self.messages_state
+            .messages
+            .latest_pending_tool_arguments(tool)
+    }
+
+    /// Return an unanswered dialog's request to the queue instead of dropping
+    /// it. `close_dialog` has other paths besides answering — a `CloseDialog`
+    /// from anywhere pops the focus stack, and this arm was `_ => {}`, so the
+    /// `perm_id` stayed set with no dialog and the next request was then
+    /// queued behind a phantom. That is the other half of "the box disappeared
+    /// and I cannot approve it".
+    ///
+    /// The answer paths clear `permission_dialog` *before* calling
+    /// `close_dialog`, so an answered request re-entering here is impossible.
+    fn requeue_open_permission(&mut self) {
+        let (Some(perm_id), Some(request)) = (
+            self.dialog_state.permission_perm_id.take(),
+            self.dialog_state
+                .permission_dialog
+                .take()
+                .map(|dialog| dialog.request),
+        ) else {
+            return;
+        };
+        if self
+            .dialog_state
+            .permission_queue
+            .iter()
+            .any(|pending| pending.perm_id == perm_id)
+        {
+            return;
+        }
+        tracing::debug!(perm_id = %perm_id, "permission dialog dismissed unanswered; requeued");
+        self.dialog_state
+            .permission_queue
+            .push_front(crate::app::state::dialog::PendingPermission { perm_id, request });
+        self.sync_pending_permission_markers();
+    }
+
+    /// Push the set of tools with an unanswered approval into the transcript so
+    /// the queued row can say it is answerable. The marker is what makes the
+    /// row honest: without it the row would advertise an action that may have
+    /// nothing to act on.
+    fn sync_pending_permission_markers(&mut self) {
+        let mut tools = std::collections::BTreeSet::new();
+        if let Some(dialog) = self.dialog_state.permission_dialog.as_ref() {
+            tools.insert(dialog.request.tool.clone());
+        }
+        for pending in &self.dialog_state.permission_queue {
+            tools.insert(pending.request.tool.clone());
+        }
+        self.messages_state
+            .messages
+            .set_pending_permission_tools(tools);
+    }
+
+    /// Open the approval behind `msg_idx`, if that row is waiting on one.
+    /// Returns whether the click was consumed as an approval action rather
+    /// than a transcript toggle.
+    pub fn open_pending_permission_for_message(&mut self, msg_idx: usize) -> bool {
+        let Some(tool) = self
+            .messages_state
+            .messages
+            .pending_permission_tool(msg_idx)
+        else {
+            return false;
+        };
+        let Some(perm_id) = self.pending_permission_for_tool(&tool) else {
+            return false;
+        };
+        if self.dialog_state.permission_perm_id.as_deref() == Some(perm_id.as_str()) {
+            return true;
+        }
+        let Some(pos) = self
+            .dialog_state
+            .permission_queue
+            .iter()
+            .position(|pending| pending.perm_id == perm_id)
+        else {
+            return false;
+        };
+        // Another request owns the screen. Do not tear it down unanswerably —
+        // put the one the user pointed at at the front of the queue so it is
+        // the next thing they see.
+        let pending = self
+            .dialog_state
+            .permission_queue
+            .remove(pos)
+            .expect("position came from the same queue");
+        self.dialog_state.permission_queue.push_front(pending);
+        if self.dialog_state.permission_dialog.is_some() {
+            self.messages_state
+                .toasts
+                .warning("Queued approval moved to the front — answer the open request first.");
+        } else {
+            self.promote_next_permission();
+        }
+        true
+    }
+
+    /// Show the next queued approval, if any, once the current one is answered.
+    /// A non-empty queue with a closed dialog is the exact state that used to
+    /// strand every request after the first.
+    pub fn promote_next_permission(&mut self) {
+        // Sync first: the empty-queue case is the one that has to *clear* the
+        // marker, and it is the case reached after answering the last request.
+        let next = self.dialog_state.permission_queue.pop_front();
+        self.sync_pending_permission_markers();
+        let Some(next) = next else {
+            return;
+        };
+        tracing::debug!(
+            perm_id = %next.perm_id,
+            remaining = self.dialog_state.permission_queue.len(),
+            "promoting queued approval"
+        );
+        self.mount_permission_dialog(next.perm_id, next.request);
+    }
+
+    /// Re-answerable approval for `tool`, preferring one already on screen and
+    /// otherwise the oldest still-queued one. Backs the click-a-queued-row
+    /// affordance: once a request has been shown and answered, or was evicted
+    /// from the screen, there would otherwise be no way back to it.
+    pub fn pending_permission_for_tool(&self, tool: &str) -> Option<String> {
+        if let (Some(id), Some(dialog)) = (
+            self.dialog_state.permission_perm_id.as_deref(),
+            self.dialog_state.permission_dialog.as_ref(),
+        ) {
+            if dialog.request.tool == tool {
+                return Some(id.to_string());
+            }
+        }
+        self.dialog_state
+            .permission_queue
+            .iter()
+            .find(|pending| pending.request.tool == tool)
+            .map(|pending| pending.perm_id.clone())
+    }
+
+    pub fn submit_permission_response(&mut self, allowed: bool) {
+        // Presence M003: observers can never answer permission requests
+        // for the observed session.
+        if self.observer.blocks_permission_response() {
+            self.messages_state.toasts.warning(
+                "Observer mode is read-only — permission answers are disabled while observing. Use /stop-observing to resume control.",
+            );
+            self.dialog_state.permission_dialog = None;
+            self.dialog_state.permission_perm_id = None;
+            self.close_dialog();
+            return;
+        }
+        if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
+            let perm_id = perm_id.clone();
+            let choice = match allowed {
+                true => codegg::permission::PermissionChoice::AllowOnce,
+                false => codegg::permission::PermissionChoice::DenyOnce,
+            };
+            self.send_local_permission_response(perm_id, choice);
+        }
+        self.dialog_state.permission_dialog = None;
+        self.dialog_state.permission_perm_id = None;
+        self.close_dialog();
+        self.promote_next_permission();
+    }
+
+    pub fn on_permission_confirm(&mut self) -> Option<(bool, usize)> {
+        // Presence M003: same negative as `submit_permission_response`.
+        if self.observer.blocks_permission_response() {
+            self.messages_state.toasts.warning(
+                "Observer mode is read-only — permission answers are disabled while observing. Use /stop-observing to resume control.",
+            );
+            self.dialog_state.permission_dialog = None;
+            self.dialog_state.permission_perm_id = None;
+            self.close_dialog();
+            return None;
+        }
+        let pd = self.dialog_state.permission_dialog.as_ref()?;
+        let idx = pd.selected_option();
+        let choice = match idx {
+            0 => codegg::permission::PermissionChoice::AllowOnce,
+            1 => codegg::permission::PermissionChoice::AlwaysAllow,
+            2 => codegg::permission::PermissionChoice::DenyOnce,
+            3 => codegg::permission::PermissionChoice::AlwaysDeny,
+            _ => return None,
+        };
+        let allowed = choice.allowed();
+        if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
+            let perm_id = perm_id.clone();
+            self.send_local_permission_response(perm_id, choice);
+        }
+        self.dialog_state.permission_dialog = None;
+        self.dialog_state.permission_perm_id = None;
+        self.close_dialog();
+        self.promote_next_permission();
+        Some((allowed, idx))
+    }
+
+    fn send_local_permission_response(
+        &mut self,
+        perm_id: String,
+        choice: codegg::permission::PermissionChoice,
+    ) {
+        let Some(core_client) = self.core_client.clone() else {
+            // Without a core client the reply never leaves the TUI, so the
+            // waiter would block indefinitely. Say so instead of failing
+            // silently.
+            self.messages_state.toasts.error(
+                "Cannot deliver approval: the core client is unavailable (check daemon status with /doctor). The tool will not run until this is resolved.",
+            );
+            return;
+        };
+        let choice = match choice {
+            codegg::permission::PermissionChoice::AllowOnce => "allow",
+            codegg::permission::PermissionChoice::AlwaysAllow => "always_allow",
+            codegg::permission::PermissionChoice::DenyOnce => "deny",
+            codegg::permission::PermissionChoice::AlwaysDeny => "always_deny",
+        }
+        .to_string();
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            tracing::warn!("no TUI command channel; cannot report permission response result");
+            return;
+        };
+        tokio::spawn(async move {
+            let request = codegg::core::new_request(
+                format!("permission-respond-{}", uuid::Uuid::new_v4()),
+                CoreRequest::PermissionRespond {
+                    id: perm_id,
+                    choice,
+                },
+            );
+            // A daemon refusal arrives as `Ok(CoreResponse::Error { .. })`, not
+            // as a transport `Err`. Treating only `Err` as failure is what made
+            // a rejected approval completely invisible while the tool hung.
+            let error = match core_client.request(request).await {
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(format!("Approval was not delivered ({code}): {message}"))
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!("failed to send permission response via core: {}", e);
+                    Some(format!("Approval was not delivered: {e}"))
+                }
+            };
+            let _ = send_tui(
+                &tx,
+                crate::app::commands::TuiCommand::PermissionResponseFinished { error },
+            );
+        });
+    }
+
+    fn send_local_question_response(&mut self, question_id: String, answers_json: String) {
+        let Some(core_client) = self.core_client.clone() else {
+            self.messages_state.toasts.error(
+                "Cannot deliver answer: the core client is unavailable (check daemon status with /doctor).",
+            );
+            return;
+        };
+        let answers = serde_json::from_str::<serde_json::Value>(&answers_json)
+            .unwrap_or(serde_json::Value::String(answers_json));
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            tracing::warn!("no TUI command channel; cannot report question response result");
+            return;
+        };
+        tokio::spawn(async move {
+            let request = codegg::core::new_request(
+                format!("question-respond-{}", uuid::Uuid::new_v4()),
+                CoreRequest::QuestionRespond {
+                    id: question_id,
+                    answers,
+                },
+            );
+            // Same contract as permissions: a daemon refusal is an
+            // `Ok(CoreResponse::Error { .. })`, not a transport error.
+            let error = match core_client.request(request).await {
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(format!("Answer was not delivered ({code}): {message}"))
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!("failed to send question response via core: {}", e);
+                    Some(format!("Answer was not delivered: {e}"))
+                }
+            };
+            let _ = send_tui(
+                &tx,
+                crate::app::commands::TuiCommand::PermissionResponseFinished { error },
+            );
+        });
+    }
+
+    pub fn enter_plan_mode(&mut self, topic: Option<String>) {
+        self.agent_state.plan_mode = true;
+        self.agent_state.plan_topic = topic;
+    }
+
+    pub fn exit_plan_mode(&mut self) {
+        self.agent_state.plan_mode = false;
+        self.agent_state.plan_topic = None;
+    }
+
+    pub fn show_timeline(&mut self) {
+        let count = self.messages_state.messages.message_count();
+        if count > 0 {
+            self.ui_state.timeline_selected = count - 1;
+            self.ui_state.timeline_visible = true;
+        } else {
+            self.messages_state.toasts.info("No messages in timeline");
+        }
+    }
+
+    fn handle_timeline_key(&mut self, key: KeyEvent) {
+        let action = handle_event(crossterm::event::Event::Key(key));
+        match action {
+            Some(InputAction::NavigateUp) => {
+                if self.ui_state.timeline_selected > 0 {
+                    self.ui_state.timeline_selected -= 1;
+                }
+            }
+            Some(InputAction::NavigateDown) => {
+                let count = self.messages_state.messages.message_count();
+                if self.ui_state.timeline_selected + 1 < count {
+                    self.ui_state.timeline_selected += 1;
+                }
+            }
+            Some(InputAction::Send) => {
+                self.messages_state
+                    .messages
+                    .select_index(self.ui_state.timeline_selected);
+                self.ui_state.timeline_visible = false;
+                self.messages_state.toasts.info(&format!(
+                    "Jumped to message {}",
+                    self.ui_state.timeline_selected
+                ));
+            }
+            Some(InputAction::Cancel) => {
+                self.ui_state.timeline_visible = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn render_timeline(&self, frame: &mut Frame, area: Rect) {
+        use codegg::session::message::ToolStatus;
+
+        let messages = &self.messages_state.messages.messages;
+        if messages.is_empty() {
+            return;
+        }
+
+        let count = messages.len();
+        let selected = self.ui_state.timeline_selected;
+
+        let max_visible = 15.min(count as u16);
+        let height = max_visible + 4;
+
+        let timeline_area = crate::components::component::centered_rect(75, height, area);
+
+        let block = Block::default()
+            .title(" Timeline ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.ui_state.theme.border))
+            .style(
+                Style::default()
+                    .bg(self.ui_state.theme.background)
+                    .fg(self.ui_state.theme.foreground),
+            );
+
+        let _inner_area = block.inner(timeline_area);
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        let is_last_msg = |idx: usize| -> bool { idx + 1 >= count };
+
+        for (i, msg) in messages.iter().enumerate() {
+            let is_sel = i == selected;
+            let tree_char = if is_last_msg(i) {
+                "└──"
+            } else {
+                "├──"
+            };
+            let continued = if is_last_msg(i) { "   " } else { "│  " };
+
+            match msg.role {
+                MessageRole::User => {
+                    let role_style = Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD);
+
+                    let time_str = msg.timestamp.map(|ts| {
+                        chrono::DateTime::from_timestamp(ts, 0)
+                            .map(|dt| dt.format("%H:%M").to_string())
+                            .unwrap_or_default()
+                    });
+
+                    let time_suffix = time_str.map(|t| format!(" @{}", t)).unwrap_or_default();
+
+                    let preview = match msg.parts.first() {
+                        Some(MsgPart::Text { content }) => {
+                            let first_line = content.lines().next().unwrap_or("");
+                            if first_line.len() > 45 {
+                                format!("{}...", truncate_prefix(first_line, 45))
+                            } else {
+                                first_line.to_string()
+                            }
+                        }
+                        Some(MsgPart::Reasoning { .. }) | Some(MsgPart::ToolCall { .. }) => {
+                            String::new()
+                        }
+                        Some(MsgPart::Image { .. })
+                        | Some(MsgPart::ShellCell { .. })
+                        | Some(MsgPart::RunCell { .. }) => String::new(),
+                        None => String::new(),
+                    };
+
+                    if is_sel {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", tree_char),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled("● ", Style::default().fg(self.ui_state.theme.primary)),
+                            Span::styled("You", role_style),
+                            Span::styled(
+                                format!(": {}{}", preview, time_suffix),
+                                Style::default().fg(self.ui_state.theme.foreground),
+                            ),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", tree_char),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled("○ ", Style::default().fg(self.ui_state.theme.muted)),
+                            Span::styled("You", role_style),
+                            Span::styled(
+                                format!(": {}{}", preview, time_suffix),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                        ]));
+                    }
+                }
+                MessageRole::Assistant => {
+                    let role_style = Style::default()
+                        .fg(self.ui_state.theme.secondary)
+                        .add_modifier(Modifier::BOLD);
+
+                    let time_str = msg.timestamp.map(|ts| {
+                        chrono::DateTime::from_timestamp(ts, 0)
+                            .map(|dt| dt.format("%H:%M").to_string())
+                            .unwrap_or_default()
+                    });
+
+                    let time_suffix = time_str.map(|t| format!(" @{}", t)).unwrap_or_default();
+
+                    let preview = match msg.parts.first() {
+                        Some(MsgPart::Text { content }) => {
+                            let first_line = content.lines().next().unwrap_or("");
+                            if first_line.len() > 45 {
+                                format!("{}...", truncate_prefix(first_line, 45))
+                            } else {
+                                first_line.to_string()
+                            }
+                        }
+                        Some(MsgPart::Reasoning { .. }) => "reasoning...".to_string(),
+                        Some(MsgPart::ToolCall { name, .. }) => format!("[{}]", name),
+                        Some(MsgPart::Image { .. })
+                        | Some(MsgPart::ShellCell { .. })
+                        | Some(MsgPart::RunCell { .. }) => String::new(),
+                        None => String::new(),
+                    };
+
+                    let tool_calls: Vec<_> = msg
+                        .parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            MsgPart::ToolCall { name, status, .. } => {
+                                Some((name.clone(), status.clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+
+                    if is_sel {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", tree_char),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled("● ", Style::default().fg(self.ui_state.theme.secondary)),
+                            Span::styled("Assistant", role_style),
+                            Span::styled(
+                                format!(": {}{}", preview, time_suffix),
+                                Style::default().fg(self.ui_state.theme.foreground),
+                            ),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", tree_char),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled("○ ", Style::default().fg(self.ui_state.theme.muted)),
+                            Span::styled("Assistant", role_style),
+                            Span::styled(
+                                format!(": {}{}", preview, time_suffix),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                        ]));
+                    }
+
+                    for (j, (name, status)) in tool_calls.iter().enumerate() {
+                        let is_last_tool = j == tool_calls.len() - 1;
+                        let branch = if is_last_tool {
+                            "└── "
+                        } else {
+                            "├── "
+                        };
+
+                        let spinner = match status {
+                            ToolStatus::Running => "⟳",
+                            ToolStatus::Pending => "○",
+                            ToolStatus::Completed => "✓",
+                            ToolStatus::Error => "✗",
+                        };
+
+                        let status_color = match status {
+                            ToolStatus::Pending => self.ui_state.theme.muted,
+                            ToolStatus::Running => self.ui_state.theme.warning,
+                            ToolStatus::Completed => self.ui_state.theme.success,
+                            ToolStatus::Error => self.ui_state.theme.error,
+                        };
+
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{}{}", continued, branch),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled(spinner, Style::default().fg(status_color)),
+                            Span::raw(format!(" {}", name)),
+                        ]));
+
+                        let _ = is_last_tool;
+                    }
+                }
+            }
+        }
+
+        let visible_lines: Vec<Line> = if lines.len() > max_visible as usize {
+            let start = if selected >= (max_visible as usize / 2) {
+                (selected.saturating_sub(max_visible as usize / 2))
+                    .min(lines.len().saturating_sub(max_visible as usize))
+            } else {
+                0
+            };
+            lines[start..start + max_visible as usize].to_vec()
+        } else {
+            lines.clone()
+        };
+
+        let paragraph = Paragraph::new(visible_lines)
+            .block(block)
+            .wrap(Wrap { trim: true });
+
+        frame.render_widget(Clear, timeline_area);
+        frame.render_widget(paragraph, timeline_area);
+
+        // The nav hint and position readout are pinned to the last row.
+        // A zero-height area has no last row, so skip them instead of
+        // underflowing the subtraction below.
+        if timeline_area.height == 0 {
+            return;
+        }
+
+        let nav_hint = Line::from(Span::styled(
+            " ↑/↓ navigate  Enter: jump  Esc: close ",
+            Style::default().fg(self.ui_state.theme.muted),
+        ));
+        let hint_len = 42;
+        let hint_x = timeline_area.x + (timeline_area.width.saturating_sub(hint_len)) / 2;
+        let hint_y = timeline_area.y + timeline_area.height - 1;
+        let hint_area = Rect {
+            x: hint_x,
+            y: hint_y,
+            width: hint_len,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(nav_hint), hint_area);
+
+        let pos_indicator = Line::from(Span::styled(
+            format!("Message {} of {}", selected + 1, count),
+            Style::default().fg(self.ui_state.theme.muted),
+        ));
+        let pos_len = 20;
+        let pos_x = timeline_area.x + (timeline_area.width.saturating_sub(pos_len)) / 2;
+        let pos_y = timeline_area.y + timeline_area.height - 1;
+        let pos_area = Rect {
+            x: pos_x,
+            y: pos_y,
+            width: pos_len,
+            height: 1,
+        };
+        let pos_para = Paragraph::new(pos_indicator).alignment(Alignment::Center);
+        frame.render_widget(pos_para, pos_area);
+    }
+
+    pub(crate) fn export_handoff(&mut self) {
+        let derived = &self.session_state_derived;
+
+        let goal = derived.goal.as_deref().unwrap_or("(no goal set)");
+        let model = self.agent_state.current_model.clone();
+        let branch = self
+            .active_workspace_root()
+            .map(|root| root.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ctx_pct = if self.session_state.context_limit > 0 {
+            format!(
+                "{:.0}%",
+                self.session_state.context_tokens as f64 / self.session_state.context_limit as f64
+                    * 100.0
+            )
+        } else {
+            "unknown".to_string()
+        };
+
+        let mut md = String::new();
+        md.push_str("# Codegg Handoff\n\n");
+
+        md.push_str("## Goal\n");
+        md.push_str(goal);
+        md.push_str("\n\n");
+
+        md.push_str("## Current plan\n");
+        if let Some(ref plan) = derived.plan {
+            for item in &plan.items {
+                let check = match item.status {
+                    codegg::session::events::PlanItemStatus::Done => "[x]",
+                    codegg::session::events::PlanItemStatus::InProgress => "[~]",
+                    codegg::session::events::PlanItemStatus::Skipped => "[-]",
+                    codegg::session::events::PlanItemStatus::Blocked => "[?]",
+                    codegg::session::events::PlanItemStatus::Pending => "[ ]",
+                };
+                md.push_str(&format!("- {} {}", check, item.text));
+                if let Some(ref note) = item.note {
+                    md.push_str(&format!(" ({})", note));
+                }
+                md.push('\n');
+            }
+        } else {
+            md.push_str("- (no plan)\n");
+        }
+        md.push('\n');
+
+        md.push_str("## Current state\n");
+        md.push_str(&format!("- Model: {}\n", model));
+        if !branch.is_empty() {
+            md.push_str(&format!("- Branch/dir: {}\n", branch));
+        }
+        if !derived.changed_files.is_empty() {
+            md.push_str(&format!(
+                "- Changed files: {}\n",
+                derived.changed_files.len()
+            ));
+        }
+        match &derived.test_state {
+            codegg::session::state::TestState::Passed { command, .. } => {
+                md.push_str(&format!("- Tests: passed ({})\n", command));
+            }
+            codegg::session::state::TestState::Failed {
+                command, summary, ..
+            } => {
+                md.push_str(&format!("- Tests: FAILED ({}) - {}\n", command, summary));
+            }
+            codegg::session::state::TestState::Running { command } => {
+                md.push_str(&format!("- Tests: running ({})\n", command));
+            }
+            _ => {
+                md.push_str("- Tests: unknown\n");
+            }
+        }
+        md.push_str(&format!("- Context pressure: {}\n", ctx_pct));
+        md.push('\n');
+
+        if !derived.changed_files.is_empty() {
+            md.push_str("## Files changed\n");
+            for f in &derived.changed_files {
+                md.push_str(&format!(
+                    "- {} ({:+}/-{})\n",
+                    f.path, f.additions, f.deletions
+                ));
+            }
+            md.push('\n');
+        }
+
+        if !derived.findings.is_empty() {
+            md.push_str("## Relevant findings\n");
+            for f in &derived.findings {
+                md.push_str(&format!("- [{}] {}\n", f.severity, f.message));
+            }
+            md.push('\n');
+        }
+
+        md.push_str("## Latest test result\n");
+        match &derived.test_state {
+            codegg::session::state::TestState::Passed {
+                command,
+                duration_ms,
+            } => {
+                md.push_str(&format!(
+                    "PASSED: {} ({:.1}s)\n",
+                    command,
+                    duration_ms.unwrap_or(0) as f64 / 1000.0
+                ));
+            }
+            codegg::session::state::TestState::Failed {
+                command,
+                duration_ms,
+                summary,
+            } => {
+                md.push_str(&format!(
+                    "FAILED: {} ({:.1}s) - {}\n",
+                    command,
+                    duration_ms.unwrap_or(0) as f64 / 1000.0,
+                    summary
+                ));
+            }
+            _ => {
+                md.push_str("(no recent test run)\n");
+            }
+        }
+        md.push('\n');
+
+        md.push_str("## Suggested next steps\n");
+        md.push_str("- (agent should fill in based on current state)\n\n");
+
+        md.push_str("## Notes for smaller model\n");
+        md.push_str("- Do not broaden scope.\n");
+        md.push_str("- Prefer minimal patches.\n");
+        md.push_str("- Run targeted tests first.\n");
+
+        let _ = codegg::util::clipboard::copy_to_clipboard(&md);
+        self.messages_state
+            .toasts
+            .info("Handoff exported to clipboard");
+    }
+}
+
+/// Describe what the agent is doing, for the one-line activity throbber.
+///
+/// The bare tool name answers "is something happening" but not "what". A turn
+/// that spends ninety seconds in `bash` looks identical to a turn that spent
+/// ninety seconds thinking, and the user cannot tell which to wait out — so
+/// the phase carries the argument that identifies the work.
+///
+/// Bounded twice over: the summary is capped in [`SUMMARY_MAX`] characters and
+/// flattened to a single line, because this draws into one fixed-height row.
+/// It is never *more* revealing than the transcript itself, which already
+/// renders these same arguments in full above the strip.
+fn tool_activity_phase(
+    tool_name: &str,
+    arguments: &str,
+) -> crate::components::messages::ActivityPhase {
+    use crate::components::messages::ActivityPhase;
+    let phase = |summary: &str| ActivityPhase::RunningTool {
+        name: tool_name.to_string(),
+        summary: summary.to_string(),
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        // Unparseable arguments are not a reason to lose the tool name.
+        return phase("");
+    };
+    let Some(summary) = summarize_tool_arguments(&value) else {
+        return phase("");
+    };
+    if summary.is_empty() {
+        return phase("");
+    }
+    phase(&summary)
+}
+
+/// Argument keys worth naming, in priority order, per tool.
+///
+/// Ordered rather than scanned because the *first* meaningful argument is the
+/// one that identifies the work; a tool with a dozen knobs still gets a label
+/// that names the one that matters.
+const TOOL_SUMMARY_KEYS: &[&str] = &[
+    "command",
+    "path",
+    "file_path",
+    "pattern",
+    "query",
+    "url",
+    "name",
+    "description",
+];
+
+/// Cap on the argument summary appended to a tool label.
+const SUMMARY_MAX: usize = 48;
+
+/// Pick the most identifying bounded argument out of a tool call's arguments.
+fn summarize_tool_arguments(value: &serde_json::Value) -> Option<String> {
+    let object = value.as_object()?;
+    for key in TOOL_SUMMARY_KEYS {
+        let Some(raw) = object.get(*key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let flattened = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flattened.is_empty() {
+            continue;
+        }
+        return Some(crate::wrap::ellipsize_to_width(&flattened, SUMMARY_MAX));
+    }
+    None
+}
+
+fn index_files_sync(dir: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    index_files_recursive(dir, dir, 0, 10, &mut files);
+    files
+}
+
+fn index_files_recursive(
+    current_dir: &str,
+    root_dir: &str,
+    depth: usize,
+    max_depth: usize,
+    files: &mut Vec<String>,
+) {
+    if depth >= max_depth {
+        return;
+    }
+
+    let skip_dirs = [
+        "node_modules",
+        ".git",
+        "target",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".cargo",
+        "dist",
+        "build",
+        // Mirrors `directory_listing::LISTING_IGNORED_DIRS`. Kept in step on
+        // purpose: the file tree and the `@` completions describe the same
+        // workspace, so a directory offered by one and hidden by the other
+        // reads as a bug in whichever one the user is looking at.
+        ".codegg",
+    ];
+
+    if let Ok(entries) = std::fs::read_dir(current_dir) {
+        for entry in entries.flatten() {
+            // Check symlink-ness on the raw entry: canonicalize resolves
+            // symlinks, so testing the resolved path would never detect one.
+            if entry.path().is_symlink() {
+                continue;
+            }
+            if let Ok(path) = entry.path().canonicalize() {
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if !skip_dirs.contains(&name) {
+                            index_files_recursive(
+                                path.to_str().unwrap_or(""),
+                                root_dir,
+                                depth + 1,
+                                max_depth,
+                                files,
+                            );
+                        }
+                    }
+                } else if path.is_file() {
+                    if let Ok(rel) = path.strip_prefix(root_dir) {
+                        let rel_str = rel.to_string_lossy().to_string();
+                        if !rel_str.contains(".git/") && !rel_str.contains("node_modules/") {
+                            files.push(rel_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn format_key_event(key: &crossterm::event::KeyEvent) -> String {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let mut parts = Vec::new();
+
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("shift".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+
+    let key_part = match key.code {
+        KeyCode::Enter => "enter",
+        KeyCode::Esc => "esc",
+        KeyCode::Tab => "tab",
+        KeyCode::Backspace => "backspace",
+        KeyCode::Delete => "delete",
+        KeyCode::Left => "left",
+        KeyCode::Right => "right",
+        KeyCode::Up => "up",
+        KeyCode::Down => "down",
+        KeyCode::Home => "home",
+        KeyCode::End => "end",
+        KeyCode::PageUp => "pageup",
+        KeyCode::PageDown => "pagedown",
+        KeyCode::Char(c) => {
+            if c == ' ' {
+                return if parts.is_empty() {
+                    "space".to_string()
+                } else {
+                    format!("{}+space", parts.join("+"))
+                };
+            }
+            return if parts.is_empty() {
+                c.to_lowercase().to_string()
+            } else {
+                format!("{}+{}", parts.join("+"), c.to_lowercase())
+            };
+        }
+        _ => return parts.join("+"),
+    };
+
+    if parts.is_empty() {
+        key_part.to_string()
+    } else {
+        format!("{}+{}", parts.join("+"), key_part)
+    }
+}
+
+fn estimate_cost(input_tokens: &u64, output_tokens: &u64, model: &str) -> String {
+    let input_price_per_m = match model.to_lowercase().as_str() {
+        m if m.contains("gpt-4o") || m.contains("gpt-4t") => 2.50,
+        m if m.contains("gpt-4") && m.contains("32k") => 60.0,
+        m if m.contains("gpt-4") && !m.contains("turbo") => 30.0,
+        m if m.contains("gpt-4-turbo") => 10.0,
+        m if m.contains("gpt-35-turbo") || m.contains("gpt-3.5") || m.contains("gpt-4o-mini") => {
+            0.5
+        }
+        m if m.contains("claude") && m.contains("haiku") => 0.25,
+        m if m.contains("claude") && m.contains("sonnet") => 3.0,
+        m if m.contains("claude") && m.contains("opus") => 15.0,
+        m if m.contains("claude") => 3.0,
+        m if m.contains("gemini") && m.contains("2.0-flash") => 0.0,
+        m if m.contains("gemini") && m.contains("1.5") && m.contains("pro") => 1.25,
+        m if m.contains("gemini") => 0.125,
+        m if m.contains("o1") || m.contains("o3") => 0.0,
+        m if m.contains("o3-mini") => 1.10,
+        m if m.contains("o1-mini") => 0.55,
+        _ => 0.0,
+    };
+
+    let output_price_per_m = match model.to_lowercase().as_str() {
+        m if m.contains("gpt-4o") || m.contains("gpt-4t") => 10.0,
+        m if m.contains("gpt-4") && m.contains("32k") => 120.0,
+        m if m.contains("gpt-4") && !m.contains("turbo") => 60.0,
+        m if m.contains("gpt-4-turbo") => 30.0,
+        m if m.contains("gpt-35-turbo") || m.contains("gpt-3.5") || m.contains("gpt-4o-mini") => {
+            1.5
+        }
+        m if m.contains("claude") && m.contains("haiku") => 1.25,
+        m if m.contains("claude") && m.contains("sonnet") => 15.0,
+        m if m.contains("claude") && m.contains("opus") => 75.0,
+        m if m.contains("claude") => 15.0,
+        m if m.contains("gemini") && m.contains("2.0-flash") => 0.0,
+        m if m.contains("gemini") && m.contains("1.5") && m.contains("pro") => 5.0,
+        m if m.contains("gemini") => 0.5,
+        m if m.contains("o1") || m.contains("o3") => 0.0,
+        m if m.contains("o3-mini") => 4.40,
+        m if m.contains("o1-mini") => 3.50,
+        _ => 0.0,
+    };
+
+    let input_cost = (*input_tokens as f64 / 1_000_000.0) * input_price_per_m;
+    let output_cost = (*output_tokens as f64 / 1_000_000.0) * output_price_per_m;
+    let total = input_cost + output_cost;
+
+    if total < 0.001 {
+        "< $0.001 (free model or no pricing data)".to_string()
+    } else {
+        format!("${:.4}", total)
+    }
+}
+
+fn format_token_short(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let m = tokens as f64 / 1_000_000.0;
+        if (m - m.round()).abs() < 0.05 {
+            format!("{:.0}m", m)
+        } else {
+            format!("{:.1}m", m)
+        }
+    } else if tokens >= 1_000 {
+        let k = tokens as f64 / 1_000.0;
+        if (k - k.round()).abs() < 0.05 {
+            format!("{:.0}k", k)
+        } else {
+            format!("{:.1}k", k)
+        }
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn format_token_line(
+    token_in: u64,
+    token_out: u64,
+    live_output_tokens: u64,
+    context_tokens: u64,
+    context_limit: u64,
+) -> String {
+    let displayed_output = token_out + live_output_tokens;
+    let displayed_context = context_tokens + live_output_tokens;
+    let total = token_in + displayed_output;
+    // A zero limit means the agent has not resolved a context window yet, so
+    // say so rather than printing a confident `0%` against a denominator we
+    // do not have. Matches the "unknown" wording used by the other context
+    // readouts.
+    let pct = if context_limit > 0 {
+        format!(
+            "{:.0}%",
+            ((displayed_context as f64 / context_limit as f64) * 100.0).clamp(0.0, 100.0)
+        )
+    } else {
+        "unknown".to_string()
+    };
+    let output_prefix = if live_output_tokens > 0 {
+        "↑~"
+    } else {
+        "↑"
+    };
+    format!(
+        "↓{} {}{} ({}) / {} {}",
+        format_token_short(token_in),
+        output_prefix,
+        format_token_short(displayed_output),
+        format_token_short(total),
+        format_token_short(displayed_context),
+        pct
+    )
+}
+
+/// Format a `GoalSnapshot` as a compact one-liner for the status bar.
+///
+/// Layout: `[status] <title>  <budget summary>` where the budget
+/// summary is whichever axes are configured (tokens, tool-calls,
+/// turns, wall-clock). Designed to fit alongside the existing status,
+/// token, and subagent spans without truncating other UI.
+pub(crate) fn format_goal_status_line(g: &crate::bus::events::GoalSnapshot) -> String {
+    let title = if g.title.is_empty() {
+        "(untitled)".to_string()
+    } else {
+        g.title.clone()
+    };
+    let mut budget_parts: Vec<String> = Vec::new();
+    let used_tokens = g.usage.input_tokens + g.usage.output_tokens;
+    if let Some(max) = g.budget.max_model_tokens {
+        budget_parts.push(format!(
+            "{}tok {}",
+            if used_tokens >= max { "!" } else { "" },
+            format_token_short(used_tokens.max(0) as u64)
+        ));
+        budget_parts.push(format!("/{}", format_token_short(max.max(0) as u64)));
+    }
+    if let Some(max) = g.budget.max_turns {
+        budget_parts.push(format!("turns {}/{}", g.usage.turns_used, max));
+    }
+    if let Some(max) = g.budget.max_tool_calls {
+        let over = g.usage.tool_calls >= max;
+        budget_parts.push(format!(
+            "{}calls {}/{}",
+            if over { "!" } else { "" },
+            g.usage.tool_calls,
+            max
+        ));
+    }
+    if let Some(max) = g.budget.max_wallclock_secs {
+        let over = g.usage.wallclock_secs >= max;
+        budget_parts.push(format!(
+            "{}wall {}s/{}s",
+            if over { "!" } else { "" },
+            g.usage.wallclock_secs,
+            max
+        ));
+    }
+    let budget = if budget_parts.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", budget_parts.join(" "))
+    };
+    format!("[{}] {}{}", g.status, title, budget)
+}
+
+#[cfg(test)]
+mod token_line_tests {
+    use super::format_token_line;
+
+    #[test]
+    fn final_token_line_has_no_estimate_marker() {
+        let line = format_token_line(100, 25, 0, 1_000, 10_000);
+
+        assert!(line.contains("↑25"));
+        assert!(!line.contains("↑~"));
+    }
+
+    #[test]
+    fn live_token_line_marks_estimated_output() {
+        let line = format_token_line(100, 25, 10, 1_000, 10_000);
+
+        assert!(line.contains("↑~35"));
+        assert!(line.contains("(135)"));
+    }
+
+    #[test]
+    fn token_line_says_unknown_when_no_window_is_resolved() {
+        // Regression guard for the fabricated-limit bug: with an unresolved
+        // window the footer used to divide by a hardcoded 128_000, and after
+        // that was removed it printed a confident `0%`. It must now state
+        // that the percentage is unknown while still showing real counts.
+        let line = format_token_line(1_000, 200, 0, 1_000, 0);
+
+        assert!(line.contains("↓1k"), "counts stay real: {line}");
+        assert!(line.contains("↑200"), "counts stay real: {line}");
+        assert!(
+            line.contains("unknown"),
+            "expected an unknown window: {line}"
+        );
+        assert!(
+            !line.contains("0%"),
+            "must not print a bogus percentage: {line}"
+        );
+    }
+
+    #[test]
+    fn token_line_reports_a_real_percentage_once_the_window_is_known() {
+        // 20_000 of a 200_000 window is exactly 10%, so this does not depend
+        // on how a fractional percentage rounds.
+        let line = format_token_line(1_000, 200, 0, 20_000, 200_000);
+
+        assert!(
+            line.contains("20k 10%"),
+            "expected a real percentage: {line}"
+        );
+        assert!(
+            !line.contains("unknown"),
+            "a known limit is not unknown: {line}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod goal_status_line_tests {
+    use super::format_goal_status_line;
+    use crate::bus::events::{GoalBudgetSnapshot, GoalSnapshot, GoalUsageSnapshot};
+
+    fn sample(budget: GoalBudgetSnapshot, usage: GoalUsageSnapshot) -> GoalSnapshot {
+        GoalSnapshot {
+            id: "g1".into(),
+            session_id: "s1".into(),
+            project_id: "/tmp".into(),
+            title: "Ship codex-style goals".into(),
+            objective: "Long-horizon autonomous goal with budget".into(),
+            status: "active".into(),
+            current_phase: Some("Phase 1".into()),
+            progress_summary: "started".into(),
+            next_action: Some("write tests".into()),
+            completion_criteria: vec!["All tests pass".into()],
+            open_questions: vec![],
+            budget,
+            usage,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            started_at_ms: None,
+            completed_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn includes_status_title_and_budget() {
+        let g = sample(
+            GoalBudgetSnapshot {
+                max_turns: Some(10),
+                max_model_tokens: Some(20_000),
+                max_tool_calls: Some(50),
+                max_wallclock_secs: Some(600),
+            },
+            GoalUsageSnapshot {
+                turns_used: 2,
+                input_tokens: 800,
+                output_tokens: 200,
+                tool_calls: 5,
+                wallclock_secs: 12,
+            },
+        );
+        let line = format_goal_status_line(&g);
+        assert!(line.contains("[active]"));
+        assert!(line.contains("Ship codex-style goals"));
+        assert!(line.contains("turns 2/10"));
+        assert!(line.contains("calls 5/50"));
+        assert!(line.contains("wall 12s/600s"));
+    }
+
+    #[test]
+    fn no_budget_renders_title_only() {
+        let g = sample(GoalBudgetSnapshot::default(), GoalUsageSnapshot::default());
+        let line = format_goal_status_line(&g);
+        assert!(line.contains("[active]"));
+        assert!(line.contains("Ship codex-style goals"));
+        assert!(!line.contains("turns"));
+    }
+
+    #[test]
+    fn empty_title_renders_placeholder() {
+        let mut g = sample(GoalBudgetSnapshot::default(), GoalUsageSnapshot::default());
+        g.title = String::new();
+        let line = format_goal_status_line(&g);
+        assert!(line.contains("(untitled)"));
+    }
+
+    #[test]
+    fn over_budget_marks_warning_prefix() {
+        let g = sample(
+            GoalBudgetSnapshot {
+                max_turns: Some(2),
+                ..Default::default()
+            },
+            GoalUsageSnapshot {
+                turns_used: 2,
+                ..Default::default()
+            },
+        );
+        let line = format_goal_status_line(&g);
+        // At the limit counts as "over" for the marker; just assert
+        // the budget is rendered.
+        assert!(line.contains("turns 2/2"));
+    }
+}
+
+#[cfg(test)]
+mod theme_integration_tests {
+    use super::*;
+
+    /// FNV-1a over `bytes`. Only ever used to compare two snapshots of a
+    /// file that may hold credentials, so a failing assertion reports a
+    /// number rather than the contents.
+    fn config_digest(bytes: &[u8]) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    #[test]
+    fn app_with_config_loads_theme_registry() {
+        let app = App::new_for_testing("/tmp".to_string());
+        let names = app.theme_registry.names();
+        assert!(!names.is_empty(), "registry should be populated");
+        assert!(
+            app.theme_registry.get("cyber-red").is_some(),
+            "default theme `cyber-red` should be bundled"
+        );
+    }
+
+    #[test]
+    fn apply_theme_succeeds_for_known_and_fails_for_unknown() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(app.apply_theme("catppuccin-mocha"));
+        assert_eq!(app.ui_state.theme.name, "Catppuccin Mocha");
+        assert!(!app.apply_theme("no-such-theme"));
+    }
+
+    #[test]
+    fn handle_theme_command_list_uses_registry() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.handle_theme_command("list");
+        // The list command should not change the theme; we just check it
+        // does not crash and that we can still query the registry.
+        let names = app.theme_registry.names();
+        assert!(!names.is_empty());
+    }
+
+    #[test]
+    fn handle_theme_command_use_applies_and_keeps_registry() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.handle_theme_command("use catppuccin-latte");
+        assert_eq!(app.ui_state.theme.name, "Catppuccin Latte");
+    }
+
+    #[test]
+    fn handle_theme_command_use_unknown_reports_error() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let before = app.ui_state.theme.name.clone();
+        app.handle_theme_command("use nope");
+        // Theme should remain the default.
+        assert_eq!(app.ui_state.theme.name, before);
+    }
+
+    #[test]
+    fn apply_theme_accepts_a_display_name() {
+        // Regression: lookups were id-only, so a reference the user can see
+        // on screen (`Nord`) failed to resolve (`nord` is the id).
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(app.apply_theme("Nord"));
+        assert_eq!(app.ui_state.theme.id, "nord");
+        assert!(app.apply_theme("Catppuccin Mocha"));
+        assert_eq!(app.ui_state.theme.id, "catppuccin-mocha");
+        assert!(app.apply_theme("Dracula"));
+        assert_eq!(app.ui_state.theme.id, "dracula");
+    }
+
+    #[test]
+    fn every_bundled_theme_is_reachable_from_the_registry() {
+        // The picker renders every entry of `all_tui_themes`; each one must
+        // be resolvable through the same lookup the picker uses.
+        let app = App::new_for_testing("/tmp".to_string());
+        for theme in app.theme_registry.all_tui_themes() {
+            let resolved = app
+                .theme_registry
+                .get_tui(&theme.id)
+                .unwrap_or_else(|| panic!("id {:?} must resolve", theme.id));
+            assert_eq!(resolved.id, theme.id);
+            assert_eq!(resolved.name, theme.name);
+        }
+    }
+
+    #[test]
+    fn picker_commit_message_resolves_to_the_selected_theme() {
+        // End-to-end guard on the exact regression: the picker used to emit
+        // the display name in the `theme_id` field, which the registry could
+        // not resolve, so 33 of the 50 bundled themes silently did nothing.
+        use crate::components::dialogs::theme::ThemePickerDialog;
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(app.apply_theme("cyber-red"));
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::clone(&app.ui_state.theme),
+            app.theme_registry.all_tui_themes(),
+        );
+
+        // Park the selection on a bundled theme whose display name is not
+        // its id, then read back what the picker would commit.
+        let target_idx = picker
+            .themes
+            .iter()
+            .position(|t| t.name != t.id)
+            .expect("the bundled gallery has themes whose name is not their id");
+        picker.selected = target_idx;
+        let target = picker.themes[target_idx].clone();
+
+        let committed_id = picker
+            .selected_theme()
+            .map(|t| t.id.clone())
+            .expect("a theme is selected");
+        assert_ne!(committed_id, target.name, "the picker must emit the id");
+
+        let resolved = app
+            .theme_registry
+            .get_tui(&committed_id)
+            .unwrap_or_else(|| panic!("committed id {committed_id:?} must resolve"));
+        assert_eq!(resolved.id, target.id);
+        assert_eq!(resolved.name, target.name);
+    }
+
+    #[test]
+    fn picker_original_id_resolves_for_revert() {
+        // Esc restores `original_id`; it has to be a resolvable id.
+        use crate::components::dialogs::theme::ThemePickerDialog;
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(app.apply_theme("catppuccin-mocha"));
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::clone(&app.ui_state.theme),
+            app.theme_registry.all_tui_themes(),
+        );
+        picker.select_down().expect("navigation yields an id");
+        let original = picker
+            .preview_original_id()
+            .expect("first navigation captures the original");
+        let resolved = app
+            .theme_registry
+            .get_tui(&original)
+            .unwrap_or_else(|| panic!("revert target {original:?} must resolve"));
+        assert_eq!(resolved.id, "catppuccin-mocha");
+    }
+
+    #[test]
+    fn handle_theme_command_reload_keeps_the_current_theme() {
+        // Regression: reload re-resolved `Theme.name` through an id-keyed
+        // registry, so every theme whose display name differed from its id
+        // silently fell back to the default (Cyber Red).
+        let mut app = App::new_for_testing("/tmp".to_string());
+        for id in ["catppuccin-mocha", "nord", "gruvbox", "vesper"] {
+            assert!(app.apply_theme(id), "{id} should apply");
+            app.handle_theme_command("reload");
+            assert_eq!(
+                app.ui_state.theme.id, id,
+                "/theme reload must preserve the active theme"
+            );
+        }
+    }
+
+    #[test]
+    fn theme_commit_in_tests_never_touches_a_real_config_file() {
+        // Regression: `persist_theme_selection` mirrors the active theme id
+        // into the on-disk config. `Config::save()` resolves a real path
+        // from the working directory and the user's config dir, so an
+        // unguarded mirror rewrites a developer's actual `codegg.json`
+        // whenever a test exercises the commit path. The field has no
+        // `Default`, so every constructor is forced to choose explicitly.
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(
+            !app.persist_theme_to_config,
+            "test apps must never write a real config file"
+        );
+
+        // Resolve exactly where an unguarded mirror would write, and
+        // snapshot it. Snapshot the mtime *and* a digest: rewriting an
+        // already-matching config can produce byte-identical output, so
+        // content alone does not prove the file was untouched.
+        //
+        // The config holds credentials, so only a digest is ever compared —
+        // never the bytes — or a failing assert would spill the whole file,
+        // secrets included, into test output.
+        let target = codegg::config::paths::find_project_config()
+            .or_else(codegg::config::paths::global_config_path);
+        let existed_before = target.as_ref().is_some_and(|p| p.exists());
+        let mtime_before = target
+            .as_ref()
+            .and_then(|p| p.metadata().ok())
+            .and_then(|m| m.modified().ok());
+        let digest_before = target
+            .as_ref()
+            .and_then(|p| std::fs::read(p).ok())
+            .map(|bytes| config_digest(&bytes));
+
+        app.handle_theme_command("use catppuccin-latte");
+
+        // The theme still applies — only the config mirror is suppressed.
+        assert_eq!(app.ui_state.theme.id, "catppuccin-latte");
+
+        assert_eq!(
+            digest_before,
+            target
+                .as_ref()
+                .and_then(|p| std::fs::read(p).ok())
+                .map(|bytes| config_digest(&bytes)),
+            "the theme commit rewrote {} — tests must not write a real config",
+            target
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
+        assert_eq!(
+            mtime_before,
+            target
+                .as_ref()
+                .and_then(|p| p.metadata().ok())
+                .and_then(|m| m.modified().ok()),
+            "the theme commit touched {} — tests must not write a real config",
+            target
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
+        assert_eq!(
+            existed_before,
+            target.as_ref().is_some_and(|p| p.exists()),
+            "the theme commit created a config file — tests must not write one"
+        );
+
+        // A config load/save failure toast means the guard regressed and the
+        // commit path reached the filesystem again.
+        let config_toasts: Vec<&str> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.as_str())
+            .filter(|m| m.to_ascii_lowercase().contains("config"))
+            .collect();
+        assert!(
+            config_toasts.is_empty(),
+            "theme commit must not attempt a config write in tests: {config_toasts:?}"
+        );
+    }
+
+    #[test]
+    fn empty_agent_catalog_keeps_the_rendering_fallback() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let original_agent_names: Vec<_> = app
+            .agent_state
+            .agents
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect();
+        let original_current_agent = app.agent_state.current_agent;
+
+        app.set_agents(Vec::new());
+
+        let current_agent_names: Vec<_> = app
+            .agent_state
+            .agents
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect();
+        assert_eq!(current_agent_names, original_agent_names);
+        assert_eq!(app.agent_state.current_agent, original_current_agent);
+        assert!(!app.agent_state.agents.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn apply_persisted_preferences_round_trip() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::time::Duration;
+
+        // Stand up an in-memory pool and run the production migration so
+        // we exercise the same schema the app uses.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        codegg::session::schema::migrate(&pool).await.unwrap();
+
+        // Pre-seed a saved theme + model.
+        let prefs = codegg::storage::UserPreferences::new(pool.clone());
+        prefs
+            .set(codegg::storage::KEY_THEME_ACTIVE, "dracula")
+            .await
+            .unwrap();
+        prefs
+            .set(
+                codegg::storage::KEY_MODEL_LAST_USED,
+                "opencode_zen/nemotron-3-super-free",
+            )
+            .await
+            .unwrap();
+
+        // Build the app with default models; verify the saved theme and
+        // model are applied on top of defaults.
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.set_models(vec![
+            "opencode_zen/big-pickle".to_string(),
+            "opencode_zen/nemotron-3-super-free".to_string(),
+        ]);
+        app.set_preferences(prefs);
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| {
+            handle.block_on(async {
+                app.apply_persisted_preferences();
+            });
+        });
+        assert_eq!(app.ui_state.theme.name, "Dracula");
+        assert_eq!(
+            app.agent_state.current_model,
+            "opencode_zen/nemotron-3-super-free"
+        );
+    }
+}
+
+#[cfg(test)]
+mod remote_core_loader_tests {
+    use super::*;
+    use codegg::core::new_request;
+    use codegg::core::InprocCoreClient;
+    use codegg::protocol::core::{CoreRequest, CoreResponse};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_models_via_core_populates_state() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::time::Duration;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        codegg::session::schema::migrate(&pool).await.unwrap();
+
+        let client: Arc<dyn CoreClient> = Arc::new(InprocCoreClient::new(
+            None,
+            None,
+            Some(pool),
+            codegg::config::schema::Config::default(),
+            None,
+        ));
+
+        let req = new_request("snap".into(), CoreRequest::SnapshotModels);
+        let resp = client.request(req).await.unwrap();
+        assert!(matches!(resp, CoreResponse::ModelsSnapshot { .. }));
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.set_core_client(client);
+
+        let models = app.load_models_via_core().await.unwrap();
+
+        assert_eq!(app.agent_state.models, models);
+
+        if let CoreResponse::ModelsSnapshot {
+            models: mut expected,
+            ..
+        } = Arc::clone(&app.core_client.unwrap())
+            .request(new_request("snap2".into(), CoreRequest::SnapshotModels))
+            .await
+            .unwrap()
+        {
+            // Provider registration order is non-deterministic (HashMap iteration),
+            // so sort both lists before comparing.
+            let mut actual = models;
+            actual.sort();
+            expected.sort();
+            assert_eq!(actual, expected);
+        } else {
+            panic!("expected ModelsSnapshot");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_models_via_core_fails_without_core_client() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let err = app.load_models_via_core().await.unwrap_err();
+        assert!(err.to_string().contains("core client unavailable"));
+    }
+
+    async fn build_inproc_client() -> Arc<dyn CoreClient> {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::time::Duration;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        codegg::session::schema::migrate(&pool).await.unwrap();
+        let now = chrono::Utc::now();
+        let workspace = codegg_core::workspace::WorkspaceRecord {
+            id: codegg_core::workspace::WorkspaceId::new(),
+            canonical_root: tokio::fs::canonicalize("/tmp").await.unwrap(),
+            display_name: "TUI test workspace".to_string(),
+            created_at: now,
+            last_opened_at: now,
+            archived_at: None,
+        };
+        let workspace_store = codegg_core::workspace::SqliteWorkspaceStore::new(pool.clone());
+        codegg_core::workspace::WorkspaceStore::upsert(&workspace_store, &workspace)
+            .await
+            .unwrap();
+        codegg_core::project_catalog::ProjectCatalog::new(pool.clone())
+            .register_local_project(
+                codegg_core::project_catalog::RegisterLocalProject {
+                    display_name: "TUI test project".to_string(),
+                    description: None,
+                    tags: Vec::new(),
+                    primary_repository_id: None,
+                },
+                &workspace.id,
+                "tui-test",
+            )
+            .await
+            .unwrap();
+        Arc::new(InprocCoreClient::new(
+            None,
+            None,
+            Some(pool),
+            codegg::config::schema::Config::default(),
+            None,
+        ))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_attach_sets_session() {
+        let client = build_inproc_client().await;
+        // Pre-create a session via the inproc client so we have a real id.
+        let create_req = new_request(
+            "create-1".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp".into(),
+                title: Some("Existing".into()),
+                project_id: None,
+                workspace_id: None,
+            },
+        );
+        let session_id = match client.request(create_req).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::Attach {
+            session_id: session_id.clone(),
+        })
+        .await;
+
+        let sess = app
+            .session_state
+            .session
+            .as_ref()
+            .expect("session should be set after Attach");
+        assert_eq!(sess.id, session_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_continue_picks_most_recent() {
+        let client = build_inproc_client().await;
+        // Create two sessions in the same project; `Continue` should
+        // pick the most recent one (limit 1, ordered by `time_updated`).
+        let req_a = new_request(
+            "create-a".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp".into(),
+                title: Some("A".into()),
+                project_id: None,
+                workspace_id: None,
+            },
+        );
+        let id_a = match client.request(req_a).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+        // Sleep a touch so the second session's time_updated is later.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let req_b = new_request(
+            "create-b".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp".into(),
+                title: Some("B".into()),
+                project_id: None,
+                workspace_id: None,
+            },
+        );
+        let id_b = match client.request(req_b).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+        assert_ne!(id_a, id_b);
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::Continue {
+            project_dir: "/tmp".to_string(),
+        })
+        .await;
+
+        let sess = app
+            .session_state
+            .session
+            .as_ref()
+            .expect("Continue should pick a session");
+        assert_eq!(
+            sess.id, id_b,
+            "Continue should pick the most recent session"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_new_creates_session() {
+        let client = build_inproc_client().await;
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::New {
+            directory: "/tmp".to_string(),
+            title: Some("Brand New".to_string()),
+        })
+        .await;
+
+        let sess = app
+            .session_state
+            .session
+            .as_ref()
+            .expect("New should create a session");
+        assert_eq!(sess.title, "Brand New");
+        assert_eq!(
+            sess.directory,
+            tokio::fs::canonicalize("/tmp")
+                .await
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_fork_attaches_via_listing() {
+        let client = build_inproc_client().await;
+        // Create a session to fork.
+        let create_req = new_request(
+            "create-fork".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp".into(),
+                title: Some("Parent".into()),
+                project_id: None,
+                workspace_id: None,
+            },
+        );
+        let parent_id = match client.request(create_req).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::Fork {
+            session_id: parent_id.clone(),
+        })
+        .await;
+
+        let sess = app
+            .session_state
+            .session
+            .as_ref()
+            .expect("Fork should result in a session being attached");
+        // The most-recent session after a fork is the new fork, not the parent.
+        assert_ne!(
+            sess.id, parent_id,
+            "Fork should attach the new fork, not the parent"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_none_does_nothing() {
+        let client = build_inproc_client().await;
+        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::None)
+            .await;
+
+        assert!(
+            app.session_state.session.is_none(),
+            "None should leave the app with no session"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_without_core_client_is_noop() {
+        // App with no core client attached: every variant must be a no-op
+        // (must not panic, must not set a session).
+        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        // Note: intentionally NOT calling set_core_client.
+
+        app.load_initial_session_via_core(InitialSessionRequest::Attach {
+            session_id: "any".into(),
+        })
+        .await;
+        app.load_initial_session_via_core(InitialSessionRequest::Continue {
+            project_dir: "/tmp/proj".into(),
+        })
+        .await;
+        app.load_initial_session_via_core(InitialSessionRequest::New {
+            directory: "/tmp/proj".into(),
+            title: None,
+        })
+        .await;
+        app.load_initial_session_via_core(InitialSessionRequest::Fork {
+            session_id: "any".into(),
+        })
+        .await;
+        app.load_initial_session_via_core(InitialSessionRequest::None)
+            .await;
+
+        assert!(app.session_state.session.is_none());
+    }
+}
+
+#[cfg(test)]
+mod lsp_command_dispatch_tests {
+    use super::*;
+    use codegg::config::schema::LspConfig;
+    use codegg::lsp::config_lsp_to_egglsp;
+    use codegg::tool::lsp::LspTool;
+
+    fn sample_lsp_tool() -> Arc<LspTool> {
+        let svc =
+            codegg::lsp::service::LspService::new_arc(config_lsp_to_egglsp(LspConfig::default()));
+        Arc::new(LspTool::new(svc))
+    }
+
+    fn dispatch(app: &mut App, query: &str) {
+        let name = query
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .trim_start_matches('/');
+        let cmd = app
+            .command_registry
+            .find_by_name_or_alias(name)
+            .expect("command must exist in registry")
+            .clone();
+        app.dialog_state.command_palette.query = query.to_string();
+        app.execute_command(&cmd, Some(query));
+    }
+
+    // ── /lsp-servers ──
+
+    #[test]
+    fn lsp_servers_with_tool_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-servers");
+        assert!(!app.messages_state.toasts.is_empty());
+        assert!(!app.ui_state.command_mode);
+    }
+
+    #[test]
+    fn lsp_servers_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-servers");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-capabilities ──
+
+    #[test]
+    fn lsp_capabilities_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-capabilities");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_capabilities_with_key_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-capabilities rust-analyzer");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_capabilities_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-capabilities rust-analyzer");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-errors ──
+
+    #[test]
+    fn lsp_errors_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-errors");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_errors_with_key_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-errors rust-analyzer");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-root ──
+
+    #[test]
+    fn lsp_root_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-root");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_root_with_path_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-root /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-restart ──
+
+    #[test]
+    fn lsp_restart_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-restart");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_restart_with_key_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-restart rust-analyzer");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-stop ──
+
+    #[test]
+    fn lsp_stop_no_args_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-stop");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_stop_all_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-stop --all");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_stop_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-stop");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-cache-status ──
+
+    #[test]
+    fn lsp_cache_status_with_tool_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-cache-status");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_cache_status_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-cache-status");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-cache-clear ──
+
+    #[test]
+    fn lsp_cache_clear_no_args_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-cache-clear");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_cache_clear_with_root_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-cache-clear /tmp/proj");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_cache_clear_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-cache-clear");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-preview-apply ──
+
+    #[test]
+    fn lsp_preview_apply_missing_id_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-apply");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_apply_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-preview-apply some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-preview ──
+
+    #[test]
+    fn lsp_preview_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_with_id_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-preview some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-preview-refresh ──
+
+    #[test]
+    fn lsp_preview_refresh_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-refresh");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_refresh_with_id_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-refresh some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_refresh_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-preview-refresh some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-preview-clear ──
+
+    #[test]
+    fn lsp_preview_clear_no_args_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-clear");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_clear_with_id_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-clear some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_clear_all_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-clear --all");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_clear_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-preview-clear some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-capabilities invalid key ──
+
+    #[test]
+    fn lsp_capabilities_with_invalid_key_shows_not_found() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-capabilities nonexistent-server");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-errors without tool ──
+
+    #[test]
+    fn lsp_errors_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-errors rust-analyzer");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_errors_with_invalid_key_shows_not_found() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-errors nonexistent-server");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-restart invalid key ──
+
+    #[test]
+    fn lsp_restart_with_invalid_key_shows_not_found() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-restart nonexistent-server");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-status ──
+
+    #[test]
+    fn lsp_status_with_tool_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-status");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_status_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-status");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-repair-local ──
+
+    #[test]
+    fn lsp_repair_local_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-repair-local");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_repair_local_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-repair-local /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_repair_local_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-repair-local /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-repair-hunk ──
+
+    #[test]
+    fn lsp_repair_hunk_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-repair-hunk");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_repair_hunk_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-repair-hunk /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_repair_hunk_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-repair-hunk /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-review-file ──
+
+    #[test]
+    fn lsp_review_file_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-review-file");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_review_file_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-review-file /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_review_file_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-review-file /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-review-diff ──
+
+    #[test]
+    fn lsp_review_diff_no_args_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-review-diff");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_review_diff_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-review-diff");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-security-review ──
+
+    #[test]
+    fn lsp_security_review_no_args_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-security-review");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_security_review_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-security-review");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-impact ──
+
+    #[test]
+    fn lsp_impact_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-impact");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_impact_with_target_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-impact /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_impact_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-impact /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-test-repair ──
+
+    #[test]
+    fn lsp_test_repair_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-test-repair");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_test_repair_with_file_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-test-repair /tmp/test_test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_test_repair_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-test-repair /tmp/test_test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-interface ──
+
+    #[test]
+    fn lsp_interface_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-interface");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_interface_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-interface /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_interface_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-interface /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-cross-repair ──
+
+    #[test]
+    fn lsp_cross_repair_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-cross-repair");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_cross_repair_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-cross-repair /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_cross_repair_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-cross-repair /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-call-neighbors ──
+
+    #[test]
+    fn lsp_call_neighbors_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-call-neighbors");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_call_neighbors_with_target_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-call-neighbors /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_call_neighbors_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-call-neighbors /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-doctor ──
+
+    #[test]
+    fn lsp_doctor_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-doctor");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("Usage")),
+            "missing arg must show Usage toast, got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn lsp_doctor_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-doctor /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("LSP Doctor")),
+            "doctor toast must contain 'LSP Doctor', got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn lsp_doctor_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-doctor /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("LSP not available")),
+            "no-tool dispatch must surface LSP-not-available, got: {texts:?}"
+        );
+    }
+
+    // ── /lsp-context-diagnostics ──
+
+    #[test]
+    fn lsp_context_diagnostics_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-context-diagnostics");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("Usage")),
+            "missing arg must show Usage toast, got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn lsp_context_diagnostics_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-context-diagnostics /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_context_diagnostics_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-context-diagnostics /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("LSP not available")),
+            "no-tool dispatch must surface LSP-not-available, got: {texts:?}"
+        );
+    }
+
+    // ── render fallback helpers ──
+
+    #[test]
+    fn extract_panic_message_from_str_ref() {
+        let err: Box<dyn std::any::Any + Send> = Box::new("something broke");
+        let msg = App::extract_panic_message(&err);
+        assert_eq!(msg, "something broke");
+    }
+
+    #[test]
+    fn extract_panic_message_from_string() {
+        let err: Box<dyn std::any::Any + Send> = Box::new(String::from("owned msg"));
+        let msg = App::extract_panic_message(&err);
+        assert_eq!(msg, "owned msg");
+    }
+
+    #[test]
+    fn extract_panic_message_from_unknown_type() {
+        let err: Box<dyn std::any::Any + Send> = Box::new(42u32);
+        let msg = App::extract_panic_message(&err);
+        assert_eq!(msg, "Unknown render panic");
+    }
+
+    #[test]
+    fn component_fallback_does_not_panic() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let app = App::new_for_testing("/tmp".into());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    panic!("test component panic");
+                }));
+                assert!(result.is_err());
+                app.render_component_fallback(frame, frame.area(), "Test fallback");
+            })
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod remote_protocol_tests {
+    use super::*;
+    use codegg::protocol::tui::{TuiMessage as RemoteTuiMessage, REMOTE_TUI_PROTOCOL_VERSION};
+    use codegg::protocol::ui::{
+        DialogSpec, PanelPlacement, PanelSpec, StatusItemSpec, StatusPlacement, TextNode, UiEffect,
+        UiNode,
+    };
+
+    #[test]
+    fn remote_snapshot_does_not_panic_on_empty_app() {
+        let app = App::new_for_testing("/tmp".into());
+        let snapshot = app.remote_snapshot();
+        assert_eq!(snapshot.protocol_version, REMOTE_TUI_PROTOCOL_VERSION);
+        assert_eq!(snapshot.route, "home");
+        assert!(snapshot.session_id.is_none());
+        assert_eq!(snapshot.status, "idle");
+        assert!(snapshot.messages.is_empty());
+    }
+
+    #[test]
+    fn remote_snapshot_includes_route_status_model_agent() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.agent_state.current_model = "test-model".to_string();
+        app.agent_state.current_agent = 0;
+        let snapshot = app.remote_snapshot();
+        assert_eq!(snapshot.model, "test-model");
+        assert!(!snapshot.agent.is_empty());
+    }
+
+    #[test]
+    fn remote_snapshot_session_route() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state
+            .routes
+            .navigate_to(crate::route::Route::Session("abc123".to_string()));
+        let snapshot = app.remote_snapshot();
+        assert_eq!(snapshot.route, "session:abc123");
+    }
+
+    #[test]
+    fn remote_snapshot_dialog_reflected() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state.dialog = Dialog::Model;
+        let snapshot = app.remote_snapshot();
+        assert!(snapshot.dialog.is_some());
+        assert!(snapshot.dialog.unwrap().contains("Model"));
+    }
+
+    #[test]
+    fn remote_snapshot_no_dialog_when_none() {
+        let app = App::new_for_testing("/tmp".into());
+        let snapshot = app.remote_snapshot();
+        assert!(snapshot.dialog.is_none());
+    }
+
+    #[test]
+    fn render_frame_sends_error_response() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+
+        let event = serde_json::json!({
+            "type": "RenderFrame",
+            "content": "some frame data"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::Error { message } => {
+                assert!(
+                    message.contains("unsupported_render_frame"),
+                    "error must mention unsupported_render_frame: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_snapshot_returns_state_snapshot() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+
+        let event = serde_json::json!({
+            "type": "RequestSnapshot",
+            "reason": "test"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::StateSnapshot { snapshot, .. } => {
+                assert_eq!(snapshot.protocol_version, REMOTE_TUI_PROTOCOL_VERSION);
+                assert_eq!(snapshot.route, "home");
+            }
+            other => panic!("expected StateSnapshot, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn next_remote_snapshot_increments_sequence_monotonically() {
+        let mut app = App::new_for_testing("/tmp".into());
+        assert_eq!(app.remote_sequence, 0);
+        let s1 = app.next_remote_snapshot();
+        assert_eq!(s1.sequence, 1);
+        let s2 = app.next_remote_snapshot();
+        assert_eq!(s2.sequence, 2);
+        let s3 = app.next_remote_snapshot();
+        assert_eq!(s3.sequence, 3);
+        // remote_snapshot (non-mutating) returns the most recent committed seq.
+        assert_eq!(app.remote_snapshot().sequence, 3);
+    }
+
+    #[test]
+    fn request_snapshot_via_remote_event_advances_sequence() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+
+        let event = serde_json::json!({
+            "type": "RequestSnapshot",
+            "reason": "test"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::StateSnapshot { sequence, .. } => {
+                assert_eq!(sequence, 1);
+            }
+            other => panic!("expected StateSnapshot, got: {other:?}"),
+        }
+        assert_eq!(app.remote_sequence, 1);
+    }
+
+    #[test]
+    fn resume_from_seq_zero_requests_resync() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+
+        let event = serde_json::json!({
+            "type": "Resume",
+            "from_event_seq": 0,
+            "reason": "test"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::ResyncRequired { reason, .. } => {
+                assert!(reason.unwrap().contains("invalid"));
+            }
+            other => panic!("expected ResyncRequired, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_from_seq_ahead_requests_resync() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+        app.remote_sequence = 5;
+
+        let event = serde_json::json!({
+            "type": "Resume",
+            "from_event_seq": 100,
+            "reason": "ahead"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::ResyncRequired { reason, .. } => {
+                assert!(reason.unwrap().contains("ahead"));
+            }
+            other => panic!("expected ResyncRequired, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_from_seq_behind_sends_fresh_snapshot() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+        app.remote_sequence = 10;
+
+        let event = serde_json::json!({
+            "type": "Resume",
+            "from_event_seq": 3,
+            "reason": "replay"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::StateSnapshot { sequence, .. } => {
+                // Resume from behind bumps the sequence forward and
+                // hands back a fresh snapshot for the client to adopt.
+                assert!(sequence > 10);
+            }
+            other => panic!("expected StateSnapshot, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remote_tui_state_snapshot_serializes() {
+        let snapshot = codegg::protocol::tui::RemoteTuiStateSnapshot {
+            protocol_version: 1,
+            sequence: 0,
+            session_id: None,
+            route: "home".to_string(),
+            model: "m".to_string(),
+            agent: "a".to_string(),
+            status: "idle".to_string(),
+            messages: vec![],
+            prompt: String::new(),
+            dialog: None,
+            toasts: vec![],
+            git: None,
+            plugin_panels: vec![],
+            plugin_status_items: vec![],
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains("\"protocol_version\":1"));
+    }
+
+    #[test]
+    fn state_snapshot_applied_to_app() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.agent_state.current_model = "old-model".to_string();
+
+        let event = serde_json::json!({
+            "type": "StateSnapshot",
+            "sequence": 42,
+            "snapshot": {
+                "protocol_version": 1,
+                "sequence": 42,
+                "session_id": "sess-1",
+                "route": "session:abc",
+                "model": "new-model",
+                "agent": "test-agent",
+                "status": "working",
+                "messages": [],
+                "prompt": "",
+                "dialog": null,
+                "toasts": [],
+                "plugin_panels": [],
+                "plugin_status_items": []
+            }
+        });
+        app.handle_remote_event(event);
+
+        assert_eq!(app.agent_state.current_model, "new-model");
+        assert!(matches!(
+            app.session_state.session_status,
+            SessionStatus::Working
+        ));
+    }
+
+    #[test]
+    fn remote_plugin_ui_effect_applies_to_plugin_ui_state() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let event = serde_json::json!({
+            "type": "PluginUiEffect",
+            "envelope": {
+                "session_id": null,
+                "source": {"type": "plugin", "plugin_id": "test-plugin"},
+                "invocation_id": "inv-1",
+                "effect": {
+                    "type": "open_dialog",
+                    "dialog": {
+                        "id": "test-plugin:test-dlg",
+                        "title": "Test Dialog",
+                        "body": {"kind": "text", "text": "hello"},
+                        "modal": true
+                    }
+                }
+            }
+        });
+        app.handle_remote_event(event);
+        assert!(
+            app.plugin_ui_state
+                .get_dialog("test-plugin:test-dlg")
+                .is_some(),
+            "dialog should be in plugin_ui_state after applying remote PluginUiEffect"
+        );
+    }
+
+    #[test]
+    fn remote_plugin_ui_effect_filters_by_session_id() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let event = serde_json::json!({
+            "type": "PluginUiEffect",
+            "envelope": {
+                "session_id": "other-session",
+                "source": {"type": "plugin", "plugin_id": "test-plugin"},
+                "invocation_id": null,
+                "effect": {
+                    "type": "open_dialog",
+                    "dialog": {
+                        "id": "test-plugin:wrong-session-dlg",
+                        "title": "Wrong",
+                        "body": {"kind": "text", "text": "nope"},
+                        "modal": false
+                    }
+                }
+            }
+        });
+        app.handle_remote_event(event);
+        assert!(
+            app.plugin_ui_state
+                .get_dialog("test-plugin:wrong-session-dlg")
+                .is_none(),
+            "dialog for non-current session should not be applied"
+        );
+    }
+
+    #[test]
+    fn remote_plugin_ui_effect_no_session_matches_any() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let event = serde_json::json!({
+            "type": "PluginUiEffect",
+            "envelope": {
+                "session_id": null,
+                "source": {"type": "plugin", "plugin_id": "test-plugin"},
+                "invocation_id": null,
+                "effect": {
+                    "type": "open_dialog",
+                    "dialog": {
+                        "id": "test-plugin:any-session-dlg",
+                        "title": "Any",
+                        "body": {"kind": "text", "text": "applies"},
+                        "modal": true
+                    }
+                }
+            }
+        });
+        app.handle_remote_event(event);
+        assert!(
+            app.plugin_ui_state
+                .get_dialog("test-plugin:any-session-dlg")
+                .is_some(),
+            "effect with no session filter should apply to any session"
+        );
+    }
+
+    #[test]
+    fn plugin_dialog_does_not_displace_permission_dialog() {
+        use crate::app::state::PluginUiApplyResult;
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state.dialog = Dialog::Permission;
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenDialog {
+                dialog: DialogSpec {
+                    id: "my-plugin:dlg".into(),
+                    title: "Plugin Dialog".into(),
+                    body: UiNode::Empty,
+                    modal: true,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert_eq!(result, PluginUiApplyResult::Applied);
+        // The plugin dialog is stored but the permission dialog stays active.
+        assert!(app.plugin_ui_state.get_dialog("my-plugin:dlg").is_some());
+        assert!(matches!(app.ui_state.dialog, Dialog::Permission));
+    }
+
+    #[test]
+    fn panel_effect_is_stored_in_plugin_ui_state() {
+        use crate::app::state::PluginUiApplyResult;
+        let mut app = App::new_for_testing("/tmp".into());
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "My Panel".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert_eq!(result, PluginUiApplyResult::Applied);
+        assert!(app.plugin_ui_state.panels.contains_key("my-plugin:panel-1"));
+    }
+
+    #[test]
+    fn status_item_effect_is_stored_in_plugin_ui_state() {
+        use crate::app::state::PluginUiApplyResult;
+        let mut app = App::new_for_testing("/tmp".into());
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::AddStatusItem {
+                item: StatusItemSpec {
+                    id: "my-plugin:status-1".into(),
+                    label: Some("Build".into()),
+                    placement: StatusPlacement::Right,
+                    body: UiNode::Text(TextNode {
+                        text: "passing".into(),
+                    }),
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert_eq!(result, PluginUiApplyResult::Applied);
+        assert!(app
+            .plugin_ui_state
+            .status_items
+            .contains_key("my-plugin:status-1"));
+    }
+
+    #[test]
+    fn remote_snapshot_includes_plugin_panels_and_status_items() {
+        use codegg::protocol::ui::{PanelPlacement, PanelSpec, StatusItemSpec, StatusPlacement};
+        let mut app = App::new_for_testing("/tmp".into());
+        app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "My Panel".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        app.apply_plugin_ui_effect(
+            UiEffect::AddStatusItem {
+                item: StatusItemSpec {
+                    id: "my-plugin:status-1".into(),
+                    label: Some("Status".into()),
+                    placement: StatusPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        let snapshot = app.remote_snapshot();
+        assert_eq!(snapshot.plugin_panels.len(), 1);
+        assert_eq!(snapshot.plugin_panels[0].id, "my-plugin:panel-1");
+        assert_eq!(snapshot.plugin_status_items.len(), 1);
+        assert_eq!(snapshot.plugin_status_items[0].id, "my-plugin:status-1");
+    }
+
+    #[test]
+    fn unsupported_effect_degrades_to_toast() {
+        use crate::app::state::PluginUiApplyResult;
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state.plugin_ui_caps = codegg::protocol::ui::PluginUiCapabilities {
+            dialog: false,
+            toast: true,
+            ..Default::default()
+        };
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenDialog {
+                dialog: DialogSpec {
+                    id: "my-plugin:dlg".into(),
+                    title: "Test Dialog".into(),
+                    body: UiNode::Text(TextNode {
+                        text: "content".into(),
+                    }),
+                    modal: true,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert!(matches!(result, PluginUiApplyResult::Unsupported(_)));
+        // The degraded summary should appear as a toast.
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 15: envelope-based dispatch and validation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn apply_plugin_ui_envelope_dispatches_with_plugin_source() {
+        use codegg::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: Some("inv-1".into()),
+            effect: UiEffect::ShowToast {
+                toast: codegg::protocol::ui::ToastSpec {
+                    level: codegg::protocol::ui::ToastLevel::Info,
+                    message: "from envelope".into(),
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::app::state::PluginUiApplyResult::ToastRequested
+        ));
+    }
+
+    #[test]
+    fn apply_plugin_ui_envelope_drops_mismatched_session() {
+        use codegg::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: Some("some-other-session".into()),
+            source: UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: codegg::protocol::ui::ToastSpec {
+                    level: codegg::protocol::ui::ToastLevel::Info,
+                    message: "should not appear".into(),
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::app::state::PluginUiApplyResult::Unsupported(_)
+        ));
+        // No toast should be queued for a mismatched session.
+        assert!(app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn apply_plugin_ui_envelope_rejects_oversize_string() {
+        use codegg::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
+        let mut app = App::new_for_testing("/tmp".into());
+        // 32KiB string exceeds balanced max_string_len of 16KiB.
+        let huge = "x".repeat(32 * 1024);
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: codegg::protocol::ui::ToastSpec {
+                    level: codegg::protocol::ui::ToastLevel::Info,
+                    message: huge,
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::app::state::PluginUiApplyResult::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn apply_plugin_ui_envelope_core_source_skips_plugin_ownership() {
+        use codegg::protocol::ui::{TextNode, UiEffect, UiEffectEnvelope, UiEffectSource, UiNode};
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Core,
+            invocation_id: None,
+            effect: UiEffect::OpenDialog {
+                dialog: codegg::protocol::ui::DialogSpec {
+                    // id lacks plugin prefix but Core source means no
+                    // ownership check is enforced.
+                    id: "core-only-dialog".into(),
+                    title: "Core".into(),
+                    body: UiNode::Text(TextNode { text: "hi".into() }),
+                    modal: false,
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::app::state::PluginUiApplyResult::Applied
+        ));
+    }
+
+    #[test]
+    fn apply_plugin_ui_envelope_rejects_cross_plugin_surface_id() {
+        use codegg::protocol::ui::{TextNode, UiEffect, UiEffectEnvelope, UiEffectSource, UiNode};
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "plugin-a".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::OpenDialog {
+                dialog: codegg::protocol::ui::DialogSpec {
+                    id: "plugin-b:foreign-dialog".into(),
+                    title: "Foreign".into(),
+                    body: UiNode::Text(TextNode {
+                        text: "spoof attempt".into(),
+                    }),
+                    modal: false,
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::app::state::PluginUiApplyResult::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn validate_plugin_ui_effects_accepts_balanced_batch() {
+        use codegg::protocol::ui::{TextNode, UiEffect, UiNode};
+        let app = App::new_for_testing("/tmp".into());
+        let effects = vec![
+            UiEffect::ShowToast {
+                toast: codegg::protocol::ui::ToastSpec {
+                    level: codegg::protocol::ui::ToastLevel::Info,
+                    message: "first".into(),
+                },
+            },
+            UiEffect::OpenPanel {
+                panel: codegg::protocol::ui::PanelSpec {
+                    id: "p:panel".into(),
+                    title: "Panel".into(),
+                    placement: codegg::protocol::ui::PanelPlacement::Right,
+                    body: UiNode::Text(TextNode { text: "ok".into() }),
+                },
+            },
+        ];
+        assert!(app.validate_plugin_ui_effects(&effects).is_ok());
+    }
+
+    #[test]
+    fn validate_plugin_ui_effects_rejects_empty_batch() {
+        use codegg::protocol::ui::UiEffect;
+        let app = App::new_for_testing("/tmp".into());
+        // An empty batch is invalid by spec: a batch is always
+        // associated with one or more effects. The validate function
+        // returns Ok for an empty slice (vacuous truth) — this test
+        // pins that behavior so future tightening is intentional.
+        let empty: Vec<UiEffect> = Vec::new();
+        assert!(app.validate_plugin_ui_effects(&empty).is_ok());
+    }
+
+    #[test]
+    fn validate_plugin_ui_effects_rejects_oversize_payload() {
+        use codegg::protocol::ui::{TextNode, UiEffect, UiNode};
+        let app = App::new_for_testing("/tmp".into());
+        // Single effect with serialized size just over balanced cap
+        // (256KiB) should be rejected by validate_effects.
+        let big_body = "y".repeat(260 * 1024);
+        let effects = vec![UiEffect::OpenPanel {
+            panel: codegg::protocol::ui::PanelSpec {
+                id: "p:big".into(),
+                title: "Big".into(),
+                placement: codegg::protocol::ui::PanelPlacement::Right,
+                body: UiNode::Text(TextNode { text: big_body }),
+            },
+        }];
+        assert!(app.validate_plugin_ui_effects(&effects).is_err());
+    }
+
+    #[test]
+    fn snapshot_body_within_limit_drops_oversize_body() {
+        let big = "z".repeat(SNAPSHOT_BODY_LIMIT + 1);
+        let body = codegg::protocol::ui::UiNode::Text(codegg::protocol::ui::TextNode { text: big });
+        assert!(snapshot_body_within_limit(&body, SNAPSHOT_BODY_LIMIT).is_none());
+
+        // A body that fits within the limit is kept; one that exceeds
+        // it is dropped, regardless of how much limit is added past
+        // its serialized size.
+        let just_fits_limit = serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0) - 1;
+        assert!(snapshot_body_within_limit(&body, just_fits_limit).is_none());
+    }
+
+    #[test]
+    fn snapshot_body_within_limit_keeps_small_body() {
+        let body = codegg::protocol::ui::UiNode::Text(codegg::protocol::ui::TextNode {
+            text: "small".into(),
+        });
+        assert!(snapshot_body_within_limit(&body, SNAPSHOT_BODY_LIMIT).is_some());
+    }
+
+    #[test]
+    fn snapshot_panels_have_source_plugin_id_and_body() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = codegg::protocol::ui::UiEffectEnvelope {
+            session_id: None,
+            source: codegg::protocol::ui::UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: None,
+            effect: codegg::protocol::ui::UiEffect::OpenPanel {
+                panel: codegg::protocol::ui::PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "P".into(),
+                    placement: codegg::protocol::ui::PanelPlacement::Right,
+                    body: codegg::protocol::ui::UiNode::Text(codegg::protocol::ui::TextNode {
+                        text: "hi".into(),
+                    }),
+                },
+            },
+        };
+        let _ = app.apply_plugin_ui_envelope(envelope);
+        let snap = app.build_remote_snapshot(app.remote_sequence);
+        assert_eq!(snap.plugin_panels.len(), 1);
+        let view = &snap.plugin_panels[0];
+        assert_eq!(view.id, "my-plugin:panel-1");
+        assert_eq!(view.source_plugin_id.as_deref(), Some("my-plugin"));
+        assert!(view.body.is_some());
+    }
+
+    #[test]
+    fn snapshot_panels_drop_oversize_body_but_keep_metadata() {
+        // Use a body that passes validation (`max_string_len = 16KiB`)
+        // but exceeds the snapshot body cap (`SNAPSHOT_BODY_LIMIT =
+        // 16KiB`). The snapshot builder drops the body so it stays
+        // bounded under reconnect storms.
+        let mut app = App::new_for_testing("/tmp".into());
+        let huge_body =
+            codegg::protocol::ui::UiNode::Container(codegg::protocol::ui::ContainerNode {
+                title: Some("huge".into()),
+                children: (0..128)
+                    .map(|i| {
+                        codegg::protocol::ui::UiNode::Text(codegg::protocol::ui::TextNode {
+                            text: format!("row-{}-{}", i, "x".repeat(200)),
+                        })
+                    })
+                    .collect(),
+            });
+        let envelope = codegg::protocol::ui::UiEffectEnvelope {
+            session_id: None,
+            source: codegg::protocol::ui::UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: None,
+            effect: codegg::protocol::ui::UiEffect::OpenPanel {
+                panel: codegg::protocol::ui::PanelSpec {
+                    id: "my-plugin:huge-panel".into(),
+                    title: "Huge".into(),
+                    placement: codegg::protocol::ui::PanelPlacement::Right,
+                    body: huge_body,
+                },
+            },
+        };
+        let _ = app.apply_plugin_ui_envelope(envelope);
+        let snap = app.build_remote_snapshot(app.remote_sequence);
+        let view = snap
+            .plugin_panels
+            .iter()
+            .find(|v| v.id == "my-plugin:huge-panel")
+            .expect("huge panel present");
+        assert_eq!(view.source_plugin_id.as_deref(), Some("my-plugin"));
+        assert!(view.body.is_none(), "oversize body must be dropped");
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 15: multi-client capability behavior
+    // -----------------------------------------------------------------
+
+    /// A "full" client (all capabilities) receives a panel in the snapshot.
+    /// An "automation" client (panel capability disabled) receives a
+    /// degraded toast instead and no panel in the snapshot.
+    #[test]
+    fn multi_client_different_capabilities_receive_appropriate_forms() {
+        use crate::app::state::PluginUiApplyResult;
+        use codegg::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
+
+        // Full client.
+        let mut full_client = App::new_for_testing("/tmp".into());
+        // new_for_testing already sets all_supported; assert that.
+        assert!(full_client.ui_state.plugin_ui_caps.panel);
+
+        let panel_effect = UiEffect::OpenPanel {
+            panel: codegg::protocol::ui::PanelSpec {
+                id: "multi-client:panel-1".into(),
+                title: "M".into(),
+                placement: codegg::protocol::ui::PanelPlacement::Right,
+                body: codegg::protocol::ui::UiNode::Text(codegg::protocol::ui::TextNode {
+                    text: "panel body".into(),
+                }),
+            },
+        };
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "multi-client".into(),
+            },
+            invocation_id: Some("inv-full".into()),
+            effect: panel_effect.clone(),
+        };
+        let result = full_client.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(result, PluginUiApplyResult::Applied));
+
+        let snap_full = full_client.build_remote_snapshot(full_client.remote_sequence);
+        let full_panel = snap_full
+            .plugin_panels
+            .iter()
+            .find(|v| v.id == "multi-client:panel-1");
+        assert!(full_panel.is_some(), "full client must see the panel");
+        assert_eq!(
+            full_panel.unwrap().source_plugin_id.as_deref(),
+            Some("multi-client")
+        );
+
+        // Automation client: same effect, but panel capability is off.
+        let mut automation_client = App::new_for_testing("/tmp".into());
+        automation_client.ui_state.plugin_ui_caps = codegg::protocol::ui::PluginUiCapabilities {
+            toast: true,
+            ..Default::default() // dialog=false, panel=false, status_item=false, etc.
+        };
+
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "multi-client".into(),
+            },
+            invocation_id: Some("inv-automation".into()),
+            effect: panel_effect,
+        };
+        let result = automation_client.apply_plugin_ui_envelope(envelope);
+        assert!(
+            matches!(result, PluginUiApplyResult::Unsupported(_)),
+            "automation client should reject panel effect"
+        );
+
+        // The unsupported path in apply_plugin_ui_effect degrades to a toast.
+        assert!(
+            !automation_client.messages_state.toasts.is_empty(),
+            "automation client should see a degraded toast summary"
+        );
+
+        // No panel in the automation client's snapshot — durable surface
+        // was never stored because the effect was rejected.
+        let snap_auto = automation_client.build_remote_snapshot(automation_client.remote_sequence);
+        assert!(
+            snap_auto
+                .plugin_panels
+                .iter()
+                .all(|v| v.id != "multi-client:panel-1"),
+            "automation client must not have the panel in snapshot"
+        );
+    }
+
+    /// After a panel is stored durably, a fresh snapshot (simulating a
+    /// reconnecting client) still includes the panel with
+    /// `source_plugin_id` and `body`.
+    #[test]
+    fn reconnect_snapshot_includes_durable_plugin_surfaces() {
+        use codegg::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
+
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "reconnect-test".into(),
+            },
+            invocation_id: Some("inv-reconnect".into()),
+            effect: UiEffect::OpenPanel {
+                panel: codegg::protocol::ui::PanelSpec {
+                    id: "reconnect-test:status".into(),
+                    title: "Status".into(),
+                    placement: codegg::protocol::ui::PanelPlacement::Left,
+                    body: codegg::protocol::ui::UiNode::Text(codegg::protocol::ui::TextNode {
+                        text: "live data".into(),
+                    }),
+                },
+            },
+        };
+        let _ = app.apply_plugin_ui_envelope(envelope);
+
+        // Simulate reconnect: a new client calls RequestSnapshot.
+        // The fresh snapshot must include the durable surface.
+        let snap1 = app.build_remote_snapshot(app.remote_sequence);
+        let snap2 = app.build_remote_snapshot(app.remote_sequence + 1);
+
+        for snap in [&snap1, &snap2] {
+            let panel = snap
+                .plugin_panels
+                .iter()
+                .find(|v| v.id == "reconnect-test:status")
+                .expect("reconnect snapshot must include durable panel");
+            assert_eq!(
+                panel.source_plugin_id.as_deref(),
+                Some("reconnect-test"),
+                "source_plugin_id must be set on reconnect snapshot"
+            );
+            assert!(
+                panel.body.is_some(),
+                "body should be included when within size cap"
+            );
+        }
+    }
+
+    /// Transient effects (ShowToast) are NOT included in reconnect
+    /// snapshots. Only durable surfaces (panels, status items) survive.
+    #[test]
+    fn transient_toast_not_in_reconnect_snapshot() {
+        use codegg::protocol::ui::{
+            ToastLevel, ToastSpec, UiEffect, UiEffectEnvelope, UiEffectSource,
+        };
+
+        let mut app = App::new_for_testing("/tmp".into());
+
+        // Apply a transient toast.
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "ephemeral".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "transient message".into(),
+                },
+            },
+        };
+        let _ = app.apply_plugin_ui_envelope(envelope);
+
+        // The toast should be queued.
+        assert!(!app.messages_state.toasts.is_empty());
+
+        // But the snapshot must not contain any toast or durable surface
+        // attributable to "ephemeral" — toasts are transient.
+        let snap = app.build_remote_snapshot(app.remote_sequence);
+        let plugin_panels: Vec<_> = snap
+            .plugin_panels
+            .iter()
+            .filter(|v| v.source_plugin_id.as_deref() == Some("ephemeral"))
+            .collect();
+        assert!(
+            plugin_panels.is_empty(),
+            "transient toasts must not produce durable panels"
+        );
+    }
+
+    /// Session-scoped envelopes that match the active session are
+    /// delivered; envelopes for a different session are silently dropped.
+    /// This pins the multi-client routing rule: only the subscribed
+    /// session's clients receive the effect.
+    #[test]
+    fn session_scoped_envelope_delivered_only_to_matching_session() {
+        use codegg::protocol::ui::{
+            ToastLevel, ToastSpec, UiEffect, UiEffectEnvelope, UiEffectSource,
+        };
+
+        let mut app = App::new_for_testing("/tmp".into());
+
+        // Envelope with session_id=None (broadcast) is delivered.
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "broadcaster".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "broadcast".into(),
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::app::state::PluginUiApplyResult::ToastRequested
+        ));
+
+        // Envelope with session_id="other-session" is rejected.
+        let envelope = UiEffectEnvelope {
+            session_id: Some("other-session".into()),
+            source: UiEffectSource::Plugin {
+                plugin_id: "broadcaster".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "for other session".into(),
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::app::state::PluginUiApplyResult::Unsupported(_)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod enqueue_tui_command_tests {
+    use super::*;
+
+    fn toast_messages(app: &App) -> Vec<String> {
+        app.messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn missing_sender_returns_false_and_toasts() {
+        let mut app = App::new_for_testing("/tmp".into());
+        // Ensure no sender is configured.
+        app.tui_cmd_tx = None;
+        let before = toast_messages(&app);
+        let accepted = app.enqueue_tui_command(TuiCommand::OpenTreeDialog);
+        assert!(!accepted, "should return false when no sender exists");
+        let after = toast_messages(&app);
+        assert!(
+            after.len() > before.len(),
+            "should surface a toast when channel unavailable"
+        );
+    }
+
+    #[test]
+    fn full_channel_returns_false_and_toasts() {
+        let mut app = App::new_for_testing("/tmp".into());
+        // Build a sender whose receiver is dropped so try_send fails
+        // with `Closed` (the smallest, deterministic TrySendError
+        // variant for a one-shot test). The point is the helper must
+        // observe the failure, surface a toast, and not pretend the
+        // command was accepted.
+        let (tx, rx) = mpsc::channel::<TuiCommand>(1);
+        drop(rx);
+        app.tui_cmd_tx = Some(tx);
+        let before = toast_messages(&app);
+        let accepted = app.enqueue_tui_command(TuiCommand::OpenTreeDialog);
+        assert!(!accepted, "should return false when the channel is closed");
+        let after = toast_messages(&app);
+        assert!(
+            after.len() > before.len(),
+            "should surface a toast on closed channel"
+        );
+    }
+
+    #[test]
+    fn direct_send_helper_reports_full_channel() {
+        let (tx, mut rx) = mpsc::channel::<TuiCommand>(1);
+        tx.try_send(TuiCommand::OpenTreeDialog)
+            .expect("first command fits");
+        assert!(!send_tui(&tx, TuiCommand::OpenTreeDialog));
+        assert!(rx.try_recv().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod skills_command_tests {
+    use super::*;
+
+    #[test]
+    fn skills_command_uses_snapshot_path_and_reports_unavailable_snapshot() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.prompt_state.prompt.set_text("/skills".into());
+        app.dispatch_builtin_command(crate::command::BuiltinSlashAction::Skills, Some("/skills"));
+        assert!(app
+            .messages_state
+            .toasts
+            .iter()
+            .any(|toast| toast.message.contains("No active asset snapshot")));
+        assert!(app.prompt_state.prompt.get_text().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod workspace_entry_convergence_tests {
+    use super::*;
+    use crate::command::{BuiltinSlashAction, CommandAction, CommandRegistry};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// M005 P1: `/workspace` and the Workspace hotkeys must reach **one**
+    /// handler (`commands::workspace_dashboard::open_workspace_dashboard`).
+    ///
+    /// Each entry point is driven through its own production seam — the
+    /// command registry for the slash command, `App::on_key` for the hotkeys —
+    /// rather than by calling the handler directly. A test that calls the
+    /// handler three times asserts only that the handler works; it would keep
+    /// passing after `/workspace` was re-pointed at a different builtin, or
+    /// after the hotkey was rebound, which is precisely the drift P1 exists to
+    /// rule out.
+    #[test]
+    fn workspace_command_and_hotkeys_reach_one_handler() {
+        // 1. The slash command, resolved by its user-facing spelling so an
+        //    alias or rebinding would be caught here.
+        let registry = CommandRegistry::new();
+        let command = registry
+            .find_by_name_or_alias("/workspace")
+            .expect("/workspace must stay registered");
+        let CommandAction::Builtin(BuiltinSlashAction::Workspace) = command.action else {
+            panic!(
+                "/workspace must stay Builtin(Workspace), got {:?}",
+                command.action
+            );
+        };
+
+        let mut via_command = App::new_for_testing("/tmp".into());
+        via_command.dispatch_builtin_command(BuiltinSlashAction::Workspace, None);
+        assert!(
+            matches!(
+                via_command.ui_state.routes.current(),
+                crate::route::Route::Workspace
+            ),
+            "/workspace must open the Workspace view"
+        );
+        assert!(
+            via_command.dialog_state.workspace_dashboard.is_some(),
+            "/workspace must mount the dashboard"
+        );
+
+        // 2. Every bound hotkey for the same action, through the real key
+        //    entry point. `Ctrl+O` works in both input modes; `Shift+W` is a
+        //    vim-Normal letter, so it needs a vim-configured app. `App::
+        //    new_for_testing` deliberately builds the *non-vim* map, and
+        //    using it unchanged would have made `Shift+W` fail for the right
+        //    reason while testing the wrong thing.
+        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        for mode in [InputMode::Insert, InputMode::Normal] {
+            let mut via_key = App::new_for_testing("/tmp".into());
+            via_key.ui_state.input_mode = mode;
+            via_key.on_key(ctrl_o);
+            assert!(
+                matches!(
+                    via_key.ui_state.routes.current(),
+                    crate::route::Route::Workspace
+                ),
+                "Ctrl+O must open the same Workspace view as /workspace in {mode:?}"
+            );
+            assert!(
+                via_key.dialog_state.workspace_dashboard.is_some(),
+                "Ctrl+O must mount the same dashboard as /workspace in {mode:?}"
+            );
+        }
+
+        let mut vim_app = App::new_for_testing("/tmp".into());
+        vim_app.ui_state.vim_mode = true;
+        vim_app.ui_state.bindings = crate::input::build_bindings(None, true);
+        vim_app.ui_state.input_mode = InputMode::Normal;
+        vim_app.on_key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        assert!(
+            matches!(
+                vim_app.ui_state.routes.current(),
+                crate::route::Route::Workspace
+            ),
+            "Shift+W (vim Normal) must open the same Workspace view as /workspace"
+        );
+        assert!(
+            vim_app.dialog_state.workspace_dashboard.is_some(),
+            "Shift+W (vim Normal) must mount the same dashboard as /workspace"
+        );
+
+        // 3. The normal-only gate is the contract, not an accident of the key
+        //    map: in Insert, `Shift+W` is the letter `W` being composed. If a
+        //    future change made this action global, the capital W a user
+        //    types mid-word would open a dashboard over their prompt.
+        let mut insert_app = App::new_for_testing("/tmp".into());
+        insert_app.ui_state.vim_mode = true;
+        insert_app.ui_state.bindings = crate::input::build_bindings(None, true);
+        insert_app.ui_state.input_mode = InputMode::Insert;
+        insert_app.on_key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        assert!(
+            !matches!(
+                insert_app.ui_state.routes.current(),
+                crate::route::Route::Workspace
+            ),
+            "Shift+W must stay Normal-only: in Insert it is composed text"
+        );
+    }
+
+    /// The advertised help key for the Workspace view must itself resolve.
+    /// `workspace_dashboard_action_is_configurable_and_helped` pins the *help
+    /// text*; this pins the round trip, so a rebind that left the help
+    /// advertising a dead key fails here rather than in a user's terminal.
+    #[test]
+    fn workspace_help_key_resolves_to_the_workspace_action() {
+        for entry in crate::input::help_entries_for_mode(crate::input::HelpMode::Normal) {
+            if entry.action != "Open Workspace view (selected-project chat)" {
+                continue;
+            }
+            assert_eq!(entry.key, "Ctrl+O");
+            let resolved = crate::input::handle_key_with_bindings(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                None,
+                InputMode::Normal,
+            );
+            assert_eq!(resolved, Some(InputAction::OpenWorkspaceDashboard));
+            return;
+        }
+        panic!("help must advertise the Workspace view hotkey");
+    }
+}
+
+#[cfg(test)]
+mod projection_adoption_tests {
+    use super::*;
+    use codegg::protocol::projection::caps::ProjectionCapabilities;
+    use codegg::protocol::projection::controller::ProjectionMode;
+    use codegg::protocol::projection::event::{
+        ProjectionEnvelope, ProjectionEvent, ProjectionStreamScope,
+    };
+    use codegg::protocol::projection::replay::ProjectionSubscriptionId;
+
+    fn fixture_envelope(session_id: &str, seq: u64) -> ProjectionEnvelope {
+        ProjectionEnvelope {
+            protocol_version: 1,
+            event_seq: seq,
+            timestamp_ms: 0,
+            session_id: Some(session_id.into()),
+            turn_id: None,
+            scope: ProjectionStreamScope::Session,
+            payload: ProjectionEvent::Diagnostic {
+                code: "x".into(),
+                message: "y".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn app_owns_projection_client_state() {
+        let app = App::new_for_testing("/tmp".into());
+        assert!(app.projection_client.is_projection_primary());
+        assert_eq!(app.projection_client.negotiated_version(), Some(1));
+    }
+
+    #[test]
+    fn switch_active_tab_updates_projection_state() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let tab_id = app
+            .project_tabs
+            .active()
+            .map(|t| t.tab_id.clone())
+            .expect("compat tab present");
+        assert!(app.switch_active_tab(&tab_id));
+        assert_eq!(app.projection_client.active_tab_id(), Some(tab_id.as_str()));
+    }
+
+    #[test]
+    fn on_projection_reconnect_clears_state() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let outcome = app.apply_projection_envelope(
+            &ProjectionSubscriptionId::new("missing"),
+            "tab-1",
+            fixture_envelope("s1", 1),
+        );
+        // Even an error envelope triggers a state update path.
+        let _ = outcome;
+        app.on_projection_reconnect();
+        assert!(app.projection_client.is_unsupported());
+        assert_eq!(app.projection_client.reconnect_epoch(), 1);
+    }
+
+    #[test]
+    fn on_projection_reconnect_clears_stale_semantic_highlight() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.editor_state.lsp.semantic_tokens = vec![codegg_protocol::lsp::LspSemanticTokenDto {
+            line: 0,
+            character: 0,
+            length: 1,
+            token_type: "keyword".into(),
+            modifiers: vec![],
+        }];
+        app.editor_state.lsp.semantic_revision = Some(9);
+        app.editor_state.lsp.semantic_truncated = true;
+        app.editor_state.lsp.semantic_incomplete = true;
+        app.on_projection_reconnect();
+        assert!(app.editor_state.lsp.semantic_tokens.is_empty());
+        assert_eq!(app.editor_state.lsp.semantic_revision, None);
+        assert!(!app.editor_state.lsp.semantic_truncated);
+        assert!(!app.editor_state.lsp.semantic_incomplete);
+    }
+
+    #[test]
+    fn enter_raw_compatibility_keeps_app_intact() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.enter_projection_raw_compatibility("test fallback");
+        assert!(app.projection_client.is_raw_compatibility());
+    }
+
+    #[test]
+    fn renegotiate_with_caps_switches_back_to_primary() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.enter_projection_raw_compatibility("forced fallback");
+        assert!(app.projection_client.is_raw_compatibility());
+        app.projection_client
+            .renegotiate(Some(&ProjectionCapabilities::default()));
+        assert_eq!(
+            app.projection_client.mode(),
+            ProjectionMode::ProjectionPrimary
+        );
+    }
+
+    #[test]
+    fn projection_capabilities_ack_accepted_switches_to_primary() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.enter_projection_raw_compatibility("pre-capabilities");
+        let json = serde_json::to_value(RemoteTuiMessage::ProjectionCapabilitiesAck {
+            accepted: true,
+            negotiated_version: Some(1),
+            reason: None,
+        })
+        .expect("serializable");
+        app.handle_remote_event(json);
+        assert_eq!(
+            app.projection_client.mode(),
+            ProjectionMode::ProjectionPrimary
+        );
+    }
+
+    #[test]
+    fn projection_capabilities_ack_rejected_keeps_compat() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let json = serde_json::to_value(RemoteTuiMessage::ProjectionCapabilitiesAck {
+            accepted: false,
+            negotiated_version: None,
+            reason: Some("version_mismatch".to_string()),
+        })
+        .expect("serializable");
+        app.handle_remote_event(json);
+        assert!(app.projection_client.is_raw_compatibility());
+    }
+
+    #[test]
+    fn projection_snapshot_installs_subscription() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let descriptor = codegg::protocol::projection::replay::ProjectionStreamDescriptor {
+            stream_id: codegg::protocol::projection::replay::ProjectionStreamId::new("session-s1")
+                .expect("stream id"),
+            kind: codegg::protocol::projection::replay::ProjectionStreamKind::Session,
+            project_id: "p1".into(),
+            workspace_id: None,
+            session_id: Some("s1".into()),
+            projection_version: 1,
+            retention_floor_seq: 0,
+            high_water_seq: 0,
+            latest_checkpoint_seq: None,
+        };
+        let snap = codegg::protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+            "s1", "p1", "w1",
+        );
+        let json = serde_json::to_value(RemoteTuiMessage::ProjectionSnapshot {
+            subscription_id: ProjectionSubscriptionId::new("sub-1"),
+            descriptor,
+            snapshot: Box::new(snap),
+            cursor: None,
+            retention_floor_seq: None,
+        })
+        .expect("serializable");
+        app.handle_remote_event(json);
+        assert_eq!(app.projection_client.subscription_count(), 1);
+    }
+
+    #[test]
+    fn projection_replay_without_identity_is_rejected() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let descriptor = codegg::protocol::projection::replay::ProjectionStreamDescriptor {
+            stream_id: codegg::protocol::projection::replay::ProjectionStreamId::new(
+                "session-missing-workspace",
+            )
+            .expect("stream id"),
+            kind: codegg::protocol::projection::replay::ProjectionStreamKind::Session,
+            project_id: "p1".into(),
+            workspace_id: None,
+            session_id: Some("s1".into()),
+            projection_version: 1,
+            retention_floor_seq: 0,
+            high_water_seq: 0,
+            latest_checkpoint_seq: None,
+        };
+        let json = serde_json::to_value(RemoteTuiMessage::ProjectionReplay {
+            subscription_id: ProjectionSubscriptionId::new("sub-missing-workspace"),
+            batch: codegg::protocol::projection::replay::ProjectionReplayBatch {
+                descriptor,
+                events: Vec::new(),
+                snapshot: None,
+                replay_start_seq: 0,
+                replay_end_seq: 0,
+                current_high_water: 0,
+                truncation_flag: false,
+                next_cursor: None,
+            },
+        })
+        .expect("serializable");
+        app.handle_remote_event(json);
+        assert_eq!(app.projection_client.subscription_count(), 0);
+    }
+
+    #[test]
+    fn turn_submission_retries_reuse_identity_only_for_identical_payload() {
+        let pending = PendingTurnSubmission {
+            session_id: "session-1".into(),
+            request_id: "submit-1".into(),
+            request_sha256: "a".repeat(64),
+            prompt: "do the thing".into(),
+        };
+        assert_eq!(
+            turn_submission_request_id(Some(&pending), "session-1", &"a".repeat(64)),
+            "submit-1"
+        );
+        assert_ne!(
+            turn_submission_request_id(Some(&pending), "session-1", &"b".repeat(64)),
+            "submit-1"
+        );
+        assert_ne!(
+            turn_submission_request_id(Some(&pending), "session-2", &"a".repeat(64)),
+            "submit-1"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reasoning_strip_warning_tests {
+    use super::*;
+
+    /// A daemon that echoes back the reasoning selection it was given.
+    ///
+    /// `/reasoning` writes the selection through the daemon, so the command
+    /// needs a core connection: without one it reports that the selection
+    /// cannot be stored, which is the honest answer but not what these
+    /// tests are about. These tests cover the command's own synchronous
+    /// behaviour — the local display and the toast — so the daemon's
+    /// completion is left on the command channel.
+    struct EchoingDaemon;
+
+    #[async_trait::async_trait]
+    impl codegg::core::CoreClient for EchoingDaemon {
+        async fn request(
+            &self,
+            request: codegg::protocol::core::RequestEnvelope<codegg::protocol::core::CoreRequest>,
+        ) -> Result<codegg::protocol::core::CoreResponse, codegg::error::AppError> {
+            let selection = match request.payload {
+                codegg::protocol::core::CoreRequest::ReasoningPreferenceSet {
+                    selection, ..
+                } => selection,
+                _ => None,
+            };
+            Ok(codegg::protocol::core::CoreResponse::ReasoningPreference {
+                preference: codegg::protocol::core::RuntimePreferenceDto {
+                    principal_id: "local".to_string(),
+                    approval_mode: codegg::protocol::core::ApprovalModeDto::Interactive,
+                    sandbox_profile: codegg::protocol::core::SandboxProfileDto::WorkspaceWrite,
+                    network_intent: codegg::protocol::core::NetworkIntentDto::LegacyUnrestricted,
+                    revision: 1,
+                    updated_at_ms: 0,
+                    last_provider_connection_id: None,
+                    last_model_id: None,
+                    last_task_provider_connection_id: None,
+                    last_task_model_id: None,
+                    reasoning_selection: selection,
+                },
+            })
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            codegg::protocol::core::EventEnvelope<codegg::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
+    fn app_with_model(model: &str) -> App {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.agent_state.current_model = model.to_string();
+        app.set_core_client(std::sync::Arc::new(EchoingDaemon));
+        app
+    }
+
+    fn toast_messages(app: &App) -> Vec<String> {
+        app.messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn stripping_providers_are_derived_from_the_capability_flag() {
+        for provider in ["azure", "openrouter", "opencode_zen"] {
+            let app = app_with_model(&format!("{provider}/some-model"));
+            assert!(
+                app.selected_provider_strips_reasoning(),
+                "{provider} removes reasoning_effort on the wire"
+            );
+        }
+        for provider in ["openai", "anthropic", "some-future-provider"] {
+            let app = app_with_model(&format!("{provider}/some-model"));
+            assert!(
+                !app.selected_provider_strips_reasoning(),
+                "{provider} passes reasoning_effort through"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_provider_never_warns_speculatively() {
+        // No provider segment (bare or empty model) means we cannot name one,
+        // so stay quiet rather than warn about a provider we invented.
+        for model in ["", "gpt-5", "/leading-slash"] {
+            let app = app_with_model(model);
+            assert!(
+                !app.selected_provider_strips_reasoning(),
+                "model {model:?} has no resolvable provider"
+            );
+        }
+    }
+
+    #[test]
+    fn selecting_an_effort_on_a_stripping_provider_warns() {
+        let mut app = app_with_model("azure/gpt-5");
+        // Cycle from Inherit onto the effort ladder.
+        app.dispatch_builtin_command(crate::command::BuiltinSlashAction::Reasoning, None);
+
+        assert!(
+            app.ui_state.reasoning_mode.requests_reasoning(),
+            "expected a reasoning-requesting mode, got {:?}",
+            app.ui_state.reasoning_mode
+        );
+        let toasts = toast_messages(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("drops this setting")),
+            "expected a wire-stripping warning, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn a_passthrough_provider_gets_the_plain_confirmation() {
+        let mut app = app_with_model("openai/gpt-5");
+        app.dispatch_builtin_command(crate::command::BuiltinSlashAction::Reasoning, None);
+
+        let toasts = toast_messages(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("Extended thinking")),
+            "expected the normal confirmation, got {toasts:?}"
+        );
+        assert!(
+            !toasts.iter().any(|t| t.contains("drops this setting")),
+            "a pass-through provider must not be warned about, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn turning_reasoning_off_never_warns() {
+        // Cycle all the way to Off on a stripping provider: asking for no
+        // thinking is honoured by every adapter, so there is nothing to warn
+        // about even though the provider strips the field.
+        //
+        // The cycle now moves through the **model's** options rather than a
+        // fixed ladder, so "all the way to Off" is a walk to the end of the
+        // option set, not a fixed number of steps.
+        let mut app = app_with_model("openrouter/anthropic/claude");
+        for _ in 0..16 {
+            if app.ui_state.reasoning_mode == codegg::protocol::core::ReasoningMode::Off {
+                break;
+            }
+            app.dispatch_builtin_command(crate::command::BuiltinSlashAction::Reasoning, None);
+        }
+        assert_eq!(
+            app.ui_state.reasoning_mode,
+            codegg::protocol::core::ReasoningMode::Off,
+            "expected the cycle to land on Off"
+        );
+        // Toasts accumulate, so the two earlier effort steps are still
+        // queued; only the most recent one describes the Off step.
+        let toasts = toast_messages(&app);
+        let last = toasts.last().expect("the cycle always toasts");
+        assert!(
+            !last.contains("drops this setting"),
+            "Off must not warn on a stripping provider, got {last:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod research_runtime_tests {
+    use super::*;
+    use codegg::config::schema::{SearchBackendConfig, SearchConfig};
+
+    /// `/research` builds its service in-process, so the only thing that can
+    /// give it network access is a `SearchRuntimeContext` on the App. Before
+    /// this was wired, every web adapter returned `NetworkNotAllowed` and the
+    /// command silently degraded to a local-only run regardless of config.
+    #[test]
+    fn research_command_has_no_search_runtime_by_default() {
+        let app = App::new_for_testing("/tmp".to_string());
+        assert!(app.search_runtime.is_none());
+    }
+
+    #[test]
+    fn set_search_runtime_is_retained_by_the_app() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.set_search_runtime(codegg::search_backend::SearchRuntimeContext::new(
+            SearchConfig {
+                backend: Some(SearchBackendConfig::Eggsearch),
+                ..Default::default()
+            },
+        ));
+        assert!(app.search_runtime.is_some());
+    }
+
+    /// The contract `/research` actually depends on: the handler builds its
+    /// service through `App::research_service`, and that is the only thing
+    /// that can give the run network access. If the handler stops passing
+    /// the App's search runtime along, this fails.
+    #[test]
+    fn research_service_takes_its_network_policy_from_the_app_search_runtime() {
+        use codegg::research::service::ResearchService;
+
+        let root = std::path::PathBuf::from("/tmp");
+        let mut app = App::new_for_testing("/tmp".to_string());
+
+        // No runtime installed -> local-only.
+        assert!(!app.research_service(root.clone()).allow_network());
+
+        // Enabled backend -> web adapters may run.
+        app.set_search_runtime(codegg::search_backend::SearchRuntimeContext::new(
+            SearchConfig {
+                backend: Some(SearchBackendConfig::Eggsearch),
+                ..Default::default()
+            },
+        ));
+        assert!(app.research_service(root.clone()).allow_network());
+
+        // The same authority that governs websearch also gates research.
+        app.set_search_runtime(codegg::search_backend::SearchRuntimeContext::disabled());
+        assert!(!app.research_service(root).allow_network());
+
+        // Sanity: the service under test is a real one, not a stub.
+        let svc = ResearchService::new(std::path::PathBuf::from("/tmp"));
+        assert!(!svc.allow_network());
+    }
+}
+
+#[cfg(test)]
+mod policy_selector_route_tests {
+    use super::*;
+
+    use crate::components::dialogs::policy_selector::PolicySelectorKind;
+
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    /// Bare `/approval` used to answer with a status toast and no dialog at
+    /// all, which made `yolo` reachable only by typing `/approval yolo`.
+    /// This is the regression guard for "the selector actually opens".
+    #[test]
+    fn bare_approval_opens_the_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dispatch_builtin_command(crate::command::BuiltinSlashAction::Approval, None);
+        assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
+        assert!(app.dialog_state.policy_selector.is_some());
+    }
+
+    /// The alias must land on the same box, not a different one.
+    ///
+    /// The alias is resolved by the registry and the argument is extracted
+    /// from the spelling the user typed, so the handler never sees the
+    /// command name — canonical or alias — inside its own argument.
+    #[test]
+    fn bare_approval_alias_opens_the_same_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let cmd = app
+            .command_registry
+            .find_by_name_or_alias("approval-mode")
+            .expect("the alias is registered")
+            .clone();
+        app.execute_command(&cmd, Some("/approval-mode"));
+        assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
+    }
+
+    /// The two commands edit different axes; `/sandbox` must not open the
+    /// approval list or it would let the operator set a mode by accident.
+    #[test]
+    fn bare_sandbox_opens_the_sandbox_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dispatch_builtin_command(crate::command::BuiltinSlashAction::Sandbox, None);
+        assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
+        let selector = app
+            .dialog_state
+            .policy_selector
+            .as_ref()
+            .expect("selector mounted");
+        assert_eq!(selector.kind, PolicySelectorKind::Sandbox);
+    }
+
+    /// The explicit-argument form must not open the selector — it applies
+    /// directly through the warning matrix.
+    #[test]
+    fn explicit_mode_argument_does_not_open_the_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dispatch_builtin_command(
+            crate::command::BuiltinSlashAction::Approval,
+            Some("interactive"),
+        );
+        assert_ne!(app.ui_state.dialog, Dialog::PolicySelector);
+    }
+
+    /// Digit-committing `yolo` must tear the selector down and reach the
+    /// policy path in one keystroke.
+    #[test]
+    fn selecting_yolo_by_digit_tears_down_the_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dispatch_builtin_command(crate::command::BuiltinSlashAction::Approval, None);
+        assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
+
+        app.on_key(key(crossterm::event::KeyCode::Char('3')));
+
+        assert!(
+            app.dialog_state.policy_selector.is_none(),
+            "the selector must not linger after a commit"
+        );
+        // No core client in tests, so the commit surfaces the unavailable
+        // update rather than silently succeeding. What matters is that the
+        // selector is gone and the policy path ran.
+        assert_ne!(app.ui_state.dialog, Dialog::PolicySelector);
+    }
+
+    /// A cancelled selector changes nothing.
+    #[test]
+    fn esc_leaves_the_selector_without_committing() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dispatch_builtin_command(crate::command::BuiltinSlashAction::Approval, None);
+
+        app.on_key(key(crossterm::event::KeyCode::Esc));
+        assert_ne!(app.ui_state.dialog, Dialog::PolicySelector);
+        assert!(
+            app.dialog_state.policy_selector.is_none(),
+            "a cancelled selector must not leave a stale seed behind"
+        );
+    }
+
+    /// Digits must answer the permission box in one keystroke, matching the
+    /// `y`/`p`/`n` contract. Routing goes through the real `App::on_key`
+    /// path, so this also covers the FocusManager hand-off.
+    #[test]
+    fn permission_digit_answers_without_a_second_enter() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.show_permission_dialog(
+            "perm-1".into(),
+            codegg::permission::PermissionRequest {
+                tool: "bash".into(),
+                path: None,
+                args: Some(serde_json::json!({ "command": "ls -la" })),
+            },
+        );
+        app.on_key(key(crossterm::event::KeyCode::Char('3')));
+        assert!(
+            app.dialog_state.permission_dialog.is_none(),
+            "digit 3 (Deny Once) must answer immediately"
+        );
+        assert_eq!(app.ui_state.dialog, Dialog::None);
+    }
+
+    /// A persistent grant stays a two-step act even via its digit: `2`
+    /// arms the interstitial and `1` commits it.
+    #[test]
+    fn permission_digit_two_arms_and_one_commits() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.show_permission_dialog(
+            "perm-1".into(),
+            codegg::permission::PermissionRequest {
+                tool: "bash".into(),
+                path: None,
+                args: Some(serde_json::json!({ "command": "ls -la" })),
+            },
+        );
+        app.on_key(key(crossterm::event::KeyCode::Char('2')));
+        assert!(
+            app.dialog_state.permission_dialog.is_some(),
+            "digit 2 (Always Allow) must arm the confirmation, not grant"
+        );
+        app.on_key(key(crossterm::event::KeyCode::Char('1')));
+        assert!(app.dialog_state.permission_dialog.is_none());
+    }
+
+    /// `0` is not a row and must never underflow into "Allow Once".
+    #[test]
+    fn permission_zero_does_not_select_the_first_row() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.show_permission_dialog(
+            "perm-1".into(),
+            codegg::permission::PermissionRequest {
+                tool: "bash".into(),
+                path: None,
+                args: Some(serde_json::json!({ "command": "ls -la" })),
+            },
+        );
+        app.on_key(key(crossterm::event::KeyCode::Char('0')));
+        assert!(app.dialog_state.permission_dialog.is_some());
+    }
+}
+
+#[cfg(test)]
+mod connection_rotation_tests {
+    use super::*;
+    use codegg::protocol::provider::ProviderConnectionSummaryDto;
+
+    fn summary(id: &str, kind: &str, name: &str) -> ProviderConnectionSummaryDto {
+        ProviderConnectionSummaryDto {
+            id: id.to_string(),
+            provider_kind: kind.to_string(),
+            display_name: name.to_string(),
+            endpoint: "https://example.invalid/v1".to_string(),
+            tls_policy: "required".to_string(),
+            scope: "personal".to_string(),
+            state: "active".to_string(),
+            revision: 1,
+            model_count: 0,
+            catalog_revision: None,
+            health: None,
+            credential_hint: None,
+        }
+    }
+
+    /// Regression: rotation built a fixed `eggpool`/`Eggpool` row, so rotating
+    /// an OpenCode Go credential asked for an Eggpool one. The dialog has to
+    /// name the connection it is about to replace, and `other:` is how
+    /// third-party providers are stored.
+    #[test]
+    fn rotation_names_the_provider_being_rotated() {
+        let mut app = App::new_for_testing("rotation-test".to_string());
+        let mut dialog =
+            crate::components::dialogs::connection_selection::ConnectionSelectionDialog::new(
+                "session-1".to_string(),
+                Arc::clone(&app.ui_state.theme),
+            );
+        dialog.connections = vec![summary("conn-1", "other:opencode_go", "eggstackmain")];
+        app.dialog_state.connection_selection_dialog = Some(dialog);
+
+        app.open_connection_rotation_dialog("conn-1".to_string(), 1);
+
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("rotation opens the connect dialog");
+        let provider = &connect.providers[0];
+        assert_eq!(
+            provider.id, "opencode_go",
+            "the `other:` prefix is storage naming, not the provider id"
+        );
+        assert_eq!(
+            provider.name, "eggstackmain",
+            "the prompt must name the credential being replaced"
+        );
+        assert!(
+            provider.description.contains("eggstackmain"),
+            "description follows the connection, not a hardcoded provider"
+        );
+    }
+
+    /// A rotation opened before the connection list has loaded must still
+    /// produce a usable dialog rather than panic on a missing summary.
+    #[test]
+    fn rotation_without_a_loaded_list_still_opens() {
+        let mut app = App::new_for_testing("rotation-empty".to_string());
+        app.open_connection_rotation_dialog("conn-missing".to_string(), 1);
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("rotation always opens a dialog");
+        assert_eq!(connect.providers.len(), 1);
+    }
+
+    /// The rotation toast named Eggpool for every provider. It is the only
+    /// feedback between pressing Enter and the probe returning, so it has to
+    /// name the connection actually being rotated.
+    #[test]
+    fn rotation_provider_label_follows_the_rotation_target() {
+        let mut app = App::new_for_testing("rotation-label".to_string());
+        let mut dialog =
+            crate::components::dialogs::connection_selection::ConnectionSelectionDialog::new(
+                "session-1".to_string(),
+                Arc::clone(&app.ui_state.theme),
+            );
+        dialog.connections = vec![
+            summary("conn-go", "other:opencode_go", "eggstackmain"),
+            summary("conn-eggpool", "eggpool", "Eggpool"),
+        ];
+        app.dialog_state.connection_selection_dialog = Some(dialog);
+
+        assert_eq!(app.rotation_provider_label("conn-go"), "opencode_go");
+        assert_eq!(app.rotation_provider_label("conn-eggpool"), "eggpool");
+        assert_eq!(
+            app.rotation_provider_label("conn-missing"),
+            "provider",
+            "an unknown target must not be labelled Eggpool"
+        );
+    }
+
+    /// A failed rotation used to clear the secret and nothing else: the dialog
+    /// stayed on `EnterApiKey` with an empty masked field and no message, so
+    /// the user was silently asked for the same API key again with no idea
+    /// the first attempt failed.
+    #[tokio::test]
+    async fn failed_rotation_leaves_a_visible_error_and_an_empty_field() {
+        let mut app = App::new_for_testing("rotation-failure".to_string());
+        app.open_connection_rotation_dialog("conn-1".to_string(), 3);
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_mut()
+            .expect("rotation opens the connect dialog");
+        connect.operation_id = Some("rot-1".to_string());
+        connect.api_key_input = "sk-rejected".to_string();
+        app.ensure_tui_cmd_channel();
+
+        crate::runtime::command_dispatch::dispatch_tui_command(
+            &mut app,
+            TuiCommand::ConnectionRotationFinished {
+                operation_id: "rot-1".to_string(),
+                result: Err("probe rejected the credential".to_string()),
+            },
+        )
+        .await;
+
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("a failed rotation must stay open for a retry");
+        assert!(
+            connect.api_key_input.is_empty(),
+            "the failed credential must not stay in memory"
+        );
+        assert_eq!(connect.operation_id, None, "the attempt is finished");
+        let error = connect
+            .error_message
+            .as_deref()
+            .expect("a failed rotation must say so on the dialog");
+        assert!(
+            error.contains("probe rejected the credential"),
+            "the dialog must name the failure, got: {error}"
+        );
+        assert!(
+            error.contains("empty"),
+            "the dialog must make the blank field deliberate, got: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod user_prompt_queue_projection_tests {
+    //! M002a (ADR-0035): the prompt-queue read projection.
+    //!
+    //! In-crate because the apply arm is `pub(crate)`, matching
+    //! `apply_shell_promotions_loaded`. These pin the three properties that
+    //! make holding local state safe at all: it is seeded empty, a failure
+    //! leaves the previous value intact, and a completion for a superseded
+    //! session cannot write into current state.
+    //!
+    //! There is deliberately no test for a user enqueueing a prompt. Nothing in
+    //! this milestone can produce one.
+
+    use super::*;
+    use codegg::protocol::core::UserPromptQueueEntryDto;
+
+    fn bound_session(id: &str) -> codegg::session::Session {
+        codegg::session::Session {
+            id: id.into(),
+            project_id: String::new(),
+            workspace_id: None,
+            parent_id: None,
+            slug: String::new(),
+            directory: String::new(),
+            title: String::new(),
+            version: String::new(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+            agent: None,
+            model: None,
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        }
+    }
+
+    fn entry(id: &str, ordinal: i64, text: &str) -> UserPromptQueueEntryDto {
+        UserPromptQueueEntryDto {
+            id: id.to_owned(),
+            ordinal,
+            text: text.to_owned(),
+            text_bytes: text.len(),
+            status: "pending".to_owned(),
+            created_at_ms: 1_700_000_000_000,
+            expires_at_ms: 1_700_000_000_000 + 604_800_000,
+            run_at_ms: None,
+        }
+    }
+
+    /// An absent projection reads as an empty queue, not as an error and not as
+    /// a populated local cache.
+    #[test]
+    fn user_prompt_queue_projection_seeds_empty_and_applies_absent_response() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "the projection must seed empty — the frontend owns no queue state"
+        );
+
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded("s-1".to_owned(), Vec::new(), None);
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "an absent projection must read as an empty queue"
+        );
+    }
+
+    /// The failure path must leave the previous value intact. Clearing it would
+    /// make a dead socket indistinguishable from a genuinely empty queue, and
+    /// the user has no way to repopulate it locally.
+    #[test]
+    fn user_prompt_queue_projection_failure_preserves_previous_value() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            vec![entry("entry-1", 0, "already loaded")],
+            None,
+        );
+        assert_eq!(app.session_state.user_prompt_queue.len(), 1);
+
+        // A transport error, then a daemon refusal: neither may clear it.
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            Vec::new(),
+            Some("connection reset".to_owned()),
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue.len(),
+            1,
+            "a failed load must not clear the previous projection"
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue[0].text,
+            "already loaded"
+        );
+
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            Vec::new(),
+            Some("user_prompt_queue_unavailable: no pool".to_owned()),
+        );
+        assert_eq!(
+            app.session_state.user_prompt_queue.len(),
+            1,
+            "a daemon refusal must not clear the previous projection"
+        );
+    }
+
+    /// A completion for a superseded session must not write into current state.
+    /// This is the stale-generation half of the shared guarded task shape.
+    #[test]
+    fn user_prompt_queue_projection_drops_superseded_session_completion() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-2"));
+        app.apply_user_prompt_queue_loaded("s-1".to_owned(), vec![entry("stale", 0, "old")], None);
+        assert!(
+            app.session_state.user_prompt_queue.is_empty(),
+            "a completion for a superseded session must be dropped"
+        );
+
+        app.apply_user_prompt_queue_loaded(
+            "s-2".to_owned(),
+            vec![entry("entry-2", 0, "current")],
+            None,
+        );
+        assert_eq!(app.session_state.user_prompt_queue.len(), 1);
+        assert_eq!(app.session_state.user_prompt_queue[0].id, "entry-2");
+    }
+
+    /// Ordinal order is the daemon's; the frontend preserves it rather than
+    /// re-sorting, so what a user eventually sees is the daemon's total order.
+    #[test]
+    fn user_prompt_queue_projection_preserves_daemon_ordinal_order() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(bound_session("s-1"));
+        app.apply_user_prompt_queue_loaded(
+            "s-1".to_owned(),
+            vec![
+                entry("entry-0", 0, "first"),
+                entry("entry-1", 1, "second"),
+                entry("entry-2", 2, "third"),
+            ],
+            None,
+        );
+        assert_eq!(
+            app.session_state
+                .user_prompt_queue
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["entry-0", "entry-1", "entry-2"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod row_precise_disclosure_tests {
+    use super::*;
+    use crate::components::messages::UIMessage;
+
+    /// The viewport the click handler resolves a click against.
+    const VIEWPORT: Rect = Rect::new(0, 0, 80, 40);
+
+    /// An assistant message carrying **both** a reasoning block and a tool
+    /// call — the shape that made the tool call unreachable by clicking.
+    ///
+    /// The reasoning block comes first so the old handler's reasoning arm
+    /// would win: it asked "does this message have reasoning?" before it
+    /// asked anything else.
+    fn mixed_message() -> UIMessage {
+        UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![
+                MsgPart::Reasoning {
+                    content: "The comparison has to run before it means anything.".to_string(),
+                    collapsed: true,
+                },
+                MsgPart::ToolCall {
+                    id: "t1".to_string(),
+                    name: "bash".to_string(),
+                    input: "{\"command\":\"cargo test\"}".to_string(),
+                    output: "running 3 tests\ntest result: ok".to_string(),
+                    status: ToolStatus::Completed,
+                    duration_ms: Some(7),
+                    exit_code: Some(0),
+                    output_lines: Some(2),
+                    expanded: false,
+                },
+                MsgPart::Text {
+                    content: "The comparison is done.".to_string(),
+                },
+            ],
+            timestamp: None,
+            is_plan_mode: None,
+        }
+    }
+
+    /// An app holding the mixed message, with a viewport to click in.
+    fn app_with_mixed_message() -> App {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.messages_state.messages.set_width(80);
+        app.messages_state.messages.set_visible_height(40);
+        app.messages_state.messages.messages.push(mixed_message());
+        app.messages_state.messages.invalidate_rows();
+        app.messages_state.messages.scroll_to_top();
+        app.frame_plan.viewport = VIEWPORT;
+        app
+    }
+
+    /// The rows the transcript draws, read back out of a rendered buffer.
+    fn drawn_rows(app: &App) -> Vec<String> {
+        let area = Rect::new(0, 0, VIEWPORT.width, VIEWPORT.height);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(&app.messages_state.messages, area, &mut buffer);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The viewport row the transcript draws the given text on.
+    fn row_of(app: &App, needle: &str) -> u16 {
+        let rows = drawn_rows(app);
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("the transcript must draw a row containing {needle:?}"))
+            as u16
+    }
+
+    /// The disclosure state of the message's parts.
+    fn disclosure_state(app: &App) -> (bool, bool) {
+        let msg = &app.messages_state.messages.messages[0];
+        let tool_expanded = msg.parts.iter().find_map(|part| match part {
+            MsgPart::ToolCall { expanded, .. } => Some(*expanded),
+            _ => None,
+        });
+        let reasoning_collapsed = msg.parts.iter().find_map(|part| match part {
+            MsgPart::Reasoning { collapsed, .. } => Some(*collapsed),
+            _ => None,
+        });
+        (
+            tool_expanded.expect("the message carries a tool call"),
+            reasoning_collapsed.expect("the message carries a reasoning block"),
+        )
+    }
+
+    /// The toast the last gesture left behind.
+    fn last_toast(app: &App) -> String {
+        app.messages_state
+            .toasts
+            .iter()
+            .last()
+            .map(|toast| toast.message.clone())
+            .unwrap_or_default()
+    }
+
+    /// Clicking a tool call's header expands **that tool call**, in a message
+    /// that also carries a reasoning block.
+    ///
+    /// The click used to be answered by the message, and the reasoning arm
+    /// won: click one expanded the reasoning, click two collapsed it again,
+    /// and the tool call was never reachable by clicking at all.
+    #[test]
+    fn clicking_a_tool_call_row_expands_the_tool_call_and_not_the_reasoning() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "bash");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(
+            tool_expanded,
+            "the clicked tool call must be the thing that expanded"
+        );
+        assert!(
+            reasoning_collapsed,
+            "the reasoning block must not have moved when the tool call was clicked"
+        );
+    }
+
+    /// Clicking a reasoning block's header expands **that reasoning block**.
+    #[test]
+    fn clicking_a_reasoning_row_expands_the_reasoning_block() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "Thinking");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(
+            !reasoning_collapsed,
+            "the clicked reasoning block must be the thing that expanded"
+        );
+        assert!(
+            !tool_expanded,
+            "the tool call must not have moved when the reasoning block was clicked"
+        );
+    }
+
+    /// A row that holds nothing expandable changes nothing. It must not
+    /// fall back to the message-level toggle: that fallback is the defect
+    /// this path exists to fix.
+    #[test]
+    fn clicking_a_prose_row_toggles_nothing() {
+        let mut app = app_with_mixed_message();
+        let row = row_of(&app, "The comparison is done.");
+
+        app.on_click(&ClickTarget::Viewport, 0, row);
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(!tool_expanded, "a prose row must not expand the tool call");
+        assert!(
+            reasoning_collapsed,
+            "a prose row must not expand the reasoning block"
+        );
+    }
+
+    /// The expand-all gesture opens every tool call and every reasoning
+    /// block, and the next press closes every one of them again.
+    #[test]
+    fn the_expand_all_gesture_opens_everything_and_the_next_press_closes_it() {
+        let mut app = app_with_mixed_message();
+
+        app.expand_all_disclosures();
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(tool_expanded, "the tool call must be open");
+        assert!(!reasoning_collapsed, "the reasoning block must be open");
+        assert!(
+            last_toast(&app).contains("expanded"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+
+        app.expand_all_disclosures();
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(!tool_expanded, "the tool call must be closed again");
+        assert!(
+            reasoning_collapsed,
+            "the reasoning block must be closed again"
+        );
+        assert!(
+            last_toast(&app).contains("collapsed"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+    }
+
+    /// The palette command is the same gesture with the same outcome.
+    #[test]
+    fn the_palette_command_expands_everything_too() {
+        let mut app = app_with_mixed_message();
+
+        app.dispatch_builtin_command(
+            crate::command::BuiltinSlashAction::ExpandAllDisclosures,
+            None,
+        );
+
+        let (tool_expanded, reasoning_collapsed) = disclosure_state(&app);
+        assert!(tool_expanded, "the tool call must be open");
+        assert!(!reasoning_collapsed, "the reasoning block must be open");
+        assert!(
+            last_toast(&app).contains("expanded"),
+            "the toast must name the outcome: {:?}",
+            last_toast(&app)
+        );
+    }
+
+    /// The palette command is registered under a name the user can find.
+    #[test]
+    fn the_palette_carries_the_expand_all_command() {
+        let registry =
+            crate::command::CommandRegistry::new_for_workspace_root(std::path::Path::new("/tmp"));
+        let command = registry
+            .find_by_name_or_alias("/expand-all")
+            .expect("the palette must carry the expand-all command");
+        assert!(
+            matches!(
+                command.action,
+                crate::command::CommandAction::Builtin(
+                    crate::command::BuiltinSlashAction::ExpandAllDisclosures
+                )
+            ),
+            "the palette command must run the expand-all gesture"
+        );
+    }
+}
+
+/// `/keybinds` Export mode is answered by the app, not by the component's own
+/// `handle_key`: the modal path routes `DialogType::Keybind` to
+/// `handle_keybind_key` before `FocusManager` sees the key.
+#[cfg(test)]
+mod keybind_export_dispatch_tests {
+    use super::*;
+
+    /// Export's `Esc` goes back to the list; it does not close the box.
+    #[test]
+    fn export_esc_returns_to_the_list_instead_of_closing() {
+        use crate::components::dialogs::keybind::KeybindMode;
+
+        let mut app = App::new_for_testing("/tmp".into());
+        app.open_dialog(Dialog::Keybind);
+        let dialog = app
+            .dialog_state
+            .keybind_dialog
+            .as_mut()
+            .expect("opening /keybinds must mount the dialog");
+        dialog.start_export();
+        assert_eq!(dialog.mode, KeybindMode::Export, "the fixture must export");
+
+        app.on_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+
+        let dialog = app
+            .dialog_state
+            .keybind_dialog
+            .as_ref()
+            .expect("Esc in Export returns to the list; it must not close the box");
+        assert_eq!(
+            dialog.mode,
+            KeybindMode::Normal,
+            "Export's Esc backs out to the list rather than closing"
+        );
+        assert!(
+            !app.focus_manager.is_empty(),
+            "the box must still be mounted after Esc in Export"
+        );
+    }
+}

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-host-protocol", "crates/codegg-sdk", "crates/codegg-client", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp", "crates/codegg-git", "crates/codegg-document", "crates/codegg-sandbox", "crates/codegg-sandbox-helper"]
+members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-host-protocol", "crates/codegg-sdk", "crates/codegg-client", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp", "crates/codegg-git", "crates/codegg-document", "crates/codegg-sandbox", "crates/codegg-sandbox-helper", "crates/codegg-tui", "crates/codegg-cli"]
 default-members = [".", "crates/codegg-sandbox-helper"]
 # `crates/eggwork-test-node` is a standalone test-fixture workspace (own
 # lockfile): it must resolve `eggwork-server` without this workspace's
@@ -46,6 +46,7 @@ serde_json = "1"
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
+tracing-subscriber = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", default-features = false }
 dashmap = "6"
@@ -113,7 +114,6 @@ path = "crates/egglsp-test-server/src/main.rs"
 required-features = ["lsp-test-support"]
 
 [dependencies]
-vt100 = "=0.16.2"
 eggup-core = { git = "https://github.com/eggstack/eggup.git", rev = "66813b3b94de3a9b2f270e0000dc339ef6f0b478" }
 eggup-acquisition = { git = "https://github.com/eggstack/eggup.git", rev = "66813b3b94de3a9b2f270e0000dc339ef6f0b478" }
 # Core (workspace-owned versions; member adds only its features)
@@ -134,21 +134,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
-tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# CLI
 clap = { version = "4", features = ["derive"] }
-
-# TUI
-# `unstable-rendered-line-info` exposes `Paragraph::line_count`, which is the
-# only way to measure how tall a transcript is **after** wrapping. The
-# delegated tab's scroll extent has to be the wrapped height: a body that
-# wraps onto three visual rows is three rows on screen, and a count taken
-# from the number of logical lines would stop short of the real end.
-ratatui = { version = "0.30", default-features = false, features = ["crossterm", "underline-color", "unstable-rendered-line-info"] }
-crossterm = { version = "0.29", features = ["event-stream"] }
-unicode-width = "0.2"
+tracing.workspace = true
 
 # HTTP / Streaming
 eggfetch-core = { workspace = true, features = ["http1", "tls-rustls", "json"] }
@@ -176,12 +163,10 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 
 # Text processing
-comrak = { version = "0.35", default-features = false }
 # `metadata` exposes each grammar's own `TM_COMMENT_START`/`TM_COMMENT_END`
 # shell variables, which is where the editor's comment toggle reads its
 # token. A feature rather than a crate: the default packdump already ships
 # the metadata, and the feature is what compiles the accessor in.
-syntect = { version = "5", features = ["metadata"] }
 strsim = "0.11"
 
 # Config parsing (TOML remains used for themes/plugins/skills; YAML frontmatter
@@ -206,7 +191,6 @@ argon2.workspace = true
 arboard = { version = "3", default-features = false, optional = true }
 
 # Desktop notifications
-notify-rust = "4"
 
 # Directory paths
 dirs.workspace = true
@@ -251,8 +235,6 @@ socket2 = { version = "0.5", optional = true }
 similar.workspace = true
 libc.workspace = true
 once_cell.workspace = true
-qrcode = { version = "0.14.1", default-features = false }
-clap_complete = "4.6.2"
 
 # Image support (optional; M003 narrowed to the formats CodeGG decodes).
 # `image` keeps `default-features = false` so `rayon` + `default-formats`
@@ -265,8 +247,6 @@ clap_complete = "4.6.2"
 # (`image/default`) is dropped because CodeGG's direct `image` dependency
 # already owns the required decoders and ratatui-image itself only needs
 # `png` (its own minimal `image` dep is `default-features = false` + `png`).
-ratatui-image = { version = "10", default-features = false, features = ["crossterm"], optional = true }
-image = { version = "0.25", default-features = false, optional = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 # Extracted tool crates
 codegg-config.workspace = true
@@ -326,6 +306,7 @@ nix = { version = "0.29", features = ["signal", "process", "fs"] }
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 # Eggwork corrective C001 live-node fixture (test-only): ephemeral identity
 # generation only. The live node itself runs in the workspace-excluded
 # `crates/eggwork-test-node` helper (own lockfile, same immutable Eggwork
@@ -377,10 +358,11 @@ server = [
     "tokio-stream",
     "socket2",
 ]
-image = ["dep:ratatui-image", "dep:image"]
 lsp-test-support = ["egglsp/lsp-test-support"]
 lsp-real-server-tests = ["egglsp/lsp-real-server-tests"]
 decision-runtime-sdm = ["dep:sdm-core", "dep:sdm-runtime"]
+# Test-only seams for the extracted TUI's unit tests; not enabled in shipped builds.
+tui-test-support = []
 
 # ── M004: root integration-test families ────────────────────────────────────
 #
@@ -443,9 +425,6 @@ path = "tests/tool_programs/mod.rs"
 name = "session_replay"
 path = "tests/session_replay/mod.rs"
 
-[[test]]
-name = "exec_workspace_path_policy"
-path = "tests/exec_workspace_path_policy.rs"
 
 # Generated tool-surface catalog (harness-practice-adoption M004). The family
 # renders the catalog from the real registry and compares it to the committed
@@ -455,10 +434,6 @@ path = "tests/exec_workspace_path_policy.rs"
 [[test]]
 name = "tool_catalog"
 path = "tests/tool_catalog/mod.rs"
-
-[[test]]
-name = "tui_render"
-path = "tests/tui_render/mod.rs"
 
 [[test]]
 name = "agent_loop"
@@ -524,15 +499,6 @@ path = "tests/projection_replay/mod.rs"
 [[test]]
 name = "session_family"
 path = "tests/session_family/mod.rs"
-
-# Desktop-GUI parity: the terminal UI's reconstruction of the canonical
-# projection snapshot, compared against the shared golden the desktop host
-# also reads (`apps/desktop/src-tauri/tests/frontend_parity.rs`). The desktop
-# crate is excluded from this workspace, so the two halves of the proof live
-# in two crates and meet at one fixture.
-[[test]]
-name = "frontend_parity"
-path = "tests/frontend_parity/mod.rs"
 
 [profile.release]
 lto = "thin"

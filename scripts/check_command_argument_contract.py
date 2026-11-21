@@ -21,7 +21,7 @@ Two invariants live here, both about the TUI's command surface:
 ## The scanned surface, and why it is checked rather than assumed
 
 A built-in command's handler lives in one of the dispatcher's family modules
-under `src/tui/commands/`, and the dispatcher's own body routes to them. Both
+under `crates/codegg-tui/src/commands/`, and the dispatcher's own body routes to them. Both
 are scanned: the dispatcher because it owns the `argument` each handler is
 given, and the family modules because that is where a handler now lives.
 
@@ -63,11 +63,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import rust_test_scan as rts  # noqa: E402
 
 # The dispatcher that routes the built-in slash commands to their handlers.
-DISPATCHER_REL = "src/tui/app/mod.rs"
+DISPATCHER_REL = "crates/codegg-tui/src/app/mod.rs"
 DISPATCHER_FN = "dispatch_builtin_command"
 
 # Its family modules: the surface the arms moved to.
-COMMANDS_DIR_REL = "src/tui/commands"
+COMMANDS_DIR_REL = "crates/codegg-tui/src/commands"
 
 # The module count this surface has today (57). A floor, not an equality: a
 # module may be added without editing this guard, and a scan that stops
@@ -75,7 +75,7 @@ COMMANDS_DIR_REL = "src/tui/commands"
 MIN_SOURCE_FILES = 40
 
 # The dialog enum and its "is a dialog open" predicate.
-DIALOG_REL = "src/tui/app/types.rs"
+DIALOG_REL = "crates/codegg-tui/src/app/types.rs"
 
 # `Dialog::None` is the *absence* of a dialog, so `is_open` must not list it.
 # Every other variant is a dialog that can be on screen.
@@ -677,7 +677,7 @@ def main(argv: list[str]) -> int:
             "palette's query is the whole typed line — so the handler sees the\n"
             "command's own name inside its argument.\n"
             "`Dialog::is_open` must cover every variant that can be on screen.\n"
-            "A finding that names `src/tui/app/mod.rs` or a missing module means\n"
+            "A finding that names `crates/codegg-tui/src/app/mod.rs` or a missing module means\n"
             "the dispatch surface moved again; re-point the scan rather than\n"
             "deleting the check.\n"
         )

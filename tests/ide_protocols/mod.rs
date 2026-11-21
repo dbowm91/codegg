@@ -1,4 +1,4 @@
-//! Consolidated ACP, LSP, and document client protocol surfaces integration test family (M004).
+//! Consolidated LSP and document client protocol surfaces integration test family (M004).
 //!
 //! History: each member lived as its own `tests/<NAME>.rs` file and was
 //! therefore its own Cargo test executable — N executables for N files.
@@ -13,9 +13,6 @@
 //! Consolidation replaces N separate Cargo test executables with 1,
 //! preserving every test body and every assertion. The only visible change
 //! is the test id, which becomes `<family>::<member>::<test>`.
-
-#[path = "acp_stdio.inc"]
-pub mod acp_stdio;
 
 #[path = "document_client_trajectory.inc"]
 pub mod document_client_trajectory;

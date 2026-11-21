@@ -311,7 +311,8 @@ impl ShellHandle {
         self.id
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "tui-test-support"))]
+    #[doc(hidden)]
     pub fn new_for_test(id: ShellCommandId, abort_handle: tokio::task::AbortHandle) -> Self {
         Self {
             id,

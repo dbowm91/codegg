@@ -68,7 +68,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRATCH_RS = Path("src/scratch.rs")
 PROTOCOL_RS = Path("crates/codegg-protocol/src/scratch.rs")
 DAEMON_RS = Path("src/core/daemon_scratch.rs")
-MAIN_RS = Path("src/main.rs")
+MAIN_RS = Path("crates/codegg-cli/src/main.rs")
 
 # The reclaim path. Every one of these functions may report an I/O failure,
 # and every one of them must say *reclaim*, not *provision*.

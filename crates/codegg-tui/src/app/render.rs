@@ -1,0 +1,3795 @@
+//! Rendering and view-model preparation for the TUI.
+//!
+//! This module owns the synchronous presentation pass. It may read cached
+//! application state and prepare ratatui widgets, but it must not perform
+//! filesystem, daemon, network, process, or other blocking work.
+
+use super::*;
+use crate::app::state::subagents::SubagentRow;
+use crate::app::state::tasks::{is_live_state, TaskRow};
+use crate::components::hint_line::HintLine;
+use crate::layout::FrameClaims;
+use crate::panels::{PanelPlacement, SidePanelId};
+use ratatui::style::Color;
+
+/// One overlay row, ellipsized to the strip width.
+///
+/// Wrapping is deliberately avoided: the overlay's height is computed once in
+/// `tasks_strip_height`, so a wrapped line would paint into the next row and a
+/// long job summary would silently corrupt the block below it.
+fn strip_line<'a>(
+    theme: &'a crate::theme::Theme,
+    width: u16,
+    lead: &str,
+    text: &str,
+    colour: Color,
+) -> Line<'a> {
+    let lead_width = unicode_width::UnicodeWidthStr::width(lead);
+    let budget = (width as usize).saturating_sub(3 + lead_width);
+    let body = crate::wrap::ellipsize_to_width(text, budget);
+    Line::from(vec![
+        Span::styled("   ", Style::default()),
+        Span::styled(lead.to_string(), Style::default().fg(theme.primary)),
+        Span::styled(body, Style::default().fg(colour)),
+    ])
+}
+
+/// [`strip_line`] for a row the tasks overlay's cursor is resting on.
+///
+/// Same geometry as the unselected form — the budget arithmetic is shared, so
+/// moving the cursor can never change the overlay's height — with the row
+/// inverted instead of re-coloured. Inverting rather than switching to the
+/// primary colour is deliberate: a selected *job* may be rendered in the error
+/// colour, and an accent that merely happens to differ from both is weaker
+/// evidence of selection than the only styling convention every terminal
+/// already uses for it.
+fn strip_line_selected<'a>(
+    theme: &'a crate::theme::Theme,
+    width: u16,
+    lead: &str,
+    text: &str,
+    colour: Color,
+) -> Line<'a> {
+    let plain = strip_line(theme, width, lead, text, colour);
+    Line::from(
+        plain
+            .spans
+            .into_iter()
+            .map(|span| {
+                let mut style = span.style;
+                style = style.add_modifier(Modifier::REVERSED);
+                Span::styled(span.content, style)
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Maximum display width of the agent name shown beside the input-mode badge.
+const MAX_AGENT_BADGE_WIDTH: usize = 20;
+
+/// Which surface owns the viewport rect for this frame.
+///
+/// The viewport rect has exactly **one** owner. It used to have two: the
+/// transcript was painted, and the subagent view was then painted *over* it,
+/// so a reader looking at a subagent saw the main conversation showing through
+/// the subagent's own text and in the rect's last column. The change review
+/// had the same problem one level up — it took the viewport, and the subagent
+/// view then took it back.
+///
+/// Naming the owner turns "one surface, one rect" from an ordering accident
+/// into a structural fact: exactly one branch renders into the rect, so no
+/// surface can be legible through another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewportOwner {
+    /// The current route's own view — transcript, home, workspace, or editor.
+    Route,
+    /// The change review. A modal decision surface: the user must accept or
+    /// reject, so it outranks an open subagent tab.
+    ChangeReview,
+    /// An open subagent tab.
+    SubagentTab,
+}
+
+/// Pick a foreground that stays legible on `background`.
+///
+/// Theme palettes are authored independently, so a slot that reads well
+/// against the window background can be invisible against a different fill —
+/// a completion row's `selection` background is the common case, because
+/// themes set it from a widget-specific slot rather than deriving it from
+/// the background. Walk `candidates` (most-preferred first) and return the
+/// first whose WCAG contrast against `background` clears the legibility bar,
+/// falling back to the highest-contrast candidate so the result is always
+/// the best available rather than an arbitrary first pick.
+fn readable_on(
+    preferred: Color,
+    background: Color,
+    candidates: impl IntoIterator<Item = Color>,
+) -> Color {
+    const MIN_CONTRAST: f64 = 3.0;
+    let to_rgb = |c: Color| match c {
+        Color::Rgb(r, g, b) => codegg::theme::Rgb::new(r, g, b),
+        // Indexed / named / reset colors carry no measurable luminance here;
+        // treat them as opaque so we never reject a palette we cannot
+        // actually evaluate.
+        _ => codegg::theme::Rgb::new(128, 128, 128),
+    };
+    let bg = to_rgb(background);
+
+    let mut best: Option<(Color, f64)> = None;
+    for candidate in candidates {
+        let ratio = to_rgb(candidate).contrast_ratio(bg);
+        if ratio >= MIN_CONTRAST {
+            return candidate;
+        }
+        if best.as_ref().is_none_or(|(_, r)| ratio > *r) {
+            best = Some((candidate, ratio));
+        }
+    }
+    // `preferred` is what the caller asked for; it is only overridden when
+    // every candidate failed the bar, in which case the best-scoring one
+    // still beats rendering text that is indistinguishable from the fill.
+    let preferred_ratio = to_rgb(preferred).contrast_ratio(bg);
+    match best {
+        Some((color, ratio)) if ratio > preferred_ratio => color,
+        _ => preferred,
+    }
+}
+
+impl App {
+    pub fn render(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        // Expire a lapsed confirmation rather than only on the next keypress:
+        // the pump runs on every animation tick, so a prompt the user walked
+        // away from clears itself instead of waiting to be overwritten by
+        // whatever they type next.
+        //
+        // Both arms live here now: the working strip used to own the stop
+        // arm's expiry because it drew the confirmation, and the strip is
+        // gone. The exit confirmation has the same lifetime, so it expires
+        // in the same place.
+        crate::commands::turn_control::expire_pending_stop_armed(self);
+        crate::commands::exit_control::expire_pending_exit_arm(self);
+        // The navigator's structure is pushed into every mounted `/files`
+        // surface **before** any of them is drawn.
+        self.refresh_file_tree_surfaces();
+        // One rect per *occupied* edge, named rather than positional: the
+        // transcript reads `regions.main` whatever the panels do, so adding a
+        // second column cannot renumber the thing underneath it.
+        let occupied: Vec<PanelPlacement> = PanelPlacement::ALL
+            .iter()
+            .copied()
+            .filter(|placement| self.panel_host.is_visible_at(*placement))
+            .collect();
+        // Recorded so a resize can convert the bottom panel's percentage into
+        // an exact row count the first time a reader drags that edge; a
+        // percentage cannot express a one-row step on its own.
+        self.ui_state.layout.observe_frame(area);
+        let regions = self.ui_state.layout.split(area, &occupied);
+        // The pane — and the width the hint line and the composer wrap at — is
+        // settled before a single row is claimed, so it cannot be read back out
+        // of the plan those claims feed.
+        let outer = self.ui_state.layout.frame_outer(area, regions);
+
+        let todo_rows = self.todo_strip_height();
+        // The hint line is built **once** for the frame: `is_some()` decides
+        // whether the row is reserved and the same string is carried to the
+        // draw site below. Its chunk is a split of the composer, so its width
+        // is the pane's and the budget is already known here.
+        let hint_budget = usize::from(outer.pane.width).saturating_sub(4);
+        let composer_hint = self.composer_hint_text_bounded(hint_budget);
+        let hint_rows = u16::from(composer_hint.is_some());
+        let tab_rows = self.subagent_tab_strip_height();
+        // The overlay's rows are derived **once** for the frame: the claim
+        // below and the painter further down are two readers of one build.
+        // `tasks_strip_height` reads this cache instead of deriving again.
+        self.frame_task_rows = self.build_frame_task_rows();
+        let tasks_rows = self.tasks_strip_height();
+        // The turn-tail card is derived from the transcript every frame —
+        // there is no second store of what a turn delivered — and it renders
+        // only on the session route, where the transcript it summarises is the
+        // surface on screen.
+        let present_files = match self.ui_state.routes.current() {
+            Route::Session(_) => {
+                crate::app::present_card::latest_declaration(&self.messages_state.messages)
+            }
+            _ => None,
+        };
+        let present_rows = present_files
+            .as_deref()
+            .map_or(0, crate::app::present_card::card_height);
+        let claims = FrameClaims {
+            todo_rows,
+            hint_rows,
+            tab_rows,
+            tasks_rows,
+            present_rows,
+            // The pane's width, not the composer chunk's: the chunk's width is
+            // what this height is asking for, so using it would be circular.
+            prompt_rows: self
+                .prompt_state
+                .prompt
+                .needed_height(outer.max_prompt_rows(), outer.pane.width),
+        };
+        // The plan is the frame's geometry: the painters below read it, and so
+        // does the next mouse event. One value, so a click cannot resolve
+        // against a rect a painter did not use.
+        self.frame_plan = self.ui_state.layout.plan_frame(outer, claims);
+        let plan = self.frame_plan;
+
+        // Outer TUI frame: paint the left border on the reserved strip
+        // and the four corner cells that connect it with the header's
+        // bottom border (top) and the reserved bottom edge (bottom).
+        // The header supplies the top horizontal line via its own
+        // `Borders::BOTTOM`; the bottom line is painted in `finish_render`
+        // on the plan's bottom border, so the lower corners have to be
+        // anchored there too — anchoring them on the footer's last row left
+        // the bottom edge's own leftmost cell showing the `│` of the left
+        // strip and put a stray `└` up on the status line.
+        self.render_outer_borders(
+            frame,
+            plan.left_border,
+            plan.pane,
+            plan.header,
+            plan.bottom_border,
+        );
+
+        self.render_header(frame, plan.header);
+
+        let viewport_chunk = plan.viewport;
+
+        // Viewport (messages) — highest-risk surface for render panics
+        //
+        // Exactly one surface owns the viewport rect. An open subagent buffer
+        // *replaces* the transcript in the same rect rather than opening a
+        // modal over it: Esc then has exactly one meaning — return to the
+        // main buffer — instead of being ambiguous between "close a dialog"
+        // and "go back". The change review is modal and outranks the tab.
+        // The scrollbar belongs to the transcript, and only the transcript
+        // draws one. Clear the rect before the dispatch so an owner that does
+        // not paint a scrollbar cannot inherit the last frame's — a rect that
+        // names a surface that is not on screen is a rect that mis-resolves a
+        // click. The plan is rebuilt from `None` every frame, and the session
+        // route records it again below.
+        let viewport_owner = self.viewport_owner();
+        let viewport_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                if self.render_panic_injection.messages {
+                    panic!("injected messages render panic");
+                }
+                match viewport_owner {
+                    ViewportOwner::Route => self.render_viewport(frame, viewport_chunk),
+                    ViewportOwner::ChangeReview => self.render_change_review(frame, viewport_chunk),
+                    ViewportOwner::SubagentTab => self.render_subagent_view(frame, viewport_chunk),
+                }
+                Ok(())
+            }));
+        if let Err(err) = viewport_result {
+            let msg = Self::extract_panic_message(&err);
+            tracing::error!("Messages render panic: {msg}");
+            self.ui_state.last_render_error = Some(msg);
+            self.ui_state
+                .diagnostics
+                .record_component_render_panic("messages");
+            self.render_component_fallback(frame, viewport_chunk, "Messages render error");
+        }
+        if let Some(area) = plan.tab_bar {
+            self.render_subagent_tab_strip(frame, area);
+        }
+
+        // The subagent rows the `/subagent` addressee lookup reads are
+        // projected here rather than by a renderer: the working strip used to
+        // draw them and synced them on the way past, and it is gone.
+        //
+        // The position matters. It is *after* the subagent view is painted,
+        // exactly as the strip's own sync was: a tab whose subject has left
+        // the projection has to render its detached state for this frame, and
+        // a sync above the viewport would re-attach it before the body is
+        // drawn and leave the view claiming a run is live.
+        self.sync_subagent_rows_from_projection();
+
+        self.render_composer_hints(frame, plan.hint, composer_hint.as_deref());
+        self.render_todo_strip(frame, plan.todo);
+        // Hand the painter the rows the height already derived, and clear the
+        // per-frame cache so a reader between frames cannot see a stale list.
+        let frame_task_rows = self.frame_task_rows.take();
+        self.render_tasks_strip(frame, plan.tasks, frame_task_rows.as_ref());
+        self.render_present_card(frame, plan.present, present_files.as_deref());
+        self.render_prompt(frame, plan.prompt);
+        self.render_footer(frame, plan.footer);
+
+        // Panels — dynamic content can trigger panics
+        //
+        // Each occupied edge paints itself from *its own* slot, so two edges
+        // can be up at once. Nothing here changes which edge the app thinks
+        // is selected: render is not allowed to move the keyboard, and the
+        // gesture dispatcher reads `placement()` after this returns.
+        self.sidebar_area = None;
+        // Every occupied column records its rect so a later mouse event can
+        // resolve a click to a *panel* rather than to nothing. The list is
+        // rebuilt each frame alongside `sidebar_area`, so it can never name a
+        // panel that is no longer painted — which is what would otherwise let
+        // a click focus a column that has moved or closed.
+        self.panel_areas.clear();
+        // One population for the whole frame, and only when the Session panel
+        // is actually on screen. It used to run at the top of
+        // `render_panel_at`, which meant once per occupied panel — including
+        // when the occupied panel was not the Session panel at all.
+        let session_panel_visible = regions.occupied().any(|(placement, rect)| {
+            rect.width > 0
+                && rect.height > 0
+                && self.panel_host.panel_at(placement) == SidePanelId::Session
+        });
+        if session_panel_visible {
+            // The population used to sit inside `render_panel_at`, under the
+            // per-panel `catch_unwind`. It is hoisted now, so it keeps a
+            // containment of its own: a panic in a setter is recorded like
+            // any other component panic instead of taking the frame down.
+            let population = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.populate_session_panel_if_needed();
+            }));
+            if let Err(err) = population {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Sidebar population panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("sidebar");
+            }
+        }
+        for (placement, rect) in regions.occupied() {
+            if rect.width == 0 || rect.height == 0 {
+                continue;
+            }
+            self.panel_areas.push((placement, rect));
+            if self.panel_host.panel_at(placement) == SidePanelId::Session {
+                self.sidebar_area = Some(rect);
+            }
+            let sidebar_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    if self.render_panic_injection.sidebar {
+                        panic!("injected sidebar render panic");
+                    }
+                    self.render_panel_at(frame, placement, rect);
+                    Ok(())
+                }));
+            if let Err(err) = sidebar_result {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Sidebar render panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("sidebar");
+                self.render_component_fallback(frame, rect, "Sidebar unavailable");
+            }
+        }
+
+        // Dialog — failures close only that dialog
+        if let Some(popup_area) = self.dialog_rect(area) {
+            // The hit-test rect is the rect the dialog paints into: one path.
+            self.dialog_area = Some(popup_area);
+            let dialog_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    if self.render_panic_injection.dialog {
+                        panic!("injected dialog render panic");
+                    }
+                    self.render_dialog(frame, popup_area);
+                    Ok(())
+                }));
+            if let Err(err) = dialog_result {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Dialog render panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("dialog");
+                self.focus_manager.pop();
+                self.ui_state.dialog = Dialog::from(self.focus_manager.active_dialog_type());
+            }
+        } else {
+            self.dialog_area = None;
+        }
+
+        // Completion overlay — failures hide completions
+        if self.prompt_state.show_completions {
+            self.completion_visible_rows = 0;
+            let compl_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    if self.render_panic_injection.completions {
+                        panic!("injected completions render panic");
+                    }
+                    self.render_completions(frame, plan.composer);
+                    Ok(())
+                }));
+            if let Err(err) = compl_result {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Completion overlay render panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("completions");
+                self.prompt_state.show_completions = false;
+                self.completion_visible_rows = 0;
+            }
+        } else {
+            self.completion_visible_rows = 0;
+        }
+
+        // Timeline
+        if self.ui_state.timeline_visible {
+            let tl_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    if self.render_panic_injection.timeline {
+                        panic!("injected timeline render panic");
+                    }
+                    self.render_timeline(frame, area);
+                    Ok(())
+                }));
+            if let Err(err) = tl_result {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Timeline render panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("timeline");
+                self.ui_state.timeline_visible = false;
+            }
+        }
+
+        if !self.messages_state.toasts.is_empty() {
+            let toast_area = Rect {
+                x: area.width.saturating_sub(60),
+                y: 2,
+                width: 60.min(area.width),
+                height: 10.min(area.height.saturating_sub(4)),
+            };
+            self.messages_state
+                .toasts
+                .render(frame, toast_area, &self.ui_state.theme);
+        }
+
+        self.finish_render(frame);
+    }
+
+    /// Apply the live text selection over the finished frame, then retain
+    /// the frame so a drag can later be resolved to real text.
+    ///
+    /// The buffer is retained **only while a selection is live**. Its one
+    /// reader, [`Self::copy_selection_to_clipboard`],
+    /// returns early with no selection, so a copy made on every other frame
+    /// is work no interaction can spend — and `clear_selection` drops the
+    /// copy when the interaction ends.
+    ///
+    /// This runs last, after every overlay (dialogs, completions, toasts),
+    /// so a selection reads as a single continuous band over the whole
+    /// window rather than being partially overpainted. Mutating the buffer
+    /// directly — instead of re-rendering the widgets — is what keeps the
+    /// selected text byte-identical to what was already drawn.
+    fn finish_render(&mut self, frame: &mut Frame) {
+        // Close the bottom edge last so nothing overwrites it.
+        if let Some(area) = self.frame_plan.bottom_border {
+            let bottom_block = Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(self.ui_state.theme.border))
+                .style(Style::default().bg(self.ui_state.theme.background));
+            frame.render_widget(bottom_block, area);
+        }
+        if let (Some(anchor), Some(focus)) = (self.selection_anchor, self.selection_focus) {
+            let selection = crate::selection::TextSelection::new(anchor, focus);
+            let buffer_area = frame.area();
+            let highlight = ratatui::style::Style::default()
+                .bg(self.ui_state.theme.selection)
+                .fg(self.ui_state.theme.foreground)
+                .add_modifier(Modifier::REVERSED);
+            let buffer = frame.buffer_mut();
+            for y in buffer_area.y..buffer_area.y + buffer_area.height {
+                for x in buffer_area.x..buffer_area.x + buffer_area.width {
+                    if selection.contains((x, y)) {
+                        buffer[(x, y)].set_style(highlight);
+                    }
+                }
+            }
+            self.last_frame_buffer = Some(buffer.clone());
+            crate::render_cost::count_frame_buffer_clone();
+        }
+    }
+
+    pub fn render_error(&mut self, frame: &mut Frame, error_msg: &str) {
+        let area = frame.area();
+        let theme = &self.ui_state.theme;
+
+        let block = Block::default()
+            .title(" Error ")
+            .borders(Borders::ALL)
+            .border_style(ratatui::style::Style::default().fg(theme.error))
+            .style(
+                ratatui::style::Style::default()
+                    .bg(theme.background)
+                    .fg(theme.foreground),
+            );
+
+        let content = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "⚠ Rendering Error",
+                ratatui::style::Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::raw("The UI failed to render properly:")),
+            Line::from(""),
+            Line::from(Span::styled(
+                error_msg,
+                ratatui::style::Style::default().fg(theme.warning),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press 'r' to retry or 'q' to quit",
+                ratatui::style::Style::default().fg(theme.muted),
+            )),
+            Line::from(""),
+        ];
+
+        let paragraph = Paragraph::new(content)
+            .block(block)
+            .wrap(Wrap { trim: true })
+            .alignment(Alignment::Center);
+
+        let center_area = crate::components::component::centered_rect(60, 40, area);
+        frame.render_widget(Clear, center_area);
+        frame.render_widget(paragraph, center_area);
+    }
+
+    /// Render a compact fallback block when a component panics.
+    pub(crate) fn render_component_fallback(&self, frame: &mut Frame, area: Rect, title: &str) {
+        let theme = &self.ui_state.theme;
+        let block = Block::default()
+            .title(format!(" {title} "))
+            .borders(Borders::ALL)
+            .border_style(ratatui::style::Style::default().fg(theme.warning))
+            .style(
+                ratatui::style::Style::default()
+                    .bg(theme.background)
+                    .fg(theme.muted),
+            );
+        let paragraph = Paragraph::new("Render failed — see log for details")
+            .block(block)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Extract a human-readable message from a panic payload.
+    pub(crate) fn extract_panic_message(err: &Box<dyn std::any::Any + Send>) -> String {
+        if let Some(s) = err.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = err.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown render panic".to_string()
+        }
+    }
+
+    fn render_header(&mut self, frame: &mut Frame, area: Rect) {
+        // Split the header into a 1-row tab strip (bottom) and the
+        // header content (top). On narrow terminals (<80 cols) the
+        // tab strip is hidden to preserve prompt + label.
+        if area.height >= 3 && area.width >= 80 {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(area.height - 1), Constraint::Length(1)])
+                .split(area);
+            self.render_tab_strip(frame, chunks[1]);
+            self.render_header_content(frame, chunks[0]);
+        } else {
+            self.render_header_content(frame, area);
+        }
+    }
+
+    fn render_header_content(&mut self, frame: &mut Frame, area: Rect) {
+        // `render_header` is one of the few render surfaces without a
+        // `catch_unwind` net, so this index must not be able to panic.
+        let agent_name = self
+            .agent_state
+            .agents
+            .get(self.agent_state.current_agent)
+            .map(|a| a.name.as_str())
+            .unwrap_or("unknown");
+        let model_short = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next_back()
+            .unwrap_or(&self.agent_state.current_model);
+        let mode_indicator = if self.agent_state.plan_mode {
+            format!(
+                "[PLAN: {}]  ",
+                self.agent_state.plan_topic.as_deref().unwrap_or("general")
+            )
+        } else {
+            String::new()
+        };
+        let context_indicator = self.active_context_indicator();
+        let sess_title = if let Some(ref session) = self.session_state.session {
+            format!("[{}]  ", clean_inline_text(&session.title, 48))
+        } else {
+            String::new()
+        };
+        // Presence M002: daemon-owned collaborator count for the active
+        // project. `None` when unavailable/loading/unauthorized so hidden
+        // projects never leak through the header.
+        let presence_summary = self
+            .active_project_id()
+            .and_then(|pid| self.presence.header_summary(pid))
+            .unwrap_or_default();
+        // Presence M003: explicit read-only observer banner. `None` when
+        // not observing. Carries only the opaque session locator + coarse
+        // status — never prompts, content, or secrets.
+        let observer_banner = self.observer.banner_line().unwrap_or_default();
+        let title = match self.ui_state.routes.current() {
+            Route::Home => Line::from(vec![
+                Span::styled(
+                    " codegg ",
+                    Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                if context_indicator.is_empty() {
+                    Span::raw("")
+                } else {
+                    Span::styled(
+                        context_indicator.clone(),
+                        Style::default()
+                            .fg(self.ui_state.theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                },
+                Span::styled(
+                    format!("{mode_indicator}{sess_title}  "),
+                    Style::default()
+                        .fg(self.ui_state.theme.foreground)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("agent:{agent_name}  model:{model_short}"),
+                    Style::default().fg(self.ui_state.theme.muted),
+                ),
+                // Project Work Orders M003: composer submission mode in
+                // the same semantic area as agent/model context. Session
+                // mode (the default) shows nothing extra; Task mode is
+                // explicit so a scheduled submit is never a surprise.
+                if self.prompt_state.composer_mode.is_task() {
+                    Span::styled(
+                        "  composer:task",
+                        Style::default()
+                            .fg(self.ui_state.theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::raw("")
+                },
+                if presence_summary.is_empty() {
+                    Span::raw("")
+                } else {
+                    Span::styled(
+                        format!("  {presence_summary}"),
+                        Style::default().fg(self.ui_state.theme.secondary),
+                    )
+                },
+                if observer_banner.is_empty() {
+                    Span::raw("")
+                } else {
+                    Span::styled(
+                        format!("  {observer_banner}"),
+                        Style::default()
+                            .fg(self.ui_state.theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                },
+            ]),
+            Route::Session(_) => Line::from(""),
+            Route::Workspace => {
+                let selected = self
+                    .dialog_state
+                    .workspace_dashboard
+                    .as_ref()
+                    .and_then(|dashboard| dashboard.selected())
+                    .map(|row| row.summary.display_name.clone())
+                    .unwrap_or_default();
+                let focus = match self.workspace_focus {
+                    crate::app::state::WorkspaceFocus::Chat => "chat",
+                    crate::app::state::WorkspaceFocus::Composer => "composer",
+                };
+                Line::from(vec![
+                    Span::styled(
+                        " workspace ",
+                        Style::default()
+                            .fg(self.ui_state.theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" selected:{selected}  focus:{focus}"),
+                        Style::default().fg(self.ui_state.theme.muted),
+                    ),
+                    if self.prompt_state.composer_mode.is_task() {
+                        Span::styled(
+                            "  composer:task",
+                            Style::default()
+                                .fg(self.ui_state.theme.warning)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    } else {
+                        Span::raw("")
+                    },
+                ])
+            }
+            Route::Editor => {
+                let path = self.editor_state.path.clone().unwrap_or_default();
+                // The same NOR/INS vocabulary the composer badge and every
+                // dockable box use. "focus:composer" named an axis that no
+                // longer exists, and read as a third mode.
+                let focus = if self.editor_state.buffer_focused(self.ui_state.input_mode) {
+                    "INS"
+                } else {
+                    "NOR"
+                };
+                Line::from(vec![
+                    Span::styled(
+                        " editor ",
+                        Style::default()
+                            .fg(self.ui_state.theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" {path}  {focus}"),
+                        Style::default().fg(self.ui_state.theme.muted),
+                    ),
+                ])
+            }
+        };
+        let block = Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(self.ui_state.theme.border))
+            .style(Style::default().bg(self.ui_state.theme.background));
+        let paragraph = Paragraph::new(title).block(block);
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Draw the left border on the reserved 1-column strip and the
+    /// four corner cells that connect it with the header's bottom
+    /// border (top edge) and the reserved bottom edge (bottom edge).
+    /// The header supplies the top horizontal line via its own
+    /// `Borders::BOTTOM`, and the bottom horizontal line is painted
+    /// later by `finish_render` — the corners here are what make the
+    /// three sides look like a single connected frame instead of three
+    /// disjoint segments.
+    ///
+    /// `bottom_edge_area` is the row carved off for that bottom line,
+    /// so the lower corners are anchored on the edge itself. They used
+    /// to be placed on the footer's last row instead, which is one row
+    /// higher: the status line got a `└`/`┘` it never asked for and the
+    /// real bottom-left corner was left showing the left border's `│`.
+    fn render_outer_borders(
+        &mut self,
+        frame: &mut Frame,
+        left_area: Rect,
+        content_area: Rect,
+        header_area: Rect,
+        bottom_edge_area: Option<Rect>,
+    ) {
+        // Left border: paint a `Borders::LEFT` block on the reserved
+        // strip. Drawing on a dedicated strip keeps the line continuous
+        // since the content widgets never write into column 0.
+        let border_style = Style::default().fg(self.ui_state.theme.border);
+        let bg_style = Style::default().bg(self.ui_state.theme.background);
+        let left_block = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(border_style)
+            .style(bg_style);
+        frame.render_widget(left_block, left_area);
+
+        // The bottom edge lives on its own reserved row (see `render`),
+        // painted in `finish_render`. Without it the main pane read as an
+        // open-ended window next to the sidebar, which draws a full
+        // `Borders::ALL`. This function only owns the corner glyphs that
+        // connect that edge to the side edges.
+        let Some(bottom_edge_area) = bottom_edge_area else {
+            return;
+        };
+        // Corner cells: top-left, top-right, bottom-left, bottom-right.
+        // Drawn after the header widget (which supplies the top line) so
+        // the corner glyphs overwrite the line glyphs at the intersections
+        // and visually connect them.
+        if header_area.height > 0 && content_area.width > 0 {
+            let header_bottom_y = header_area.y + header_area.height - 1;
+            let bottom_y = bottom_edge_area.y + bottom_edge_area.height.saturating_sub(1);
+            let right_x = content_area.x + content_area.width - 1;
+            self.render_corner(frame, left_area.x, header_bottom_y, '┌', border_style);
+            self.render_corner(frame, right_x, header_bottom_y, '┐', border_style);
+            self.render_corner(frame, left_area.x, bottom_y, '└', border_style);
+            self.render_corner(frame, right_x, bottom_y, '┘', border_style);
+        }
+    }
+
+    /// Paint a single corner glyph at `(x, y)` in the given style.
+    /// Uses a 1x1 [`Paragraph`] so the glyph goes through ratatui's
+    /// normal styling pipeline and respects the active background.
+    fn render_corner(&self, frame: &mut Frame, x: u16, y: u16, glyph: char, style: Style) {
+        let cell = Paragraph::new(glyph.to_string()).style(style);
+        frame.render_widget(cell, Rect::new(x, y, 1, 1));
+    }
+
+    fn active_context_indicator(&self) -> String {
+        let dialog_type = self.focus_manager.active_dialog_type();
+        if dialog_type != DialogType::None {
+            return format!("[DIALOG: {:?}]  ", dialog_type);
+        }
+        if self.ui_state.dialog.is_open() {
+            return format!("[DIALOG: {:?}]  ", self.ui_state.dialog);
+        }
+        if self.ui_state.command_mode {
+            return "[CMD]  ".to_string();
+        }
+        if self.messages_state.messages.search_visible {
+            return "[SEARCH]  ".to_string();
+        }
+        if self.agent_state.plan_mode {
+            return "[PLAN]  ".to_string();
+        }
+        if self.session_state.permission_pending {
+            return "[PERMISSION]  ".to_string();
+        }
+        let subagent_count = self.session_state.subagent_count;
+        if subagent_count > 0 {
+            return format!("[...{}]  ", subagent_count);
+        }
+        // Turn state deliberately does NOT appear here. This prefix used to
+        // paint a second spinner here, driven by a private widget whose cadence
+        // disagreed with the working strip's — two indicators, two speeds, one
+        // of them on a row too small to read. The working strip is the single
+        // status surface now; keeping a token here would only re-create the
+        // ambiguity it replaced.
+        String::new()
+    }
+
+    /// Decide which surface owns the viewport rect this frame.
+    ///
+    /// The change review outranks the subagent tab: it is a modal decision
+    /// surface the user has to answer, so a subagent tab must not cover it.
+    /// The tab outranks the transcript, because the tab *is* the buffer the
+    /// user asked to read — the transcript is what is behind it, not what
+    /// shares it.
+    fn viewport_owner(&self) -> ViewportOwner {
+        if self.change_review_state.is_open() {
+            return ViewportOwner::ChangeReview;
+        }
+        if self.ui_state.subagents.active_tab().is_some() {
+            return ViewportOwner::SubagentTab;
+        }
+        ViewportOwner::Route
+    }
+
+    fn render_viewport(&mut self, frame: &mut Frame, area: Rect) {
+        match self.ui_state.routes.current() {
+            Route::Home => self.render_home(frame, area),
+            Route::Session(_) => self.render_session(frame, area),
+            Route::Workspace => self.render_workspace_view(frame, area),
+            Route::Editor => self.render_editor_view(frame, area),
+        }
+    }
+
+    /// Draw the modal change review into the viewport rect.
+    ///
+    /// M006-E: an open review takes over the viewport. It is a modal decision
+    /// surface — the user must accept or reject — so it is the one place M006
+    /// does not stay non-modal, and it is reachable only via an explicit
+    /// `/review`.
+    fn render_change_review(&mut self, frame: &mut Frame, area: Rect) {
+        crate::components::change_review::ChangeReviewView::new(
+            &self.change_review_state,
+            Arc::clone(&self.ui_state.theme),
+        )
+        .render(frame, area);
+    }
+
+    /// M006-A: non-modal document editor primary view. Reads the text
+    /// from a scoped borrow of the controller replica and drops it with
+    /// this call, so the frame holds no document buffer. The bottom
+    /// composer and the sidebar are rendered separately and are
+    /// unaffected.
+    fn render_editor_view(&mut self, frame: &mut Frame, area: Rect) {
+        let theme = Arc::clone(&self.ui_state.theme);
+        // M006-D: when the tree pane is visible the viewport splits. The tree
+        // is rendered first and borrows only its own state, so the editor's
+        // controller replica is still borrowed and dropped inside its own
+        // render below — the frame holds no document buffer either way.
+        let (tree_area, editor_area) =
+            crate::components::file_tree::split_pane(area, self.file_tree_state.visible);
+        let shell = |frame: &mut Frame, message: String, style: Style, area: Rect| {
+            let block = Block::default()
+                .title(" Editor (/open <workspace-relative path> · Esc leaves) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border))
+                .style(Style::default().bg(theme.background));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(Paragraph::new(message).style(style), inner);
+        };
+        let Some(session) = self.editor_state.session.as_ref() else {
+            // The tree is a navigator, not a precondition: it renders even
+            // with no document open, because browsing a workspace is useful
+            // before choosing what to open.
+            self.render_file_tree_pane(frame, tree_area);
+            shell(
+                frame,
+                "No document open — use /open <path>".to_string(),
+                Style::default().fg(theme.muted),
+                editor_area,
+            );
+            return;
+        };
+        let Some(snapshot) = session.try_snapshot() else {
+            self.render_file_tree_pane(frame, tree_area);
+            shell(
+                frame,
+                self.editor_state.status.label().to_string(),
+                Style::default().fg(theme.warning),
+                editor_area,
+            );
+            return;
+        };
+        let presentation = session.presentation();
+        let cursor = presentation.cursor_byte;
+        let mode = presentation.mode;
+        let focus = self.editor_state.buffer_focused(self.ui_state.input_mode);
+        // Hoisted like the search fields below: `EditorPrefix` is `Copy`, and
+        // reading it here rather than inside the widget literal ends the
+        // shared borrow of `session` before the tree pane is painted.
+        let pending_prefix = presentation.pending_prefix;
+        // `EditorPrefix` and `FindNote` are `Copy`, and reading them here
+        // rather than inside the widget literal ends the shared borrow of
+        // `session` before the tree pane is painted. `FindNote::label`
+        // allocates, so it is done once per frame here instead of per banner
+        // line inside the widget.
+        let find_note = presentation.find_note.label();
+        // The pending count, rendered to text here for the same reason the
+        // find note is: the widget holds no domain state, and this allocates
+        // once per frame instead of once per banner line. It is **not** the
+        // notice: a count states what is about to happen, and the notice slot
+        // states what just did.
+        let count_label = crate::editor::pending_count_label(presentation.pending_count);
+        let command_active = presentation.command_active;
+        let command_line = presentation.command_line.clone();
+        let command_selection = presentation.command_selection;
+        // Hoisted out of the widget construction below: it needs the mutable
+        // `session`, and holding the shared borrow this function started
+        // with across that point would be the same borrow the whole call is
+        // built around.
+        let search_active = presentation.search_active;
+        let search_line = presentation.search_line.clone();
+        let search_count = presentation.search_matches.len();
+        let search_partial = presentation.search_partial;
+        let scope = self.editor_state.scope;
+        let path = self
+            .editor_state
+            .path
+            .clone()
+            .unwrap_or_else(|| "(unknown)".to_string());
+        let status = self.editor_state.status;
+        let notice = self
+            .editor_state
+            .notice
+            .as_ref()
+            .map(|notice| notice.message());
+        let writable = self.editor_state.is_writer();
+        let busy = self.editor_state.is_busy();
+        self.render_file_tree_pane(frame, tree_area);
+        if let Some(session) = self.editor_state.session.as_mut() {
+            crate::components::editor::EditorWidget {
+                path: &path,
+                status: status.label(),
+                notice: notice.as_deref(),
+                find_note: &find_note,
+                count_label: &count_label,
+                mode,
+                buffer_focused: focus,
+                pending_prefix,
+                command_active,
+                command_line: &command_line,
+                command_selection,
+                search_active,
+                search_line: &search_line,
+                search_count,
+                search_partial,
+                scope,
+                cursor_byte: cursor,
+                writable,
+                busy,
+                snapshot: &snapshot,
+                lsp: &self.editor_state.lsp,
+                completion: &self.editor_state.completion,
+                highlight: &mut self.editor_state.highlight,
+                presentation: session.presentation_mut(),
+                theme,
+            }
+            .render(frame, editor_area);
+        }
+    }
+
+    /// M006-D: render the project-scoped file tree beside the editor.
+    ///
+    /// Borrows only `file_tree_state` and the theme, and is a no-op when the
+    /// pane is hidden or did not fit.
+    fn render_file_tree_pane(&mut self, frame: &mut Frame, area: Option<Rect>) {
+        let Some(area) = area else { return };
+        if !self.file_tree_state.visible {
+            return;
+        }
+        let layout = crate::components::file_tree::FileTreeView::new(
+            &self.file_tree_state,
+            self.ui_state.tree_focused,
+            Arc::clone(&self.ui_state.theme),
+        )
+        .render(frame, area);
+        self.file_tree_state.set_viewport_rows(layout.viewport_rows);
+    }
+
+    /// Push the authority's tree structure into every mounted `/files` surface.
+    ///
+    /// Once per frame, ahead of the tree pane, the side panel and the modal
+    /// dialog. The copy happens only when the authority's revision moved, and
+    /// it reaches the **docked panel** as well as the modal box: a docked box
+    /// is owned by the panel host, not by the focus manager.
+    fn refresh_file_tree_surfaces(&mut self) {
+        use crate::components::component::DialogType;
+        use crate::components::dialogs::files::FilesDialog;
+
+        let authority = &self.file_tree_state;
+        let revision = authority.revision;
+        let build = || authority.structure();
+        self.focus_manager
+            .with_dialog_mut::<FilesDialog, ()>(DialogType::Files, |dialog| {
+                dialog.adopt_structure(revision, &build);
+            });
+        self.panel_host
+            .with_hosted_mut::<FilesDialog, ()>(SidePanelId::Files, |dialog| {
+                dialog.adopt_structure(revision, &build);
+            });
+    }
+
+    /// M005: non-modal Workspace primary view. Reads the bounded
+    /// `WorkspaceDashboardState` projection; performs no I/O. The bottom
+    /// composer stays editable (rendered separately) and the sidebar
+    /// shows project chat for the same selection.
+    fn render_workspace_view(&mut self, frame: &mut Frame, area: Rect) {
+        use crate::app::state::MAX_DASHBOARD_VISIBLE_ROWS;
+        let theme = Arc::clone(&self.ui_state.theme);
+        let block = Block::default()
+            .title(" Workspace (Esc leaves · Enter descends when prompt empty · Space expands) ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let Some(dashboard) = self.dialog_state.workspace_dashboard.as_ref() else {
+            let paragraph = Paragraph::new("Workspace closed — /workspace to open")
+                .style(Style::default().fg(theme.muted));
+            frame.render_widget(paragraph, inner);
+            return;
+        };
+        let mut lines: Vec<Line> = Vec::new();
+        if dashboard.loading {
+            lines.push(Line::from(Span::styled(
+                "Loading workspace…",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        if let Some(error) = dashboard.error.as_ref() {
+            lines.push(Line::from(Span::styled(
+                format!("Error: {error}"),
+                Style::default().fg(theme.error),
+            )));
+        }
+        if !dashboard.query.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("Filter: {}", dashboard.query),
+                Style::default().fg(theme.secondary),
+            )));
+        }
+        let indices = dashboard.filtered_indices();
+        if indices.is_empty() && !dashboard.loading {
+            lines.push(Line::from(Span::styled(
+                "No projects match — adjust the filter",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        for (visible_pos, row_idx) in indices.iter().take(MAX_DASHBOARD_VISIBLE_ROWS).enumerate() {
+            let Some(row) = dashboard.rows.get(*row_idx) else {
+                continue;
+            };
+            let is_selected = visible_pos == dashboard.selected_row;
+            let badge = crate::app::state::dashboard_row_badge(row);
+            let stale = if row.stale { " stale" } else { "" };
+            let expanded = if dashboard.expanded_project_id.as_deref()
+                == Some(row.summary.project_id.as_str())
+            {
+                " [expanded]"
+            } else {
+                ""
+            };
+            let text = format!(
+                "{} {} — {badge}{stale}{expanded}",
+                row.summary.display_name, row.summary.project_id
+            );
+            let style = if is_selected {
+                Style::default()
+                    .fg(theme.primary)
+                    .bg(theme.selection)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.foreground)
+            };
+            let prefix = if is_selected { "▸ " } else { "  " };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(text, style),
+            ]));
+            // Inline expansion for the selected project only.
+            if dashboard.expanded_project_id.as_deref() == Some(row.summary.project_id.as_str()) {
+                if dashboard.expanded_loading {
+                    lines.push(Line::from(Span::styled(
+                        "    Loading tasks…",
+                        Style::default().fg(theme.muted),
+                    )));
+                } else if let Some(error) = dashboard.expanded_error.as_ref() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    Task detail: {error}"),
+                        Style::default().fg(theme.error),
+                    )));
+                } else if dashboard.expanded_tasks.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "    No running tasks",
+                        Style::default().fg(theme.muted),
+                    )));
+                } else {
+                    for task in dashboard.expanded_tasks.iter() {
+                        let title = task.title.as_deref().unwrap_or(&task.work_order_id);
+                        lines.push(Line::from(Span::styled(
+                            format!("    · {} [{}]", title, task.state),
+                            Style::default().fg(theme.foreground),
+                        )));
+                    }
+                }
+            }
+        }
+        if dashboard.truncated {
+            lines.push(Line::from(Span::styled(
+                "More projects exist — refine the filter",
+                Style::default().fg(theme.warning),
+            )));
+        }
+        if dashboard.dirty {
+            lines.push(Line::from(Span::styled(
+                "Stale — Ctrl+R refreshes",
+                Style::default().fg(theme.warning),
+            )));
+        }
+        let focus_hint = match self.workspace_focus {
+            crate::app::state::WorkspaceFocus::Chat => {
+                "Chat panel focused — Enter sends, Esc returns to composer"
+            }
+            crate::app::state::WorkspaceFocus::Composer => {
+                "Composer focused — type Session/Task input; Space expands, / focuses slash"
+            }
+        };
+        lines.push(Line::from(Span::styled(
+            focus_hint,
+            Style::default().fg(theme.muted),
+        )));
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, inner);
+    }
+
+    fn render_home(&mut self, frame: &mut Frame, area: Rect) {
+        // Render a background block first to ensure the viewport isn't transparent
+        let block = Block::default().style(Style::default().bg(self.ui_state.theme.background));
+        frame.render_widget(block, area);
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  codegg ",
+                Style::default()
+                    .fg(self.ui_state.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Type a prompt to begin",
+                Style::default().fg(self.ui_state.theme.muted),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                HintLine::from_items(&[
+                    ("Ctrl+N", "new session"),
+                    ("Ctrl+L", "change model"),
+                    ("?", "help"),
+                ])
+                .render(0),
+                Style::default().fg(self.ui_state.theme.muted),
+            )),
+        ];
+        let paragraph = Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
+    }
+
+    fn render_session(&mut self, frame: &mut Frame, area: Rect) {
+        self.messages_state.messages.set_theme(&self.ui_state.theme);
+        self.messages_state
+            .messages
+            .set_display_options(self.ui_state.show_thinking, self.ui_state.show_timestamps);
+
+        let (content_area, scrollbar_area) = self.ui_state.layout.viewport_with_scrollbar(area);
+        self.messages_state
+            .messages
+            .set_visible_height(content_area.height as usize);
+        self.messages_state.messages.set_width(content_area.width);
+        self.frame_plan.scrollbar = (scrollbar_area.width > 0).then_some(scrollbar_area);
+
+        // Render a background block first to ensure the viewport isn't transparent
+        let block = Block::default().style(Style::default().bg(self.ui_state.theme.background));
+        frame.render_widget(block, area);
+
+        frame.render_widget(&self.messages_state.messages, content_area);
+
+        if self.frame_plan.scrollbar.is_some() {
+            let mut state = self
+                .messages_state
+                .messages
+                .scrollbar_state(scrollbar_area.height as usize);
+            frame.render_stateful_widget(
+                Scrollbar::default()
+                    .orientation(ScrollbarOrientation::VerticalRight)
+                    .thumb_style(Style::default().fg(self.ui_state.theme.foreground))
+                    .track_style(Style::default().fg(self.ui_state.theme.border))
+                    .begin_symbol(None)
+                    .end_symbol(None),
+                scrollbar_area,
+                &mut state,
+            );
+        }
+    }
+
+    /// Draw the todo strip directly above the input box.
+    ///
+    /// Always a single `n/m completed` progress line. The strip has no
+    /// expanded form: the full todo list is a group inside the tasks overlay
+    /// (`Ctrl+T`), next to the subagents and jobs the session is also waiting
+    /// on. Keeping it to one row is what lets row 0 stay reserved and the
+    /// transcript above it stay put while a turn composes.
+    fn render_todo_strip(&mut self, frame: &mut Frame, area: Option<Rect>) {
+        let Some(area) = area else { return };
+        if area.width == 0 || area.height == 0 || self.todos.is_empty() {
+            return;
+        }
+
+        let total = self.todos.len();
+        let done = self.todos_completed();
+        let remaining = total.saturating_sub(done);
+        let theme = self.ui_state.theme.clone();
+
+        let lines: Vec<Line> = vec![Line::from(Span::styled(
+            format!(
+                " Todo list: {done}/{total} completed · {remaining} remaining · Ctrl+T for all pending work "
+            ),
+            Style::default().fg(theme.muted),
+        ))];
+
+        let shown = (area.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
+    /// Draw the unified tasks overlay (`Ctrl+T`) directly above the input.
+    ///
+    /// Renders three projection-backed groups — todos, in-flight subagents,
+    /// in-flight jobs — each preceded by its own header, with empty groups
+    /// omitted entirely. Every line is ellipsized to the available width
+    /// rather than wrapped, so a long description can never change the
+    /// overlay's height and reflow the transcript underneath it.
+    fn render_tasks_strip(
+        &mut self,
+        frame: &mut Frame,
+        area: Option<Rect>,
+        frame_rows: Option<&crate::app::FrameTaskRows>,
+    ) {
+        let Some(area) = area else { return };
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let theme = self.ui_state.theme.clone();
+        // One build of the rows serves the height and the painter. The
+        // fallback exists only for a caller outside a frame; the render path
+        // always hands in the list it already derived.
+        let fallback;
+        let built = match frame_rows {
+            Some(rows) => rows,
+            None => {
+                fallback = self.build_frame_task_rows().unwrap_or(FrameTaskRows {
+                    all: Vec::new(),
+                    bounded: Vec::new(),
+                });
+                &fallback
+            }
+        };
+        let all_rows = built.all.as_slice();
+        let rows = built.bounded.as_slice();
+        let selected = self.selected_task_row_index(rows);
+
+        let mut lines: Vec<Line> = Vec::new();
+        if rows.is_empty() {
+            // Absence of a projection is not evidence that the session has no
+            // work. Keep loading and unavailable distinct from an authoritative
+            // empty snapshot.
+            let empty_label = match self.projection_client.primary_status() {
+                Some(crate::app::state::projection_client::PrimaryProjectionStatus::Loading) => {
+                    " Loading session work… · Ctrl+T close "
+                }
+                Some(
+                    crate::app::state::projection_client::PrimaryProjectionStatus::Unavailable(_),
+                ) => " Session work unavailable · Ctrl+T close ",
+                _ if self.projection_client.active_snapshot().is_none()
+                    && self.active_session_id().is_some() =>
+                {
+                    " Session work unavailable · Ctrl+T close "
+                }
+                _ => " Nothing pending · Ctrl+T close ",
+            };
+            lines.push(Line::from(Span::styled(
+                empty_label.to_string(),
+                Style::default().fg(theme.muted),
+            )));
+        } else {
+            for (index, row) in rows.iter().enumerate() {
+                // The cursor renders as a leading marker as well as the
+                // inversion, because `REVERSED` is a hint some themes and
+                // some terminals flatten — and a selection the user cannot
+                // see is a selection they will press Enter against the wrong
+                // row on.
+                let is_selected = selected == Some(index);
+                let lead = if is_selected { "▸" } else { " " };
+                let line = match row {
+                    // Headers are never selectable, so they render plainly
+                    // even if a stale cursor index happens to land here.
+                    TaskRow::Header { group } => {
+                        let total = all_rows
+                            .iter()
+                            .filter(|candidate| {
+                                !matches!(candidate, TaskRow::Header { .. })
+                                    && candidate.group() == *group
+                            })
+                            .count();
+                        let visible = rows
+                            .iter()
+                            .filter(|candidate| candidate.group() == *group)
+                            .count()
+                            .saturating_sub(1);
+                        let omitted = total.saturating_sub(visible);
+                        let more = if omitted > 0 {
+                            format!(" · {omitted} more")
+                        } else {
+                            String::new()
+                        };
+                        Line::from(Span::styled(
+                            format!(" ── {}{more} ──", group.title()),
+                            Style::default().fg(theme.muted),
+                        ))
+                    }
+                    TaskRow::Todo { bubble, content } => {
+                        // The bubble is rendered as the lead rather than
+                        // folded into the text so the completed/pending
+                        // distinction stays in the same column on every row.
+                        if is_selected {
+                            strip_line_selected(
+                                &theme,
+                                area.width,
+                                &format!("{bubble} "),
+                                content,
+                                theme.foreground,
+                            )
+                        } else {
+                            strip_line(
+                                &theme,
+                                area.width,
+                                &format!("{bubble} "),
+                                content,
+                                theme.foreground,
+                            )
+                        }
+                    }
+                    TaskRow::Subagent {
+                        label,
+                        agent,
+                        description,
+                        profile,
+                        status,
+                        ..
+                    } => {
+                        // Name and agent type together: the name is what the
+                        // user looks for later, the type is what it actually is.
+                        let text = if label == agent {
+                            format!(" {label} ")
+                        } else {
+                            format!(" {label} ({agent}) ")
+                        };
+                        // Descriptor when the projection carried one, the task
+                        // description otherwise — `SubagentRow::topic`'s rule,
+                        // applied to the same row so this overlay and the
+                        // working strip cannot describe one subagent two ways.
+                        let topic = profile.as_deref().unwrap_or(description.as_str());
+                        let text = if topic.trim().is_empty() {
+                            text
+                        } else {
+                            format!("{text}· {status} — {topic}")
+                        };
+                        if is_selected {
+                            strip_line_selected(&theme, area.width, lead, &text, theme.foreground)
+                        } else {
+                            strip_line(&theme, area.width, lead, &text, theme.foreground)
+                        }
+                    }
+                    TaskRow::Job {
+                        kind,
+                        summary,
+                        state,
+                        error_class,
+                        ..
+                    } => {
+                        let text = if summary.trim().is_empty() {
+                            format!(" {kind} · {state}")
+                        } else {
+                            format!(" {kind} · {state} — {summary}")
+                        };
+                        let colour = if error_class.is_some() {
+                            theme.error
+                        } else {
+                            theme.foreground
+                        };
+                        if is_selected {
+                            strip_line_selected(&theme, area.width, lead, &text, colour)
+                        } else {
+                            strip_line(&theme, area.width, lead, &text, colour)
+                        }
+                    }
+                };
+                lines.push(line);
+            }
+            lines.push(Line::from(Span::styled(
+                if selected.is_some() {
+                    HintLine::from_items(&[
+                        ("Esc", "close"),
+                        ("Shift+N/P", "open"),
+                        ("↵", "select"),
+                        ("i", "inspect"),
+                    ])
+                } else {
+                    HintLine::from_items(&[("Ctrl+T", "close")])
+                }
+                .render(0),
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        let shown = (area.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
+    /// Draw the turn-tail deliverable card.
+    ///
+    /// The files come straight from the `present` tool result in the
+    /// transcript: this painter holds no list of its own, so there is exactly
+    /// one record of what a turn delivered. The rect is optional because the
+    /// card claims no rows at all when the transcript holds no verified
+    /// declaration — and a refused declaration is a failed tool call at its
+    /// own position, not a card with the reason moved into it.
+    fn render_present_card(
+        &self,
+        frame: &mut Frame,
+        area: Option<Rect>,
+        files: Option<&[codegg::tool::present::PresentedFile]>,
+    ) {
+        let (Some(area), Some(files)) = (area, files) else {
+            return;
+        };
+        crate::app::present_card::render(frame, area, &self.ui_state.theme, files);
+    }
+
+    /// Render the open subagent buffer into the viewport rect.
+    ///
+    /// This surface **owns** the rect it is given: the transcript is not
+    /// painted underneath it, so nothing of the main conversation shows
+    /// through. It is a run inspector **and** the delegated run's recorded
+    /// transcript: it shows what the projection vouches for — the agent, its
+    /// task description, the lifecycle status, and the canonical ids needed
+    /// to reach durable run detail — and then the conversation the child
+    /// actually had, in the order it happened.
+    ///
+    /// The inspector metadata is retained rather than replaced. The user
+    /// still needs the status at a glance, and a transcript without the run
+    /// it belongs to is a wall of text.
+    ///
+    /// It deliberately does not synthesize progress text: the projection
+    /// adapter hardcodes `progress: None`, so an invented "working on step
+    /// 3" line would be a lie the user acts on.
+    fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
+        // Borrow the tab rather than cloning it. The clone this replaced
+        // copied the tab's row and both transcript windows (up to two
+        // 512-entry caches) so a view that paints roughly forty rows could
+        // read them. The borrow ends before the scroll write-back below.
+        let Some(tab) = self.ui_state.subagents.active_tab() else {
+            return;
+        };
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = self.ui_state.theme.clone();
+        // Fill the rect before decorating it. A row or a paragraph painted on
+        // its own leaves every cell it does not cover showing whatever was
+        // there before, and this surface is the only thing drawn into the
+        // viewport now.
+        let block = Block::default().style(Style::default().bg(theme.background));
+        frame.render_widget(block, area);
+        let status_style = if tab.is_running() {
+            Style::default().fg(theme.primary)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+        // Lead with the curated display name where there is one, so the tab
+        // bar and this view name the same run identically — a tab reading
+        // `Sally` over a body reading `explore` would make the user hunt.
+        let title = match tab.row.display_name.as_deref() {
+            Some(name) if !name.trim().is_empty() && name != tab.row.agent => {
+                format!(" Subagent · {} ({})", name, tab.row.agent)
+            }
+            _ => format!(" Subagent · {}", tab.row.agent),
+        };
+        lines.push(Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(" {}", tab.row.status),
+            status_style,
+        )));
+        // The terminal state for "my subject left the projection". This is a
+        // first-class outcome, not an error: the per-turn agent tree is
+        // cleared when the turn ends, so a tab opened during a turn outliving
+        // that turn is expected rather than exceptional. Stating it plainly is
+        // the whole point — the alternative is a view that keeps rendering
+        // `running` for a run the projection has stopped reporting.
+        if !tab.liveness.is_attached() {
+            lines.push(Line::from(Span::styled(
+                " This run is no longer in the session's projection.",
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                " What is shown below is the last state it reported.",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Task",
+            Style::default().fg(theme.muted),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("   {}", tab.row.description),
+            Style::default().fg(theme.foreground),
+        )));
+        // The curated pool's description of this agent. This is the one
+        // surface that carries Task *and* Agent side by side, which is why the
+        // one-line rows may spend their single slot on the descriptor: here
+        // both are shown, wrapped and untruncated. A node recorded before
+        // descriptors existed has neither field and the section is omitted —
+        // no heading over an empty body.
+        let profile = tab.row.profile.as_deref().filter(|p| !p.trim().is_empty());
+        let usefulness = tab
+            .row
+            .usefulness
+            .as_deref()
+            .filter(|u| !u.trim().is_empty());
+        if profile.is_some() || usefulness.is_some() {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                " Agent",
+                Style::default().fg(theme.muted),
+            )));
+            if let Some(profile) = profile {
+                lines.push(Line::from(Span::styled(
+                    format!("   {profile}"),
+                    Style::default().fg(theme.foreground),
+                )));
+            }
+            if let Some(usefulness) = usefulness {
+                lines.push(Line::from(Span::styled(
+                    format!("   Best used for: {usefulness}"),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Identity",
+            Style::default().fg(theme.muted),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("   task {}", tab.row.task_id),
+            Style::default().fg(theme.foreground),
+        )));
+        if let Some(run_id) = &tab.row.run_id {
+            lines.push(Line::from(Span::styled(
+                format!("   run  {run_id}"),
+                Style::default().fg(theme.foreground),
+            )));
+        }
+        // The delegated run's recorded conversation, beneath the metadata
+        // above. The three states are three different facts and each one is
+        // stated: complete, truncated (with the point it stops at), and
+        // absent (with the reason it is absent). A transcript rendered as an
+        // empty pane would read as "the child did nothing", which is a claim
+        // the system does not know.
+        let overflow_index = lines.len();
+        lines.push(Line::default());
+        lines.extend(self.delegated_transcript_lines(tab));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Esc returns to the main buffer".to_string(),
+            Style::default().fg(theme.muted),
+        )));
+        // The scroll offset is the renderer's to clamp: it is the only place
+        // that knows how tall the content is, so a tab that guessed would
+        // either stop short of the end or run past it into blank space.
+        //
+        // The height that matters is the **wrapped** height. A body that
+        // wraps onto three visual rows is three rows on screen, and a scroll
+        // extent computed from the number of logical lines would let the view
+        // stop short of the real end — and would claim a line count the
+        // screen never showed.
+        let viewport = area.height as usize;
+        let probe = Paragraph::new(lines.clone()).wrap(ratatui::widgets::Wrap { trim: false });
+        let content_height = probe.line_count(area.width);
+        let max_scroll = content_height.saturating_sub(viewport);
+        // Whether the view was at the bottom **before** this frame's content
+        // grew. A view that was at the bottom follows the new rows; a view
+        // that was scrolled up stays anchored where the reader left it.
+        let was_at_bottom = tab.follow_bottom
+            || tab
+                .scroll_max
+                .map(|previous| tab.scroll as usize >= previous as usize)
+                .unwrap_or(false);
+        let scroll = if was_at_bottom {
+            max_scroll
+        } else {
+            (tab.scroll as usize).min(max_scroll)
+        };
+        // Say how much is below the fold. A transcript longer than the
+        // viewport that says nothing about it reads as a complete
+        // conversation, and the user never learns to scroll.
+        let below = content_height.saturating_sub(scroll + viewport);
+        let overflow = if below > 0 {
+            format!("   ▾ {below} more lines below — PageDown to read on")
+        } else {
+            "   ▾ end of the transcript view".to_string()
+        };
+        if let Some(line) = lines.get_mut(overflow_index) {
+            *line = Line::from(Span::styled(overflow, Style::default().fg(theme.muted)));
+        }
+        // Write the two facts the tab cannot compute back onto the tab: how
+        // far the view can scroll, and whether it is pinned to the bottom.
+        // The pin is what decides whether newly recorded rows pull the view
+        // down; a reader who scrolled up keeps their place.
+        if let Some(tab) = self.ui_state.subagents.active_tab_mut() {
+            tab.scroll = scroll as u16;
+            tab.scroll_max = Some(max_scroll as u16);
+            if !tab.follow_bottom && scroll >= max_scroll {
+                tab.follow_bottom = true;
+            }
+        }
+        // The full width of the rect. A one-column inset left the last
+        // column of the viewport unpainted, which read as the transcript
+        // showing through the tab.
+        let paragraph = Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((scroll as u16, 0));
+        frame.render_widget(paragraph, area);
+    }
+    /// The delegated run's recorded transcript, as view lines.
+    ///
+    /// Two sources, in one order: the **fetched** rows win, because a page
+    /// read is strictly newer than the projection's boundary preview for the
+    /// same run. The preview is still used — for a daemon that does not
+    /// serve the page read, and for the frame before any page has landed —
+    /// so a tab is never blank while a read is on its way.
+    ///
+    /// `None` in the preview means the projection carried no transcript at
+    /// all — an older daemon, or a summary built for a lifecycle event
+    /// rather than read at a boundary. The tab then stays the run inspector
+    /// it was, and says that live follow is unavailable rather than painting
+    /// an empty pane.
+    fn delegated_transcript_lines(
+        &self,
+        tab: &crate::app::state::subagent_tabs::SubagentTabState,
+    ) -> Vec<Line<'static>> {
+        use codegg::protocol::projection::dto::AgentRunTranscriptProjection;
+        let theme = self.ui_state.theme.clone();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        // The live-follow state comes first: it says what the tab is doing
+        // about the recording. A user who cannot see that cannot tell a
+        // paused follow from a finished run, and an empty pane must never
+        // read as "the subagent did nothing".
+        lines.extend(self.transcript_follow_lines(tab));
+        let fetched = tab
+            .transcript
+            .as_ref()
+            .filter(|cache| cache.entry_count() > 0);
+        if let Some(cache) = fetched {
+            lines.push(Line::from(Span::styled(
+                " Transcript",
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                self.fetched_transcript_state_line(cache),
+                Style::default().fg(theme.foreground),
+            )));
+            for entry in cache.entries.iter() {
+                lines.extend(self.transcript_entry_lines(entry));
+            }
+            // The cache's own cap is a **window** fact, and it is distinct
+            // from the store's per-run truncation and from the viewport's own
+            // fold. A view that scrolled to the top of a bounded window must
+            // not claim to be the whole conversation.
+            if cache.has_evicted_entries() {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "   … earlier entries not loaded — this tab keeps the last {} of {} recorded entries",
+                        cache.entry_count(),
+                        cache.entry_count() as i64 + cache.evicted_entries
+                    ),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+            return lines;
+        }
+        let Some(transcript) = tab.row.transcript.as_ref() else {
+            return lines;
+        };
+        lines.push(Line::from(Span::styled(
+            " Transcript",
+            Style::default().fg(theme.muted),
+        )));
+        match transcript {
+            AgentRunTranscriptProjection::Absent => {
+                lines.push(Line::from(Span::styled(
+                    "   No transcript was recorded for this run.",
+                    Style::default().fg(theme.foreground),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "   Nothing was captured of what it did, so there is no",
+                    Style::default().fg(theme.muted),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "   conversation to show. A run dispatched before the",
+                    Style::default().fg(theme.muted),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "   transcript store existed looks like this.",
+                    Style::default().fg(theme.muted),
+                )));
+                return lines;
+            }
+            AgentRunTranscriptProjection::Complete { entries } => {
+                lines.push(Line::from(Span::styled(
+                    format!("   complete · {} entries", entries.len()),
+                    Style::default().fg(theme.foreground),
+                )));
+            }
+            AgentRunTranscriptProjection::Truncated {
+                entries,
+                truncation,
+            } => {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "   truncated · showing {} of {} recorded entries",
+                        entries.len(),
+                        entries.len() as i64 + truncation.omitted_entries
+                    ),
+                    Style::default().fg(theme.foreground),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "   the next entry is ordinal {} — this is not the whole conversation",
+                        truncation.next_ordinal
+                    ),
+                    Style::default().fg(theme.muted),
+                )));
+                if truncation.recording_stopped {
+                    lines.push(Line::from(Span::styled(
+                        "   the run's own recording stopped at the store's per-run bound,",
+                        Style::default().fg(theme.muted),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "   so the rows that are missing were never written.",
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+            }
+        }
+        for entry in transcript.entries() {
+            lines.extend(self.transcript_entry_lines(entry));
+        }
+        lines
+    }
+    /// One recorded entry, as view lines.
+    ///
+    /// The per-entry **display** bound is a viewport fact: the row is
+    /// clipped so one enormous tool output cannot push the rest of the
+    /// conversation off the screen. It says so when it clips, because a
+    /// silently shortened row reads as a short row.
+    fn transcript_entry_lines(
+        &self,
+        entry: &codegg::protocol::projection::dto::AgentRunTranscriptEntryProjection,
+    ) -> Vec<Line<'static>> {
+        use crate::app::state::subagent_tabs::MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES;
+        use codegg::protocol::projection::dto::{AgentRunTranscriptKind, AgentRunTranscriptRole};
+        let theme = self.ui_state.theme.clone();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let role = match entry.role {
+            AgentRunTranscriptRole::Orchestrator => "orchestrator",
+            AgentRunTranscriptRole::Internal => "internal",
+        };
+        let kind = match entry.kind {
+            AgentRunTranscriptKind::ModelMessage => "model message",
+            AgentRunTranscriptKind::ToolCall => "tool call",
+            AgentRunTranscriptKind::ToolResult => "tool result",
+            AgentRunTranscriptKind::TerminalNote => "terminal note",
+        };
+        lines.push(Line::from(Span::styled(
+            format!("   {} · {kind} · {role}", entry.ordinal),
+            Style::default().fg(theme.primary),
+        )));
+        let body = entry.body.as_str();
+        let (shown, omitted) = if body.len() > MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES {
+            (
+                codegg::protocol::projection::limits::clip_str(
+                    body,
+                    MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES,
+                ),
+                body.len() - MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES,
+            )
+        } else {
+            (body, 0)
+        };
+        for body_line in shown.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("     {body_line}"),
+                Style::default().fg(theme.foreground),
+            )));
+        }
+        if omitted > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("     … {omitted} more bytes of this {kind} are not shown"),
+                Style::default().fg(theme.muted),
+            )));
+        }
+        lines
+    }
+    /// The one-line state of the fetched transcript.
+    ///
+    /// Four different facts, four different lines: the run may still be
+    /// recording, the run has finished and every row is here, the run's own
+    /// recording stopped at the store's bound, or the tab is behind.
+    fn fetched_transcript_state_line(
+        &self,
+        cache: &crate::app::state::transcript_cache::TranscriptCache,
+    ) -> String {
+        use crate::app::state::transcript_cache::TranscriptFollowStatus;
+        match cache.status {
+            TranscriptFollowStatus::Complete => {
+                format!("   complete · {} entries", cache.entry_count())
+            }
+            TranscriptFollowStatus::RecordingStopped => format!(
+                "   the run's recording stopped at the store's per-run bound · {} entries",
+                cache.entry_count()
+            ),
+            TranscriptFollowStatus::Absent => {
+                "   no transcript was recorded for this run".to_string()
+            }
+            TranscriptFollowStatus::CatchingUp => {
+                format!("   catching up · {} entries so far", cache.entry_count())
+            }
+            _ => format!(
+                "   following · {} entries recorded so far",
+                cache.entry_count()
+            ),
+        }
+    }
+    /// What the tab is doing about the delegated run's recording.
+    ///
+    /// These are several different facts and the tab says which one it is.
+    /// "The daemon is older", "the daemon refused", "the daemon is
+    /// unreachable", "the run recorded nothing" and "the read failed" are
+    /// not the same claim, and none of them is "the subagent did nothing".
+    fn transcript_follow_lines(
+        &self,
+        tab: &crate::app::state::subagent_tabs::SubagentTabState,
+    ) -> Vec<Line<'static>> {
+        use crate::app::state::transcript_cache::TranscriptFollowStatus;
+        let theme = self.ui_state.theme.clone();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let Some(cache) = tab.transcript.as_ref() else {
+            // No cache. Either the run has no durable identity — there is
+            // nothing to read at all — or the follow has simply not been
+            // started yet. The two are different claims and the tab says
+            // which one it is, because an empty pane must never read as a
+            // subagent that did nothing.
+            let reason = tab.follow_unavailable.as_deref();
+            let (head, tail) = match reason {
+                Some(reason) => (
+                    format!(" Live follow unavailable — {reason}"),
+                    "   What is shown above is the run's own metadata.".to_string(),
+                ),
+                None => (
+                    " Live follow · not started — the recorded transcript has not been read yet"
+                        .to_string(),
+                    "   The run's own metadata is shown above.".to_string(),
+                ),
+            };
+            lines.push(Line::from(Span::styled(
+                head,
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                tail,
+                Style::default().fg(theme.muted),
+            )));
+            return lines;
+        };
+        let text = match &cache.status {
+            TranscriptFollowStatus::Idle => {
+                " Live follow · not started — the recorded transcript has not been read yet"
+                    .to_string()
+            }
+            TranscriptFollowStatus::Fetching => {
+                " Live follow · reading the recorded transcript …".to_string()
+            }
+            TranscriptFollowStatus::Following => format!(
+                " Live follow · following · {} entries so far",
+                cache.entry_count()
+            ),
+            TranscriptFollowStatus::CatchingUp => format!(
+                " Live follow · catching up · {} entries so far",
+                cache.entry_count()
+            ),
+            TranscriptFollowStatus::Complete => {
+                format!(" Live follow · the run finished · {} entries", cache.entry_count())
+            }
+            TranscriptFollowStatus::RecordingStopped => format!(
+                " Live follow · the run's own recording stopped at the store's bound · {} entries",
+                cache.entry_count()
+            ),
+            TranscriptFollowStatus::Absent => {
+                " Live follow · the run recorded no transcript at all".to_string()
+            }
+            TranscriptFollowStatus::Unavailable => {
+                " Live follow unavailable — this run has no durable identity".to_string()
+            }
+            TranscriptFollowStatus::Unsupported => {
+                " Live follow unavailable — the connected daemon does not serve delegated transcript reads"
+                    .to_string()
+            }
+            TranscriptFollowStatus::Denied => {
+                " Live follow unavailable — the daemon refused this session's read of the run"
+                    .to_string()
+            }
+            TranscriptFollowStatus::Disconnected => {
+                " Live follow paused — the daemon is unreachable".to_string()
+            }
+            TranscriptFollowStatus::Failed(message) => {
+                format!(" Live follow failed — {message}")
+            }
+        };
+        lines.push(Line::from(Span::styled(
+            text,
+            Style::default().fg(theme.muted),
+        )));
+        if cache.status.is_retryable() {
+            // The retry is an explicit gesture, and it says what it does.
+            lines.push(Line::from(Span::styled(
+                "   Ctrl+Alt+R retries the read; Shift+X then reopening the tab does the same",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        lines
+    }
+    /// Draw the one-row subagent tab bar directly under the header.
+    ///
+    /// Carved off the **top** of the viewport chunk rather than the prompt
+    /// chunk: a tab bar belongs to the buffer it labels, and the working strip
+    /// already owns the bottom edge of the transcript. The rows are reserved
+    /// from the prompt allocation instead (see the `prompt_height` sum) so
+    /// opening a tab does not shrink the input box.
+    ///
+    /// The active entry is styled, not merely ordered, because at a narrow
+    /// width the bar trims older tabs and "which one am I reading" can no
+    /// longer be answered by position.
+    ///
+    /// The row carries three things, and they share **one** width budget: the
+    /// tab labels on the left, the active tab's persona next to the entry it
+    /// describes, and the key hints on the right. The budget is computed once,
+    /// in [`plan_strip`], so what is drawn is exactly what was measured.
+    fn render_subagent_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = self.ui_state.theme.clone();
+        // The row is carved out of the viewport chunk, so nothing else ever
+        // paints it: without a background of its own it was the one surface in
+        // the TUI with no fill, and whatever the terminal had underneath showed
+        // through. A carved-out row is still a row — fill it, then decorate it.
+        let block = Block::default().style(Style::default().bg(theme.background));
+        frame.render_widget(block, area);
+        let plan = crate::app::state::subagent_tabs::plan_strip(
+            self.ui_state.subagents.tabs.bar_tabs(),
+            area.width as usize,
+        );
+        let separator = crate::app::state::subagent_tabs::BAR_SEPARATOR;
+        let muted = Style::default().fg(theme.muted);
+
+        // Left region: the tab entries, then the active tab's persona.
+        let mut spans: Vec<Span> = Vec::with_capacity(plan.entries.len() * 3 + 2);
+        for (index, entry) in plan.entries.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(separator.to_string(), muted));
+            }
+            let style = if entry.active {
+                // The same treatment the project tab strip gives its active
+                // entry: the strip trims older tabs at narrow widths, so "which
+                // one am I reading" cannot be answered by position alone.
+                Style::default()
+                    .fg(theme.primary)
+                    .bg(theme.selection)
+                    .add_modifier(Modifier::BOLD)
+            } else if entry.ellipsis {
+                muted
+            } else {
+                Style::default().fg(theme.foreground)
+            };
+            if !entry.glyph.is_empty() {
+                // The marker leads the label: a status dot in front of a name
+                // reads as that name's status, and the main entry's marker
+                // reads as a tab marker rather than as a trailing action.
+                spans.push(Span::styled(
+                    format!("{} ", entry.glyph),
+                    if entry.active { style } else { muted },
+                ));
+            }
+            spans.push(Span::styled(entry.label.clone(), style));
+            if entry.active {
+                // The persona annotates the entry it describes, so it sits
+                // directly after it rather than at the end of the row — where
+                // it would read as a description of the *last* tab instead.
+                if let Some(persona) = plan.persona.as_deref() {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        persona.to_string(),
+                        muted.add_modifier(Modifier::ITALIC),
+                    ));
+                }
+            }
+        }
+        let entries_area = Rect {
+            width: plan.entries_width as u16,
+            ..area
+        };
+        frame.render_widget(Paragraph::new(Line::from(spans)), entries_area);
+
+        // Right region: the keys that operate this row. The row exists only
+        // while tabs are open, so the hints cannot outlive what they describe.
+        let gap = plan.gap as u16;
+        let hints_x = area.x + plan.entries_width as u16 + gap;
+        if plan.hints_width > 0 {
+            let hints_area = Rect {
+                x: hints_x,
+                width: plan.hints_width as u16,
+                ..area
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    crate::app::state::subagent_tabs::BAR_HINTS,
+                    muted,
+                )))
+                .alignment(Alignment::Right),
+                hints_area,
+            );
+        }
+    }
+
+    /// The contextual key line for whatever currently owns the keyboard.
+    ///
+    /// Rendered from the panel's own `composer_hints`, so a panel advertises
+    /// its verbs once and they appear next to the input they modify. Kept out
+    /// of each panel's own chrome: inside the panel they described the
+    /// panel, while the keys actually operate on the shared composer.
+    ///
+    /// `text` is the frame's **one** build of the line, made where the row's
+    /// height was decided. This function only draws it.
+    fn render_composer_hints(
+        &mut self,
+        frame: &mut Frame,
+        chunk: Option<Rect>,
+        text: Option<&str>,
+    ) {
+        let Some(area) = chunk else {
+            return;
+        };
+        if area.width < 4 || area.height == 0 {
+            return;
+        }
+        let budget = usize::from(area.width).saturating_sub(4);
+        let Some(text) = text else {
+            return;
+        };
+        let theme = &self.ui_state.theme;
+        let line = Line::from(vec![
+            Span::styled(
+                " \u{258c} ",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                crate::wrap::ellipsize_to_width(text, budget),
+                Style::default().fg(theme.muted),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
+        let bg_block = Block::default().style(Style::default().bg(self.ui_state.theme.input_bg));
+        frame.render_widget(bg_block, area);
+
+        // The active agent rides alongside the input-mode badge (`[INS]
+        // [build]`) so the mode a prompt will actually run under is visible
+        // without opening the agent picker. Bounded so a long agent name
+        // cannot crowd out the prompt's own prefix row.
+        //
+        // The mode comes from `App::composer_input_mode`, not from
+        // `ui_state.input_mode`. The raw field is the *composer's* mode, and
+        // `focus_panel` forces it to `Normal` whenever a panel takes the
+        // keyboard — so a terminal panel holding a live PTY in Insert rendered
+        // `[NOR]` above the input while the user was typing into a shell. The
+        // badge and the contextual hint line read this one derived answer, so
+        // a surface that owns the keyboard is named by both or by neither. The
+        // derivation is a read: the render pass never moves the keyboard.
+        //
+        // The destination badge names the surface that currently has the
+        // keyboard — `[LLM]`, `[CHAT]`, `[SESSIONS]` — rather than listing
+        // every reachable destination. Showing both send targets at once was
+        // meant to answer "where am I about to send this?", but it rendered
+        // `[CHAT]` unconditionally and put a second `[BUILD]` beside the agent
+        // name, so the row read as three badges about two axes and answered
+        // the question worse than a single accurate one does.
+        let target = self.input_target();
+        // One destination badge, naming the surface that currently has the
+        // keyboard. See `App::composer_destination_title`.
+        //
+        // C007 overrides it when a subagent addressee is armed. `[LLM]` beside a
+        // `[TO Sally]` badge would be two claims about one destination and the
+        // wrong one: Enter does not start a turn, it hands text to the agent
+        // that is already running. The badge names what Enter actually does.
+        let addressee_badge = self
+            .prompt_state
+            .subagent_addressee
+            .as_ref()
+            .map(|addressee| addressee.label().to_string());
+        let destination_title: String = match addressee_badge.as_deref() {
+            Some(name) => format!("TO {name}"),
+            None => self.composer_destination_title().to_string(),
+        };
+        let destination_style =
+            if target == crate::panels::InputTarget::Chat || addressee_badge.is_some() {
+                Style::default()
+                    .fg(self.ui_state.theme.warning)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(self.ui_state.theme.primary)
+                    .add_modifier(Modifier::BOLD)
+            };
+        // The agent only runs a prompt; naming it while chat is armed would
+        // imply a delivery that is not going to happen.
+        let agent_badge = match target {
+            // C007: an addressed reply is not run by the selected agent — it
+            // is read by the agent already running the turn. Naming the
+            // selected one would imply this submission picks a runner.
+            _ if addressee_badge.is_some() => String::new(),
+            crate::panels::InputTarget::Chat => String::new(),
+            crate::panels::InputTarget::Build => self
+                .agent_state
+                .agents
+                .get(self.agent_state.current_agent)
+                .map(|agent| {
+                    let name = crate::wrap::ellipsize_to_width(&agent.name, MAX_AGENT_BADGE_WIDTH);
+                    format!(" [{name}]")
+                })
+                .unwrap_or_default(),
+        };
+        let input_mode = self.composer_input_mode();
+        // The badge describes the **surface that holds the keyboard**.
+        //
+        // It used to read the editor's *select* mode over the composer, so
+        // an editor in select mode showed `[SEL]` above a composer that was
+        // in Normal mode — and the composer had no select mode of its own
+        // to report, so the row was describing a surface that was not the
+        // one the reader was typing into.
+        //
+        // The composer is a surface with a mode of its own now, so the badge
+        // asks the surface that holds the keyboard: the composer's
+        // Insert/Normal half from the app's own resolution, and its select
+        // half from the widget, because the select mode is the composer's
+        // own and the app has no word for it.
+        //
+        // **Three** surfaces can hold the keys, and the third is the one
+        // that must not be mistaken for the editor: a focused **panel** or
+        // the timeline overlay takes the composer out without the editor
+        // taking over. The badge then reads the composer's own resolved
+        // mode, which is what it read before it learned to ask the surface
+        // — a terminal panel holding a live PTY claims the Insert keys, and
+        // the row said `[NOR]` while the reader was typing into a shell.
+        let composer_holds_keyboard = self.composer_holds_keyboard();
+        let (mode_label, mode_span_style) = if composer_holds_keyboard {
+            match input_mode {
+                InputMode::Insert => (
+                    "[INS]",
+                    Style::default()
+                        .fg(self.ui_state.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                InputMode::Normal if self.prompt_state.prompt.is_selecting() => (
+                    "[SEL]",
+                    Style::default()
+                        .fg(self.ui_state.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                InputMode::Normal => (
+                    "[NOR]",
+                    Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            }
+        } else if self.editor_buffer_owns_keyboard() {
+            // The editor's buffer holds the keyboard, so the badge describes
+            // the editor.
+            match self.editor_state.mode() {
+                crate::editor::EditorMode::Select => (
+                    "[SEL]",
+                    Style::default()
+                        .fg(self.ui_state.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                crate::editor::EditorMode::Insert => (
+                    "[INS]",
+                    Style::default()
+                        .fg(self.ui_state.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                crate::editor::EditorMode::Normal => (
+                    "[NOR]",
+                    Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            }
+        } else {
+            // Neither the composer nor the editor holds the keys: a focused
+            // panel, the timeline overlay or a modal does. The fact that is
+            // true about the composer here is its own **resolved** mode — a
+            // panel that claims the Insert keys puts the composer in Insert
+            // — and that is the answer the badge gave before it learned to
+            // ask which surface holds the keyboard.
+            match input_mode {
+                InputMode::Insert => (
+                    "[INS]",
+                    Style::default()
+                        .fg(self.ui_state.theme.secondary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                InputMode::Normal => (
+                    "[NOR]",
+                    Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            }
+        };
+        // An armed chat reply/edit is a *third* state neither badge covers:
+        // `[CHAT]` says the destination but not that Enter will thread or
+        // replace a specific message, which is exactly what a user needs to
+        // be reminded of before pressing it.
+        let context_badge = self
+            .prompt_state
+            .chat_seed
+            .as_ref()
+            .filter(|seed| seed.is_contextual())
+            .map(|seed| {
+                Span::styled(
+                    format!("[{}] ", seed.label().to_uppercase()),
+                    Style::default()
+                        .fg(self.ui_state.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                )
+            });
+        // `[NOR] [agent] [LLM]` — one row carrying the mode, the agent that
+        // will run the prompt, and the single surface this text is aimed at,
+        // plus the armed chat context when there is one.
+        let mut badge_spans = vec![
+            Span::styled(mode_label.to_string(), mode_span_style),
+            Span::styled(agent_badge.clone(), mode_span_style),
+            Span::styled(format!("[{}] ", destination_title), destination_style),
+        ];
+        badge_spans.extend(context_badge);
+        let mode_indicator = Line::from(badge_spans);
+        let session_prefix = match &self.session_state.session_status {
+            SessionStatus::Working => Span::styled(
+                " ● ",
+                Style::default()
+                    .fg(self.ui_state.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Error => Span::styled(
+                " ✗ ",
+                Style::default()
+                    .fg(self.ui_state.theme.error)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Idle => Span::styled(
+                " ❯ ",
+                Style::default()
+                    .fg(self.ui_state.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        };
+        self.prompt_state.prompt.set_theme(&self.ui_state.theme);
+        self.prompt_state.prompt.set_mode_indicator(mode_indicator);
+        self.prompt_state.prompt.set_prefix(session_prefix);
+
+        // The composer's text is borrowed: the placeholder only asks whether
+        // it starts with a shell marker, and a frame that cloned the whole
+        // buffer to ask that paid for the buffer on every frame.
+        let prompt_text = self.prompt_state.prompt.text();
+        let placeholder = if let Some(name) = addressee_badge.as_deref() {
+            format!("Reply to the agent about {name}…")
+        } else if target == crate::panels::InputTarget::Chat {
+            "Message the project chat…".to_string()
+        } else if prompt_text.starts_with('!') {
+            "shell: run locally; not included in model context".to_string()
+        } else if self.prompt_state.composer_mode.is_task() {
+            "Describe the task to schedule… (Enter opens sheet, Tab for session)".to_string()
+        } else {
+            "Ask anything…".to_string()
+        };
+        self.prompt_state.prompt.set_placeholder(placeholder);
+        // The composer wraps at the pane's width, which is the width this
+        // chunk has: the layout splits the pane vertically, so the chunk's
+        // width is the pane's width and the height the box asked for was
+        // computed against it.
+        self.prompt_state.prompt.set_wrap_width(area.width);
+        let visible_rows = self.prompt_state.prompt.visible_text_rows(area.height);
+        self.prompt_state
+            .prompt
+            .ensure_cursor_visible_with_width(visible_rows, area.width);
+
+        // The cursor rules and the badge read the same two facts: the resolved
+        // mode and the derived keyboard ownership. A caret that disagrees with
+        // the `[INS]`/`[NOR]` badge teaches the wrong keymap, so both are
+        // computed here, once, from the same derivation.
+        //
+        // Normal mode paints a solid block. Insert mode positions the
+        // terminal's own cursor, which blinks at the terminal's rate — the app
+        // runs one animation cadence, and a second one for a blinking caret is
+        // not allowed. The fake block and the real terminal cursor are mutually
+        // exclusive by construction: exactly one of the two branches below runs.
+        let holds_keyboard = self.composer_holds_keyboard();
+        let block_cursor = holds_keyboard && input_mode == InputMode::Normal;
+        self.prompt_state.prompt.set_cursor_style(if block_cursor {
+            crate::components::prompt::ComposerCursor::Block
+        } else {
+            crate::components::prompt::ComposerCursor::None
+        });
+
+        frame.render_widget(&self.prompt_state.prompt, area);
+
+        // Ratatui hides the terminal cursor whenever a frame did not position
+        // it, so "position nothing" is how the composer shows no cursor at
+        // all — when another surface holds the keyboard, and in Normal mode,
+        // where the painted block is the caret instead.
+        if holds_keyboard && input_mode == InputMode::Insert {
+            if let Some((x, y)) = self.prompt_state.prompt.caret_cell(area) {
+                frame.set_cursor_position(Position::new(x, y));
+            }
+        }
+
+        // Command mode deliberately does NOT draw `dialog_state.command_palette`
+        // over the prompt any more. That widget is a second, independent
+        // slash-command popup: 50 columns instead of 110, a raw
+        // `selection`-on-`primary` highlight that themes render as an
+        // unreadable solid block, and its own fuzzy ordering. Because
+        // `update_completions` used to leave `show_completions` false in
+        // command mode, typing `/logs` showed that box, while backspacing to
+        // a bare `/` cleared command mode and showed `render_completions`
+        // instead — one interaction, two boxes. `render_completions` is now
+        // the only popup, and it is driven by `show_completions` in every
+        // mode.
+    }
+
+    fn render_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
+        use crate::app::state::project_picker::disambiguate_label;
+
+        let labels = self.project_tabs.display_labels();
+        let active_id = self.project_tabs.active_tab_id().cloned();
+        let total = labels.len();
+        if total == 0 {
+            return;
+        }
+
+        // Sliding visible window around the active tab, max 7 tabs.
+        const MAX_VISIBLE: usize = 7;
+        let active_idx = active_id
+            .as_ref()
+            .and_then(|id| labels.iter().position(|(tid, _)| tid == id))
+            .unwrap_or(0);
+        let window_start = active_idx.saturating_sub(MAX_VISIBLE / 2);
+        let window_end = (window_start + MAX_VISIBLE).min(total);
+        let window_start = window_end.saturating_sub(MAX_VISIBLE);
+
+        let mut spans: Vec<Span> = Vec::new();
+        if window_start > 0 {
+            spans.push(Span::styled(
+                "‹ ",
+                Style::default().fg(self.ui_state.theme.muted),
+            ));
+        }
+        for (_i, (tid, label)) in labels
+            .iter()
+            .enumerate()
+            .take(window_end)
+            .skip(window_start)
+        {
+            let is_active = active_id.as_ref() == Some(tid);
+            let suffix_source = tid.as_str();
+            let label_str: &str = label.as_str();
+            let display = if labels
+                .iter()
+                .filter(|(_, l)| l.as_str() == label_str)
+                .count()
+                > 1
+            {
+                disambiguate_label(label_str, suffix_source)
+            } else {
+                label.clone()
+            };
+            let display = crate::app::state::project_picker::truncate_tab_label(&display);
+
+            let prefix = if is_active { "▸" } else { " " };
+            let (fg, bg) = if is_active {
+                (self.ui_state.theme.primary, self.ui_state.theme.selection)
+            } else {
+                (
+                    self.ui_state.theme.foreground,
+                    self.ui_state.theme.background,
+                )
+            };
+            spans.push(Span::styled(
+                format!("{} {} ", prefix, display),
+                Style::default().fg(fg).bg(bg),
+            ));
+        }
+        if window_end < total {
+            spans.push(Span::styled(
+                "›",
+                Style::default().fg(self.ui_state.theme.muted),
+            ));
+        }
+
+        let line = Line::from(spans);
+        let paragraph = Paragraph::new(line);
+        frame.render_widget(paragraph, area);
+    }
+
+    fn render_footer(&mut self, frame: &mut Frame, area: Rect) {
+        let mut summary = self.build_status_summary();
+
+        let token_str = format_token_line(
+            self.session_state.token_in,
+            self.session_state.token_out,
+            self.session_state.live_output_tokens,
+            self.session_state.context_tokens as u64,
+            self.session_state.context_limit as u64,
+        );
+        summary.secondary = Some(token_str);
+
+        self.status_bar.set_theme(&self.ui_state.theme);
+        self.status_bar.apply_summary(&summary);
+        self.status_bar
+            .set_project_context(self.active_project_display_context());
+
+        // M007: daemon-resolved effective policy line (cached from the
+        // last snapshot; cleared until the first snapshot lands).
+        self.status_bar
+            .set_policy_status(self.policy_ui.status_line());
+
+        // The LSP status is a cache: computing it awaits the live LSP
+        // service, which cannot happen here (the render pass runs inside
+        // the event loop's runtime context, where `Handle::block_on`
+        // panics). `maybe_refresh_lsp_status` refreshes it off the render
+        // path and `LspStatusRefreshed` fills this cache.
+        self.status_bar
+            .set_lsp_status(self.lsp_status_cache.clone());
+
+        frame.render_widget(&self.status_bar, area);
+    }
+
+    pub fn build_status_summary(&self) -> TuiStatusSummary {
+        crate::render_cost::count_status_summary_build();
+        let mut primary = String::from("idle");
+        let mut activity: Vec<String> = Vec::new();
+
+        if let Some(ref err) = self.ui_state.last_render_error {
+            primary = format!("degraded: {err}");
+        } else if self.session_state.permission_pending {
+            primary = "permission pending".to_string();
+        } else if self.dialog_state.question_dialog.is_some() {
+            primary = "question pending".to_string();
+        } else if self.security_review_running.is_some() {
+            primary = "security review".to_string();
+        } else if self.session_state.session_status == SessionStatus::Working {
+            primary = "working".to_string();
+        } else if !self.shell_handles.is_empty() {
+            primary = "shell running".to_string();
+        } else if self.task_registry.active_count() > 0 {
+            primary = format!("bg:{}", self.task_registry.active_count());
+        } else if self.session_state.session_status == SessionStatus::Error {
+            primary = "error".to_string();
+        }
+
+        let undo_message = if self.undo_session_id.is_some() {
+            if let Some(until) = self.undo_until {
+                if Instant::now() < until {
+                    Some("Session deleted — press U to undo".to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
+        activity.push(format!("agent:{agent_name}"));
+
+        // Provider reasoning control (M004): the daemon-owned extended-
+        // thinking selection, shown next to the daemon-resolved policy line
+        // because it is the same kind of fact — a setting the daemon owns and
+        // the frontend only displays. It is **content in an existing chip
+        // chain**, never a condition on a row's presence: the footer is a
+        // fixed-height surface, so a chip cannot reflow the transcript the
+        // way a row could, and it adds no second spinner and no second
+        // cadence (it is static text in a bar the one 100 ms frame table
+        // already redraws).
+        activity.push(format!(
+            "reasoning:{}",
+            self.ui_state.reasoning_mode.detail()
+        ));
+
+        if self.session_state.subagent_count > 0 {
+            activity.push(format!("subagents:{}", self.session_state.subagent_count));
+        }
+
+        if self.dialog_state.session_reload_request.is_loading() {
+            activity.push("reloading".to_string());
+        }
+
+        if self.dialog_state.import_request.is_loading() {
+            activity.push("importing".to_string());
+        }
+
+        if self.dialog_state.research_request.is_loading() {
+            activity.push("research".to_string());
+        }
+
+        if self.dialog_state.session_messages_request.is_loading() {
+            activity.push("messages".to_string());
+        }
+
+        if self.dialog_state.session_mutation_request.is_loading() {
+            activity.push("mutating".to_string());
+        }
+
+        if self.dialog_state.task_list_request.is_loading() {
+            activity.push("tasks".to_string());
+        }
+
+        if self.dialog_state.worktree_list_request.is_loading() {
+            activity.push("worktrees".to_string());
+        }
+
+        if self.dialog_state.template_create_request.is_loading() {
+            activity.push("template".to_string());
+        }
+
+        let memory_tasks = self
+            .task_registry
+            .iter()
+            .filter(|(_, r)| r.kind == crate::task_lifecycle::TuiTaskKind::Memory)
+            .count();
+        if memory_tasks > 0 {
+            activity.push(format!("mem:{memory_tasks}"));
+        }
+
+        let active_tasks = self.task_registry.active_count();
+        if active_tasks > 0 {
+            activity.push(format!("tasks:{active_tasks}"));
+        }
+
+        if !self.shell_handles.is_empty() {
+            activity.push(format!("shell:{}", self.shell_handles.len()));
+        }
+
+        // Tool programs from projection snapshot
+        if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
+            let active_programs = snapshot
+                .tool_programs
+                .iter()
+                .filter(|p| p.state != "completed" && p.state != "failed")
+                .count();
+            if active_programs > 0 {
+                activity.push(format!("programs:{active_programs}"));
+            }
+            let active_agent_runs = snapshot
+                .agent_runs
+                .iter()
+                .filter(|run| {
+                    !matches!(
+                        run.status.as_str(),
+                        "completed" | "failed" | "interrupted" | "cancelled"
+                    )
+                })
+                .count();
+            if active_agent_runs > 0 {
+                activity.push(format!("agent-runs:{active_agent_runs}"));
+            }
+            let attention_runs = snapshot
+                .agent_runs
+                .iter()
+                .filter(|run| run.attention_required)
+                .count();
+            if attention_runs > 0 {
+                activity.push(format!("attention:{attention_runs}"));
+            }
+        }
+
+        let pending_diffs = self
+            .session_state
+            .changed_files
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.diff_state,
+                    crate::app::state::session::DiffStatsState::Pending { .. }
+                )
+            })
+            .count();
+        if pending_diffs > 0 {
+            activity.push(format!("diff:{pending_diffs}"));
+        }
+
+        if self.security_review_running.is_some() {
+            activity.push("security".to_string());
+        }
+
+        // M004: shared-session controller indicator (cached lease for
+        // the active session; display only, refreshed via `/control`).
+        let active_session = self.active_session_id().map(str::to_string);
+        if let Some(indicator) =
+            crate::commands::control::control_indicator_for(self, active_session.as_deref())
+        {
+            activity.push(indicator);
+        }
+
+        if let Some(ref goal) = self.active_goal {
+            activity.push(format!("goal:{}", format_goal_status_line(goal)));
+        }
+
+        TuiStatusSummary {
+            primary,
+            secondary: None,
+            activity,
+            undo_message,
+        }
+    }
+
+    /// Paint the panel docked to `placement`.
+    ///
+    /// Split from [`render_sidebar`](Self::render_sidebar) so the two differ in
+    /// exactly one thing: which slot's panel they read, and whether that slot is
+    /// the one holding the keyboard. Keeping them together is what would let the
+    /// focus flag drift between "the edge I am painting" and "the edge I am
+    /// driving", which shows up as a panel that renders unfocused while the badge
+    /// claims it is focused.
+    fn render_panel_at(&mut self, frame: &mut Frame, placement: PanelPlacement, area: Rect) {
+        let mut ctx = crate::panels::PanelCtx {
+            theme: Arc::clone(&self.ui_state.theme),
+            // `now_ms` is display-only (composing expiry); no I/O.
+            now_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            session: &mut self.sidebar,
+            chat: &mut self.chat,
+            terminal: &mut self.interactive_terminals,
+            vim_mode: self.ui_state.vim_mode,
+            chat_project: self.chat_panel_project.as_deref(),
+            area,
+            focused: self.panel_host.is_focused_at(placement),
+            input_mode: self.ui_state.input_mode,
+            // The one frame clock decides, once, for every surface this frame
+            // paints — so the docked panel and the box cannot show the caret in
+            // opposite phases.
+            caret_blink_on: crate::components::spinner::cursor_blink_visible_now(),
+        };
+        // `Clear` first: the previous panel's pixels must not show through
+        // a narrower panel (the chat panel is shorter than the sidebar).
+        frame.render_widget(Clear, area);
+        self.panel_host
+            .render_at(placement, &mut ctx, frame.buffer_mut(), area);
+    }
+
+    /// Populate the Session panel, once per frame and only when it moved.
+    ///
+    /// The population step is a copy of the projection and of the session's
+    /// own sidebar-visible state. It runs when **either** the projection
+    /// revision **or** one of those session-derived inputs differs from what
+    /// the sidebar already holds. A frame that changed neither does no work;
+    /// a projection that arrives is always reflected, because its
+    /// `(stream_id, event_seq)` is the first half of the test.
+    fn populate_session_panel_if_needed(&mut self) {
+        if self.sidebar_projection_is_current() && self.sidebar_inputs_are_current() {
+            return;
+        }
+        self.populate_session_panel();
+    }
+
+    /// Whether the sidebar's projection-derived rows match the live snapshot.
+    fn sidebar_projection_is_current(&self) -> bool {
+        match self.sidebar_projection_revision.as_ref() {
+            Some(SidebarProjectionRevision::NoSnapshot) => {
+                self.projection_client.active_snapshot().is_none()
+            }
+            Some(SidebarProjectionRevision::Snapshot {
+                stream_id,
+                event_seq,
+            }) => self.projection_client.active_snapshot().is_some_and(
+                |(current_stream, snapshot)| {
+                    current_stream.as_str() == stream_id.as_str()
+                        && snapshot.event_seq == *event_seq
+                },
+            ),
+            None => false,
+        }
+    }
+
+    /// Whether the session-derived inputs match the rows already copied.
+    fn sidebar_inputs_are_current(&self) -> bool {
+        use crate::components::sidebar::SidebarPopulationInputs;
+
+        let project_scope = self.active_project_id();
+        let session = self.session_state.session.as_ref();
+        let current_agent = &self.agent_state.agents[self.agent_state.current_agent];
+        let provider = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next()
+            .unwrap_or("");
+        let derived = &self.session_state_derived;
+        let git = session.map(|_| &self.session_state.git_sidebar);
+        let git_fallback_root = session.map(|session| session.project_id.as_str());
+        let inputs = SidebarPopulationInputs {
+            project_scope,
+            session,
+            agent: &current_agent.name,
+            provider,
+            model: &self.agent_state.current_model,
+            mcp_servers: &self.session_state.mcp_servers,
+            file_changes: &self.session_state.changed_files,
+            git,
+            git_fallback_root,
+            goal: derived.goal.as_deref(),
+            plan: derived.plan.as_ref(),
+            live_work_status: self.sidebar_live_work_status(),
+        };
+        self.sidebar.population_is_current(&inputs)
+    }
+
+    /// The sidebar's live-work badge, derived from the projection's status.
+    fn sidebar_live_work_status(
+        &self,
+    ) -> Option<crate::components::sidebar::SidebarLiveWorkStatus> {
+        use crate::app::state::projection_client::PrimaryProjectionStatus;
+        use crate::components::sidebar::SidebarLiveWorkStatus;
+
+        match self.projection_client.primary_status() {
+            Some(PrimaryProjectionStatus::Loading) => Some(SidebarLiveWorkStatus::Loading),
+            Some(PrimaryProjectionStatus::Unavailable(_)) => {
+                Some(SidebarLiveWorkStatus::Unavailable)
+            }
+            Some(PrimaryProjectionStatus::Authoritative) | None => None,
+        }
+    }
+
+    /// Record the revision the population just read.
+    fn record_sidebar_projection_revision(&mut self) {
+        self.sidebar_projection_revision = Some(match self.projection_client.active_snapshot() {
+            Some((stream_id, snapshot)) => SidebarProjectionRevision::Snapshot {
+                stream_id: stream_id.to_string(),
+                event_seq: snapshot.event_seq,
+            },
+            None => SidebarProjectionRevision::NoSnapshot,
+        });
+    }
+
+    /// Push session projection into the Session panel's widget.
+    ///
+    /// Split out of `render_panel_at` so the sidebar's field population is
+    /// readable on its own; it performs no I/O and reads only cached state.
+    fn populate_session_panel(&mut self) {
+        crate::render_cost::count_sidebar_population();
+        // One focus reconciliation for the whole population, rather than one
+        // per row setter.
+        self.sidebar.begin_population();
+        // The Workspace route no longer forces this panel. It selects the
+        // Chat panel through the host instead (see
+        // `workspace_dashboard::open_workspace`), which keeps the previous
+        // behaviour while leaving the choice switchable on every route.
+        let project_scope = self.active_project_id().map(str::to_string);
+        self.sidebar.set_project_scope(project_scope.as_deref());
+        if let Some(ref sess) = self.session_state.session {
+            self.sidebar.set_session(sess);
+        }
+        self.sidebar
+            .set_agent(&self.agent_state.agents[self.agent_state.current_agent].name);
+        self.sidebar.set_model(&self.agent_state.current_model);
+        let provider = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        self.sidebar.set_provider(&provider);
+        self.sidebar
+            .set_mcp_servers(self.session_state.mcp_servers.clone());
+        self.sidebar.set_file_changes(
+            self.session_state
+                .changed_files
+                .iter()
+                .map(|file| crate::components::sidebar::SidebarFileChange {
+                    path: file.path.to_string_lossy().into_owned(),
+                    action: file.action.clone(),
+                    diff_preview: file.diff_preview.clone(),
+                    diff_state: file.diff_state.clone(),
+                })
+                .collect(),
+        );
+
+        if let Some(ref sess) = self.session_state.session {
+            let cached = &self.session_state.git_sidebar;
+            let display_root = cached
+                .root
+                .clone()
+                .or_else(|| Some(sess.project_id.clone()));
+            self.sidebar
+                .set_git_status(cached.loading, cached.error.clone());
+            self.sidebar.set_git_info(GitSidebarInfo {
+                root: display_root,
+                branch: cached.branch.clone(),
+                dirty: cached.dirty,
+                staged_count: cached.staged_count,
+                unstaged_count: cached.unstaged_count,
+                untracked_count: cached.untracked_count,
+                conflicted_count: cached.conflicted_count,
+                ahead: cached.ahead,
+                behind: cached.behind,
+                operation_state_label: cached.operation_state_label.clone(),
+                available_actions: cached.available_actions.clone(),
+                conflicted_paths: cached.conflicted_paths.clone(),
+            });
+        } else {
+            self.sidebar.set_git_status(false, None);
+            self.sidebar.set_git_info(GitSidebarInfo::default());
+        }
+
+        let derived = &self.session_state_derived;
+        self.sidebar.set_goal(derived.goal.clone());
+        self.sidebar.set_plan(derived.plan.clone());
+        self.sidebar
+            .set_live_work_status(self.sidebar_live_work_status());
+
+        // Derive the subagent rows first and let the snapshot borrow end
+        // here: the sidebar writes below all need `&mut self`, so holding the
+        // snapshot across them would conflict.
+        let subagent_rows = self
+            .projection_client
+            .active_snapshot()
+            .and_then(|(_, snapshot)| Self::sync_subagents_from_snapshot(snapshot));
+
+        // Populate tool programs from projection snapshot
+        if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
+            use crate::components::sidebar::{
+                SidebarAgentRun, SidebarConvergence, SidebarJob, SidebarToolProgram,
+            };
+            self.sidebar.set_tool_programs(
+                snapshot
+                    .tool_programs
+                    .iter()
+                    .map(|p| SidebarToolProgram {
+                        program_id: p.program_id.clone(),
+                        state: p.state.clone(),
+                        language: p.language.clone(),
+                        calls_completed: p.calls_completed,
+                        summary: p.last_progress.clone(),
+                    })
+                    .collect(),
+            );
+            self.sidebar.set_agent_runs(
+                snapshot
+                    .agent_runs
+                    .iter()
+                    .map(|run| SidebarAgentRun {
+                        run_id: run.run_id.clone(),
+                        task_id: Some(run.task_id.clone()),
+                        agent: run.agent.clone(),
+                        status: run.status.clone(),
+                        worktree: run.worktree_id.clone(),
+                        branch: run.branch.clone(),
+                        read_only_worktree: run.read_only_worktree,
+                        result_commit: run.result_commit.clone(),
+                        attention_required: run.attention_required,
+                        progress: run.progress.clone(),
+                    })
+                    .collect(),
+            );
+            self.sidebar.set_run_groups(
+                snapshot
+                    .run_groups
+                    .iter()
+                    .take(crate::components::sidebar::MAX_SIDEBAR_RUN_GROUPS)
+                    .cloned()
+                    .collect(),
+            );
+            let agent_tree = snapshot
+                .active_turn
+                .as_ref()
+                .map(|turn| turn.agent_tree.iter())
+                .or_else(|| {
+                    snapshot
+                        .recent_turns
+                        .front()
+                        .map(|turn| turn.agent_tree.iter())
+                });
+            self.sidebar.set_agent_tree(
+                agent_tree
+                    .into_iter()
+                    .flatten()
+                    .take(crate::components::sidebar::MAX_SIDEBAR_AGENT_TREE_NODES)
+                    .cloned()
+                    .collect(),
+            );
+            self.sidebar.set_convergences(
+                snapshot
+                    .convergences
+                    .iter()
+                    .map(|convergence| SidebarConvergence {
+                        convergence_id: convergence.convergence_id.clone(),
+                        status: convergence.status.clone(),
+                        cycle_ordinal: convergence.cycle_ordinal,
+                        max_cycles: convergence.max_cycles,
+                        remaining_cycles: convergence.remaining_cycles,
+                        producer_completed: convergence.producer_completed,
+                        producer_active: convergence.producer_active,
+                        verifier_run_id: convergence.verifier_run_id.clone(),
+                        verdict_kind: convergence.verdict_kind.clone(),
+                        awaiting_decision: convergence.awaiting_decision,
+                        selected_run_id: convergence.selected_run_id.clone(),
+                        selected_result_commit: convergence.selected_result_commit.clone(),
+                        last_finding_count: convergence.last_finding_count,
+                    })
+                    .collect(),
+            );
+            // Jobs are filtered with the *same* `is_live_state` the `Ctrl+T`
+            // overlay uses, so "jobs this session is waiting on" means one
+            // thing across both surfaces rather than two rules that drift the
+            // first time a producer invents a new state token.
+            //
+            // The total is read off the filtered references *before* a row is
+            // cloned: the bound truncates what is displayed, never what the
+            // header counts.
+            let live_jobs: Vec<_> = snapshot
+                .jobs
+                .iter()
+                .filter(|job| is_live_state(&job.state))
+                .collect();
+            let job_total = live_jobs.len();
+            self.sidebar.set_jobs_with_total(
+                live_jobs
+                    .into_iter()
+                    .take(crate::components::sidebar::MAX_SIDEBAR_JOB_ROWS)
+                    .map(|job| SidebarJob {
+                        job_id: job.job_id.clone(),
+                        kind: job.kind.clone(),
+                        summary: job.summary.clone(),
+                        state: job.state.clone(),
+                        error_class: job.error_class.clone(),
+                    })
+                    .collect(),
+                job_total,
+            );
+        } else {
+            self.sidebar.set_tool_programs(Vec::new());
+            self.sidebar.set_agent_runs(Vec::new());
+            self.sidebar.set_agent_tree(Vec::new());
+            self.sidebar.set_convergences(Vec::new());
+            self.sidebar.set_jobs(Vec::new());
+        }
+
+        // Only a snapshot that *arrives* replaces the rows. A missing
+        // snapshot is not evidence that no subagents exist — it means the
+        // projection stream has not spoken yet or just hiccupped — so
+        // clearing on it would blank the strip mid-turn and hide work that
+        // is genuinely in flight. An arriving snapshot with no tree is
+        // authoritative emptiness and does clear.
+        if let Some(rows) = subagent_rows {
+            // The panel reads the *same* derived rows rather than re-projecting
+            // the agent tree a third time. That is what makes the panel, the
+            // `Ctrl+T` overlay, and the tab bar show one name per subagent:
+            // they are three renderings of one vector, not three independent
+            // reads that could disagree. `label()` supplies the same
+            // name-else-agent-type fallback the overlay uses.
+            let subagent_total = rows.len();
+            self.sidebar.set_subagents_with_total(
+                rows.iter()
+                    .take(crate::components::sidebar::MAX_SIDEBAR_SUBAGENT_ROWS)
+                    .map(|row| crate::components::sidebar::SidebarSubagent {
+                        task_id: row.task_id.clone(),
+                        child_instance_id: row.child_instance_id.clone(),
+                        name: row.label().to_string(),
+                        agent: row.agent.clone(),
+                        status: row.status.clone(),
+                        profile: row.descriptor().map(str::to_string),
+                    })
+                    .collect(),
+                subagent_total,
+            );
+            self.apply_subagent_rows(rows);
+        }
+        self.sidebar.end_population();
+        self.record_sidebar_projection_revision();
+    }
+
+    /// Project the snapshot's agent tree into the main buffer's subagent rows.
+    ///
+    /// Reads the same `active_turn` (falling back to the newest
+    /// `recent_turns`) tree the sidebar renders, so the two surfaces cannot
+    /// disagree about which delegated runs exist. The durable `run_id` and the
+    /// human-readable `display_name` are read straight off the node, having
+    /// been carried there by the event; a task with no matching run still gets
+    /// a row rather than being hidden, because the agent tree is the
+    /// authoritative record that the task was dispatched.
+    ///
+    /// Refresh the shared subagent rows from the active projection snapshot.
+    ///
+    /// This is the one place the working strip's count and the sidebar's list
+    /// are both written from, so they cannot disagree. It is deliberately
+    /// independent of whether the session panel is being drawn this frame:
+    /// row 0 of the strip reports `awaiting N tasks` from this vector, and a
+    /// hidden sidebar must not turn that into `idle`.
+    ///
+    /// A snapshot that has not arrived yet is not evidence of emptiness, so
+    /// the rows are left alone rather than cleared.
+    fn sync_subagent_rows_from_projection(&mut self) {
+        if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
+            if let Some(rows) = Self::sync_subagents_from_snapshot(snapshot) {
+                self.apply_subagent_rows(rows);
+            }
+        }
+        // A subagent that starts while `/sessions` is open has to appear there
+        // without the user closing and reopening the dialog. Refreshing only
+        // when the dialog is mounted keeps this off the hot path for the
+        // common case where it is closed, and — as with the rows above — a
+        // snapshot that has not arrived is not evidence of emptiness, so a
+        // missing snapshot leaves the sections exactly as they were.
+        self.refresh_sessions_dialog_pending_rows();
+    }
+
+    /// Returns `None` when there is no snapshot to read at all, which is not
+    /// the same as an empty tree: the caller keeps the rows it already has
+    /// rather than blanking the strip mid-turn.
+    fn sync_subagents_from_snapshot(
+        snapshot: &codegg::protocol::projection::SessionProjectionSnapshot,
+    ) -> Option<Vec<SubagentRow>> {
+        Some(
+            crate::app::state::session_work::select_session_work(snapshot)
+                .into_iter()
+                .filter_map(|work| work.subagent)
+                .collect(),
+        )
+    }
+
+    /// The one place a dialog's rect is decided: a stated preference, clamped.
+    fn dialog_rect(&self, available: Rect) -> Option<Rect> {
+        self.focus_manager.top().map(|dialog| {
+            crate::components::dialog_size::clamp_area(dialog.preferred_area(available), available)
+        })
+    }
+
+    fn render_dialog(&mut self, frame: &mut Frame, popup_area: Rect) {
+        frame.render_widget(Clear, popup_area);
+
+        // The picker body reads App-owned state; its rect is `dialog_rect`'s.
+        if self.focus_manager.active_dialog_type() == DialogType::ProjectPicker {
+            self.render_project_picker(frame, popup_area);
+            return;
+        }
+
+        self.focus_manager
+            .render(frame, popup_area, &self.ui_state.theme);
+    }
+
+    fn render_project_picker(&mut self, frame: &mut Frame, dialog_area: Rect) {
+        use crate::components::dialogs::project_picker::render_picker_body;
+
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.ui_state.theme.border))
+            .title(" Project Picker ");
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        if let Some(picker) = self.dialog_state.project_picker.as_ref() {
+            let filtered = picker.filtered_indices(&self.project_catalog.entries);
+            render_picker_body(
+                frame,
+                picker,
+                &filtered,
+                &self.project_catalog.entries,
+                self.project_catalog.capability_supported,
+                inner,
+                &self.ui_state.theme,
+            );
+        }
+    }
+
+    fn render_completions(&mut self, frame: &mut Frame, prompt_area: Rect) {
+        let rows = self.completion_rows();
+        let sel = self.prompt_state.completion_sel;
+        // Popup inner width, so descriptions get an ellipsis instead of
+        // being cut mid-word by the widget's hard clip.
+        //
+        // The popup used to be pinned to 40 columns, which clipped almost
+        // every command description ("Show the aggregated token/cost usage
+        // breakdown for this session" became "Show the aggregated …"). Size
+        // it against the prompt area instead, capped so it still reads as a
+        // popup anchored to the composer rather than a full-screen overlay.
+        const MAX_COMPLETION_WIDTH: u16 = 110;
+        // Rendered on the popup's top border row, so it costs no content
+        // height. The retired command palette advertised its keys this way and
+        // the single popup now needs to stand on its own.
+        const COMPLETION_HINT: &str =
+            " \u{2191}\u{2193} navigate \u{b7} Enter run \u{b7} Esc cancel ";
+        let compl_w = MAX_COMPLETION_WIDTH.min(prompt_area.width.saturating_sub(2));
+        let inner_w = (compl_w as usize).saturating_sub(2);
+        // The selected row is painted with an explicit background, so its
+        // colors have to be resolved against *that* background rather than
+        // the popup's. Themes are free to pick a `selection` and an accent
+        // that sit at the same luminance, which renders the highlighted row
+        // as a solid block of one color — unreadable, and indistinguishable
+        // from the surrounding background. Resolve both foregrounds against
+        // the selection fill by contrast so the highlighted row is legible
+        // under every theme, including the 50 bundled Halloy imports.
+        let sel_bg = self.ui_state.theme.selection;
+        let sel_label_fg = readable_on(
+            self.ui_state.theme.primary,
+            sel_bg,
+            [
+                self.ui_state.theme.primary,
+                self.ui_state.theme.foreground,
+                self.ui_state.theme.secondary,
+                self.ui_state.theme.link,
+            ],
+        );
+        let sel_desc_fg = readable_on(
+            self.ui_state.theme.muted,
+            sel_bg,
+            [
+                self.ui_state.theme.foreground,
+                self.ui_state.theme.primary,
+                self.ui_state.theme.secondary,
+                self.ui_state.theme.muted,
+            ],
+        );
+        let items: Vec<ListItem> = match self.prompt_state.completion_type {
+            CompletionType::Slash => rows
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_label_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    // The description shares the label's background on the
+                    // selected row; without this it kept the popup fill and
+                    // the highlight bar visibly stopped mid-line.
+                    let desc_style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_desc_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.muted)
+                    };
+                    let content = if let Some(ref desc) = c.description {
+                        let budget = inner_w.saturating_sub(c.label.chars().count() + 1);
+                        Text::from(vec![Line::from(vec![
+                            Span::styled(format!("{} ", c.label), style),
+                            Span::styled(
+                                crate::components::sidebar::clean_inline_text(desc, budget),
+                                desc_style,
+                            ),
+                        ])])
+                    } else {
+                        Text::from(Span::styled(&c.label, style))
+                    };
+                    ListItem::new(content)
+                })
+                .collect(),
+            CompletionType::File => rows
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_label_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    let desc_style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_desc_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.muted)
+                    };
+                    let content = if let Some(ref desc) = c.description {
+                        Text::from(vec![Line::from(vec![
+                            Span::styled(format!("{} ", c.icon()), style),
+                            Span::styled(format!("{} ", c.label), style),
+                            Span::styled(desc, desc_style),
+                        ])])
+                    } else {
+                        Text::from(vec![Line::from(vec![
+                            Span::styled(format!("{} ", c.icon()), style),
+                            Span::styled(&c.label, style),
+                        ])])
+                    };
+                    ListItem::new(content)
+                })
+                .collect(),
+            CompletionType::Agent => rows
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_label_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    let desc_style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_desc_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.muted)
+                    };
+                    let content = if let Some(ref desc) = c.description {
+                        Text::from(vec![Line::from(vec![
+                            Span::styled(format!("@{} ", c.label), style),
+                            Span::styled(desc, desc_style),
+                        ])])
+                    } else {
+                        Text::from(Span::styled(format!("@{}", c.label), style))
+                    };
+                    ListItem::new(content)
+                })
+                .collect(),
+        };
+        if items.is_empty() {
+            // A trigger is active but nothing matched. Say so instead of
+            // leaving the user looking at an unchanged screen; the old
+            // command-palette popup rendered a " No results " row here and
+            // this is the one popup now serving that path.
+            let compl_h = 3u16;
+            let empty_area = Rect {
+                x: prompt_area.x + 1,
+                y: prompt_area.y.saturating_sub(compl_h),
+                width: compl_w,
+                height: compl_h,
+            };
+            frame.render_widget(Clear, empty_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(COMPLETION_HINT)
+                .title_style(Style::default().fg(self.ui_state.theme.muted))
+                .border_style(Style::default().fg(self.ui_state.theme.border))
+                .style(Style::default().bg(self.ui_state.theme.background));
+            frame.render_widget(
+                Paragraph::new(" No results ")
+                    .block(block)
+                    .alignment(ratatui::layout::Alignment::Center),
+                empty_area,
+            );
+            self.completion_visible_rows = 0;
+            self.completion_scroll_offset = 0;
+            return;
+        }
+        let max_h = 8.min(items.len() as u16);
+        let compl_h = max_h + 2;
+        // Scroll the list so the selection is always on screen. Without this
+        // the popup was a fixed 8-row window over the whole result set, so
+        // arrowing past row 8 highlighted an entry that was not drawn — the
+        // selection silently vanished. `completion_sel` is reset to 0 on
+        // every filter change (`update_completions`), so anchoring the
+        // window so the selection sits on its last row keeps navigation
+        // monotonic without carrying a second piece of scroll state that
+        // could drift out of sync with the filter.
+        let visible = max_h as usize;
+        let total = items.len();
+        let sel = sel.min(total.saturating_sub(1));
+        let start = sel.saturating_sub(visible.saturating_sub(1));
+        let compl_area = Rect {
+            x: prompt_area.x + 1,
+            y: prompt_area.y.saturating_sub(compl_h),
+            width: compl_w,
+            height: compl_h,
+        };
+        frame.render_widget(Clear, compl_area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(COMPLETION_HINT)
+            .title_style(Style::default().fg(self.ui_state.theme.muted))
+            .border_style(Style::default().fg(self.ui_state.theme.border))
+            .style(Style::default().bg(self.ui_state.theme.background));
+        let list = List::new(items[start..(start + visible).min(total)].to_vec()).block(block);
+        frame.render_widget(list, compl_area);
+        // The visible rows are the *filtered* set, which the popup sizes
+        // itself from. Click hit-testing must use the same count, offset by
+        // the scroll window or every click would select the wrong row.
+        self.frame_plan.completion = Some(compl_area);
+        self.completion_visible_rows = visible;
+        self.completion_scroll_offset = start;
+    }
+}
+
+#[cfg(test)]
+mod subagent_row_chain_tests {
+    //! The untested middle of the subagent naming chain.
+    //!
+    //! Every TUI test that shows a named subagent hand-seeds `display_name`,
+    //! which means the chain
+    //! `CoreEvent::SubagentStarted -> adapter -> reducer -> snapshot -> row`
+    //! had **no** coverage at all: every one of those links could drop the
+    //! name and the suite would stay green while the feature stopped working.
+    //! The user-visible symptom is a subagent row that shows its agent type
+    //! instead of `Sally`, with nothing failing.
+    //!
+    //! C005 rides the same seam with the pool descriptors. They are asserted
+    //! **in these tests rather than in parallel ones**: this chain has exactly
+    //! one snapshot→row derivation, and a second suite for the second pair of
+    //! fields would be a second thing to keep in step rather than a second
+    //! defect to catch.
+
+    use super::App;
+    use codegg::protocol::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
+    use codegg::protocol::projection::fixtures::active_turn_snapshot;
+    use codegg::protocol::projection::reducer::{ProjectionReducer, ReducerEventInput};
+    use codegg::protocol::projection::ProjectionEvent;
+    use codegg::protocol::projection::ProjectionState;
+
+    /// Drives a named `SubagentStarted` all the way through the real adapter
+    /// and reducer, and asserts the row the TUI would render carries it.
+    #[test]
+    fn a_named_subagent_reaches_the_rendered_row() {
+        let node = |name: Option<&str>| AgentTreeNodeProjection {
+            child_instance_id: "child-7".into(),
+            originating_turn_id: Some("turn-1".into()),
+            task_id: 7,
+            agent: "explore".into(),
+            description: "walking the tree".into(),
+            status: AgentTreeStatus::Running,
+            parent_task_id: None,
+            created_at: 4,
+            completed_at: None,
+            result_summary: None,
+            display_name: name.map(str::to_string),
+            profile: Some("Reconnaissance generalist.".into()),
+            usefulness: Some("Useful for broad recon.".into()),
+            run_id: Some("018f-run-7".into()),
+        };
+
+        let mut snapshot = active_turn_snapshot();
+        ProjectionReducer::default().apply_all(
+            &mut snapshot,
+            vec![ReducerEventInput::session(
+                4,
+                4,
+                codegg::protocol::projection::fixtures::FIXTURE_SESSION_ID,
+                Some("turn-1".into()),
+                ProjectionEvent::SubagentStarted {
+                    node: node(Some("Sally")),
+                },
+            )],
+        );
+
+        let rows = App::sync_subagents_from_snapshot(&snapshot)
+            .expect("a snapshot with an active turn always yields rows");
+        let row = rows
+            .iter()
+            .find(|r| r.task_id == "7")
+            .unwrap_or_else(|| panic!("row for task 7 missing: {rows:?}"));
+        assert_eq!(
+            row.display_name.as_deref(),
+            Some("Sally"),
+            "the name dropped between the snapshot and the row"
+        );
+        assert_eq!(
+            row.profile.as_deref(),
+            Some("Reconnaissance generalist."),
+            "the descriptor dropped between the snapshot and the row"
+        );
+        assert_eq!(row.usefulness.as_deref(), Some("Useful for broad recon."));
+        assert_eq!(row.run_id.as_deref(), Some("018f-run-7"));
+        assert_eq!(row.agent, "explore");
+        assert_eq!(row.status, "running");
+    }
+
+    /// A node recorded before names existed still renders — as its agent type,
+    /// never as a blank row.
+    ///
+    /// C005: the same holds for the descriptors. A pre-milestone node has no
+    /// descriptor, so the row must fall back to its task description rather
+    /// than leaving an empty column.
+    #[test]
+    fn an_unnamed_node_still_renders_a_row() {
+        let mut snapshot = active_turn_snapshot();
+        ProjectionReducer::default().apply_all(
+            &mut snapshot,
+            vec![ReducerEventInput::session(
+                4,
+                4,
+                codegg::protocol::projection::fixtures::FIXTURE_SESSION_ID,
+                Some("turn-1".into()),
+                ProjectionEvent::SubagentStarted {
+                    node: AgentTreeNodeProjection {
+                        child_instance_id: "child-9".into(),
+                        originating_turn_id: Some("turn-1".into()),
+                        task_id: 9,
+                        agent: "review".into(),
+                        description: "reading".into(),
+                        status: AgentTreeStatus::Running,
+                        parent_task_id: None,
+                        created_at: 4,
+                        completed_at: None,
+                        result_summary: None,
+                        display_name: None,
+                        profile: None,
+                        usefulness: None,
+                        run_id: None,
+                    },
+                },
+            )],
+        );
+        let rows = App::sync_subagents_from_snapshot(&snapshot).expect("rows");
+        let row = rows.iter().find(|r| r.task_id == "9").expect("row 9");
+        assert!(row.display_name.is_none());
+        assert!(row.descriptor().is_none());
+        assert_eq!(
+            row.topic(),
+            "reading",
+            "a node with no descriptor must fall back to its task description, \
+             not to an empty string"
+        );
+        assert!(
+            !row.label().is_empty(),
+            "an unnamed subagent must still be identifiable"
+        );
+    }
+
+    /// Rows survive the parent turn completing.
+    ///
+    /// `sync_subagents_from_snapshot` reads `active_turn` and falls back to the
+    /// newest `recent_turns`. Without that fallback a subagent would vanish the
+    /// moment its turn ended, which is the "row disappeared" report this
+    /// fallback exists to prevent.
+    #[test]
+    fn rows_survive_the_parent_turn_completing() {
+        let mut snapshot = active_turn_snapshot();
+        ProjectionReducer::default().apply_all(
+            &mut snapshot,
+            vec![ReducerEventInput::session(
+                4,
+                4,
+                codegg::protocol::projection::fixtures::FIXTURE_SESSION_ID,
+                Some("turn-1".into()),
+                ProjectionEvent::SubagentStarted {
+                    node: AgentTreeNodeProjection {
+                        child_instance_id: "child-11".into(),
+                        originating_turn_id: Some("turn-1".into()),
+                        task_id: 11,
+                        agent: "explore".into(),
+                        description: "walking".into(),
+                        status: AgentTreeStatus::Running,
+                        parent_task_id: None,
+                        created_at: 4,
+                        completed_at: None,
+                        result_summary: None,
+                        display_name: Some("Ada".into()),
+                        profile: Some("Reconnaissance generalist.".into()),
+                        usefulness: None,
+                        run_id: None,
+                    },
+                },
+            )],
+        );
+        // Move the finished turn out of `active_turn`, exactly as the reducer
+        // does on TurnCompleted.
+        let finished = snapshot.active_turn.take().expect("an active turn");
+        snapshot.push_recent_turn(finished);
+
+        let rows = App::sync_subagents_from_snapshot(&snapshot)
+            .expect("a snapshot with no active turn still yields rows");
+        let row = rows
+            .iter()
+            .find(|r| r.task_id == "11")
+            .unwrap_or_else(|| panic!("row vanished when its turn completed: {rows:?}"));
+        assert_eq!(row.display_name.as_deref(), Some("Ada"));
+    }
+
+    /// A snapshot that carries no turn at all yields *no rows* rather than an
+    /// error — and, per the module's own contract, a missing snapshot (`None`)
+    /// is distinct from an empty one, so the caller keeps what it had.
+    #[test]
+    fn an_empty_snapshot_yields_no_rows() {
+        let snapshot = codegg::protocol::projection::fixtures::idle_snapshot();
+        let rows = App::sync_subagents_from_snapshot(&snapshot).expect("Some, not None");
+        assert!(rows.is_empty(), "no turn means no rows: {rows:?}");
+    }
+}
+
+#[cfg(test)]
+mod viewport_owner_tests {
+    //! Who owns the viewport rect.
+    //!
+    //! The viewport used to have two owners: the transcript was painted, and
+    //! the subagent view was then painted *over* it, so a reader looking at a
+    //! subagent saw the main conversation showing through the subagent's own
+    //! text and in the rect's last column. The change review had the same
+    //! defect one level up — it took the viewport, and the subagent view took
+    //! it back.
+    //!
+    //! These tests pin the **decision**, so "one surface, one rect" is a fact
+    //! about the code rather than a fact about the order two calls happen in.
+
+    use super::{App, ViewportOwner};
+    use crate::app::state::subagents::SubagentRow;
+    use crate::unified_diff::parse_review;
+
+    fn app() -> App {
+        App::new_for_testing("/tmp".into())
+    }
+
+    fn row() -> SubagentRow {
+        SubagentRow {
+            transcript: None,
+            child_instance_id: Some("child-1".into()),
+            task_id: "1".into(),
+            run_id: Some("run-1".into()),
+            display_name: Some("Sally".into()),
+            profile: None,
+            usefulness: None,
+            agent: "explore".into(),
+            description: "Map the auth flow".into(),
+            status: "running".into(),
+        }
+    }
+
+    /// Open a change review, which is modal and therefore outranks a tab.
+    fn open_review(app: &mut App) {
+        let patches = vec![(
+            "src/lib.rs".to_string(),
+            "@@ -1,1 +1,1 @@\n-a\n+b\n".to_string(),
+        )];
+        app.change_review_state.open(
+            "preview-1".into(),
+            "edit".into(),
+            "Rename helper".into(),
+            "agent".into(),
+            false,
+            parse_review(&patches),
+            vec!["src/lib.rs".into()],
+        );
+    }
+
+    #[test]
+    fn the_transcript_owns_the_viewport_when_nothing_else_claims_it() {
+        let app = app();
+        assert_eq!(app.viewport_owner(), ViewportOwner::Route);
+    }
+
+    #[test]
+    fn an_open_subagent_tab_owns_the_viewport() {
+        let mut app = app();
+        app.ui_state.subagents.set_rows(vec![row()]);
+        assert!(app.open_subagent_tab("1"), "the tab opens");
+        assert_eq!(app.viewport_owner(), ViewportOwner::SubagentTab);
+    }
+
+    #[test]
+    fn the_change_review_owns_the_viewport_on_its_own() {
+        let mut app = app();
+        open_review(&mut app);
+        assert_eq!(app.viewport_owner(), ViewportOwner::ChangeReview);
+    }
+
+    #[test]
+    fn the_change_review_outranks_an_open_subagent_tab() {
+        let mut app = app();
+        app.ui_state.subagents.set_rows(vec![row()]);
+        assert!(app.open_subagent_tab("1"), "the tab opens");
+        open_review(&mut app);
+        assert_eq!(
+            app.viewport_owner(),
+            ViewportOwner::ChangeReview,
+            "a modal decision surface must never be covered by a tab"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reasoning_indicator_tests {
+    use super::*;
+    use codegg::protocol::core::ReasoningMode;
+
+    /// The activity chips the status bar would render.
+    fn chips(app: &App) -> Vec<String> {
+        app.build_status_summary().activity
+    }
+
+    /// The indicator shows the **daemon-owned** selection compactly.
+    #[test]
+    fn the_indicator_shows_the_daemon_owned_selection() {
+        let app = App::new_for_testing("/tmp".to_string());
+        let mut app = app;
+
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        assert!(
+            chips(&app).iter().any(|c| c == "reasoning:high"),
+            "the chip must show the selection, got {:?}",
+            chips(&app)
+        );
+
+        app.ui_state.reasoning_mode = ReasoningMode::Off;
+        assert!(
+            chips(&app).iter().any(|c| c == "reasoning:off"),
+            "the chip must show the off selection, got {:?}",
+            chips(&app)
+        );
+
+        app.ui_state.reasoning_mode = ReasoningMode::Inherit;
+        assert!(
+            chips(&app).iter().any(|c| c == "reasoning:default"),
+            "the chip must show the default selection, got {:?}",
+            chips(&app)
+        );
+
+        app.ui_state.reasoning_mode = ReasoningMode::Budget(2048);
+        assert!(
+            chips(&app).iter().any(|c| c == "reasoning:budget 2048"),
+            "the chip must show the budget selection, got {:?}",
+            chips(&app)
+        );
+    }
+
+    /// The indicator is **content in an existing chain**, never a condition
+    /// on the surface's presence. The footer is a fixed-height row, so the
+    /// chip cannot move the transcript the way a row could: the number of
+    /// chips changes, but nothing about the layout does.
+    #[test]
+    fn the_indicator_does_not_reflow_the_transcript() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let layout_before = app
+            .ui_state
+            .layout
+            .session_layout(Rect::new(0, 0, 80, 24), None);
+
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        let layout_after = app
+            .ui_state
+            .layout
+            .session_layout(Rect::new(0, 0, 80, 24), None);
+
+        assert_eq!(
+            layout_before, layout_after,
+            "the reasoning indicator must not move the transcript"
+        );
+    }
+
+    /// The indicator adds no second spinner and no second cadence: it is
+    /// static text in a bar that the one 100 ms frame table already
+    /// redraws, so two renders of the same selection are byte-identical and
+    /// the chip carries no animation glyph of its own.
+    #[test]
+    fn the_indicator_adds_no_second_spinner_or_cadence() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.ui_state.reasoning_mode = ReasoningMode::Effort("high".to_string());
+        let first = chips(&app);
+        let second = chips(&app);
+        assert_eq!(
+            first, second,
+            "the reasoning indicator must be static, not an animated frame"
+        );
+        for frame in crate::components::spinner::SPINNER_FRAMES {
+            assert!(
+                !first.iter().any(|chip| chip.contains(frame)),
+                "the reasoning indicator must not draw a spinner frame ({frame})"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod dialog_sizing_tests {
+    use super::*;
+    use crate::components::component::centered_rect;
+    use crate::components::dialogs::project_picker::ProjectPickerDialog;
+
+    #[test]
+    fn a_mounted_picker_is_sized_by_its_preference_not_by_the_legacy_popup() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.focus_manager.push(Box::new(ProjectPickerDialog::new(
+            app.ui_state.theme.clone(),
+        )));
+        let screen = Rect::new(0, 0, 80, 24);
+        let rect = app
+            .dialog_rect(screen)
+            .expect("a mounted dialog states a rect");
+        assert_eq!(
+            rect,
+            ProjectPickerDialog::picker_area(screen),
+            "the host must place the picker's own preferred area"
+        );
+        assert_ne!(
+            rect,
+            centered_rect(60, 50, screen),
+            "the picker must not fall back to the shared 60x50 popup"
+        );
+    }
+}

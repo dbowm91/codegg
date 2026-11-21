@@ -285,7 +285,7 @@ lists, `ExecOutput::success` / `::error` constructors, the
 serialization-fallback literal in `print_output`, not a `classify_error`
 arm.
 
-Verified 2026-10-23 against `src/exec.rs`, `src/main.rs` (the `Exec`
+Verified 2026-10-23 against `src/exec.rs`, `crates/codegg-cli/src/main.rs` (the `Exec`
 subcommand and `ExecutionPolicyArgs`), `src/agent/loop.rs`
 (`setup_question_channel_for_exec`), and `src/agent/tool_batch.rs` (the
 question timeout). Corrected:

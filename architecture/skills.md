@@ -133,7 +133,7 @@ in `src/agent/asset_context.rs` pins the accessor.
 
 Every registry construction site builds its own `AssetRegistry`, so every one
 of them must honor the parent-directory contract. There are **seven** such
-construction sites, spread across six files (`src/tui/app/mod.rs` holds two):
+construction sites, spread across six files (`crates/codegg-tui/src/app/mod.rs` holds two):
 
 | Construction site | Purpose |
 |---|---|
@@ -142,7 +142,7 @@ construction sites, spread across six files (`src/tui/app/mod.rs` holds two):
 | `src/skills/publish.rs:447-451` | `SkillPublicationService`; the publish-time collision check |
 | `src/tool/skill.rs:101-110` | The `skill` model tool; chains the context roots with the platform default |
 | `src/tool/skill_proposal.rs:132-136` | Collision diagnostics for a submitted proposal |
-| `src/tui/app/mod.rs:6823` and `:6986` | `/skill-promote` listing and the `/skill-proposal` live-collision view |
+| `crates/codegg-tui/src/app/mod.rs:6823` and `:6986` | `/skill-promote` listing and the `/skill-proposal` live-collision view |
 
 The daemon no longer builds a registry directly: `src/core/daemon_refresh.rs`
 builds the shared `AssetContext` (seeding the global root at `:317-319`) and
@@ -303,7 +303,7 @@ re-export in `src/skills/mod.rs:12`.
 `Skill` (name, description, version, tags, body, source) and `SkillIndex`
 (legacy facade) are preserved for backward compatibility.
 
-`SkillIndex` is still **live** on one path: `src/main.rs:4098-4105` uses it
+`SkillIndex` is still **live** on one path: `crates/codegg-cli/src/main.rs:4098-4105` uses it
 to implement `codegg --session skill:<name>`, which activates a skill body
 into the composer. That path does **not** go through `AssetRegistry`: it
 scans `dirs::config_dir()/codegg/skills` and `<project>/.codegg/skills`
@@ -459,7 +459,7 @@ M002/M003 symbols (`validate_portable_document` `parser.rs:171`,
 Verified 2026-10-23 against all 10 files in `src/skills/`, plus
 `src/agent/asset_context.rs`, `src/agent/asset_snapshot_builder.rs`,
 `src/core/daemon_refresh.rs`, `src/tool/skill.rs`,
-`src/tool/skill_proposal.rs`, `src/tui/app/mod.rs`, `src/main.rs`, and
+`src/tool/skill_proposal.rs`, `crates/codegg-tui/src/app/mod.rs`, `crates/codegg-cli/src/main.rs`, and
 `tests/agent_loop/`. Corrections made:
 
 | Claim in the previous revision | Finding |
@@ -478,9 +478,9 @@ Verified 2026-10-23 against all 10 files in `src/skills/`, plus
 | "the exact 11 `SourceKind` variants with their literal discriminants `0/10/20/30/35/40/50/60/70/80/90`" | Stale. `SourceKind` has **23** variants (`src/skills/source.rs:6-37`); the eleven listed are the original set, and the twelve added since are `PiProject` 21, `CursorProject` 22, `GeminiProject` 24, `CopilotProject` 26, `ClineProject` 27, `RooProject` 28, `FactoryProject` 29, `ClineGlobal` 52, `PiGlobal` 54, `RooGlobal` 56, `CopilotGlobal` 57, `FactoryGlobal` 58. The precedence table in the body already listed all 23 correctly. |
 | "the global-root append happens at `src/skills/registry.rs:250-303`" | The function is `resolve_source_roots_with_home` at `registry.rs:249-435`. |
 | "The daemon does so at `src/core/daemon_refresh.rs:187-191`" | The daemon now seeds the shared `AssetContext` global root at `src/core/daemon_refresh.rs:317-319`; it does **not** build a registry. The registry is built by `src/agent/asset_snapshot_builder.rs:98` via `build_with_plugin_sources`. |
-| The construction-site table listed `src/core/daemon_refresh.rs:187-191,375-379` | Dead reference — that file no longer builds a registry. Rebuilt the table against the real construction sites: `src/agent/asset_snapshot_builder.rs:98`, `src/skills/compat.rs:67`, `src/skills/publish.rs:447`, `src/tool/skill.rs:110`, `src/tool/skill_proposal.rs:136`, `src/tui/app/mod.rs:6823` and `:6986`. |
-| "`SkillIndexCompat` … Used by `src/main.rs` and `src/tool/skill.rs`" | Wrong on both counts. `src/tool/skill.rs:110` builds an `AssetRegistry` directly, and `src/main.rs:4098` uses the legacy `SkillIndex`, not `SkillIndexCompat`. `SkillIndexCompat` has **no production consumer**. |
-| — | Added: the fact that the legacy `SkillIndex` is still live on the `codegg --session skill:<name>` path (`src/main.rs:4098-4105`) and that it bypasses `AssetRegistry` entirely — no other harness roots, no precedence, no portable-name or symlink-boundary validation; the `enabled_sources` default (all 22 non-`Plugin` kinds); and the `workspace_depth` field's role. |
+| The construction-site table listed `src/core/daemon_refresh.rs:187-191,375-379` | Dead reference — that file no longer builds a registry. Rebuilt the table against the real construction sites: `src/agent/asset_snapshot_builder.rs:98`, `src/skills/compat.rs:67`, `src/skills/publish.rs:447`, `src/tool/skill.rs:110`, `src/tool/skill_proposal.rs:136`, `crates/codegg-tui/src/app/mod.rs:6823` and `:6986`. |
+| "`SkillIndexCompat` … Used by `crates/codegg-cli/src/main.rs` and `src/tool/skill.rs`" | Wrong on both counts. `src/tool/skill.rs:110` builds an `AssetRegistry` directly, and `crates/codegg-cli/src/main.rs:4098` uses the legacy `SkillIndex`, not `SkillIndexCompat`. `SkillIndexCompat` has **no production consumer**. |
+| — | Added: the fact that the legacy `SkillIndex` is still live on the `codegg --session skill:<name>` path (`crates/codegg-cli/src/main.rs:4098-4105`) and that it bypasses `AssetRegistry` entirely — no other harness roots, no precedence, no portable-name or symlink-boundary validation; the `enabled_sources` default (all 22 non-`Plugin` kinds); and the `workspace_depth` field's role. |
 
 Corrected 2026-10-23: the test commands. `cargo test --test skills_registry`
 and `cargo test --test skill_publication` select **zero** tests — both are
@@ -491,7 +491,7 @@ required.
 Corrected 2026-10-23 (second pass): the construction-site **count**. Both the
 body prose and the 2026-10-06 reconciliation note said "six sites", but six is
 the number of *files*; the table lists **seven** call sites because
-`src/tui/app/mod.rs` holds two. Re-measured every `AssetRegistry::build*`
+`crates/codegg-tui/src/app/mod.rs` holds two. Re-measured every `AssetRegistry::build*`
 call site in `src/` and `crates/`: seven are production and two
 (`src/skills/registry.rs:748`, `:801`) are `#[cfg(test)]` helpers inside the
 `mod tests` block that starts at `src/skills/registry.rs:733`. The body now

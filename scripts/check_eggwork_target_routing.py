@@ -17,7 +17,7 @@ Enforces the CodeGG-owned target-selection invariants from
      (``set_attempt_remote_handle``) so restart reconciles instead of
      resubmitting.
   6. The frontend and tool layers cannot name a remote node at all: no
-     file under ``src/tool``, ``src/tui``, ``src/agent``, or ``src/command``
+     file under ``src/tool``, ``crates/codegg-tui/src``, ``src/agent``, or ``src/command``
      may mention ``EggworkNode``. A remote-targeted command is only ever
      spawned on the remote node, so a local surface that cannot name one
      cannot spawn one either.
@@ -72,7 +72,7 @@ FAILURES: list[str] = []
 # a remote-targeted command locally.
 FRONTEND_TREES: tuple[str, ...] = (
     "src/tool",
-    "src/tui",
+    "crates/codegg-tui/src",
     "src/agent",
     "src/command",
 )

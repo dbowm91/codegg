@@ -71,7 +71,7 @@ All production model-facing test execution flows through the scheduler:
   `resolve_and_run_test()`.
 - `src/tool/test.rs` submits jobs via `JobSubmissionService` and waits for completion.
 - `src/tool/bash/process.rs` submits planner-validated `TestScope::BashDispatch` jobs.
-- `src/tui/commands/test.rs` submits through `CoreRequest::JobSubmit` and waits.
+- `crates/codegg-tui/src/commands/test.rs` submits through `CoreRequest::JobSubmit` and waits.
 - The scheduler owns admission and attempt lifecycle; TestRunner remains the domain
   authority for framework discovery, stall handling, reports, artifacts, and RunStore
   persistence.

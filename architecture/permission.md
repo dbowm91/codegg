@@ -849,7 +849,7 @@ of every nested syscall; see
     effective-state rendering, restore summaries, CLI resolution; no
     daemon/TUI/server/authority imports — guard:
     `scripts/check_policy_surface.py`). The TUI exposes `/approval`,
-    `/sandbox`, `/policy` (`src/tui/commands/policy.rs`, async
+    `/sandbox`, `/policy` (`crates/codegg-tui/src/commands/policy.rs`, async
     start/apply pattern, stale completions dropped), renders the cached
     daemon-resolved line in the status bar and `/status`, announces the
     restored preference once at startup, and chains one confirmation for

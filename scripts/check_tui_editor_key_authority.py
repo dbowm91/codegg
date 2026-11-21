@@ -213,7 +213,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TARGET = REPO_ROOT / "src" / "tui" / "commands" / "editor.rs"
+TARGET = REPO_ROOT / "crates" / "codegg-tui" / "src" / "commands" / "editor.rs"
 
 # Every modifier the dispatch tables may name. A modifier outside this set is an
 # unresolved shape rather than a silent pass.

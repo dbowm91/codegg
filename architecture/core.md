@@ -907,7 +907,7 @@ team principals fail closed); see `architecture/authorization.md` and
 `std::env::current_dir()` / `set_current_dir()` use in daemon-owned execution
 surfaces (`src/tool/`, `src/scheduler/`, `src/core/`, `src/agent/worker.rs`,
 `src/agent/turn_runtime.rs`, the Git execution services), exempting only
-`#[cfg(test)]` modules and the two pre-session bootstrap files `src/main.rs`
+`#[cfg(test)]` modules and the two pre-session bootstrap files `crates/codegg-cli/src/main.rs`
 and `src/exec.rs`. There is no line-pattern allowlist — the predecessor's
 patterns matched the production sites themselves, so it passed with every
 violation present. Use `--self-test` to confirm the guard still discriminates.
@@ -1371,14 +1371,14 @@ records what had drifted since.
   (`crates/codegg-core/Cargo.toml:57-59`); the forbidden-dependency list
   matching `scripts/check-core-boundary.sh:39`; the
   `check_daemon_cwd_usage.py` scope and its two `EXEMPT_FILES`
-  (`src/main.rs`, `src/exec.rs`); the `turn_submit_uses_injected_runtime`
+  (`crates/codegg-cli/src/main.rs`, `src/exec.rs`); the `turn_submit_uses_injected_runtime`
   test (`src/core/daemon.rs:7192`),
   `request_family_routes_each_coherent_family`
   (`src/core/daemon_family.rs:382`), and
   `thin_dispatcher_delegates_to_family_handlers`
   (`src/core/daemon_family.rs:527`); `bind_runtime_for_session` in
   `daemon_refresh.rs:985`; `App::bootstrap_launch_project_context`
-  (`src/tui/app/mod.rs:14432`); the `UserPromptQueueList` descriptor
+  (`crates/codegg-tui/src/app/mod.rs:14432`); the `UserPromptQueueList` descriptor
   (`ViaSession` + `SessionRead`, `policy.rs:394`), its `Turns` routing
   (`daemon_family.rs:153`), and the `list_user_prompt_queue` handler
   (`src/core/daemon_turns.rs:1930`); the

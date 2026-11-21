@@ -60,7 +60,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 CATALOG_PATH = "crates/codegg-core/src/command_catalog.rs"
 FRONTEND_ACTION_PATH = "crates/codegg-core/src/frontend_action.rs"
-TUI_TREE = "src/tui"
+TUI_TREE = "crates/codegg-tui/src"
 
 # The dispositions a declaration may carry. There is deliberately no
 # mutating disposition: a frontend action changes only what the frontend

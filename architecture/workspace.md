@@ -221,7 +221,7 @@ labels that scope; cross-project navigation uses the authorized project picker.
   `git_recovery.rs`)
 
 `#[cfg(test)]` modules are skipped, and two files are exempt as pre-session
-bootstrap: `src/main.rs` and `src/exec.rs`.
+bootstrap: `crates/codegg-cli/src/main.rs` and `src/exec.rs`.
 
 There is **no line-pattern allowlist**. The guard's predecessor had one, and
 its patterns (`allowed_root: std::env::current_dir`, `let cwd = …`,
@@ -350,4 +350,4 @@ requests and their authority notes, `CoreDaemon::bind_runtime_for_session`
 `typed_identity!` newtypes in `identity.rs` (a count that matches
 `architecture/overview.md`), and the `check_daemon_cwd_usage.py`
 scanned-surface list and its two whole-file exemptions
-(`src/main.rs`, `src/exec.rs`).
+(`crates/codegg-cli/src/main.rs`, `src/exec.rs`).

@@ -1,0 +1,116 @@
+//! The session side panel.
+//!
+//! A thin adapter, not a rewrite: `SidebarWidget` already owns a bounded
+//! projection, logical-row focus identities, collapse state, and its own
+//! render. The panel exists so that widget can be swapped for another one
+//! without moving its key handling, so its binding-resolved behavior is
+//! exactly the `handle_sidebar_action` mapping it had before the host
+//! existed.
+//!
+//! The only additions are the title bar, which makes the active panel legible
+//! now that more than one panel can occupy this column, and the focus
+//! highlight — both from the shared `PanelChrome`, so this panel's edge cannot
+//! disagree with the other four.
+
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::{buffer::Buffer, layout::Rect};
+
+use crate::app::TuiMsg;
+use crate::components::hint_line::HintLine;
+use crate::components::sidebar::SidebarActivation;
+use crate::input::InputAction;
+
+use super::chrome::PanelChrome;
+use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
+
+/// Session projection panel. Stateless — all view state lives in
+/// `SidebarWidget`.
+pub struct SessionPanel;
+
+impl SidePanel for SessionPanel {
+    fn id(&self) -> SidePanelId {
+        SidePanelId::Session
+    }
+
+    /// `SidebarWidget::render_with_title` paints the body inside the chrome
+    /// this panel hands it, so the panel name and the focus marker live on the
+    /// panel edge rather than on a band that would steal a content row.
+    fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
+        let chrome = PanelChrome::new(SidePanelId::Session.label(), ctx.focused, &ctx.theme);
+        ctx.session.set_theme(&ctx.theme);
+        ctx.session.render_with_title(area, buf, &chrome);
+    }
+
+    /// The session panel has no input mode of its own, so it never claims the
+    /// host's exit key: `Shift+Q` returns to the composer. `Esc` is the mode
+    /// switch and leaves the panel where it is.
+    fn owns_exit_key(&self, _key: KeyEvent, _ctx: &PanelCtx<'_>) -> bool {
+        false
+    }
+
+    fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
+        hints.focused.then(|| {
+            HintLine::new()
+                .push("SESSIONS", "")
+                .push("jk", "move")
+                .push("↵", "open")
+                .push("space", "fold")
+                .push("hl", "collapse/expand")
+                .push("⇧S", "panel")
+                .render(0)
+        })
+    }
+
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        action: Option<InputAction>,
+        ctx: &mut PanelCtx<'_>,
+    ) -> PanelKey {
+        match action {
+            Some(InputAction::NavigateUp) => ctx.session.focus_prev(),
+            Some(InputAction::NavigateDown) => ctx.session.focus_next(),
+            Some(InputAction::PageUp) => ctx.session.focus_page_prev(ctx.area),
+            Some(InputAction::PageDown) => ctx.session.focus_page_next(ctx.area),
+            Some(InputAction::Left) => ctx.session.collapse_or_parent(),
+            Some(InputAction::Right) => ctx.session.expand_focused(),
+            // Normal-mode Space is the sidebar toggle row and Enter is
+            // `Send`; both act on the focused row, which is why they are
+            // matched separately rather than through one action.
+            Some(InputAction::ToggleSection) | Some(InputAction::FocusSidebar)
+                if key.code == KeyCode::Char(' ') =>
+            {
+                ctx.session.toggle_focused();
+            }
+            Some(InputAction::ToggleSection) => ctx.session.toggle_focused(),
+            Some(InputAction::Send) => {
+                return match ctx.session.activate_focused() {
+                    SidebarActivation::ToggleSection | SidebarActivation::ToggleAgentNode(_) => {
+                        ctx.session.toggle_focused();
+                        PanelKey::Consumed
+                    }
+                    SidebarActivation::InspectRun(run_id) => {
+                        PanelKey::Intent(TuiMsg::OpenRunDetail { run_id })
+                    }
+                    // Opens the addressed subagent as a tab in the main buffer.
+                    // Routed as an `Intent` rather than applied here: the panel
+                    // does not own the tab set, and calling into the app
+                    // directly is how a viewer panel acquires authority it was
+                    // never given.
+                    SidebarActivation::InspectSubagent(task_id) => {
+                        PanelKey::Intent(TuiMsg::OpenSubagentTab { task_id })
+                    }
+                    SidebarActivation::InspectJob(job_id) => {
+                        PanelKey::Intent(TuiMsg::OpenJobDetail { job_id })
+                    }
+                    SidebarActivation::None => PanelKey::Consumed,
+                };
+            }
+            // Unbound and text actions are consumed rather than leaked to
+            // the prompt, so a focused sidebar can never half-type a turn.
+            _ => {}
+        }
+        ctx.session.ensure_focused_visible(ctx.area);
+        PanelKey::Consumed
+    }
+}

@@ -414,8 +414,8 @@ Verified 2026-10-23 against source. Corrected:
 - The `candidates_from_deferred_surface` call sites were given as
   `src/agent/request_preparation.rs:117` and `:207`; they are `:129` and
   `:219`.
-- The `codegg tool-advisor` CLI was cited at `src/main.rs:880`; the
-  command is declared at `src/main.rs:296`, its subcommand enum is at
+- The `codegg tool-advisor` CLI was cited at `crates/codegg-cli/src/main.rs:880`; the
+  command is declared at `crates/codegg-cli/src/main.rs:296`, its subcommand enum is at
   `:518`, and the handler `cmd_tool_advisor` is at `:2516`.
 - The root `Cargo.toml` feature table was incomplete: it listed
   `default`, `arboard`, `plugins`, `debug-logging`, `server`, `image`,
@@ -481,8 +481,8 @@ explicitly scoped to its original verification date. Historical sections that
 describe the retired contextual scorer, the sequence encoder, and the
 requalification CLI are retained as evidence and are marked retired; the
 `codegg tool-advisor` CLI is now `bench | data | inspect | lint | status`
-(`src/main.rs:296` declares the command; the subcommand enum is at
-`src/main.rs:518` and `cmd_tool_advisor` at `:2516`), and
+(`crates/codegg-cli/src/main.rs:296` declares the command; the subcommand enum is at
+`crates/codegg-cli/src/main.rs:518` and `cmd_tool_advisor` at `:2516`), and
 `qualify`/`requalify` no longer exist. The named
 symbols still resolve: `build_leakage_groups`, `partition_cases`,
 `family_holdout_partition`, `split_for`, and `preselect_candidates` remain in

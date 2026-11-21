@@ -1374,7 +1374,7 @@ measurement bodies.
 Run it as one family member:
 
 ```bash
-cargo test --test tui_render -- invariants
+cargo test -p codegg-tui --test tui_render -- invariants
 ```
 
 | Invariant | What it asserts | Where |
@@ -1427,10 +1427,10 @@ pass through `Component` and `SidePanelHost`.
 
 ## The frame plan's ordering test
 
-`TuiLayout::plan_frame` (`src/tui/layout.rs`) is the one place the frame's
+`TuiLayout::plan_frame` (`crates/codegg-tui/src/layout.rs`) is the one place the frame's
 regions are computed, so the carve-order rule is **enforced** there rather than
 described in a comment. The tests live in that module's own `mod tests` and run
-as `cargo test -p codegg --lib tui::layout`:
+as `cargo test -p codegg-tui --lib layout`:
 
 | Test | What it fails on |
 | --- | --- |
@@ -1443,7 +1443,7 @@ as `cargo test -p codegg --lib tui::layout`:
 | `claims_larger_than_the_pane_produce_a_valid_plan` | a claim set larger than the pane producing an inverted or out-of-frame rect |
 | `the_plan_tiles_the_pane_across_the_size_and_claim_matrix` | at 120×40, 80×24, 40×12 and 20×6 across five claim sets: a row lost, a row counted twice, or a strip outside its chunk |
 
-The corpus is not the guard here. `cargo test --test tui_render` (1221 tests)
+The corpus is not the guard here. `cargo test -p codegg-tui --test tui_render` (1221 tests)
 moves only when a claim changes the geometry the frame is checked against, and
 the two one-row strips can swap without moving it at all — which is why the
 ordering test exists rather than a larger golden frame. A reordering is caught

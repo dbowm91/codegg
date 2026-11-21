@@ -376,7 +376,7 @@ payload, so the category, the usage, and the usage reason are produced
 together and cannot drift apart.
 
 Verified 2026-10-23 against `src/acp.rs` (1354 lines) and
-`src/main.rs`'s `codegg acp` subcommand.
+`crates/codegg-cli/src/main.rs`'s `codegg acp` subcommand.
 - **Corrected the file length**: the doc said "~736 lines"; the file is
   **1354 lines**. Every `file.rs:line` reference in the doc had drifted
   and was re-derived from the live source: `ACP_PROTOCOL_VERSION` `:22` ->

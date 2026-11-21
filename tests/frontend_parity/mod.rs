@@ -185,6 +185,3 @@ pub struct ToolState {
     pub tool_name: String,
     pub status: String,
 }
-
-#[path = "tui_reconstruction.inc"]
-pub mod tui_reconstruction;

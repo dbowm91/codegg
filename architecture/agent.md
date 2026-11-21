@@ -363,7 +363,7 @@ persists an `EditCheckpoint` with explicit
 `EditCheckpointManager`. A foreign workspace `FileChanged` event cannot
 contaminate another turn's checkpoint because durability no longer
 drains the unscoped global event stream. `FileChanged` remains an
-observational UI signal (`src/tui/file_diff.rs`, `projection`).
+observational UI signal (`crates/codegg-tui/src/file_diff.rs`, `projection`).
 
 Regular calls from one provider response also share a batch-local semaphore.
 Admission has a separate 30-second bound and emits `queued`, `admitted`, and

@@ -1,0 +1,56 @@
+[package]
+name = "codegg-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "codegg"
+path = "src/main.rs"
+
+[dependencies]
+codegg = { path = "../.." }
+codegg-client.workspace = true
+codegg-core.workspace = true
+codegg-protocol.workspace = true
+codegg-tui = { path = "../codegg-tui" }
+
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4.6.2"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "io-std", "net", "process", "signal"] }
+uuid = { workspace = true, features = ["serde"] }
+url.workspace = true
+chrono.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
+dirs.workspace = true
+sha2.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tokio-tungstenite = { version = "0.26", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+tempfile.workspace = true
+
+[features]
+default = []
+server = ["codegg/server", "dep:tokio-tungstenite"]
+plugins = ["codegg/plugins"]
+image = ["codegg-tui/image"]
+lsp-test-support = ["codegg/lsp-test-support"]
+lsp-real-server-tests = ["codegg/lsp-real-server-tests"]
+decision-runtime-sdm = ["codegg/decision-runtime-sdm"]
+
+[lints]
+workspace = true

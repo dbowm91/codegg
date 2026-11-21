@@ -80,8 +80,8 @@ SCANNED_FILES: list[str] = [
 # session exists — and never afterwards.
 
 EXEMPT_FILES: dict[str, str] = {
-    "src/main.rs": "CLI bootstrap: derives the project root before any daemon or session exists.",
-    "src/exec.rs": "CLI bootstrap: same pre-session entry point as src/main.rs.",
+    "crates/codegg-cli/src/main.rs": "CLI bootstrap: derives the project root before any daemon or session exists.",
+    "src/exec.rs": "CLI bootstrap: same pre-session entry point as crates/codegg-cli/src/main.rs.",
 }
 
 # ── Detection ────────────────────────────────────────────────────────
@@ -216,7 +216,7 @@ SELF_TEST_CASES: list[tuple[str, str, str, int]] = [
     ),
     (
         "the declared bootstrap file is exempt",
-        "src/main.rs",
+        "crates/codegg-cli/src/main.rs",
         "fn root() -> PathBuf { std::env::current_dir().unwrap_or_default() }\n",
         0,
     ),

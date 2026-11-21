@@ -125,7 +125,7 @@ identity.
 Because that resolver never registers on a miss, identity creation for a
 previously unseen directory belongs to frontend open flows, not the resolver.
 `ensure_bound_project_context` (root crate,
-`src/tui/commands/project_picker.rs`) is shared by startup and the local
+`crates/codegg-tui/src/commands/project_picker.rs`) is shared by startup and the local
 project picker: it performs idempotent workspace-then-project registration,
 names a new project after its directory, and loads the existing binding on
 reopen.

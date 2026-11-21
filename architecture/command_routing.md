@@ -26,7 +26,7 @@ The slash command's own surface is:
 - `crates/codegg-core/src/command_catalog.rs` — that definition itself.
 - `src/core/daemon_commands.rs` — the daemon's executor: a catalog form
   dispatched to a daemon request under `command.execute`.
-- `src/tui/command_route.rs` — the TUI's route from a typed line to a
+- `crates/codegg-tui/src/command_route.rs` — the TUI's route from a typed line to a
   catalog form and back to a `CoreRequest::CommandExecute`.
 
 The two surfaces share the word "command" and nothing else. A slash
@@ -438,6 +438,6 @@ pipeline and nothing else. The added section is a **pointer**, not a second
 description: the slash command's surface is `architecture/command.md`, the
 catalog is `crates/codegg-core/src/command_catalog.rs`, the daemon's
 executor is `src/core/daemon_commands.rs`, and the TUI's route is
-`src/tui/command_route.rs`. `src/command_routing.rs` is still a 30-line
+`crates/codegg-tui/src/command_route.rs`. `src/command_routing.rs` is still a 30-line
 zero-logic compatibility facade and `CommandPlan::dispatch_target()` in
 `src/command_intent/plan.rs` is still the sole production mapping.

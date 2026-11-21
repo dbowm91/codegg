@@ -33,7 +33,7 @@ frontend-action set and creates **no** `Run`.
   (`build_inner_request()`, `:189`), the serve-ability predicate
   (`serves_form()`, `:638`), and the audit as a canonical `Run`.
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry`: a **cache** of the daemon's
+- `crates/codegg-tui/src/command.rs` — TUI `CommandRegistry`: a **cache** of the daemon's
   catalog with 169 built-in rows, plus the TUI's own local dynamic sources
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
@@ -134,14 +134,14 @@ a raw command string.
 
 #### Built-in dispatch: one arm, one family function
 
-`App::dispatch_builtin_command` (`src/tui/app/mod.rs`) normalises the
+`App::dispatch_builtin_command` (`crates/codegg-tui/src/app/mod.rs`) normalises the
 argument once — `argument.unwrap_or_default().trim()`, so "no argument" and
 "empty argument" mean the same thing — and then dispatches with an
 exhaustive `match` over `BuiltinSlashAction`. Every arm is **one
 delegation**:
 
 - the handler lives in the command's family module under
-  `src/tui/commands/` and **the family owns the body**;
+  `crates/codegg-tui/src/commands/` and **the family owns the body**;
 - the handler receives the `App` and, only when the command reads it, the
   normalised argument — nothing else, and never the typed line;
 - the handler runs the same sequence the arm always ran, in the same
@@ -187,7 +187,7 @@ pub struct ProcessCommandSpec {
 }
 ```
 
-### TUI Command (`src/tui/command.rs:325`)
+### TUI Command (`crates/codegg-tui/src/command.rs:325`)
 
 ```rust
 pub struct Command {
@@ -209,7 +209,7 @@ pub struct Command {
 }
 ```
 
-### CommandAction (`src/tui/command.rs`)
+### CommandAction (`crates/codegg-tui/src/command.rs`)
 
 ```rust
 pub enum CommandAction {
@@ -222,7 +222,7 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (161 variants, `src/tui/command.rs:112`).
+built-in executable operation (161 variants, `crates/codegg-tui/src/command.rs:112`).
 Adding a new built-in command requires touching this one typed
 registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
@@ -243,7 +243,7 @@ The palette searches the canonical name, aliases, description, domain, and
 keywords, and caps visible fuzzy results. Switching project tabs replaces the
 project catalog without rediscovering files during palette input.
 
-### CommandCategory (`src/tui/command.rs:10`)
+### CommandCategory (`crates/codegg-tui/src/command.rs:10`)
 
 ```rust
 pub enum CommandCategory {
@@ -294,7 +294,7 @@ A future headless plugin surface must call that shared authority
 without duplicating install policy, and must add parser tests plus
 docs in the same change.
 
-### CommandRegistry (`src/tui/command.rs:557`)
+### CommandRegistry (`crates/codegg-tui/src/command.rs:557`)
 
 ```rust
 pub struct CommandRegistry {
@@ -476,7 +476,7 @@ supports: `description`, `agent`, `model`, `template`, `runtime`,
   bytes through the read-only git fact layer and answers with the diff's
   own bytes (`src/core/daemon_git.rs`). The frontend sends the form to the
   daemon through `CoreRequest::CommandExecute` and renders the answer
-  (`src/tui/commands/diff.rs`); it no longer spawns `git` and reads the
+  (`crates/codegg-tui/src/commands/diff.rs`); it no longer spawns `git` and reads the
   working tree itself. Every invocation opens a **canonical `Run`**, and the
   catalog's `/diff` descriptor is unchanged — the catalog's version moves by
   **zero** for the move.
@@ -487,7 +487,7 @@ supports: `description`, `agent`, `model`, `template`, `runtime`,
   `command.execute` and audits it as a canonical `Run`.
 - **Built-in count is 169**: Guarded by
   `built_in_command_count_matches_release_docs` and
-  `command_docs_count_matches_registry` in `src/tui/command.rs`. The
+  `command_docs_count_matches_registry` in `crates/codegg-tui/src/command.rs`. The
   docs test parses this file and fails on drift, so update the test
   assertion and every count in this doc together when adding built-ins.
   The authoritative catalog is `CommandRegistry::built_in_commands`.
@@ -531,14 +531,14 @@ that the registry-length guard cannot see.
 
 ## Source verification
 
-Verified 2026-10-23 against `src/tui/command.rs`, `src/command/mod.rs`,
+Verified 2026-10-23 against `crates/codegg-tui/src/command.rs`, `src/command/mod.rs`,
 `crates/codegg-config/src/schema.rs`, `crates/codegg-config/src/paths.rs`
 and the root `Cargo.toml`.
 
 Changes made in this pass:
 
 - **Two stale source anchors.** The `CommandRegistry` section heading said
-  `src/tui/command.rs:458` while the verification paragraph below already
+  `crates/codegg-tui/src/command.rs:458` while the verification paragraph below already
   said `:500`; the struct is at `:500`. The `CommandConfig` heading said
   `crates/codegg-config/src/schema.rs:1416` and the verification paragraph
   said `:1821`; the struct declaration is at `:1823`. The document
@@ -585,7 +585,7 @@ absence of any `subtask` field in `src/` and `crates/`, and that
 `/checkpoint` is absent from the registry (its only remaining occurrence
 is the `CommandDomain::Execution` keyword list).
 
-Both count-guard tests live in `src/tui/command.rs`
+Both count-guard tests live in `crates/codegg-tui/src/command.rs`
 (`built_in_command_count_matches_release_docs` at `:1277`,
 `command_docs_count_matches_registry` at `:1429`, and
 `command_docs_builtin_slash_action_variant_count_matches_source` at
@@ -594,10 +594,10 @@ drifts.
 
 ### Pass of 2026-10-25 (M007-D)
 
-Re-verified against `src/tui/command.rs` while closing the daemon-owned
+Re-verified against `crates/codegg-tui/src/command.rs` while closing the daemon-owned
 command catalog milestone.
 
-- **Six stale source anchors, all in `src/tui/command.rs`.** The two section
+- **Six stale source anchors, all in `crates/codegg-tui/src/command.rs`.** The two section
   headings pointed at `:281` (the `Command` struct, actually `:325`) and
   `:500` (the `CommandRegistry`, actually `:557`). `CommandAction` was cited
   at `:313` (actually `:316`), the `Command` struct at `:322` (actually
@@ -611,7 +611,7 @@ command catalog milestone.
 
 ### Earlier passes
 
-Verified 2026-10-13 against `src/tui/command.rs` and `src/command/mod.rs`,
+Verified 2026-10-13 against `crates/codegg-tui/src/command.rs` and `src/command/mod.rs`,
 re-verified 2026-10-19 after C007 added `/subagent-send`, and re-verified
 2026-10-20 after Eggwork M002 added `/nodes`, and re-verified
 2026-10-23 after the TUI text-rendering line added `/expand-all`:
@@ -697,7 +697,7 @@ expand-all gesture: the built-in command count is **169** and the
 collapses every tool-call and reasoning disclosure in the transcript; it is the
 same gesture as the `Ctrl+Alt+O` chord and dispatches to the same handler, so
 the toast is identical. The count pins live in two files and move together:
-`built_in_command_count_matches_release_docs` in `src/tui/command.rs` (the
+`built_in_command_count_matches_release_docs` in `crates/codegg-tui/src/command.rs` (the
 registry length) and `command_docs_count_matches_registry` (this document's
 counts, which the test parses and fails on drift). The variant total has its
 own source-backed assertion,
@@ -714,7 +714,7 @@ Re-verified 2026-10-25 against `crates/codegg-core/src/command_catalog.rs`
 `crates/codegg-core/src/frontend_action.rs` (`FrontendAction` `:41`,
 `action_for_form()` `:323`), `src/core/daemon_commands.rs`
 (`build_inner_request()` `:189`, `serves_form()` `:638`) and
-`src/tui/command.rs`: the cached built-in rows still number **169** and
+`crates/codegg-tui/src/command.rs`: the cached built-in rows still number **169** and
 `BuiltinSlashAction` still has **161** variants, byte-identical to
 `origin/main` (`cb4ceed9d`). The daemon's catalog carries **161** commands
 over **167** argument forms — 126 daemon-effect forms and 41 frontend-effect

@@ -91,7 +91,6 @@ pub mod theme;
 pub mod tool;
 pub mod tool_advisor;
 pub mod tts;
-pub mod tui;
 pub mod upgrade;
 pub mod util;
 pub mod work_plan_arbiter;

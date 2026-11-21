@@ -101,11 +101,11 @@ surfaces, which spawn nothing and so are deliberately not manifest entries:
 | `src/managed_process.rs` | Canonical | Only finite-process direct-spawn owner; owns lifecycle and safety primitives. |
 | `src/interactive_process.rs` | Canonical interactive | Only PTY direct-spawn owner (M001). Every spawn holds a scheduler `AdmissionController` permit acquired before `openpty` (ManagedProcess resource class, no exclusivity key); cwd/env derive from the immutable `ExecutionContext`; bounded sequence-numbered scrollback; input/resize/terminate over the master fd; child process-group (setsid leader) cleanup with SIGTERM-then-SIGKILL escalation on terminate/shutdown. Handles are ephemeral UUIDs and do not survive daemon restart. No model-facing tool is registered here. |
 | `src/interactive_process_attach.rs` | Interactive protocol adapter (M002) | No direct-spawn owner: the bounded attach/resume family (`create/list/attach/detach/input/resize/terminate/remove/resume`) delegates every lifecycle call to the M001 service. Attachment ownership is keyed by transport `client_id`; mutating payloads name an `attachment_id`, never a handle. Output reads are on-demand from the shared M001 ring (no per-attachment queue or task); lag answers typed resync. The daemon shares the scheduler's admission controller with the M001 engine so process-slot accounting stays single. |
-| `src/tui/interactive_terminal.rs`, `src/tui/commands/interactive_terminal.rs` | Interactive TUI projection (M003) | No spawn/dispatch owner: the controller is a bounded projection of M002 handles/output (scrollback window, focus gate, link state) and the command layer issues daemon `CoreRequest::InteractiveProcess*` operations through the TUI `CoreClient`. No `Session`/projection/observer coupling; keyboard bytes reach a terminal only under explicit focus; `Esc` always leaves focus and never submits. |
+| `crates/codegg-tui/src/interactive_terminal.rs`, `crates/codegg-tui/src/commands/interactive_terminal.rs` | Interactive TUI projection (M003) | No spawn/dispatch owner: the controller is a bounded projection of M002 handles/output (scrollback window, focus gate, link state) and the command layer issues daemon `CoreRequest::InteractiveProcess*` operations through the TUI `CoreClient`. No `Session`/projection/observer coupling; keyboard bytes reach a terminal only under explicit focus; `Esc` always leaves focus and never submits. |
 | `src/tool/bash.rs`, `src/scheduler/` | Scheduler/adapter | Job admission and domain output remain local; managed argv attempts use `ManagedProcessService`. `TestJobExecutor` delegates to `test_runner::runner`, which streams through `ManagedProcessService`; the accepted profile is stored in the durable Test payload and applied to the child launch. ReadOnly is refused before submission because test commands write build and report artifacts. |
 | `src/python_script/` | Scheduler/managed adapter | `PythonJobExecutor` uses `ManagedProcessService` and mode/code-derived Landlock policy. The typed Python tool carries the validated accepted `SandboxProfile` through its durable job payload; the process owner refuses constrained execution if the sandbox request is disabled. ReadOnly transform is refused before submission. |
 | `src/core/daemon_human_shell.rs`, `src/shell/daemon.rs` | Daemon human-shell owner | Resolves authenticated principal and registered workspace/project/session scope, applies human confirmation and persisted sandbox policy, reserves the shared scheduler process permit, and owns bounded run/read/cancel handles. Finite child lifecycle remains in `ManagedProcessService`; workspace-bound remote-node execution is refused. |
-| `src/tui/commands/shell.rs`, `src/tui/runtime/command_dispatch.rs` | Human-shell client adapter | Negotiates `human_shell.v1`, submits bounded typed create/read/cancel requests, and renders daemon results. It does not choose cwd or shell environment and has no local process fallback. |
+| `crates/codegg-tui/src/commands/shell.rs`, `crates/codegg-tui/src/runtime/command_dispatch.rs` | Human-shell client adapter | Negotiates `human_shell.v1`, submits bounded typed create/read/cancel requests, and renders daemon results. It does not choose cwd or shell environment and has no local process fallback. |
 | `src/shell/runtime.rs` | Managed-process adapter | Preserves human `$SHELL -lc` command semantics and delegates finite streaming process lifecycle to `ManagedProcessService`; daemon human-shell dispatch supplies daemon-host shell, canonical workspace cwd, filtered environment, and sandbox launch policy. |
 | `src/shell/rtk.rs`, `src/tool/formatter.rs`, `src/tool/terminal.rs`, `src/ide/` | Blocking adapters | Authorization, parsing, and presentation remain local; timeout, bounded capture, cwd, env, and cleanup use the canonical service. |
 | `src/hooks/` | Configured hook adapter | Hook-specific context remains local; finite command lifecycle uses the canonical service. |
@@ -114,7 +114,7 @@ surfaces, which spawn nothing and so are deliberately not manifest entries:
 | `src/mcp/local.rs` | Protocol-specialized | MCP owns JSON-RPC framing and persistent connection state; it is not a finite captured process. |
 | `src/core/transport/stdio.rs` | Standalone compatibility | Deprecated stdio core transport owns protocol framing and child connection state. |
 | `crates/codegg-client/src/connect.rs` | Frontend daemon lifecycle adapter | Connect-or-start launches only the canonical `codegg daemon start` lifecycle; singleton lock and execution authority remain root-owned. |
-| `src/core/instance.rs`, `src/tui/app/`, `src/tts/`, `src/core/notification.rs`, `src/upgrade/` | Standalone/interactive exceptions | Daemon bootstrap, external editor, speech, and self-upgrade are explicit administrative or user-controlled surfaces. |
+| `src/core/instance.rs`, `crates/codegg-tui/src/app/`, `src/tts/`, `src/core/notification.rs`, `src/upgrade/` | Standalone/interactive exceptions | Daemon bootstrap, external editor, speech, and self-upgrade are explicit administrative or user-controlled surfaces. |
 | `crates/codegg-sandbox-helper/src/main.rs` | Service adapter | Unix installation-owned helper applies Landlock/Seatbelt and replaces itself with the already-validated target; `ManagedProcessService` launches it only on supported Unix paths. The packaged Windows `.exe` remains an unavailable stub in M002; Windows FullHost children launch directly through the parent-owned suspended/Job path, and constrained requests fail before spawn until M004. |
 | `src/git_*.rs`, `crates/egggit/`, `crates/codegg-core/src/{worktree.rs,repository_lineage.rs}` | Deferred domain | Typed Git/worktree/read probes retain domain semantics and are tracked for M003 Git ownership convergence. Test-only fixtures are annotated separately. `worktree_service.rs` is not a manifest entry — it owns no direct spawn site. |
 
@@ -255,8 +255,8 @@ typed `InteractiveResync` (`HistoryExpired` with both cursors, `CursorAhead`,
 
 ## TUI terminal projection and legacy disposition (M003)
 
-The reference TUI experience (`src/tui/interactive_terminal.rs` state
-controller + `src/tui/commands/interactive_terminal.rs` slash-command
+The reference TUI experience (`crates/codegg-tui/src/interactive_terminal.rs` state
+controller + `crates/codegg-tui/src/commands/interactive_terminal.rs` slash-command
 handlers + the `Terminal` dialog) consumes the M002 protocol and owns no
 process state: create/list/attach/detach/input/resize/terminate/remove
 are daemon `CoreRequest::InteractiveProcess*` operations issued through
@@ -286,8 +286,8 @@ visible dialog issues a bounded daemon PTY resize.
 
 Verified 2026-10-06 against `docs/execution-ownership.toml`,
 `scripts/check_execution_ownership.py`, and the named source files.
-Re-verified 2026-10-10 against `src/tui/interactive_terminal.rs` and
-`src/tui/commands/interactive_terminal.rs` for C003: VT screen state is
+Re-verified 2026-10-10 against `crates/codegg-tui/src/interactive_terminal.rs` and
+`crates/codegg-tui/src/commands/interactive_terminal.rs` for C003: VT screen state is
 presentation-only, Esc/Ctrl-] behavior is updated, dimensions are bounded,
 and the `Terminal` dialog forwards styled cells rather than raw escape bytes.
 - Confirmed the manifest declares **54** entries and recorded its owner
@@ -298,7 +298,7 @@ and the `Terminal` dialog forwards styled cells rather than raw escape bytes.
   `crates/codegg-core/src/worktree.rs` and `repository_lineage.rs`, but **not**
   `worktree_service.rs` (it owns no direct spawn site).
 - Clarified that the M003 TUI projection surfaces
-  (`src/tui/interactive_terminal.rs`, `src/tui/commands/interactive_terminal.rs`)
+  (`crates/codegg-tui/src/interactive_terminal.rs`, `crates/codegg-tui/src/commands/interactive_terminal.rs`)
   appear in this table but are **not** manifest entries — they spawn nothing.
   Both files exist.
 - Confirmed correct as written: `src/shell_session/` does not exist (the

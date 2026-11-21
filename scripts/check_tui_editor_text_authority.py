@@ -101,11 +101,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # session seam, the render widget, the state record, and the command
 # layer. All of them must respect the same two invariants.
 SCANNED_FILES: list[str] = [
-    "tui/editor.rs",
-    "tui/document_session.rs",
-    "tui/components/editor.rs",
-    "tui/app/state/editor.rs",
-    "tui/commands/editor.rs",
+    "editor.rs",
+    "document_session.rs",
+    "components/editor.rs",
+    "app/state/editor.rs",
+    "commands/editor.rs",
 ]
 
 # Declarations that read or enumerate the filesystem. The editor must
@@ -175,12 +175,12 @@ CFG_TEST_RE = re.compile(r"^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 
 # Declarations that must exist for the guard's rules to be meaningful.
 REQUIRED_DECLARATIONS: list[tuple[str, str]] = [
-    ("tui/document_session.rs", "pub struct TuiDocumentPresentation"),
-    ("tui/document_session.rs", "pub struct TuiDocumentSession"),
-    ("tui/app/state/editor.rs", "pub struct EditorState"),
-    ("tui/editor.rs", "pub struct EditorUndoEntry"),
-    ("tui/editor.rs", "pub fn clear_history"),
-    ("tui/components/editor.rs", "pub struct EditorWidget"),
+    ("document_session.rs", "pub struct TuiDocumentPresentation"),
+    ("document_session.rs", "pub struct TuiDocumentSession"),
+    ("app/state/editor.rs", "pub struct EditorState"),
+    ("editor.rs", "pub struct EditorUndoEntry"),
+    ("editor.rs", "pub fn clear_history"),
+    ("components/editor.rs", "pub struct EditorWidget"),
 ]
 
 # Rules reported for visibility but not counted as violations.
@@ -256,7 +256,7 @@ def _check_field(path: Path, line_no: int, raw: str, code: str) -> Finding | Non
 
 
 def _scan_file(root: Path, relative: str) -> list[Finding]:
-    path = root / "src" / relative
+    path = root / "crates" / "codegg-tui" / "src" / relative
     if not path.is_file():
         return [Finding(path, 0, "file not found", "missing-file")]
 
@@ -320,7 +320,7 @@ def check_non_vacuous(root: Path) -> list[Finding]:
     """Assert the declarations the rules reason about still exist."""
     findings: list[Finding] = []
     for relative, declaration in REQUIRED_DECLARATIONS:
-        path = root / "src" / relative
+        path = root / "crates" / "codegg-tui" / "src" / relative
         if not path.is_file():
             findings.append(Finding(path, 0, f"{relative} is missing", "missing-file"))
             continue
@@ -384,8 +384,8 @@ EXPECTED_INJECTIONS = 8
 
 def copy_guard_tree(root: Path, destination: Path) -> None:
     for relative in SCANNED_FILES:
-        source = root / "src" / relative
-        target = destination / "src" / relative
+        source = root / "crates" / "codegg-tui" / "src" / relative
+        target = destination / "crates" / "codegg-tui" / "src" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
@@ -430,7 +430,7 @@ def run_self_test() -> int:
     def _retained_text(root: Path) -> list[tuple[Path, str]]:
         return [
             mutate(
-                root / "src/tui/document_session.rs",
+                root / "crates/codegg-tui/src/document_session.rs",
                 "    pub mode: EditorMode,\n",
                 "    pub mode: EditorMode,\n    pub text: String,\n",
             )
@@ -443,7 +443,7 @@ def run_self_test() -> int:
     def _retained_lines(root: Path) -> list[tuple[Path, str]]:
         return [
             mutate(
-                root / "src/tui/app/state/editor.rs",
+                root / "crates/codegg-tui/src/app/state/editor.rs",
                 "    pub path: Option<String>,\n",
                 "    pub path: Option<String>,\n"
                 "    pub rendered: Vec<Line<'static>>,\n",
@@ -457,7 +457,7 @@ def run_self_test() -> int:
     def _owned_snapshot(root: Path) -> list[tuple[Path, str]]:
         return [
             mutate(
-                root / "src/tui/document_session.rs",
+                root / "crates/codegg-tui/src/document_session.rs",
                 "    pub clamp_cache: Option<ClampCache>,\n",
                 "    pub clamp_cache: Option<ClampCache>,\n"
                 "    pub cached_snapshot: DocumentSnapshot,\n",
@@ -471,7 +471,7 @@ def run_self_test() -> int:
     def _direct_read(root: Path) -> list[tuple[Path, str]]:
         return [
             mutate(
-                root / "src/tui/commands/editor.rs",
+                root / "crates/codegg-tui/src/commands/editor.rs",
                 "fn editor_buffer_key(\n",
                 "fn stale_reload(path: &std::path::Path) -> std::io::Result<String> {\n"
                 "    std::fs::read_to_string(path)\n"
@@ -487,7 +487,7 @@ def run_self_test() -> int:
     def _second_buffer(root: Path) -> list[tuple[Path, str]]:
         return [
             mutate(
-                root / "src/tui/editor.rs",
+                root / "crates/codegg-tui/src/editor.rs",
                 "pub fn clear_history(",
                 "pub fn adopt_local_buffer(text: &str) -> DocumentBuffer {\n"
                 "    DocumentBuffer::new(text)\n"
@@ -503,7 +503,7 @@ def run_self_test() -> int:
     def _test_fixture_read(root: Path) -> list[tuple[Path, str]]:
         return [
             mutate(
-                root / "src/tui/commands/editor.rs",
+                root / "crates/codegg-tui/src/commands/editor.rs",
                 "#[cfg(test)]\nmod tests {\n    use super::*;\n",
                 "#[cfg(test)]\nmod tests {\n    use super::*;\n"
                 "\n    fn reload_fixture() -> std::io::Result<String> {\n"
@@ -519,7 +519,7 @@ def run_self_test() -> int:
     def _renamed_presentation(root: Path) -> list[tuple[Path, str]]:
         return [
             mutate(
-                root / "src/tui/document_session.rs",
+                root / "crates/codegg-tui/src/document_session.rs",
                 "pub struct TuiDocumentPresentation",
                 "pub struct EditorPresentation",
             )
@@ -527,7 +527,7 @@ def run_self_test() -> int:
 
     @case("a scanned file is deleted rather than reclassified", "missing-file")
     def _deleted_file(root: Path) -> list[tuple[Path, str]]:
-        path = root / "src/tui/app/state/editor.rs"
+        path = root / "crates/codegg-tui/src/app/state/editor.rs"
         text = path.read_text()
         path.unlink()
         return [(path, text)]

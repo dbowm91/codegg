@@ -1,0 +1,3300 @@
+//! Command dispatch: routes TuiCommand variants to handler functions.
+//!
+//! This is intentionally the single runtime entry point. The match is grouped
+//! by existing domain handlers (sessions, project/projection, prompt/turn,
+//! plugin UI, shell/terminal, and diagnostics) rather than introducing a
+//! second router. Request variants start bounded work; completion variants
+//! synchronously apply typed results and retain their existing stale/context
+//! guards.
+
+use super::super::app::state::session::GitSidebarInfo;
+use super::super::app::{send_tui, App, TuiCommand};
+use crate::components::hint_line::HintLine;
+
+#[allow(unused_imports)]
+use super::super::commands::agents::{apply_asset_refresh_finished, start_refresh_assets};
+#[allow(unused_imports)]
+use super::super::commands::diagnostics::{
+    apply_doctor_result, handle_tool_contracts, start_run_doctor,
+};
+#[allow(unused_imports)]
+use super::super::commands::goals::{
+    apply_goal_operation_finished, apply_session_state_refreshed, handle_goal_budget,
+    handle_goal_from_file, handle_goal_set, handle_goal_simple, start_goal_checkpoint,
+    start_goal_show, start_refresh_session_state,
+};
+#[allow(unused_imports)]
+use super::super::commands::interactive_terminal::{
+    apply_terminal_attach_finished, apply_terminal_create_finished, apply_terminal_list_finished,
+    apply_terminal_op_finished, apply_terminal_resume_finished, handle_terminal_show,
+};
+#[allow(unused_imports)]
+use super::super::commands::memory::{
+    apply_habit_result, apply_memory_result, start_habit_dismiss, start_habit_list,
+    start_memory_forget, start_memory_remember, start_memory_search, start_memory_summary,
+};
+#[allow(unused_imports)]
+use super::super::commands::plugins::{
+    apply_plugin_command_finished, apply_plugin_ui_effect, start_plugin_command,
+};
+#[allow(unused_imports)]
+use super::super::commands::project_catalog::{
+    apply_project_catalog_refreshed, start_refresh_project_catalog,
+};
+use super::super::commands::project_init::{
+    start_project_init_draft, start_project_init_publish, start_project_init_refresh,
+};
+#[allow(unused_imports)]
+use super::super::commands::provider_connections::start_connection_lifecycle;
+#[allow(unused_imports)]
+use super::super::commands::research::{
+    apply_research_run_loaded, apply_research_runs_loaded, apply_research_section_loaded,
+    start_research_list_runs, start_research_load_run, start_research_load_section,
+};
+#[allow(unused_imports)]
+use super::super::commands::security::{
+    handle_security_review_finished, handle_security_review_run,
+};
+#[allow(unused_imports)]
+use super::super::commands::sessions::{
+    apply_export_session_finished, apply_session_messages_loaded, apply_session_mutation_finished,
+    apply_sessions_reloaded, apply_share_session_finished, apply_template_session_created,
+    apply_tree_dialog_loaded, apply_unshare_session_finished, start_archive_session,
+    start_bulk_archive, start_bulk_delete, start_bulk_export, start_create_from_template,
+    start_delete_session, start_export_session, start_fork_session, start_load_session_messages,
+    start_open_tree_dialog, start_reload_sessions, start_rename_session, start_session_launch,
+    start_share_session, start_undo_delete, start_unshare_session,
+};
+use super::super::commands::shell::{
+    handle_run_human_shell, handle_shell_ask, handle_shell_event, handle_shell_expand,
+    handle_shell_include, handle_shell_kill, handle_shell_list, handle_shell_rerun,
+    handle_shell_show,
+};
+#[allow(unused_imports)]
+use super::super::commands::tasks::{
+    apply_notification_sent, apply_subagent_spawn_finished, apply_task_operation_finished,
+    apply_tasks_listed, apply_worktree_listed, handle_file_diff_stats_ready,
+    handle_open_diff_dialog, handle_spawn_subagent, start_delete_task, start_list_tasks,
+    start_send_notification, start_task_schedule, start_worktree_list,
+};
+#[allow(unused_imports)]
+use super::super::commands::test::{apply_test_run_finished, start_test_run};
+
+use crate::components::toast::Toast;
+use codegg::protocol::core::{CoreRequest, CoreResponse};
+
+pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
+    match cmd {
+        TuiCommand::ProjectInitDraft => {
+            start_project_init_draft(app);
+        }
+        TuiCommand::ProjectInitDraftFinished { draft, error } => {
+            if let Some(error) = error {
+                app.messages_state.toasts.error(&error);
+            } else if let Some(draft) = draft {
+                let mut lines = vec![
+                    format!(
+                        "Operation: {:?} {}",
+                        draft.operation, draft.target_relative_path
+                    ),
+                    String::new(),
+                    "Proposed AGENTS.md:".into(),
+                ];
+                lines.extend(draft.candidate_markdown.lines().map(str::to_owned));
+                lines.push(String::new());
+                lines.push("Diff:".into());
+                lines.extend(draft.unified_diff.lines().map(str::to_owned));
+                if !draft.evidence.is_empty() {
+                    lines.push(String::new());
+                    lines.push("Evidence:".into());
+                    lines.extend(draft.evidence.iter().map(|item| {
+                        format!("- [{}] {} — {}", item.confidence, item.source, item.fact)
+                    }));
+                }
+                lines.extend(
+                    draft
+                        .diagnostics
+                        .iter()
+                        .map(|item| format!("Diagnostic: {} — {}", item.source, item.message)),
+                );
+                app.dialog_state.project_init_draft = Some(draft);
+                app.open_info_dialog(
+                    crate::components::dialogs::info::InfoType::ProjectInit,
+                    lines,
+                );
+                if let Some(dialog) = app
+                    .focus_manager
+                    .dialog_mut_any::<crate::components::dialogs::info::InfoDialog>()
+                {
+                    dialog.set_custom_footer(HintLine::from_items(&[
+                        ("a", "publish"),
+                        ("Esc", "cancel"),
+                    ]));
+                }
+            }
+        }
+        TuiCommand::ProjectInitPublish {
+            project_id,
+            workspace_id,
+            draft_token,
+        } => {
+            start_project_init_publish(app, project_id, workspace_id, draft_token);
+        }
+        TuiCommand::ProjectInitPublishFinished {
+            project_id,
+            workspace_id,
+            error,
+        } => {
+            if let Some(error) = error {
+                app.messages_state.toasts.error(&error);
+            } else {
+                app.messages_state.toasts.success("AGENTS.md published; refreshing project instructions for future turns (active turns remain pinned)");
+                start_project_init_refresh(app, project_id, workspace_id);
+            }
+        }
+        TuiCommand::RefreshAssets => {
+            start_refresh_assets(app);
+        }
+        TuiCommand::AssetRefreshFinished { report, error } => {
+            apply_asset_refresh_finished(app, report, error);
+            app.refresh_project_command_registry();
+        }
+        TuiCommand::PermissionResponseFinished { error } => {
+            if let Some(error) = error {
+                app.messages_state.toasts.error(&error);
+            }
+        }
+        TuiCommand::LspPreviewApplyFinished {
+            session_id,
+            result,
+            error,
+        } => {
+            if app.active_session_id() != Some(session_id.as_str()) {
+                return;
+            }
+            match (result, error) {
+                (Some(result), None) => {
+                    if let Some(tool) = app.lsp_tool.as_ref() {
+                        tool.mark_preview_applied(&result.preview_id);
+                    }
+                    let mut message = format!(
+                        "Applied {} patch(es) for preview {}.\nCheckpoint: {}\nFiles: {}",
+                        result.written_files.len(),
+                        result.preview_id,
+                        result.checkpoint_id,
+                        result.written_files.join(", ")
+                    );
+                    if !result.synchronization_errors.is_empty() {
+                        message.push_str(&format!(
+                            "\nLSP synchronization warnings: {}",
+                            result.synchronization_errors.join("; ")
+                        ));
+                    }
+                    app.messages_state.toasts.info(&message);
+                }
+                (_, Some(error)) => app
+                    .messages_state
+                    .toasts
+                    .info(&format!("LSP preview apply blocked: {error}")),
+                _ => app
+                    .messages_state
+                    .toasts
+                    .info("LSP preview apply did not return a result"),
+            }
+        }
+        TuiCommand::DeleteSession { session_id } => {
+            start_delete_session(app, session_id);
+        }
+        TuiCommand::ArchiveSession {
+            session_id,
+            unarchive,
+        } => {
+            start_archive_session(app, session_id, unarchive);
+        }
+        TuiCommand::ForkSession { session_id } => {
+            start_fork_session(app, session_id);
+        }
+        TuiCommand::LspStatusRefreshRequested => {
+            crate::commands::diagnostics::refresh_lsp_status(app);
+        }
+        TuiCommand::LspStatusRefreshed { status } => {
+            app.lsp_status_cache = status;
+        }
+        TuiCommand::LspStatusDetailRequested => {
+            crate::commands::diagnostics::request_lsp_status_detail(app);
+        }
+        TuiCommand::LspErrorsRequested { server_id } => {
+            crate::commands::diagnostics::request_lsp_server_status(
+                app,
+                "lsp_errors",
+                Some(server_id),
+            );
+        }
+        TuiCommand::LspServersRequested => {
+            crate::commands::diagnostics::request_lsp_server_status(app, "lsp_servers", None);
+        }
+        TuiCommand::LspCapabilitiesRequested { server_id } => {
+            crate::commands::diagnostics::request_lsp_server_status(
+                app,
+                "lsp_capabilities",
+                Some(server_id),
+            );
+        }
+        TuiCommand::LspRestartRequested { server_id } => {
+            crate::commands::diagnostics::request_lsp_restart(app, server_id);
+        }
+        TuiCommand::LspControlRequested {
+            command_id,
+            argument,
+        } => crate::commands::diagnostics::request_lsp_control(app, command_id, argument),
+        TuiCommand::LspWorkflowRequested {
+            command_id,
+            argument,
+        } => crate::commands::diagnostics::request_lsp_workflow(app, command_id, argument),
+        TuiCommand::LspStatusDetailLoaded { detail } => match detail {
+            Some(text) => app.messages_state.toasts.info(&text),
+            None => app.messages_state.toasts.info("No LSP server connected"),
+        },
+        TuiCommand::NodeTelemetryRequested => {
+            crate::commands::diagnostics::request_node_telemetry(app);
+        }
+        TuiCommand::NodeTelemetryLoaded { nodes, error } => match error {
+            Some(error) => app.messages_state.toasts.warning(&error),
+            None => {
+                let text = crate::commands::diagnostics::format_node_telemetry(&nodes);
+                app.messages_state.toasts.info(&text);
+            }
+        },
+        TuiCommand::ShareSession { session_id } => {
+            start_share_session(app, session_id);
+        }
+        TuiCommand::UnshareSession { session_id } => {
+            start_unshare_session(app, session_id);
+        }
+        TuiCommand::ExportSession { session_id } => {
+            start_export_session(app, session_id);
+        }
+        TuiCommand::RenameSession {
+            session_id,
+            new_title,
+        } => {
+            start_rename_session(app, session_id, new_title);
+        }
+        TuiCommand::BulkDelete { session_ids } => {
+            start_bulk_delete(app, session_ids);
+        }
+        TuiCommand::BulkArchive {
+            session_ids,
+            unarchive,
+        } => {
+            start_bulk_archive(app, session_ids, unarchive);
+        }
+        TuiCommand::BulkExport { session_ids } => {
+            start_bulk_export(app, session_ids);
+        }
+        TuiCommand::ReloadSessions => {
+            start_reload_sessions(app);
+        }
+        TuiCommand::RefreshProjectCatalog => {
+            start_refresh_project_catalog(app);
+        }
+        TuiCommand::ProjectCatalogRefreshed {
+            request_id,
+            supported,
+            entries,
+            truncated,
+            error,
+        } => {
+            apply_project_catalog_refreshed(app, request_id, supported, entries, truncated, error);
+        }
+        TuiCommand::PolicySnapshotRequested {
+            request_id: _,
+            reason,
+        } => {
+            super::super::commands::policy::start_snapshot_refresh(app, reason);
+        }
+        TuiCommand::PolicySnapshotLoaded {
+            request_id,
+            reason,
+            preference,
+            snapshot,
+            error,
+        } => {
+            super::super::commands::policy::apply_snapshot_loaded(
+                app, request_id, reason, preference, snapshot, error,
+            );
+        }
+        TuiCommand::PolicyUpdateFinished {
+            request_id,
+            preference,
+            snapshot,
+            error,
+        } => {
+            super::super::commands::policy::apply_policy_updated(
+                app, request_id, preference, snapshot, error,
+            );
+        }
+        TuiCommand::ReasoningPreferenceUpdated {
+            request_id,
+            preference,
+            previous,
+            error,
+        } => {
+            super::super::commands::reasoning::apply_preference_updated(
+                app, request_id, preference, previous, error,
+            );
+        }
+        TuiCommand::ReasoningPreferenceLoaded {
+            request_id,
+            preference,
+            error,
+        } => {
+            super::super::commands::reasoning::apply_preference_loaded(
+                app, request_id, preference, error,
+            );
+        }
+        TuiCommand::RefreshPresence { project_id } => {
+            super::super::commands::presence::start_refresh_presence(
+                app,
+                project_id,
+                super::super::commands::presence::PresenceRefresh::User,
+            );
+        }
+        TuiCommand::PresenceSnapshotLoaded {
+            request_id,
+            project_id,
+            snapshot,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            super::super::commands::presence::apply_presence_snapshot_loaded(
+                app,
+                request_id,
+                project_id,
+                snapshot,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::PresenceHint { project_id } => {
+            // Liveness hint only: flag for a bounded re-fetch when the
+            // project is not already loading. No task per hint.
+            if app.presence.note_hint(&project_id) {
+                // Only auto-refresh the active project to avoid a
+                // background storm across inactive tabs. Inactive tabs
+                // refresh on foreground.
+                let is_active = app.active_project_id() == Some(project_id.as_str());
+                if is_active {
+                    super::super::commands::presence::start_refresh_presence(
+                        app,
+                        project_id,
+                        super::super::commands::presence::PresenceRefresh::Hint,
+                    );
+                }
+            }
+        }
+        TuiCommand::StartObserve {
+            project_id,
+            session_id,
+        } => {
+            super::super::commands::observe::start_observe(app, project_id, session_id);
+        }
+        TuiCommand::ObserveSubscribed {
+            request_id,
+            project_id,
+            session_id,
+            subscription_id,
+            cursor,
+            projection,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            super::super::commands::observe::apply_observe_subscribed(
+                app,
+                request_id,
+                project_id,
+                session_id,
+                subscription_id,
+                cursor,
+                projection,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ObserveResumed {
+            request_id,
+            session_id,
+            cursor,
+            last_delivered_seq,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::observe::apply_observe_resumed(
+                app,
+                request_id,
+                session_id,
+                cursor,
+                last_delivered_seq,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::StopObserving => {
+            super::super::commands::observe::stop_observing(app);
+        }
+        TuiCommand::ObserveUnsubscribed { .. } => {
+            // Best-effort unsubscribe completion; no state to apply
+            // (reducer already cleared on stop). Ignored when stale.
+        }
+        TuiCommand::PrimaryProjectionSubscribed {
+            request_id,
+            project_id,
+            session_id,
+            tab_id,
+            subscription_id,
+            cursor,
+            projection,
+            error,
+            unsupported,
+        } => {
+            super::super::commands::primary_projection::apply_subscribed(
+                app,
+                super::super::commands::primary_projection::PrimaryProjectionCompletion {
+                    request_id,
+                    project_id,
+                    session_id,
+                    tab_id,
+                    subscription_id,
+                    cursor,
+                    projection,
+                    error,
+                    unsupported,
+                },
+            );
+        }
+        TuiCommand::RefreshChat { project_id } => {
+            super::super::commands::chat::start_chat_history(app, project_id);
+        }
+        TuiCommand::SubagentTranscriptPage {
+            request_id,
+            route,
+            tab_id,
+            run_id,
+            from_ordinal,
+            page,
+            error,
+            error_code,
+        } => {
+            super::super::commands::transcript_follow::apply_page(
+                app,
+                super::super::commands::transcript_follow::TranscriptPageCompletion {
+                    request_id,
+                    route,
+                    tab_id,
+                    run_id,
+                    from_ordinal,
+                    page,
+                    error,
+                    error_code,
+                },
+            );
+        }
+        TuiCommand::SubagentTranscriptPass { tab_id } => {
+            super::super::commands::transcript_follow::continue_pass(
+                app,
+                &crate::app::state::subagent_tabs::SubagentTabId::new(tab_id),
+            );
+        }
+        TuiCommand::ChatHistoryLoaded {
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            next_cursor,
+            truncated,
+            retention_floor_seq,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_history(
+                request_id,
+                project_id,
+                channel_id,
+                messages,
+                next_cursor,
+                truncated,
+                retention_floor_seq,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatHistoryOlderLoaded {
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            has_older,
+            retention_floor_seq,
+            error,
+            reconnect_epoch,
+        } => {
+            crate::commands::chat::apply_chat_history_older_loaded(
+                app,
+                request_id,
+                project_id,
+                channel_id,
+                messages,
+                has_older,
+                retention_floor_seq,
+                error,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatSyncLoaded {
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            next_cursor,
+            resync_required,
+            retention_floor_seq,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_sync(
+                request_id,
+                project_id,
+                channel_id,
+                messages,
+                next_cursor,
+                resync_required,
+                retention_floor_seq,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatMessageSent {
+            request_id: _,
+            project_id,
+            channel_id,
+            message,
+            duplicate,
+            draft,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_sent(
+                project_id,
+                channel_id,
+                message,
+                duplicate,
+                draft,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatEditFinished {
+            request_id: _,
+            project_id,
+            channel_id,
+            message,
+            message_id: _,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_edit(
+                project_id,
+                channel_id,
+                message,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatRedactFinished {
+            request_id: _,
+            project_id,
+            channel_id,
+            message_id,
+            revision,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_redact(
+                project_id,
+                channel_id,
+                message_id,
+                revision,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatReadMarkerSet {
+            project_id,
+            channel_id,
+            last_read_seq,
+            error,
+        } => {
+            app.apply_chat_read(project_id, channel_id, last_read_seq, error);
+        }
+        TuiCommand::ChatComposingLoaded {
+            request_id: _,
+            project_id,
+            channel_id,
+            composing,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_composing(
+                project_id,
+                channel_id,
+                composing,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatHint {
+            project_id,
+            channel_id,
+        } => {
+            // Liveness hint only: flag for a bounded re-fetch when the
+            // project is not already loading. No task per hint.
+            // M005: Workspace selection owns the target while active.
+            if app.chat.note_hint(&project_id) {
+                let is_target =
+                    app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+                if is_target {
+                    super::super::commands::chat::start_chat_history(app, project_id);
+                } else {
+                    let _ = channel_id;
+                }
+            }
+        }
+        TuiCommand::ChatActionSubmitted {
+            request_id,
+            project_id,
+            channel_id,
+            action,
+            duplicate,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_action_submitted(
+                request_id,
+                project_id,
+                channel_id,
+                action,
+                duplicate,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatActionListLoaded {
+            request_id,
+            project_id,
+            channel_id,
+            actions,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_action_list(
+                request_id,
+                project_id,
+                channel_id,
+                actions,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatActionHint {
+            project_id,
+            channel_id,
+            message_id,
+        } => {
+            // Action liveness hint: flag for a bounded action re-fetch
+            // when the project is the chat target; otherwise mark resync.
+            // M005: Workspace selection owns the target while active.
+            if app.chat.note_hint(&project_id) {
+                let is_target =
+                    app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+                if is_target {
+                    super::super::commands::chat::start_chat_action_list(
+                        app,
+                        project_id,
+                        Some(message_id),
+                    );
+                } else {
+                    let _ = channel_id;
+                }
+            }
+        }
+        TuiCommand::OpenTreeDialog => {
+            start_open_tree_dialog(app);
+        }
+        TuiCommand::PreviewImport { source } => {
+            super::super::commands::import::start_preview_import(app, source);
+        }
+        TuiCommand::ConfirmImport { source } => {
+            super::super::commands::import::start_confirm_import(app, source);
+        }
+        TuiCommand::CreateFromTemplate { key, template } => {
+            start_create_from_template(app, key, template);
+        }
+        TuiCommand::LoadSessionMessages { session_id } => {
+            start_load_session_messages(app, session_id);
+        }
+        TuiCommand::RefreshSessionState { session_id } => {
+            start_refresh_session_state(app, session_id);
+        }
+        TuiCommand::SpawnSubagent { agent_name, prompt } => {
+            handle_spawn_subagent(app, agent_name, prompt);
+        }
+        TuiCommand::UndoDelete { session_id } => {
+            start_undo_delete(app, session_id);
+        }
+        TuiCommand::ListTasks => {
+            start_list_tasks(app);
+        }
+        TuiCommand::UpdateModels(models) => {
+            app.set_models(models);
+            app.messages_state
+                .toasts
+                .add(Toast::success("Models list updated"));
+        }
+        TuiCommand::DeleteTask { id } => {
+            start_delete_task(app, id);
+        }
+        TuiCommand::TaskSchedule {
+            interval_secs,
+            message,
+        } => {
+            start_task_schedule(app, interval_secs, message);
+        }
+        TuiCommand::WorktreeList => {
+            start_worktree_list(app);
+        }
+        TuiCommand::MemorySummary { command_id } => {
+            start_memory_summary(app, command_id);
+        }
+        TuiCommand::MemorySearch { query } => {
+            start_memory_search(app, query);
+        }
+        TuiCommand::MemoryRemember { text } => {
+            start_memory_remember(app, text);
+        }
+        TuiCommand::MemoryForget { id } => {
+            start_memory_forget(app, id);
+        }
+        TuiCommand::HabitList { ready_only } => {
+            start_habit_list(app, ready_only);
+        }
+        TuiCommand::HabitDismiss { id } => {
+            start_habit_dismiss(app, id);
+        }
+        TuiCommand::SkillPromotionFinished {
+            action,
+            response,
+            error,
+        } => {
+            crate::commands::promotion::apply_skill_promotion_finished(
+                app, action, response, error,
+            );
+        }
+        TuiCommand::CompactSessionFinished {
+            session_id,
+            response,
+            error,
+        } => {
+            crate::commands::compaction::apply_compact_session_finished(
+                app, session_id, response, error,
+            );
+        }
+        TuiCommand::OpenDiffDialog {
+            old_content,
+            new_content,
+            title,
+        } => {
+            handle_open_diff_dialog(app, old_content, new_content, title);
+        }
+        TuiCommand::SendNotification {
+            notification_type,
+            body,
+        } => {
+            start_send_notification(app, notification_type, body);
+        }
+        TuiCommand::GoalSet {
+            session_id,
+            project_id,
+            objective,
+        } => {
+            handle_goal_set(app, session_id, project_id, objective);
+        }
+        TuiCommand::GoalFromFile {
+            session_id,
+            project_id,
+            path,
+        } => {
+            handle_goal_from_file(app, session_id, project_id, path);
+        }
+        TuiCommand::GoalShow { session_id } => {
+            start_goal_show(app, session_id);
+        }
+        TuiCommand::GoalPause { session_id } => {
+            handle_goal_simple(app, CoreRequest::GoalPause { session_id }, "pause");
+        }
+        TuiCommand::GoalResume { session_id } => {
+            handle_goal_simple(app, CoreRequest::GoalResume { session_id }, "resume");
+        }
+        TuiCommand::GoalClear { session_id } => {
+            handle_goal_simple(app, CoreRequest::GoalClear { session_id }, "clear");
+        }
+        TuiCommand::GoalDone { session_id } => {
+            handle_goal_simple(app, CoreRequest::GoalDone { session_id }, "done");
+        }
+        TuiCommand::GoalCheckpoint {
+            session_id,
+            project_id,
+        } => {
+            start_goal_checkpoint(app, session_id, project_id);
+        }
+        TuiCommand::GoalBudget {
+            session_id,
+            subcommand,
+        } => {
+            handle_goal_budget(app, session_id, subcommand);
+        }
+        TuiCommand::ResearchListRuns => {
+            start_research_list_runs(app);
+        }
+        TuiCommand::ResearchLoadRun { run_id } => {
+            start_research_load_run(app, run_id);
+        }
+        TuiCommand::ResearchLoadSection { run_id, section } => {
+            start_research_load_section(app, run_id, section);
+        }
+        TuiCommand::OpenRunDetailLoaded { dialog } => {
+            app.push_dialog(crate::Dialog::RunDetail, Box::new(dialog));
+        }
+        TuiCommand::OpenRunDetailError { error } => {
+            app.messages_state.toasts.error(&error);
+        }
+        TuiCommand::OpenJobDetailLoaded {
+            request_id,
+            job_id,
+            job,
+            attempts,
+            error,
+            notice,
+        } => {
+            if !app.dialog_state.job_detail_request.finish(request_id)
+                || app.ui_state.dialog != crate::Dialog::JobDetail
+            {
+                return;
+            }
+            if app.ui_state.dialog == crate::Dialog::JobDetail {
+                app.close_dialog();
+            }
+            if let Some(notice) = notice {
+                app.messages_state.toasts.info(&notice);
+            }
+            let mut dialog = crate::components::dialogs::job_detail::JobDetailDialog::loaded(
+                job_id, job, attempts,
+            );
+            dialog.can_cancel = !app.is_observing();
+            dialog.error = error;
+            app.push_dialog(crate::Dialog::JobDetail, Box::new(dialog));
+        }
+        TuiCommand::RunRerunFinished {
+            parent_run_id,
+            child_job_id,
+            error,
+        } => {
+            crate::commands::run_rerun::apply_run_rerun_finished(
+                app,
+                parent_run_id,
+                child_job_id,
+                error,
+            );
+        }
+        TuiCommand::RunDoctor => {
+            start_run_doctor(app);
+        }
+        TuiCommand::ToolContracts => {
+            handle_tool_contracts(app);
+        }
+        TuiCommand::SecurityReviewRun {
+            id,
+            root,
+            args,
+            lsp_tool,
+        } => {
+            handle_security_review_run(app, id, root, args, lsp_tool);
+        }
+        TuiCommand::SecurityReviewFinished { id, receipt, error } => {
+            handle_security_review_finished(app, id, receipt, error);
+        }
+        TuiCommand::SubagentSpawnFinished {
+            agent_name,
+            task_id,
+            prompt,
+            error,
+        } => {
+            apply_subagent_spawn_finished(app, agent_name, task_id, prompt, error);
+        }
+        TuiCommand::GitSidebarRefreshFinished {
+            generation,
+            root,
+            branch,
+            dirty,
+            staged_count,
+            unstaged_count,
+            untracked_count,
+            conflicted_count,
+            ahead,
+            behind,
+            error,
+            operation_state_label,
+            available_actions,
+            conflicted_paths,
+        } => {
+            let info = GitSidebarInfo {
+                root,
+                branch,
+                dirty,
+                staged_count,
+                unstaged_count,
+                untracked_count,
+                conflicted_count,
+                ahead,
+                behind,
+                operation_state_label,
+                available_actions,
+                conflicted_paths,
+            };
+            super::super::commands::git_sidebar::apply_git_sidebar_refresh(
+                app, generation, error, info,
+            );
+        }
+        TuiCommand::SessionsReloaded {
+            request_id,
+            sessions,
+            message_counts,
+            checkouts,
+            error,
+        } => {
+            apply_sessions_reloaded(app, request_id, sessions, message_counts, checkouts, error);
+        }
+        TuiCommand::SessionLaunch {
+            project_id,
+            intent,
+            parent_session_id,
+            placement,
+            idempotency_key,
+        } => {
+            start_session_launch(
+                app,
+                project_id,
+                intent,
+                parent_session_id,
+                placement,
+                idempotency_key,
+            );
+        }
+        TuiCommand::SessionRefreshed {
+            request_id,
+            session_id,
+            title,
+            error,
+        } => {
+            crate::commands::sessions::apply_session_refreshed(
+                app, request_id, session_id, title, error,
+            );
+        }
+        TuiCommand::SessionActivated {
+            request_id,
+            tab_id,
+            session,
+            workspace_root,
+            error,
+        } => {
+            crate::commands::sessions::apply_session_activated(
+                app,
+                request_id,
+                tab_id,
+                session,
+                workspace_root,
+                error,
+            );
+        }
+        TuiCommand::SessionMessagesLoaded {
+            request_id,
+            session_id,
+            messages,
+            error,
+        } => {
+            apply_session_messages_loaded(app, request_id, session_id, messages, error);
+        }
+        TuiCommand::TreeDialogLoaded {
+            current_session_id,
+            nodes,
+            error,
+        } => {
+            apply_tree_dialog_loaded(app, current_session_id, nodes, error);
+        }
+        TuiCommand::ImportPreviewLoaded {
+            request_id,
+            session,
+            msg_count,
+            error,
+        } => {
+            super::super::commands::import::apply_import_preview_loaded(
+                app, request_id, session, msg_count, error,
+            );
+        }
+        TuiCommand::ImportConfirmed {
+            request_id,
+            session,
+            error,
+        } => {
+            super::super::commands::import::apply_import_confirmed(app, request_id, session, error);
+        }
+        TuiCommand::ResearchRunsLoaded {
+            request_id,
+            runs,
+            error,
+        } => {
+            apply_research_runs_loaded(app, request_id, runs, error);
+        }
+        TuiCommand::ResearchRunLoaded {
+            request_id,
+            run_id,
+            bundle,
+            error,
+        } => {
+            apply_research_run_loaded(app, request_id, run_id, bundle, error);
+        }
+        TuiCommand::ResearchSectionLoaded {
+            request_id,
+            section,
+            content,
+            error,
+        } => {
+            apply_research_section_loaded(app, request_id, section, content, error);
+        }
+        TuiCommand::MemoryResult {
+            toast_message,
+            is_error,
+        } => {
+            apply_memory_result(app, toast_message, is_error);
+        }
+        TuiCommand::HabitResult {
+            toast_message,
+            is_error,
+        } => {
+            apply_habit_result(app, toast_message, is_error);
+        }
+        TuiCommand::DoctorResult { summary, is_error } => {
+            apply_doctor_result(app, summary, is_error);
+        }
+        TuiCommand::ShareSessionFinished {
+            session_id,
+            session,
+            error,
+        } => {
+            apply_share_session_finished(app, session_id, session, error);
+        }
+        TuiCommand::UnshareSessionFinished {
+            session_id,
+            session,
+            error,
+        } => {
+            apply_unshare_session_finished(app, session_id, session, error);
+        }
+        TuiCommand::ExportSessionFinished {
+            session_id,
+            json,
+            error,
+        } => {
+            apply_export_session_finished(app, session_id, json, error);
+        }
+        TuiCommand::SessionMutationFinished {
+            request_id,
+            op,
+            affected_ids,
+            message,
+            reload_after,
+            error,
+        } => {
+            apply_session_mutation_finished(
+                app,
+                request_id,
+                op,
+                affected_ids,
+                message,
+                reload_after,
+                error,
+            );
+        }
+        TuiCommand::GoalOperationFinished {
+            session_id,
+            op,
+            response,
+            error,
+        } => {
+            apply_goal_operation_finished(app, session_id, op, response, error);
+        }
+        TuiCommand::ChangeReviewOpened { response, error } => {
+            crate::commands::change_review::apply_opened(app, response, error);
+        }
+        TuiCommand::RevertFinished { response, error } => {
+            crate::commands::revert::apply_revert_finished(app, response, error);
+        }
+        TuiCommand::DiffFinished { response, error } => {
+            crate::commands::diff::apply_diff_finished(app, response, error);
+        }
+        TuiCommand::SessionStateRefreshed {
+            todos,
+            active_goal,
+            error,
+        } => {
+            apply_session_state_refreshed(app, todos, active_goal, error);
+        }
+        TuiCommand::EggpoolConnectionFinished {
+            operation_id,
+            result,
+        } => {
+            let is_current = app
+                .dialog_state
+                .connect_dialog
+                .as_ref()
+                .and_then(|dialog| dialog.operation_id.as_deref())
+                == Some(operation_id.as_str());
+            if !is_current {
+                return;
+            }
+            match result {
+                Ok(result) => {
+                    app.messages_state.toasts.success(&format!(
+                        "Eggpool connected on {} ({} models)",
+                        result.connection.endpoint,
+                        result.models.len()
+                    ));
+                    app.dialog_state.connect_dialog = None;
+                    app.close_dialog();
+                }
+                Err(error) => {
+                    apply_connect_error(app, &operation_id, &error, "Eggpool");
+                }
+            }
+        }
+        TuiCommand::ConnectSetupLoaded { providers, error } => {
+            // The dialog stays open in loading state until this completion.
+            // A closed dialog means stale completion: drop it.
+            if app.dialog_state.connect_dialog.is_none() {
+                return;
+            }
+            if let Some(error) = error {
+                if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+                    dialog.set_setup_error(error.clone());
+                }
+                app.focus_manager
+                    .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                        crate::components::component::DialogType::Connect,
+                        |live| {
+                            live.set_setup_error(error.clone());
+                        },
+                    );
+                return;
+            }
+            if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+                dialog.set_setup_entries(&providers);
+            }
+            app.focus_manager
+                .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                    crate::components::component::DialogType::Connect,
+                    |live| {
+                        live.set_setup_entries(&providers);
+                    },
+                );
+        }
+        TuiCommand::ProviderConnectionFinished {
+            operation_id,
+            provider_id,
+            display_name,
+            result,
+        } => {
+            // Stale-completion guard: only the in-flight operation may mutate
+            // the dialog. Closing the dialog cancels the task and drops late
+            // completions via the operation-ID check.
+            let is_current = app
+                .dialog_state
+                .connect_dialog
+                .as_ref()
+                .and_then(|dialog| dialog.operation_id.as_deref())
+                == Some(operation_id.as_str());
+            if !is_current {
+                return;
+            }
+            match result {
+                Ok(result) => {
+                    // M010: state catalog reachability and credential
+                    // verification as the separate facts they are. A single
+                    // "connected" message implied the credential had been
+                    // validated, which catalog discovery never establishes for
+                    // most providers.
+                    app.messages_state.toasts.success(
+                        &crate::components::dialogs::connect::connect_success_message(
+                            &display_name,
+                            &result.connection.endpoint,
+                            result.models.len(),
+                            result
+                                .connection
+                                .health
+                                .as_ref()
+                                .and_then(|health| health.credential_status.as_deref()),
+                        ),
+                    );
+                    let _ = provider_id;
+                    app.dialog_state.connect_dialog = None;
+                    app.close_dialog();
+                    // Refresh the existing connections/model projections
+                    // rather than maintaining a second TUI-only provider
+                    // list. No-ops unless the management surface is open.
+                    if let Some(tx) = app.tui_cmd_tx.clone() {
+                        let _ = send_tui(
+                            &tx,
+                            TuiCommand::SessionSelectionRefresh {
+                                focus_connection_id: None,
+                            },
+                        );
+                    }
+                }
+                Err(error) => {
+                    apply_connect_error(app, &operation_id, &error, &display_name);
+                }
+            }
+        }
+        TuiCommand::ConnectionRotationFinished {
+            operation_id,
+            result,
+        } => {
+            let is_current = app
+                .dialog_state
+                .connect_dialog
+                .as_ref()
+                .and_then(|dialog| dialog.operation_id.as_deref())
+                == Some(operation_id.as_str());
+            if !is_current {
+                return;
+            }
+            match result {
+                Ok(result) => {
+                    app.messages_state
+                        .toasts
+                        .success(&format!("Provider credential rotation {}", result.state));
+                    app.dialog_state.connect_dialog = None;
+                    app.close_dialog();
+                    if let Some(tx) = app.tui_cmd_tx.clone() {
+                        let _ = send_tui(
+                            &tx,
+                            TuiCommand::SessionSelectionRefresh {
+                                focus_connection_id: None,
+                            },
+                        );
+                    }
+                }
+                Err(error) => {
+                    app.messages_state
+                        .toasts
+                        .error(&format!("Provider credential rotation failed: {error}"));
+                    // Clearing the secret is required — the failed attempt's
+                    // credential must not stay in memory — but it used to
+                    // leave the dialog on `EnterApiKey` with an empty masked
+                    // field and no explanation, which reads as a silent
+                    // re-prompt for the same key. Say what failed and that the
+                    // field is now empty on purpose.
+                    let message = format!(
+                        "Rotation failed: {error}. The credential field is now empty — enter it again."
+                    );
+                    if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+                        dialog.operation_id = None;
+                        dialog.clear_secret();
+                        dialog.set_error(message.clone());
+                    }
+                    app.focus_manager
+                        .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+                            crate::components::component::DialogType::Connect,
+                            |live| {
+                                live.operation_id = None;
+                                live.clear_secret();
+                                live.set_error(message);
+                            },
+                        );
+                }
+            }
+        }
+        TuiCommand::SessionSelectionRefresh {
+            focus_connection_id,
+        } => {
+            // The dialog was opened (or the user requested a refresh).
+            // Drive a fresh selection fetch through the daemon.
+            if app.dialog_state.connection_selection_dialog.is_some() {
+                let session_id = app
+                    .dialog_state
+                    .connection_selection_dialog
+                    .as_ref()
+                    .map(|d| d.session_id.clone())
+                    .unwrap_or_default();
+                if let Some(tx) = app.tui_cmd_tx.clone() {
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SessionSelectionLoad {
+                            session_id,
+                            focus_connection_id,
+                        },
+                    );
+                }
+            }
+        }
+        TuiCommand::SessionSelectionLoad {
+            session_id,
+            focus_connection_id,
+        } => {
+            crate::commands::session_selection::start_selection_refresh(
+                app,
+                session_id,
+                focus_connection_id,
+            );
+        }
+        TuiCommand::ModelSelectPersist { session_id, model } => {
+            crate::commands::session_selection::start_model_select_persist(app, session_id, model);
+        }
+        TuiCommand::ConnectionLifecycle {
+            action,
+            connection_id,
+            expected_revision,
+        } => {
+            start_connection_lifecycle(app, action, connection_id, expected_revision);
+        }
+        TuiCommand::ConnectionLifecycleFinished {
+            action,
+            connection_id,
+            message,
+            error,
+        } => {
+            if let Some(error) = error {
+                app.messages_state.toasts.error(&format!(
+                    "Provider connection {connection_id} {action:?} failed: {error}"
+                ));
+            } else if let Some(message) = message {
+                app.messages_state.toasts.info(&message);
+            }
+            if app.dialog_state.connection_selection_dialog.is_some() {
+                let session_id = app
+                    .dialog_state
+                    .connection_selection_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.session_id.clone())
+                    .unwrap_or_default();
+                if let Some(tx) = app.tui_cmd_tx.clone() {
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SessionSelectionLoad {
+                            session_id,
+                            focus_connection_id: None,
+                        },
+                    );
+                }
+            }
+        }
+        TuiCommand::ModelSelectPersisted { model, error } => {
+            app.apply_model_select_persisted(model, error);
+        }
+        TuiCommand::SessionSelectionLoaded {
+            session_id,
+            selection,
+            connections,
+            models,
+            focused_connection_id,
+            error,
+        } => {
+            // The durable session selection is authoritative for what the
+            // daemon will actually run, so it must be reflected in the
+            // displayed model even when no dialog is open. Previously the
+            // handler returned early unless the connection dialog existed,
+            // so the fetched selection was discarded and the status line
+            // kept showing a manifest-sourced model — the UI and the
+            // provider could silently disagree.
+            if error.is_none() {
+                if let Some(selection) = selection.as_ref() {
+                    // The capability rides on the model-resolution response.
+                    // Recording it here is what lets `/reasoning` offer the
+                    // model's own options instead of the known-label
+                    // fallback.
+                    if let codegg_protocol::provider::SessionSelectionDto::Selected {
+                        model, ..
+                    } = selection
+                    {
+                        app.record_reasoning_capability(
+                            model.model_id.as_str(),
+                            model.reasoning_capability.clone(),
+                        );
+                    }
+                    if let Some(runtime_model) =
+                        codegg::core::session_selection::durable_selected_runtime_model(selection)
+                    {
+                        app.reconcile_durable_selection_model(&runtime_model);
+                    }
+                }
+                for model in &models {
+                    app.record_reasoning_capability(
+                        model.model_id.as_str(),
+                        model.reasoning_capability.clone(),
+                    );
+                }
+            }
+
+            let Some(dialog) = app.dialog_state.connection_selection_dialog.as_mut() else {
+                return;
+            };
+            if dialog.session_id != session_id {
+                return;
+            }
+            dialog.finish_loading();
+            if let Some(err) = error {
+                dialog.set_error(err);
+            } else {
+                dialog.set_connections(connections);
+                dialog.set_models(models);
+                if let Some(focused) = focused_connection_id {
+                    if let Some(idx) = dialog.connections.iter().position(|c| c.id == focused) {
+                        dialog.connection_idx = idx;
+                    }
+                }
+                if let Some(sel) = selection {
+                    dialog.set_selection(sel);
+                }
+            }
+            // The focus stack owns the rendered instance. Apply the same
+            // authoritative completion directly to that live component.
+            let loading_error = dialog.last_error.clone();
+            let connections = dialog.connections.clone();
+            let models = dialog.models.clone();
+            let selection = dialog.selection.clone();
+            let focused_connection_id = dialog
+                .connections
+                .get(dialog.connection_idx)
+                .map(|connection| connection.id.clone());
+            let _ = app
+                .focus_manager
+                .dialog_mut::<crate::components::dialogs::connection_selection::ConnectionSelectionDialog>(
+                    crate::components::component::DialogType::ConnectionSelection,
+                )
+                .map(|live| {
+                    live.finish_loading();
+                    if let Some(error) = loading_error {
+                        live.set_error(error);
+                    } else {
+                        live.set_connections(connections);
+                        live.set_models(models);
+                        if let Some(focused) = focused_connection_id {
+                            if let Some(idx) = live.connections.iter().position(|c| c.id == focused) {
+                                live.connection_idx = idx;
+                            }
+                        }
+                        if let Some(selection) = selection {
+                            live.set_selection(selection);
+                        }
+                    }
+                });
+        }
+        TuiCommand::TasksListed {
+            request_id,
+            tasks,
+            error,
+        } => {
+            apply_tasks_listed(app, request_id, tasks, error);
+        }
+        TuiCommand::TaskOperationFinished {
+            request_id,
+            op,
+            task_id,
+            error,
+        } => {
+            apply_task_operation_finished(app, request_id, op, task_id, error);
+        }
+        TuiCommand::WorktreeListed {
+            request_id,
+            worktrees,
+            error,
+        } => {
+            apply_worktree_listed(app, request_id, worktrees, error);
+        }
+        TuiCommand::TemplateSessionCreated {
+            request_id,
+            session,
+            agent,
+            model,
+            template_name,
+            error,
+        } => {
+            apply_template_session_created(
+                app,
+                request_id,
+                session,
+                agent,
+                model,
+                template_name,
+                error,
+            );
+        }
+        TuiCommand::NewSessionCreated {
+            request_id,
+            session,
+            error,
+        } => {
+            super::super::commands::sessions::apply_new_session_created(
+                app, request_id, session, error,
+            );
+        }
+        TuiCommand::PromptSessionCreated {
+            request_id,
+            route,
+            prompt,
+            session,
+            error,
+        } => {
+            super::super::commands::prompt::apply_session_create_for_prompt(
+                app, request_id, route, prompt, session, error,
+            );
+        }
+        TuiCommand::TaskSheetPrefetched {
+            request_id,
+            route,
+            project_id,
+            data,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_sheet_prefetched(
+                app, request_id, route, project_id, data, error,
+            );
+        }
+        TuiCommand::WorkOrderCreated {
+            request_id,
+            route,
+            project_id,
+            prompt,
+            work_order,
+            duplicate,
+            schedule_summary,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_work_order_created(
+                app,
+                request_id,
+                route,
+                project_id,
+                prompt,
+                work_order,
+                duplicate,
+                schedule_summary,
+                error,
+            );
+        }
+        TuiCommand::TaskViewRefreshed {
+            request_id,
+            route,
+            generation,
+            project_id,
+            work_orders,
+            summary,
+            lanes,
+            capabilities_supported,
+            truncated,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_task_view_refreshed(
+                app,
+                request_id,
+                route,
+                generation,
+                project_id,
+                work_orders,
+                summary,
+                lanes,
+                capabilities_supported,
+                truncated,
+                error,
+            );
+        }
+        TuiCommand::TaskOccurrenceLoaded {
+            request_id,
+            route,
+            generation,
+            work_order_id,
+            occurrence,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_occurrence_loaded(
+                app,
+                request_id,
+                route,
+                generation,
+                work_order_id,
+                occurrence,
+                error,
+            );
+        }
+        TuiCommand::LaneReordered {
+            request_id,
+            route,
+            generation,
+            lane_id,
+            revision,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_lane_reordered(
+                app, request_id, route, generation, lane_id, revision, error,
+            );
+        }
+        TuiCommand::TaskMutationFinished {
+            request_id,
+            route,
+            generation,
+            op,
+            work_order_id,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_task_mutation_finished(
+                app,
+                request_id,
+                route,
+                generation,
+                op,
+                work_order_id,
+                error,
+            );
+        }
+        TuiCommand::TaskSessionFocus {
+            request_id,
+            route,
+            generation,
+            project_id,
+            session_id,
+            sessions,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_task_session_focus(
+                app, request_id, route, generation, project_id, session_id, sessions, error,
+            );
+        }
+        TuiCommand::TaskModelPrefetched {
+            request_id,
+            route,
+            connection,
+            model,
+            revision,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_task_model_prefetched(
+                app, request_id, route, connection, model, revision, error,
+            );
+        }
+        TuiCommand::TaskModelPrefSaved { request_id, error } => {
+            super::super::commands::work_orders::apply_task_model_pref_saved(
+                app, request_id, error,
+            );
+        }
+        TuiCommand::WorkOrderTriggerCreated {
+            request_id,
+            route,
+            project_id,
+            work_order_id,
+            trigger,
+            secret,
+            duplicate,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_trigger_created(
+                app,
+                request_id,
+                route,
+                project_id,
+                work_order_id,
+                trigger,
+                secret,
+                duplicate,
+                error,
+            );
+        }
+        TuiCommand::WorkOrderTriggersListed {
+            request_id,
+            route,
+            generation,
+            project_id,
+            work_order_id,
+            triggers,
+            truncated,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_triggers_listed(
+                app,
+                request_id,
+                route,
+                generation,
+                project_id,
+                work_order_id,
+                triggers,
+                truncated,
+                error,
+            );
+        }
+        TuiCommand::WorkOrderTriggerRevoked {
+            request_id,
+            route,
+            project_id,
+            work_order_id,
+            trigger_id,
+            trigger,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_trigger_revoked(
+                app,
+                request_id,
+                route,
+                project_id,
+                work_order_id,
+                trigger_id,
+                trigger,
+                error,
+            );
+        }
+        TuiCommand::TeamMembershipLoaded {
+            request_id,
+            project_id,
+            memberships,
+            policy,
+            truncated,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_membership_loaded(
+                app,
+                request_id,
+                project_id,
+                memberships,
+                policy,
+                truncated,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::TeamPrincipalsLoaded {
+            request_id,
+            principals,
+            truncated,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_principals_loaded(
+                app,
+                request_id,
+                principals,
+                truncated,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::TeamTokensLoaded {
+            request_id,
+            principal_id,
+            tokens,
+            truncated,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_tokens_loaded(
+                app,
+                request_id,
+                principal_id,
+                tokens,
+                truncated,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::TeamMutationFinished {
+            request_id,
+            project_id,
+            message,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_mutation_finished(
+                app,
+                request_id,
+                project_id,
+                message,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::TeamTokenCreated {
+            request_id,
+            project_id,
+            principal_id,
+            token,
+            plaintext,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_token_created(
+                app,
+                request_id,
+                project_id,
+                principal_id,
+                token,
+                plaintext,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ControlLoaded {
+            request_id,
+            session_id,
+            controller,
+            requests,
+            truncated,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            super::super::commands::control::apply_control_loaded(
+                app,
+                request_id,
+                session_id,
+                controller,
+                requests,
+                truncated,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ControlMutationFinished {
+            request_id,
+            session_id,
+            message,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::control::apply_control_mutation(
+                app,
+                request_id,
+                session_id,
+                message,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::EditorOpened {
+            request_id,
+            generation,
+            result,
+            state,
+        } => {
+            super::super::commands::editor::apply_editor_opened(
+                app, request_id, generation, result, state,
+            );
+        }
+        TuiCommand::EditorOperationFinished {
+            request_id,
+            generation,
+            operation,
+            error,
+            state,
+        } => {
+            super::super::commands::editor::apply_editor_operation_finished(
+                app, request_id, generation, operation, error, state,
+            );
+        }
+        TuiCommand::DocumentDeleted { path, scope, error } => {
+            super::super::commands::editor::apply_document_deleted(app, path, scope, error);
+        }
+        TuiCommand::EditorDiagnosticsFinished {
+            request_id,
+            scope,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_diagnostics(
+                app, request_id, scope, result, error,
+            );
+        }
+        TuiCommand::EditorDiagnosticsStreamUpdated {
+            scope,
+            result,
+            stale,
+        } => {
+            if app.editor_state.generation == scope.generation
+                && super::super::commands::editor::current_lsp_scope(app).as_ref() == Some(&scope)
+                && result.project_id == scope.project_id
+                && matches!(
+                    result.status,
+                    codegg::protocol::lsp::LspDiagnosticsStatus::Ready
+                        | codegg::protocol::lsp::LspDiagnosticsStatus::NotReady
+                )
+            {
+                app.editor_state
+                    .lsp
+                    .apply_streamed_diagnostics(&scope, result, stale);
+            }
+        }
+        TuiCommand::EditorLspReadFinished {
+            request_id,
+            scope,
+            operation,
+            document_revision,
+            request_position,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_lsp_read_fresh(
+                app,
+                request_id,
+                scope,
+                operation,
+                document_revision,
+                request_position,
+                result,
+                error,
+            );
+        }
+        TuiCommand::EditorCompletionFinished {
+            request_id,
+            completion_epoch,
+            scope,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_completion(
+                app,
+                request_id,
+                completion_epoch,
+                scope,
+                result,
+                error,
+            );
+        }
+        TuiCommand::FileTreeListed {
+            request_id,
+            generation,
+            root,
+            listing,
+        } => {
+            super::super::commands::file_tree::apply_listing(
+                app, request_id, generation, root, listing,
+            );
+        }
+        TuiCommand::FileTreeFailed {
+            request_id,
+            generation,
+            root,
+            message,
+        } => {
+            super::super::commands::file_tree::apply_failure(
+                app, request_id, generation, root, message,
+            );
+        }
+        TuiCommand::ChangeReviewAccepted {
+            request_id,
+            generation,
+            written_files,
+            checkpoint_id,
+            error,
+        } => {
+            super::super::commands::change_review::apply_completion(
+                app,
+                request_id,
+                generation,
+                written_files,
+                checkpoint_id,
+                error,
+            );
+        }
+        TuiCommand::WorkspaceDashboardLoaded {
+            request_id,
+            generation,
+            reconnect_epoch,
+            rows,
+            truncated,
+            next_cursor,
+            error,
+        } => {
+            super::super::commands::workspace_dashboard::apply_dashboard_loaded(
+                app,
+                request_id,
+                generation,
+                reconnect_epoch,
+                rows,
+                truncated,
+                next_cursor,
+                error,
+            );
+        }
+        TuiCommand::WorkspaceDashboardExpanded {
+            request_id,
+            generation,
+            reconnect_epoch,
+            project_id,
+            tasks,
+            error,
+        } => {
+            super::super::commands::workspace_dashboard::apply_dashboard_expanded(
+                app,
+                request_id,
+                generation,
+                reconnect_epoch,
+                project_id,
+                tasks,
+                error,
+            );
+        }
+        TuiCommand::NotificationSent { error } => {
+            apply_notification_sent(app, error);
+        }
+        TuiCommand::RunHumanShell {
+            command,
+            promote_after,
+            cwd,
+            confirmed_dangerous,
+        } => {
+            handle_run_human_shell(app, command, promote_after, cwd, confirmed_dangerous);
+        }
+        TuiCommand::RemoteShellRunAccepted {
+            local_id,
+            command,
+            cwd,
+            promote_after,
+            shell_binding,
+            binding,
+        } => {
+            let capture_policy = if promote_after {
+                codegg::shell::types::ShellCapturePolicy::StoreAndPromote
+            } else {
+                codegg::shell::types::ShellCapturePolicy::StoreEphemeral
+            };
+            let request = codegg::shell::types::ShellRequest {
+                id: codegg::shell::types::ShellCommandId(local_id),
+                origin: if promote_after {
+                    codegg::shell::types::ShellOrigin::HumanPromoted
+                } else {
+                    codegg::shell::types::ShellOrigin::HumanEphemeral
+                },
+                command,
+                cwd,
+                timeout: std::time::Duration::from_secs(300),
+                capture_policy,
+                env_policy: codegg::shell::types::ShellEnvPolicy::Clean,
+            };
+            app.shell_store.insert_started(&request);
+            app.remote_shell_runs.insert(local_id, binding);
+            app.shell_command_bindings.insert(local_id, shell_binding);
+            let retained: std::collections::HashSet<u64> = app
+                .shell_store
+                .list_recent(usize::MAX)
+                .iter()
+                .map(|entry| entry.id.0)
+                .collect();
+            app.shell_command_bindings
+                .retain(|run_id, _| retained.contains(run_id));
+        }
+        TuiCommand::RemoteShellRunCancelResult { message } => {
+            app.messages_state.toasts.info(&message);
+        }
+        TuiCommand::TestRun { scope, args } => {
+            start_test_run(app, scope, args);
+        }
+        TuiCommand::TestRunFinished {
+            request_id,
+            report,
+            summary,
+            error,
+        } => {
+            apply_test_run_finished(app, request_id, report, summary, error);
+        }
+        TuiCommand::ShellEvent(event) => {
+            handle_shell_event(app, event);
+        }
+        TuiCommand::RegisterShellHandle { id, handle } => {
+            app.shell_handles.insert(id, handle);
+        }
+        TuiCommand::ShellInclude { id, mode, question } => {
+            handle_shell_include(app, id, mode, question);
+        }
+        TuiCommand::ShellRerun { id } => {
+            handle_shell_rerun(app, id);
+        }
+        TuiCommand::ShellKill { id } => {
+            handle_shell_kill(app, id);
+        }
+        TuiCommand::ShellList => {
+            handle_shell_list(app);
+        }
+        TuiCommand::ShellShow { id } => {
+            handle_shell_show(app, id);
+        }
+        TuiCommand::ShellAsk { id, question } => {
+            handle_shell_ask(app, id, question);
+        }
+        TuiCommand::ShellAskSubmitted {
+            id,
+            promotion_id,
+            text,
+            error,
+        } => {
+            crate::commands::shell::apply_shell_ask_submitted(app, id, promotion_id, text, error);
+        }
+        TuiCommand::ShellPromotionStaged { result } => {
+            app.apply_shell_promotion_staged(result);
+        }
+        TuiCommand::ShellPromotionsLoaded {
+            session_id,
+            workspace_id,
+            promotions,
+            error,
+        } => {
+            app.apply_shell_promotions_loaded(session_id, workspace_id, promotions, error);
+        }
+        TuiCommand::UserPromptQueueLoaded {
+            session_id,
+            entries,
+            error,
+        } => {
+            app.apply_user_prompt_queue_loaded(session_id, entries, error);
+        }
+        TuiCommand::UserPromptQueueDeleteFinished {
+            request_id,
+            session_id,
+            entries,
+            code,
+            error,
+        } => {
+            crate::commands::queue::apply_queue_delete_finished(
+                app, request_id, session_id, entries, code, error,
+            );
+        }
+        TuiCommand::UserPromptQueueAddFinished {
+            request_id,
+            session_id,
+            entries,
+            code,
+            error,
+            entry_id,
+            text,
+        } => {
+            crate::commands::queue::apply_queue_add_finished(
+                app, request_id, session_id, entries, code, error, entry_id, text,
+            );
+        }
+        TuiCommand::UserPromptQueueEditFinished {
+            request_id,
+            session_id,
+            entries,
+            code,
+            error,
+            entry_id,
+            text,
+        } => {
+            crate::commands::queue::apply_queue_edit_finished(
+                app, request_id, session_id, entries, code, error, entry_id, text,
+            );
+        }
+        TuiCommand::UserPromptQueueReorderFinished {
+            request_id,
+            session_id,
+            entries,
+            code,
+            error,
+        } => {
+            crate::commands::queue::apply_queue_reorder_finished(
+                app, request_id, session_id, entries, code, error,
+            );
+        }
+        TuiCommand::UserPromptQueueSendNowFinished {
+            request_id,
+            session_id,
+            entries,
+            outcome,
+            error,
+        } => {
+            crate::commands::queue::apply_queue_send_now_finished(
+                app, request_id, session_id, entries, outcome, error,
+            );
+        }
+        TuiCommand::SubagentSteerFinished {
+            request_id,
+            addressee,
+            body,
+            code,
+            error,
+        } => {
+            crate::commands::subagent_steer::apply_subagent_steer_finished(
+                app, request_id, addressee, body, code, error,
+            );
+        }
+        TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
+            app.apply_shell_promotions_submitted(&promotions, error);
+        }
+        TuiCommand::TurnSubmissionFinished {
+            request_id,
+            generation,
+            outcome,
+        } => {
+            // The daemon refused the submit, the socket is gone, or a turn was
+            // already running. This arm used to discard the reason entirely:
+            // the only thing that recorded it was a `tracing::debug!`, so the
+            // composer kept its message in the transcript, stayed pinned on
+            // `Working`, and produced no output and no error until the 5-minute
+            // stall watchdog fired with a generic "the core produced no
+            // event". Worse, it treated every refusal as a turn that never
+            // started, so `turn_already_active` nulled the identity and elapsed
+            // age of a turn that was still running and reported an error state
+            // for a session that was actively working.
+            app.apply_turn_submission_finished(&request_id, generation, outcome);
+        }
+        TuiCommand::TurnCancelRequested {
+            session_id,
+            turn_id,
+            error,
+        } => {
+            crate::commands::turn_control::apply_cancel_result(app, &session_id, &turn_id, error);
+        }
+        TuiCommand::ShellExpand { id, stream, range } => {
+            handle_shell_expand(app, id, stream, range);
+        }
+        TuiCommand::TerminalShow { handle } => {
+            handle_terminal_show(app, handle);
+        }
+        TuiCommand::TerminalCreateFinished {
+            request_id,
+            handle,
+            workspace_id,
+            command_label,
+            error,
+        } => {
+            apply_terminal_create_finished(
+                app,
+                request_id,
+                handle,
+                workspace_id,
+                command_label,
+                error,
+            );
+        }
+        TuiCommand::TerminalListFinished {
+            request_id,
+            processes,
+            error,
+        } => {
+            apply_terminal_list_finished(app, request_id, processes, error);
+        }
+        TuiCommand::TerminalAttachFinished {
+            request_id,
+            handle,
+            attachment_id,
+            chunk,
+            resync,
+            error,
+        } => {
+            apply_terminal_attach_finished(
+                app,
+                request_id,
+                handle,
+                attachment_id,
+                chunk,
+                resync,
+                error,
+            );
+        }
+        TuiCommand::TerminalResumeFinished {
+            request,
+            handle,
+            chunk,
+            resync,
+            error,
+        } => {
+            apply_terminal_resume_finished(app, request, handle, chunk, resync, error);
+        }
+        TuiCommand::TerminalOpFinished {
+            request_id,
+            op,
+            handle,
+            exit_code,
+            exit_signal,
+            cols,
+            rows,
+            error,
+        } => {
+            apply_terminal_op_finished(
+                app,
+                request_id,
+                op,
+                handle,
+                exit_code,
+                exit_signal,
+                cols,
+                rows,
+                error,
+            );
+        }
+        TuiCommand::FileDiffStatsReady {
+            path,
+            generation,
+            result,
+        } => {
+            handle_file_diff_stats_ready(app, path, generation, result);
+        }
+        TuiCommand::TuiStats => {
+            let mut summary = app.ui_state.diagnostics.summary();
+            let task_summary = app.task_registry.summary();
+            summary.push('\n');
+            summary.push_str(&task_summary);
+            if !app.shell_handles.is_empty() {
+                summary.push_str(&format!("\nShell handles: {}", app.shell_handles.len()));
+            }
+
+            summary.push_str("\n\nBackground Activity:");
+            let mut has_activity = false;
+
+            if app.dialog_state.session_reload_request.is_loading() {
+                summary.push_str("\n  Session reload: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.import_request.is_loading() {
+                summary.push_str("\n  Import preview: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.research_request.is_loading() {
+                summary.push_str("\n  Research browser: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.session_messages_request.is_loading() {
+                summary.push_str("\n  Session messages: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.session_mutation_request.is_loading() {
+                summary.push_str("\n  Session mutation: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.task_list_request.is_loading() {
+                summary.push_str("\n  Task list: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.worktree_list_request.is_loading() {
+                summary.push_str("\n  Worktree list: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.template_create_request.is_loading() {
+                summary.push_str("\n  Template create: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.terminal_request.is_loading() {
+                summary.push_str("\n  Terminal operation: loading");
+                has_activity = true;
+            }
+            if app.security_review_running.is_some() {
+                summary.push_str("\n  Security review: running");
+                has_activity = true;
+            }
+            if !app.shell_handles.is_empty() {
+                summary.push_str(&format!(
+                    "\n  Shell commands: {} running",
+                    app.shell_handles.len()
+                ));
+                has_activity = true;
+            }
+            if !app.interactive_terminals.is_empty() {
+                summary.push_str(&format!(
+                    "\n  Interactive terminals: {} tracked",
+                    app.interactive_terminals.len()
+                ));
+                has_activity = true;
+            }
+
+            let pending_diffs = app
+                .session_state
+                .changed_files
+                .iter()
+                .filter(|f| {
+                    matches!(
+                        f.diff_state,
+                        crate::app::state::session::DiffStatsState::Pending { .. }
+                    )
+                })
+                .count();
+            if pending_diffs > 0 {
+                summary.push_str(&format!("\n  Pending diffs: {pending_diffs}"));
+                has_activity = true;
+            }
+
+            if !has_activity {
+                summary.push_str("\n  (none)");
+            }
+
+            let lines: Vec<String> = summary.lines().map(|s| s.to_string()).collect();
+            app.open_info_dialog(crate::components::dialogs::info::InfoType::Stats, lines);
+        }
+        TuiCommand::PluginCommandRun {
+            spec,
+            args,
+            session_id,
+            model,
+            workspace_root,
+        } => {
+            start_plugin_command(app, spec, args, session_id, model, workspace_root);
+        }
+        TuiCommand::PluginCommandFinished {
+            invocation_id,
+            command,
+            response,
+            stdout,
+            stderr,
+            error,
+        } => {
+            apply_plugin_command_finished(
+                app,
+                invocation_id,
+                command,
+                response,
+                stdout,
+                stderr,
+                error,
+            );
+        }
+        TuiCommand::PluginUiEffect { effect } => {
+            apply_plugin_ui_effect(app, effect);
+        }
+        TuiCommand::PluginList => {
+            crate::commands::plugin_management::show_plugins(app);
+        }
+        TuiCommand::PluginInfo { selector } => {
+            crate::commands::plugin_management::show_plugin_info(app, &selector);
+        }
+        TuiCommand::PluginEnable { selector } => {
+            crate::commands::plugin_management::enable_plugin(app, &selector);
+        }
+        TuiCommand::PluginDisable { selector } => {
+            crate::commands::plugin_management::disable_plugin(app, &selector);
+        }
+        TuiCommand::PluginDoctor { selector } => {
+            crate::commands::plugin_management::doctor_plugin(app, selector.as_deref());
+        }
+        TuiCommand::PluginRemove { selector } => {
+            crate::commands::plugin_management::remove_plugin(app, &selector);
+        }
+        TuiCommand::PluginInstall { path } => {
+            crate::commands::plugin_management::install_plugin(app, &path);
+        }
+        TuiCommand::PluginListFinished { lines, error } => {
+            crate::commands::plugin_management::apply_plugin_list_finished(app, lines, error);
+        }
+        TuiCommand::PluginInfoFinished {
+            plugin_id,
+            lines,
+            error,
+        } => {
+            crate::commands::plugin_management::apply_plugin_info_finished(
+                app, plugin_id, lines, error,
+            );
+        }
+        TuiCommand::PluginEnableFinished { plugin_id, error } => {
+            crate::commands::plugin_management::apply_plugin_enable_finished(app, plugin_id, error);
+        }
+        TuiCommand::PluginDisableFinished { plugin_id, error } => {
+            crate::commands::plugin_management::apply_plugin_disable_finished(
+                app, plugin_id, error,
+            );
+        }
+        TuiCommand::PluginDoctorFinished { lines, error } => {
+            crate::commands::plugin_management::apply_plugin_doctor_finished(app, lines, error);
+        }
+        TuiCommand::PluginRemoveFinished {
+            plugin_id,
+            removed_files,
+            install_path,
+            warning,
+            error,
+        } => {
+            crate::commands::plugin_management::apply_plugin_remove_finished(
+                app,
+                plugin_id,
+                removed_files,
+                install_path,
+                warning,
+                error,
+            );
+        }
+        TuiCommand::PluginInstallFinished {
+            source,
+            lines,
+            error,
+        } => {
+            crate::commands::plugin_management::apply_plugin_install_finished(
+                app, source, lines, error,
+            );
+        }
+        TuiCommand::StartGetProject {
+            request_id,
+            project_id,
+            picker_generation,
+            picker_request_id,
+        } => {
+            super::super::commands::project_picker::start_get_project(
+                app,
+                request_id,
+                project_id,
+                picker_generation,
+                picker_request_id,
+            );
+        }
+        TuiCommand::ProjectGetLoaded {
+            request_id,
+            target_project_id,
+            picker_generation,
+            picker_request_id,
+            result,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_get_loaded(
+                app,
+                request_id,
+                target_project_id,
+                picker_generation,
+                picker_request_id,
+                result,
+                error,
+            );
+        }
+        TuiCommand::ProjectDestroyConfirmationLoaded {
+            picker_request_id,
+            project_id,
+            display_name,
+            session_count,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_destroy_confirmation_loaded(
+                app,
+                picker_request_id,
+                project_id,
+                display_name,
+                session_count,
+                error,
+            );
+        }
+        TuiCommand::ProjectLifecycleFinished {
+            picker_request_id,
+            project_id,
+            restored,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_lifecycle_finished(
+                app,
+                picker_request_id,
+                project_id,
+                restored,
+                error,
+            );
+        }
+        TuiCommand::ProjectDeleteFinished {
+            picker_request_id,
+            project_id,
+            deleted_session_count,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_delete_finished(
+                app,
+                picker_request_id,
+                project_id,
+                deleted_session_count,
+                error,
+            );
+        }
+        TuiCommand::ProjectEditLoaded {
+            picker_request_id,
+            project_id,
+            display_name,
+            root,
+            expected_updated_at,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_edit_loaded(
+                app,
+                picker_request_id,
+                project_id,
+                display_name,
+                root,
+                expected_updated_at,
+                error,
+            );
+        }
+        TuiCommand::ProjectUpdateFinished {
+            picker_request_id,
+            project,
+            workspace,
+            previous_display_name,
+            previous_root,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_update_finished(
+                app,
+                picker_request_id,
+                project,
+                workspace,
+                previous_display_name,
+                previous_root,
+                error,
+            );
+        }
+        TuiCommand::StartListProjectSessions {
+            tab_id,
+            project_id,
+            workspace_id,
+        } => {
+            super::super::commands::project_picker::start_list_project_sessions(
+                app,
+                tab_id,
+                project_id,
+                workspace_id,
+            );
+        }
+        TuiCommand::ProjectSessionsLoaded {
+            request_id,
+            tab_id,
+            project_id,
+            workspace_id,
+            sessions,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_sessions_loaded(
+                app,
+                request_id,
+                tab_id,
+                project_id,
+                workspace_id,
+                sessions,
+                error,
+            );
+        }
+        TuiCommand::StartRegisterWorkspace { path } => {
+            super::super::commands::project_picker::start_register_workspace(app, path);
+        }
+        TuiCommand::ProjectRegistered {
+            request_id,
+            picker_request_id,
+            workspace_id,
+            workspace_root,
+            project_id,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_registered(
+                app,
+                request_id,
+                picker_request_id,
+                workspace_id,
+                workspace_root,
+                project_id,
+                error,
+            );
+        }
+        TuiCommand::NextProjectTab => {
+            super::super::commands::project_picker::next_project_tab(app);
+        }
+        TuiCommand::PreviousProjectTab => {
+            super::super::commands::project_picker::previous_project_tab(app);
+        }
+        TuiCommand::CloseProjectTab => {
+            super::super::commands::project_picker::close_active_project_tab(app);
+        }
+        TuiCommand::ManifestRestoreRequested => {
+            super::super::commands::manifest_restore::apply_manifest_restore(app);
+        }
+        TuiCommand::ManifestRestoreProjectGetLoaded {
+            request_id,
+            project_id,
+            result,
+            error,
+        } => {
+            super::super::commands::manifest_restore::apply_manifest_project_get_loaded(
+                app, request_id, project_id, result, error,
+            );
+        }
+        TuiCommand::ManifestRestoreFinished { .. } => {
+            // The restore pipeline is orchestrated from within the
+            // commands module itself; the dispatch arm here is a
+            // no-op marker so the enum can be matched.
+        }
+        TuiCommand::ManifestPersistenceDisable => {
+            app.disable_manifest_persistence();
+        }
+        TuiCommand::ManifestPersistenceEnable => {
+            app.enable_manifest_persistence();
+        }
+        TuiCommand::ManifestPersistenceReset => {
+            if let Err(e) = app.reset_manifest_persistence() {
+                tracing::warn!(
+                    target: "codegg::tui::manifest",
+                    error = %e,
+                    "manifest reset failed"
+                );
+            }
+        }
+        TuiCommand::EditUndoLatest {
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            // M007-D: the daemon owns the effect. The command named the
+            // session and the workspace, so the scope carries those two
+            // rather than the app's attached session.
+            let mut scope = crate::command_route::scope_for(app);
+            scope.session_id = Some(sid.clone());
+            scope.workspace_id = wid.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::async_cmd::spawn_tui_task(tx, "edit_undo_latest", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                // M007-D: the undo is executed as the catalog's
+                // `edit_undo` command; the response the presentation reads
+                // is the one the daemon produced.
+                let req = codegg::core::new_request(
+                    format!("edit-undo-{}", uuid::Uuid::new_v4()),
+                    crate::command_route::command_execute(scope, "edit_undo", "", ""),
+                );
+                match crate::command_route::unwrap_inner_result(core_client.request(req).await) {
+                    Ok(CoreResponse::EditCheckpointUndoResult { result }) => {
+                        Some(TuiCommand::EditUndoFinished {
+                            session_id: sid,
+                            result: Some(result),
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditUndoFinished {
+                            session_id: sid,
+                            result: None,
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditReapplyLatest {
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            // M007-D: the daemon owns the effect. The command named the
+            // session and the workspace, so the scope carries those two
+            // rather than the app's attached session.
+            let mut scope = crate::command_route::scope_for(app);
+            scope.session_id = Some(sid.clone());
+            scope.workspace_id = wid.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::async_cmd::spawn_tui_task(tx, "edit_reapply_latest", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                // M007-D: the reapply is executed as the catalog's
+                // `edit_reapply` command.
+                let req = codegg::core::new_request(
+                    format!("edit-reapply-{}", uuid::Uuid::new_v4()),
+                    crate::command_route::command_execute(scope, "edit_reapply", "", ""),
+                );
+                match crate::command_route::unwrap_inner_result(core_client.request(req).await) {
+                    Ok(CoreResponse::EditCheckpointReapplyResult { result }) => {
+                        Some(TuiCommand::EditReapplyFinished {
+                            session_id: sid,
+                            result: Some(result),
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditReapplyFinished {
+                            session_id: sid,
+                            result: None,
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditUndo {
+            checkpoint_id,
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            let cid = checkpoint_id.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::async_cmd::spawn_tui_task(tx, "edit_undo", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                let req = codegg::core::new_request(
+                    format!("edit-undo-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::EditCheckpointUndo {
+                        checkpoint_id: cid,
+                        workspace_id: wid,
+                        session_id: sid.clone(),
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::EditCheckpointUndoResult { result }) => {
+                        Some(TuiCommand::EditUndoFinished {
+                            session_id: sid,
+                            result: Some(result),
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditUndoFinished {
+                            session_id: sid,
+                            result: None,
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditReapply {
+            checkpoint_id,
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            let cid = checkpoint_id.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::async_cmd::spawn_tui_task(tx, "edit_reapply", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                let req = codegg::core::new_request(
+                    format!("edit-reapply-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::EditCheckpointReapply {
+                        checkpoint_id: cid,
+                        workspace_id: wid,
+                        session_id: sid.clone(),
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::EditCheckpointReapplyResult { result }) => {
+                        Some(TuiCommand::EditReapplyFinished {
+                            session_id: sid,
+                            result: Some(result),
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditReapplyFinished {
+                            session_id: sid,
+                            result: None,
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditCheckpointList {
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            let tx = app.tui_cmd_tx.clone();
+            // M007-D: the daemon owns the effect. The checkpoint listing
+            // is the catalog's `edit_checkpoints` command, and the scope
+            // names the workspace and the session it reads.
+            let scope = crate::command_route::scope_for(app);
+            let scope = codegg::protocol::core::CommandCatalogScopeDto {
+                workspace_id: wid.clone(),
+                session_id: Some(sid.clone()),
+                ..scope
+            };
+            crate::async_cmd::spawn_tui_task(tx, "edit_checkpoint_list", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditCheckpointListFinished {
+                        session_id: sid,
+                        checkpoints: vec![],
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                match crate::command_route::send_command(
+                    &core_client,
+                    scope,
+                    "edit_checkpoints",
+                    "",
+                    "",
+                )
+                .await
+                {
+                    Ok(CoreResponse::EditCheckpointList { checkpoints }) => {
+                        Some(TuiCommand::EditCheckpointListFinished {
+                            session_id: sid,
+                            checkpoints,
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditCheckpointListFinished {
+                            session_id: sid,
+                            checkpoints: vec![],
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditCheckpointListFinished {
+                        session_id: sid,
+                        checkpoints: vec![],
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditCheckpointListFinished {
+                        session_id: sid,
+                        checkpoints: vec![],
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditUndoFinished {
+            session_id: _,
+            result,
+            error,
+        } => {
+            if let Some(err) = error {
+                app.messages_state.toasts.error(&err);
+            } else if let Some(res) = result {
+                match res {
+                    codegg::protocol::dto::EditRestoreResultDto::Applied {
+                        checkpoint_id,
+                        restored_paths,
+                        direction,
+                        ..
+                    } => {
+                        let msg = format!(
+                            "{} applied for {} ({} paths)",
+                            direction,
+                            &checkpoint_id[..8.min(checkpoint_id.len())],
+                            restored_paths.len()
+                        );
+                        app.messages_state.toasts.success(&msg);
+                    }
+                    codegg::protocol::dto::EditRestoreResultDto::Conflict {
+                        stale_paths, ..
+                    } => {
+                        let bounded: Vec<&String> = stale_paths.iter().take(5).collect();
+                        let paths = bounded
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let msg = if stale_paths.len() > 5 {
+                            format!(
+                                "Undo blocked: {} paths stale ({} ... and {} more)",
+                                stale_paths.len(),
+                                paths,
+                                stale_paths.len() - 5
+                            )
+                        } else {
+                            format!("Undo blocked: stale paths: {}", paths)
+                        };
+                        app.messages_state.toasts.warning(&msg);
+                    }
+                    codegg::protocol::dto::EditRestoreResultDto::NotFound { checkpoint_id } => {
+                        app.messages_state
+                            .toasts
+                            .warning(&format!("No checkpoint found: {}", checkpoint_id));
+                    }
+                    codegg::protocol::dto::EditRestoreResultDto::WrongWorkspace { .. } => {
+                        app.messages_state
+                            .toasts
+                            .error("Checkpoint belongs to another workspace");
+                    }
+                    codegg::protocol::dto::EditRestoreResultDto::WrongSession { .. } => {
+                        app.messages_state
+                            .toasts
+                            .error("Checkpoint belongs to another session");
+                    }
+                    codegg::protocol::dto::EditRestoreResultDto::PathValidationFailed {
+                        invalid_paths,
+                        reason,
+                        ..
+                    } => {
+                        let bounded: Vec<&String> = invalid_paths.iter().take(3).collect();
+                        let detail = bounded
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        app.messages_state
+                            .toasts
+                            .error(&format!("Path validation failed: {} ({})", reason, detail));
+                    }
+                    codegg::protocol::dto::EditRestoreResultDto::PartialFailure {
+                        applied_paths,
+                        failed_paths,
+                        error,
+                        ..
+                    } => {
+                        app.messages_state.toasts.error(&format!(
+                            "Partial failure: {} applied, {} failed: {} (applied: {}, failed: {})",
+                            applied_paths.len(),
+                            failed_paths.len(),
+                            error,
+                            applied_paths.join(", "),
+                            failed_paths.join(", ")
+                        ));
+                    }
+                    other => {
+                        app.messages_state
+                            .toasts
+                            .info(&format!("Undo result: {:?}", other));
+                    }
+                }
+            }
+        }
+        TuiCommand::EditReapplyFinished {
+            session_id: _,
+            result,
+            error,
+        } => {
+            if let Some(err) = error {
+                app.messages_state.toasts.error(&err);
+            } else if let Some(res) = result {
+                match res {
+                    codegg::protocol::dto::EditRestoreResultDto::Applied {
+                        checkpoint_id,
+                        restored_paths,
+                        direction,
+                        ..
+                    } => {
+                        let msg = format!(
+                            "{} applied for {} ({} paths)",
+                            direction,
+                            &checkpoint_id[..8.min(checkpoint_id.len())],
+                            restored_paths.len()
+                        );
+                        app.messages_state.toasts.success(&msg);
+                    }
+                    codegg::protocol::dto::EditRestoreResultDto::Conflict {
+                        stale_paths, ..
+                    } => {
+                        let bounded: Vec<&String> = stale_paths.iter().take(5).collect();
+                        let paths = bounded
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        app.messages_state
+                            .toasts
+                            .warning(&format!("Reapply blocked: stale paths: {}", paths));
+                    }
+                    codegg::protocol::dto::EditRestoreResultDto::NotFound { checkpoint_id } => {
+                        app.messages_state
+                            .toasts
+                            .warning(&format!("No checkpoint to reapply: {}", checkpoint_id));
+                    }
+                    other => {
+                        app.messages_state
+                            .toasts
+                            .info(&format!("Reapply result: {:?}", other));
+                    }
+                }
+            }
+        }
+        TuiCommand::EditCheckpointListFinished {
+            session_id: _,
+            checkpoints,
+            error,
+        } => {
+            if let Some(err) = error {
+                app.messages_state.toasts.error(&err);
+            } else if checkpoints.is_empty() {
+                app.messages_state
+                    .toasts
+                    .info("No checkpoints for this session");
+            } else {
+                let lines: Vec<String> = checkpoints
+                    .iter()
+                    .take(10)
+                    .map(|cp| {
+                        format!(
+                            "{} | {} | {} | {} paths",
+                            &cp.id[..8.min(cp.id.len())],
+                            cp.created_at,
+                            cp.batch_seq,
+                            cp.file_count
+                        )
+                    })
+                    .collect();
+                // Bounded, path-safe: only ids/timestamps/counts, no file bodies
+                let footer = if checkpoints.len() > 10 {
+                    format!("... and {} more", checkpoints.len() - 10)
+                } else {
+                    String::new()
+                };
+                let mut msg = lines.join("\n");
+                if !footer.is_empty() {
+                    msg.push_str(&format!("\n{footer}"));
+                }
+                app.messages_state.toasts.info(&msg);
+            }
+        }
+    }
+}
+
+/// Shared secret-safe error path for `/connect` provisioning completions.
+/// Clears the in-flight operation, forgets any typed secret on both the
+/// stored and live dialog copies, and surfaces a bounded daemon error.
+fn apply_connect_error(app: &mut App, operation_id: &str, error: &str, display_name: &str) {
+    let _ = operation_id;
+    app.messages_state
+        .toasts
+        .error(&format!("{display_name} connection failed: {error}"));
+    if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+        dialog.operation_id = None;
+        dialog.clear_secret();
+        dialog.set_error(error.to_string());
+    }
+    app.focus_manager
+        .with_dialog_mut::<crate::components::dialogs::connect::ConnectDialog, _>(
+            crate::components::component::DialogType::Connect,
+            |live| {
+                live.operation_id = None;
+                live.clear_secret();
+                live.set_error(error.to_string());
+            },
+        );
+}

@@ -127,7 +127,7 @@ type, the field, an operation, or the bound fails the guard. The
 forbidden-identifier scan covers `src/` wholesale, so a *test* that resurrects
 a deleted name fails the guard too.
 
-`--self-test` proves the other half: it copies `src/tui/` — the subtree the
+`--self-test` proves the other half: it copies `crates/codegg-tui/src/` — the subtree the
 mechanism lives in — into a throwaway directory, injects one realistic
 regression per rule above, and requires the *same* checks to reject each one.
 The unmodified copy must pass, and a case that stops being caught fails the
@@ -229,12 +229,12 @@ class Report:
     summary: str | None
 
 
-def src_root(root: Path) -> Path:
-    return root / "src"
+def tui_src_root(root: Path) -> Path:
+    return root / "crates" / "codegg-tui" / "src"
 
 
 def presentation_path(root: Path) -> Path:
-    return src_root(root) / "tui" / "document_session.rs"
+    return tui_src_root(root) / "document_session.rs"
 
 
 def struct_body(text: str, name: str) -> str:
@@ -277,7 +277,7 @@ def item_body(text: str, needle: str) -> str:
 
 def rust_sources(root: Path) -> list[Path]:
     """Every `.rs` file under `src/`, sorted so output is deterministic."""
-    src = src_root(root)
+    src = tui_src_root(root)
     if not src.is_dir():
         raise ParseError(f"{src} is missing")
     return sorted(src.rglob("*.rs"))
@@ -450,11 +450,11 @@ def check(root: Path) -> Report:
 # still scans all of `src/`; this is the subset the assertions are about, kept
 # small so the self-test stays as cheap as its siblings.
 SELF_TEST_PATHS = (
-    Path("src/tui/editor.rs"),
-    Path("src/tui/document_session.rs"),
-    Path("src/tui/components/editor.rs"),
-    Path("src/tui/app/state/editor.rs"),
-    Path("src/tui/commands/editor.rs"),
+    Path("crates/codegg-tui/src/editor.rs"),
+    Path("crates/codegg-tui/src/document_session.rs"),
+    Path("crates/codegg-tui/src/components/editor.rs"),
+    Path("crates/codegg-tui/src/app/state/editor.rs"),
+    Path("crates/codegg-tui/src/commands/editor.rs"),
 )
 
 # One injection per rule the guard enforces. The assertion below fails if a
@@ -507,7 +507,7 @@ def restore(undo: list[tuple[Path, str]]) -> None:
 SELF_TEST_CASES = [
     Injection(
         name="a second prefix field returns under a new name (`yank_prefix`)",
-        relative=Path("src/tui/document_session.rs"),
+        relative=Path("crates/codegg-tui/src/document_session.rs"),
         old="    pub pending_prefix: EditorPrefix,\n",
         new=(
             "    pub pending_prefix: EditorPrefix,\n"
@@ -517,21 +517,21 @@ SELF_TEST_CASES = [
     ),
     Injection(
         name="the only prefix field is moved out, leaving prefix state nowhere",
-        relative=Path("src/tui/document_session.rs"),
+        relative=Path("crates/codegg-tui/src/document_session.rs"),
         old="    pub pending_prefix: EditorPrefix,\n",
         new="",
         expected="declares 0 prefix field(s)",
     ),
     Injection(
         name="the deleted `pending_command` mechanism is restored as a field",
-        relative=Path("src/tui/document_session.rs"),
+        relative=Path("crates/codegg-tui/src/document_session.rs"),
         old="    pub mode: EditorMode,\n",
         new="    pub mode: EditorMode,\n    pub pending_command: String,\n",
         expected="references deleted `pending_command`",
     ),
     Injection(
         name="a test module resurrects a deleted helper name",
-        relative=Path("src/tui/commands/editor.rs"),
+        relative=Path("crates/codegg-tui/src/commands/editor.rs"),
         old="#[cfg(test)]\nmod tests {\n    use super::*;\n",
         new=(
             "#[cfg(test)]\nmod tests {\n    use super::*;\n"
@@ -541,7 +541,7 @@ SELF_TEST_CASES = [
     ),
     Injection(
         name="the mismatch policy is collapsed to one answer for every prefix",
-        relative=Path("src/tui/editor.rs"),
+        relative=Path("crates/codegg-tui/src/editor.rs"),
         old=(
             "        self == EditorPrefix::Goto || self == EditorPrefix::View "
             "|| self == EditorPrefix::Register\n"
@@ -551,28 +551,28 @@ SELF_TEST_CASES = [
     ),
     Injection(
         name="the policy loses the view-mode arm",
-        relative=Path("src/tui/editor.rs"),
+        relative=Path("crates/codegg-tui/src/editor.rs"),
         old=" || self == EditorPrefix::View",
         new="",
         expected="answers for Goto, Register instead of Goto, Register, View",
     ),
     Injection(
         name="the policy loses the register-name arm",
-        relative=Path("src/tui/editor.rs"),
+        relative=Path("crates/codegg-tui/src/editor.rs"),
         old=" || self == EditorPrefix::Register",
         new="",
         expected="answers for Goto, View instead of Goto, Register, View",
     ),
     Injection(
         name="the dispatch stops asking the prefix for the policy",
-        relative=Path("src/tui/commands/editor.rs"),
+        relative=Path("crates/codegg-tui/src/commands/editor.rs"),
         old="    if pending.swallows_unmatched() {\n",
         new="    if true {\n",
         expected="expected declaration `pending.swallows_unmatched()` is absent",
     ),
     Injection(
         name="the leaf table accessor is renamed away",
-        relative=Path("src/tui/editor.rs"),
+        relative=Path("crates/codegg-tui/src/editor.rs"),
         old="    pub fn leaves(self) -> &'static [PrefixLeaf] {\n",
         new="    pub fn leaf_choices(self) -> &'static [PrefixLeaf] {\n",
         expected="expected declaration `pub fn leaves(` is absent",

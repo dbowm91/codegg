@@ -773,7 +773,7 @@ impl CoreDaemon {
     /// Delivery is daemon-initiated with no response channel, so the client that
     /// queued a prompt learns about it running only if the daemon pushes. Before
     /// M003 the queue was re-read solely on the session-change edge
-    /// (`src/tui/app/mod.rs`), which a delivery never produces — an entry would
+    /// (`crates/codegg-tui/src/app/mod.rs`), which a delivery never produces — an entry would
     /// sit shown as pending while its turn ran.
     ///
     /// A read that fails is logged and dropped rather than retried: the next

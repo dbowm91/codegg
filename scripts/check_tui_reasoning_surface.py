@@ -2,7 +2,7 @@
 """Static guard for the TUI's single activity cadence (M004).
 
 The terminal UI has **one** spinner, **one** frame table, and **one**
-cadence. `src/tui/components/spinner.rs` owns all three: the braille frame
+cadence. `crates/codegg-tui/src/components/spinner.rs` owns all three: the braille frame
 table, the 100 ms frame interval, and the pure `spinner_frame(elapsed)`
 chooser. Everything else draws a frame by asking that module.
 
@@ -44,8 +44,8 @@ to the footer status bar. The property that survived the move is the one
 that mattered: the indicator is **content**, and no surface's presence or
 height is a function of the reasoning state.
 
-The guard also keeps a **census** of the frame tables under `src/tui/`. The
-activity indicator's table is the one in `src/tui/components/spinner.rs`.
+The guard also keeps a **census** of the frame tables under `crates/codegg-tui/src/`. The
+activity indicator's table is the one in `crates/codegg-tui/src/components/spinner.rs`.
 Exactly one other table is known and documented below; it is a per-row
 status affordance on a tool-call header, not the activity indicator, and it
 predates M004. The census is exact: a documented exemption that has been
@@ -73,17 +73,18 @@ import rust_test_scan  # noqa: E402  (path is set above)
 
 # The one module that may own the activity indicator's frame table, frame
 # interval, and frame chooser.
-FRAME_TABLE_OWNER = Path("src") / "tui" / "components" / "spinner.rs"
+TUI_SRC = Path("crates") / "codegg-tui" / "src"
+FRAME_TABLE_OWNER = TUI_SRC / "components" / "spinner.rs"
 
 # The reasoning surface: the command module that owns the option set and the
 # write path, and the render module that draws the indicator.
-REASONING_COMMAND = Path("src") / "tui" / "commands" / "reasoning.rs"
-REASONING_RENDER = Path("src") / "tui" / "app" / "render.rs"
+REASONING_COMMAND = TUI_SRC / "commands" / "reasoning.rs"
+REASONING_RENDER = TUI_SRC / "app" / "render.rs"
 
 # The status bar: the surface that renders the indicator's chip. It must not
 # mention the reasoning state at all, so the bar's height and width budget
 # can never become a function of the selection.
-STATUS_BAR = Path("src") / "tui" / "components" / "status_bar.rs"
+STATUS_BAR = TUI_SRC / "components" / "status_bar.rs"
 
 # Frame tables that are known and are **not** the activity indicator's.
 #
@@ -95,7 +96,7 @@ STATUS_BAR = Path("src") / "tui" / "components" / "status_bar.rs"
 # part of the record: if the table changes shape, the record is stale and
 # the guard says so instead of accepting it silently.
 FRAME_TABLE_EXEMPTIONS = {
-    (Path("src") / "tui" / "components" / "messages.rs", "TOOL_SPINNER_FRAMES"): 8,
+    (TUI_SRC / "components" / "messages.rs", "TOOL_SPINNER_FRAMES"): 8,
 }
 
 # Braille (U+2800..U+28FF) and block elements (U+2580..U+259F) are the
@@ -180,7 +181,7 @@ def _binding_name(source: str, start: int) -> str | None:
 
 
 def _frame_tables(root: Path) -> list[tuple[Path, str | None, int]]:
-    """Every module under `src/tui/` that defines an animation frame table.
+    """Every module under `crates/codegg-tui/src/` that defines an animation frame table.
 
     A frame table is an array literal holding at least two frame glyphs.
     The *glyphs* are the signal, not the binding's name: a second spinner
@@ -188,7 +189,7 @@ def _frame_tables(root: Path) -> list[tuple[Path, str | None, int]]:
     `SPINNER_FRAMES`, and one called `dots` is no better.
     """
     found: list[tuple[Path, str | None, int]] = []
-    tui_root = root / "src" / "tui"
+    tui_root = root / TUI_SRC
     if not tui_root.is_dir():
         return found
     for path in sorted(tui_root.rglob("*.rs")):
@@ -235,7 +236,7 @@ def check_one_frame_table(root: Path) -> bool:
 
     for (relative, binding), count in seen.items():
         print(f"  [FAIL] an undocumented animation frame table exists: {relative}:{binding} ({count} frames)")
-        print("         the activity indicator's frame table is src/tui/components/spinner.rs")
+        print("         the activity indicator's frame table is crates/codegg-tui/src/components/spinner.rs")
         ok = False
 
     if ok:

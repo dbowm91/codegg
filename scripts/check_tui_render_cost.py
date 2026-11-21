@@ -55,7 +55,7 @@ guard pins the shape of the render path that C006 established:
 The guard is a *shape* check, not a benchmark: it looks at the source, so a
 regression that re-introduces a second producer is caught before it ships.
 The cost itself is measured by the render counters in
-``src/tui/render_cost.rs`` and asserted by the tests.
+``crates/codegg-tui/src/render_cost.rs`` and asserted by the tests.
 
 Usage::
 
@@ -74,23 +74,23 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-PROMPT_RS = "src/tui/components/prompt.rs"
-MESSAGES_RS = "src/tui/components/messages.rs"
-RENDER_RS = "src/tui/app/render.rs"
-APP_MOD_RS = "src/tui/app/mod.rs"
-EVENT_LOOP_RS = "src/tui/runtime/event_loop.rs"
-FILE_TREE_STATE_RS = "src/tui/app/state/file_tree.rs"
-FILE_TREE_PANE_RS = "src/tui/components/file_tree.rs"
-FILES_DIALOG_RS = "src/tui/components/dialogs/files.rs"
-CHAT_BROWSER_RS = "src/tui/chat_browser.rs"
-CHAT_PANEL_RS = "src/tui/panels/chat.rs"
-CHAT_DIALOG_RS = "src/tui/components/dialogs/chat.rs"
-CHANGE_REVIEW_RS = "src/tui/components/change_review.rs"
-DIFF_RS = "src/tui/components/diff.rs"
-EDITOR_WIDGET_RS = "src/tui/components/editor.rs"
-EDITOR_MODEL_RS = "src/tui/editor.rs"
-EDITOR_HIGHLIGHT_RS = "src/tui/editor_highlight.rs"
-WRAP_RS = "src/tui/wrap.rs"
+PROMPT_RS = "crates/codegg-tui/src/components/prompt.rs"
+MESSAGES_RS = "crates/codegg-tui/src/components/messages.rs"
+RENDER_RS = "crates/codegg-tui/src/app/render.rs"
+APP_MOD_RS = "crates/codegg-tui/src/app/mod.rs"
+EVENT_LOOP_RS = "crates/codegg-tui/src/runtime/event_loop.rs"
+FILE_TREE_STATE_RS = "crates/codegg-tui/src/app/state/file_tree.rs"
+FILE_TREE_PANE_RS = "crates/codegg-tui/src/components/file_tree.rs"
+FILES_DIALOG_RS = "crates/codegg-tui/src/components/dialogs/files.rs"
+CHAT_BROWSER_RS = "crates/codegg-tui/src/chat_browser.rs"
+CHAT_PANEL_RS = "crates/codegg-tui/src/panels/chat.rs"
+CHAT_DIALOG_RS = "crates/codegg-tui/src/components/dialogs/chat.rs"
+CHANGE_REVIEW_RS = "crates/codegg-tui/src/components/change_review.rs"
+DIFF_RS = "crates/codegg-tui/src/components/diff.rs"
+EDITOR_WIDGET_RS = "crates/codegg-tui/src/components/editor.rs"
+EDITOR_MODEL_RS = "crates/codegg-tui/src/editor.rs"
+EDITOR_HIGHLIGHT_RS = "crates/codegg-tui/src/editor_highlight.rs"
+WRAP_RS = "crates/codegg-tui/src/wrap.rs"
 # The styled wrap's span lookup. One cursor over the span list is what makes
 # the lookup `O(spans + words)`; a lookup that rescans from the front for every
 # word is `O(words x spans)`, and `split_at_spans` is the shape that did it.
@@ -758,7 +758,7 @@ def _rust_sources(root: Path, *subtrees: str) -> list[Path]:
 def check_file_tree_row_inputs_are_written_through_verbs(root: Path) -> list[Violation]:
     """`FileTreeState`'s row inputs are written only by its own module."""
     violations: list[Violation] = []
-    for path in _rust_sources(root, "src/tui", "tests/tui_render"):
+    for path in _rust_sources(root, "crates/codegg-tui/src", "crates/codegg-tui/tests/tui_render"):
         relative = path.relative_to(root).as_posix()
         if relative == FILE_TREE_STATE_RS:
             continue
@@ -1415,7 +1415,7 @@ INJECTIONS = (
     (
         "file-tree-row-input-write",
         "a direct write to the tree's row inputs from outside the authority",
-        "src/tui/app/modal.rs",
+        "crates/codegg-tui/src/app/modal.rs",
         None,
         # The receiver has to be `file_tree_state.` — the check is anchored on
         # it, so an injection that writes through a bare `state` would pass the

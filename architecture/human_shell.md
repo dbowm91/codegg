@@ -347,9 +347,9 @@ struct declaration and the same trailing `auto_promote_bangbang` default, so the
 range still spans exactly the same members. No `src/shell/` reference in this
 document was affected by that commit.
 
-Re-verified 2026-10-10 against `src/tui/app/mod.rs`,
-`src/tui/commands/shell.rs`, `src/tui/app/prompt_turn.rs`,
-`src/tui/runtime/event_loop.rs`, and `crates/codegg-config/src/schema.rs`:
+Re-verified 2026-10-10 against `crates/codegg-tui/src/app/mod.rs`,
+`crates/codegg-tui/src/commands/shell.rs`, `crates/codegg-tui/src/app/prompt_turn.rs`,
+`crates/codegg-tui/src/runtime/event_loop.rs`, and `crates/codegg-config/src/schema.rs`:
 shell cells are omitted from provider context; explicit shell evidence is
 ANSI-stripped, redacted, bounded, and included only after user promotion;
 submission acknowledgement controls the promoted marker; config enablement,

@@ -23,10 +23,10 @@ roadmap exists to end.
 
 Two files, and no more:
 
-* `src/tui/editor.rs` — the leaf tables (`GOTO_LEAVES`, `SPACE_LEAVES`,
+* `crates/codegg-tui/src/editor.rs` — the leaf tables (`GOTO_LEAVES`, `SPACE_LEAVES`,
   `OPEN_BRACKET_LEAVES`, `CLOSE_BRACKET_LEAVES`, `MATCH_LEAVES`) and
   `EditorPrefix::leaves()`, which says which table each prefix uses.
-* `src/tui/commands/editor.rs` — the **guard block** of `editor_buffer_key`,
+* `crates/codegg-tui/src/commands/editor.rs` — the **guard block** of `editor_buffer_key`,
   through `scripts/check_tui_editor_key_authority.py`, which already models
   the dispatch chain's stages.
 
@@ -105,8 +105,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_tui_editor_key_authority as key_authority  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EDITOR = REPO_ROOT / "src" / "tui" / "editor.rs"
-COMMANDS = REPO_ROOT / "src" / "tui" / "commands" / "editor.rs"
+EDITOR = REPO_ROOT / "crates" / "codegg-tui" / "src" / "editor.rs"
+COMMANDS = REPO_ROOT / "crates" / "codegg-tui" / "src" / "commands" / "editor.rs"
 
 # `pub const NAME: &[PrefixLeaf] = &[` — the table's opening.
 TABLE_RE = re.compile(r"pub\s+const\s+([A-Z_][A-Z0-9_]*)\s*:\s*&\[PrefixLeaf\]\s*=\s*&\[")
@@ -278,7 +278,7 @@ def parse_prefix_bindings(text: str) -> list[tuple[str, str | None]]:
     try:
         base, body = key_authority.function_body(lines, "leaves")
     except StopIteration as error:
-        raise ParseError("`fn leaves(` not found in src/tui/editor.rs") from error
+        raise ParseError("`fn leaves(` not found in crates/codegg-tui/src/editor.rs") from error
     body = [strip_comment(line) for line in body]
     bindings: list[tuple[str, str | None]] = []
     pending: list[str] = []
@@ -299,7 +299,7 @@ def parse_prefix_bindings(text: str) -> list[tuple[str, str | None]]:
             table = target
         else:
             raise ParseError(
-                f"src/tui/editor.rs:{base + offset + 1}: unrecognised leaf target {target!r}"
+                f"crates/codegg-tui/src/editor.rs:{base + offset + 1}: unrecognised leaf target {target!r}"
             )
         for prefix in PREFIX_ARM_RE.findall(head):
             bindings.append((prefix, table))
@@ -343,7 +343,7 @@ def parse_unavailable_rows(text: str) -> dict[str, str]:
                 raise ParseError(f"SPACE_LEAVES row {glyph!r} has an unreadable reason")
             rows[glyph] = reason_match.group(1)
         return rows
-    raise ParseError("no `SPACE_LEAVES` table found in src/tui/editor.rs")
+    raise ParseError("no `SPACE_LEAVES` table found in crates/codegg-tui/src/editor.rs")
 
 
 def compare_unavailable_rows(

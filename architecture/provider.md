@@ -1794,7 +1794,7 @@ The daemon's `CoreRequest::SnapshotModels` handler follows this sequence
 rather than calling `refresh()` unconditionally on a fresh service, which
 re-queried every provider on every request and returned `[]` whenever any
 of them was slow — leaving the TUI model picker permanently empty.
-Standalone mode uses the same sequence in `src/main.rs`.
+Standalone mode uses the same sequence in `crates/codegg-cli/src/main.rs`.
 
 ## Configuration Surface
 

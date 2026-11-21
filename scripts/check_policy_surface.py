@@ -5,7 +5,7 @@ M007 exposes approval/sandbox selection without moving security truth
 into frontends. This guard pins three boundaries:
 
 1. The TUI never forges effective state. Only
-   `src/tui/commands/policy.rs` (the daemon-DTO cache) may build the
+   `crates/codegg-tui/src/commands/policy.rs` (the daemon-DTO cache) may build the
    cached policy view or issue `RuntimePolicySet`; no TUI file may touch
    `RuntimePreferenceStore`, capture an `ExecutionPolicySnapshot`, route
    escalations, or mutate loop approval/sandbox services.
@@ -37,7 +37,7 @@ TOOL_BATCH = ROOT / "src" / "agent" / "tool_batch.rs"
 
 # Only this TUI file may translate daemon policy DTOs into the cached
 # view or issue RuntimePolicySet (via CoreRequest through CoreClient).
-POLICY_OWNER = "src/tui/commands/policy.rs"
+POLICY_OWNER = "crates/codegg-tui/src/commands/policy.rs"
 
 TUI_FORBIDDEN = [
     (re.compile(r"RuntimePreferenceStore"), "preference-store access"),

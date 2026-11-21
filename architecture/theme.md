@@ -1,9 +1,9 @@
 # Theme Module
 
-The theme module (`src/theme/`) implements a frontend-neutral theme system
-with a pipeline architecture: multiple import formats decode into a
-canonical `SemanticTheme`, which is then projected into frontend-specific
-types (currently ratatui `Theme`).
+The canonical theme module (`src/theme/`) implements a frontend-neutral
+theme system: import formats decode into `SemanticTheme`, which is then
+projected into frontend-specific types. The Ratatui projection and legacy
+static palette are owned by `codegg-tui`, not the root service package.
 
 ## Purpose
 
@@ -13,7 +13,8 @@ projections convert it to ratatui styles. The two never mix.
 
 ## Where It Lives
 
-`src/theme/` — 10 source files, all in one directory.
+`src/theme/` — 9 canonical theme source files. The TUI-specific palette
+and Ratatui projection live in `crates/codegg-tui/src/`.
 
 | File | Role |
 |------|------|
@@ -24,11 +25,12 @@ projections convert it to ratatui styles. The two never mix.
 | `src/theme/registry.rs` | `ThemeRegistry`, bundled themes, resolution, user-theme loading |
 | `src/theme/halloy.rs` | Halloy-format importer |
 | `src/theme/native.rs` | Native codegg TOML importer |
-| `src/theme/target.rs` | ratatui projection (`SemanticTheme` → `ratatui::Theme`) |
+| `crates/codegg-tui/src/theme_projection.rs` | Ratatui projection (`SemanticTheme` → `ratatui::Theme`) |
 | `src/theme/validate.rs` | Contrast checking and structural diagnostics |
 | `src/theme/theme_registry_test_helpers.rs` | `pub(crate)` test-only helpers (`mod.rs:36`) |
 
 The bundled themes live outside the crate, in `assets/themes/halloy/`.
+The static palette remains TUI-owned in `crates/codegg-tui/src/theme.rs`.
 
 ## How It Works
 
@@ -41,8 +43,8 @@ future Base16       ┘
 ```
 
 Importers decode into `SemanticTheme`. Frontend projections consume it.
-When a future iced GUI is added, add a new file under `target/` that
-projects `SemanticTheme` into the GUI's style system.
+A future GUI should add its own frontend-specific projection while keeping
+`SemanticTheme` and its importers frontend-neutral.
 
 ### ThemeRegistry (`src/theme/registry.rs`)
 
@@ -186,8 +188,8 @@ surface — `selection_text` over `selection`, `accent_text` over
 the Invariants section for why the Halloy format cannot supply them.
 
 `Theme::selection_style()` and `Theme::highlight_style()` (on the legacy
-`src/tui/theme.rs::Theme`, **not** the ratatui projection in
-`src/theme/target.rs`) return `fg(selection_text).bg(selection)`. Painting
+`crates/codegg-tui/src/theme.rs::Theme`, **not** the ratatui projection in
+`crates/codegg-tui/src/theme_projection.rs`) return `fg(selection_text).bg(selection)`. Painting
 the *accent* as a foreground over a different fill was the previous
 behaviour and it made a selected row's text the same colour as the accents
 around it.
@@ -208,7 +210,7 @@ Key functions:
 - `builtin_fallback()` — hardcoded dark theme placeholder
 - `expand_home(path)` — path expansion helper
 
-### Frontend Projection (`src/theme/target.rs`)
+### Frontend Projection (`crates/codegg-tui/src/theme_projection.rs`)
 
 `SemanticTheme` → `ratatui::Theme` via `Theme::from(&SemanticTheme)`.
 The ratatui `Theme` type is what the TUI uses for rendering. It carries both
@@ -279,7 +281,7 @@ byte is `00` is Halloy's "no paint" and is skipped rather than parsed into a
 `#000000` frame.
 
 `ui.border_focused` is set to `ui.accent_primary`, the colour the renderer
-actually paints for focus (`src/tui/panels/chrome.rs`), so the token names what
+actually paints for focus (`crates/codegg-tui/src/panels/chrome.rs`), so the token names what
 is drawn. It is **semantic-only**: the ratatui `Theme` has no `border_focused`
 field. `ui.title_background` (`buffer.background_title_bar`) is likewise
 resolved and never projected.
@@ -324,8 +326,9 @@ the last-resort placeholder.
 
 ## Invariants & Gotchas
 
-- **`target/` is a file, not a directory**: `src/theme/target.rs` is a
-  single file containing the ratatui projection, not a subdirectory.
+- **The Ratatui projection is TUI-owned**: `crates/codegg-tui/src/theme_projection.rs`
+  projects the canonical `SemanticTheme`; it does not belong in the root
+  theme domain.
 - **Importers must not project**: Importers decode to `SemanticTheme`
   only. Frontend projections consume it. Never mix the two.
 - **50 bundled themes**: The `BUILTIN_THEME_FILES` constant embeds all
@@ -345,7 +348,7 @@ the last-resort placeholder.
   no theme author for anything — that is what keeps "any Halloy theme ingests
   unchanged" true. `UiColors::derive_selection_texts` does it, both importers
   call it *after* `base` and `ui` resolve (so a theme overriding `selection`
-  derives against its own value), and `tests/tui_render/theme_selection_tokens.inc` asserts
+  derives against its own value), and `crates/codegg-tui/tests/tui_render/theme_selection_tokens.inc` asserts
   the 0-of-50 measurement so the "simplification" back to a dead read fails.
 - **A bundled theme file is third-party content and is never edited.** A value
   that cannot be read as this TUI's foreground is a finding about the *mapping*,
@@ -360,7 +363,7 @@ the last-resort placeholder.
   render that reads it, and that is a bug waiting to happen. A `Widget` impl
   cannot receive a theme at all — that is why `DiffViewer` and the legacy
   `DiffDialog`/`PlanDialog` paths are inherent methods rather than trait impls.
-  Enforced behaviourally by `tests/tui_render/tui_theme_source_of_truth.inc`.
+  Enforced behaviourally by `crates/codegg-tui/tests/tui_render/tui_theme_source_of_truth.inc`.
 - **The theme picker's column is allowed to paint other themes' colours.**
   `/theme` previews each candidate palette, so it deliberately shows colours
   that are not the active theme's. "Everything follows the live theme" would
@@ -394,10 +397,10 @@ cargo test -p codegg -- builtins_load
 cargo test -p codegg -- every_builtin_display_name_resolves
 cargo test -p codegg -- lookup_tolerates_casing_and_separator_drift
 
-# Render-level guards (the root package's integration tests are families,
+# Render-level guards (`codegg-tui` integration tests are families,
 # so the member is selected by name after `--`)
-cargo test --test tui_render -- theme_selection_tokens
-cargo test --test tui_render -- tui_theme_source_of_truth
+cargo test -p codegg-tui --test tui_render -- theme_selection_tokens
+cargo test -p codegg-tui --test tui_render -- tui_theme_source_of_truth
 
 # Source guard against hardcoded selection colours
 python3 scripts/check_no_hardcoded_selection_colours.py
@@ -410,7 +413,7 @@ python3 scripts/check_no_hardcoded_selection_colours.py
 
 ## Source verification
 
-Verified 2026-10-06 against `src/theme/` (10 source files, as stated) and
+Verified 2026-10-06 against `src/theme/` (9 canonical theme source files, as stated) and
 `assets/themes/halloy/`: 50 bundled themes, all Halloy-format, embedded via
 50 `include_str!` calls in `BUILTIN_THEME_FILES`
 (`registry.rs:36`); `DEFAULT_THEME_ID = "cyber-red"`; `SemanticTheme`
@@ -421,7 +424,7 @@ Verified 2026-10-06 against `src/theme/` (10 source files, as stated) and
 with exactly the six documented fields; the registry entry points
 `load_builtins`, `load_with_config`, `load_dir`, `load_file_auto`,
 `expand_home`, `builtin_fallback`, `resolve_theme_for_app`;
-`looks_like_halloy`; `Theme::from(&SemanticTheme)` (`target.rs:52`); and
+`looks_like_halloy`; `Theme::from(&SemanticTheme)` (`theme_projection.rs:84`); and
 contrast checking. The only
 correction was `ThemeDiagnostic`'s optional field, which is a color-field
 name rather than a file path.
@@ -450,19 +453,19 @@ Verified against `src/theme/` and `assets/themes/halloy/`:
   overrides; a malformed value is dropped, not fatal, because the derivation is
   already a usable answer.
 - `ThemeData::to_theme` derives both for all **31** static palettes in
-  `src/tui/theme.rs` (the M003 plan recorded 32; verified 31 `ThemeData {`
+  `crates/codegg-tui/src/theme.rs` (the M003 plan recorded 32; verified 31 `ThemeData {`
   literals and 31 `THEMES[n]` accessors).
 
-Tests: `tests/tui_render/theme_selection_tokens.inc` (9 tests, incl. the 50-theme sweep),
-`tests/tui_render/tui_theme_source_of_truth.inc` (render-level staleness),
+Tests: `crates/codegg-tui/tests/tui_render/theme_selection_tokens.inc` (9 tests, incl. the 50-theme sweep),
+`crates/codegg-tui/tests/tui_render/tui_theme_source_of_truth.inc` (render-level staleness),
 `scripts/check_no_hardcoded_selection_colours.py` (source guard, wired into
 `verify.sh quick`).
 
 ### 2026-10-23 — deep-dive pass
 
-Verified against `src/theme/` (all 10 files), `assets/themes/halloy/`,
-`crates/codegg-config/src/schema.rs`, `src/tui/theme.rs`,
-`tests/tui_render/` and `scripts/`.
+Verified against `src/theme/` (all 9 canonical files), `assets/themes/halloy/`,
+`crates/codegg-config/src/schema.rs`, `crates/codegg-tui/src/theme.rs`,
+`crates/codegg-tui/tests/tui_render/` and `scripts/`.
 
 Corrections made in this pass:
 
@@ -485,8 +488,8 @@ Corrections made in this pass:
   attributed to it.
 - **`Theme::selection_style()` / `Theme::highlight_style()` were ambiguous.**
   Two types are named `Theme`: the ratatui projection
-  (`src/theme/target.rs`) and the legacy static palette
-  (`src/tui/theme.rs`). The two style methods exist only on the legacy
+  (`crates/codegg-tui/src/theme_projection.rs`) and the legacy static palette
+  (`crates/codegg-tui/src/theme.rs`). The two style methods exist only on the legacy
   one; the projection exposes `selection` / `selection_dim` /
   `selection_text` as plain fields. Named the owning type.
 - **Every line reference in the 2026-10-06 section had drifted** by more
@@ -498,7 +501,7 @@ Corrections made in this pass:
   `get_tui` `:596`; `resolve` `:628`; `expand_home` `:667`;
   `DEFAULT_THEME_ID` `:681`; `builtin_fallback` `:693`;
   `resolve_theme_for_app` `:767`; `looks_like_halloy` `halloy.rs:488`;
-  `Theme::from(&SemanticTheme)` `target.rs:52`; `ThemeDiagnostic`
+  `Theme::from(&SemanticTheme)` `theme_projection.rs:84`; `ThemeDiagnostic`
   `validate.rs:16`; `SELECTION_TEXT_RATIO` `validate.rs:57`;
   `MIN_DERIVED_TEXT_RATIO` `schema.rs:79`; `normalize_id` `schema.rs:177`.
 - **Added a per-file table for `src/theme/`** — the doc asserted "10
@@ -513,7 +516,7 @@ Corrections made in this pass:
   `tui_render` family members (correctly selected with `-- <member>`),
   and the `check_no_hardcoded_selection_colours.py` source guard.
 
-Verified accurate and left unchanged: the 10-file count and the file
+Verified accurate and left unchanged: the 9-file count and the file
 roster; 50 bundled themes in `assets/themes/halloy/` embedded via 50
 `include_str!` calls; the "33 of the 50 bundled themes have a `name` that
 is not their `id`" measurement (re-counted from `BUILTIN_THEME_FILES`);
@@ -523,7 +526,7 @@ with `Inline` default; every colour-group field list; the
 `normalize_id`; the `BTreeMap` ordering rule; the duplicate-id
 diagnostic; the "0 of 50 themes set `foreground_selected`" measurement and
 its consequence for the derived tokens; the 31 static palettes in
-`src/tui/theme.rs` (re-counted: 31 `ThemeData` constructors from `dark()`
+`crates/codegg-tui/src/theme.rs` (re-counted: 31 `ThemeData` constructors from `dark()`
 to `dracula_soft()`); the 9 tests in
-`tests/tui_render/theme_selection_tokens.inc`; and the existence of
+`crates/codegg-tui/tests/tui_render/theme_selection_tokens.inc`; and the existence of
 `scripts/check_no_hardcoded_selection_colours.py`.

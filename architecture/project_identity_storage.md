@@ -162,7 +162,7 @@ Verified 2026-10-23 against
 `crates/codegg-core/src/session/schema.rs`,
 `crates/codegg-core/src/session/store.rs`,
 `crates/codegg-protocol/src/core.rs`, and
-`src/tui/commands/project_picker.rs`.
+`crates/codegg-tui/src/commands/project_picker.rs`.
 
 Corrections made in this pass:
 

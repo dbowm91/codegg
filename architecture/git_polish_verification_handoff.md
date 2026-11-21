@@ -172,7 +172,7 @@ never sees it.
 A future replay path that needs the raw URL must reconstruct it
 from the user (credential helper, prompt, or env) before
 re-rendering via `render_argv`. The TUI `RunRerun` handler is
-currently a placeholder (`src/tui/app/mod.rs:3615`); it does not
+currently a placeholder (`crates/codegg-tui/src/app/mod.rs:3615`); it does not
 attempt to re-execute.
 
 Full inventory and rationale: [`docs/validation/git-rerun-secret-lifecycle.md`](../docs/validation/git-rerun-secret-lifecycle.md).
@@ -308,7 +308,7 @@ cross-platform behavior:
    classifier is correct; the routing gate is intentionally conservative
    for mutations because the model-facing `git` tool already exposes
    typed mutations.
-2. **TUI `RunRerun` is a placeholder** (`src/tui/app/mod.rs:3615`).
+2. **TUI `RunRerun` is a placeholder** (`crates/codegg-tui/src/app/mod.rs:3615`).
    The handler emits `TuiCommand::ShellRerun { id: 0 }` and never
    reads back `rerun.argv`. The polish pass strengthened the
    invariant (redacted argv), so a future replay implementation
@@ -394,7 +394,7 @@ verified 2026-10-06 and re-verified 2026-10-23:
 | `cargo test -p codegg-git` — "354 + 7 ignored + new B4 tests" | **360** test functions; **0** `#[ignore]` attributes remain in the crate | `crates/codegg-git/src/*.rs` |
 | `git_execution_origin_matrix` — 19 tests, then 26 after D4 delta (lines 106, 241, 247, 352) | **23** | `tests/command_git/git_execution_origin_matrix.inc` |
 | `git_closure_matrix` — "141+ passed (10 original + 4 new)" | **34** | `tests/command_git/git_closure_matrix.inc` |
-| TUI `RunRerun` placeholder at `src/tui/app/mod.rs:3615` (lines 174, 310) | The *TUI-side* `RunRerun` handler is gone, but a **live daemon-side rerun path** now exists: `CoreRequest::RunRerun` (`src/core/daemon_jobs.rs:786`) → `CoreResponse::RunRerunAccepted`, driven by `src/tui/commands/run_rerun.rs` (`start_run_rerun`, `:7`). The earlier claim that no `RunRerun` symbol remains was wrong. Separately, the `/shell-rerun` TUI command is now at `src/tui/app/mod.rs:8498` and resolves a real id, emitting `ShellRerun { id }` (not `id: 0`) | `src/tui/app/mod.rs`, `src/core/daemon_jobs.rs`, `src/tui/commands/run_rerun.rs` |
+| TUI `RunRerun` placeholder at `crates/codegg-tui/src/app/mod.rs:3615` (lines 174, 310) | The *TUI-side* `RunRerun` handler is gone, but a **live daemon-side rerun path** now exists: `CoreRequest::RunRerun` (`src/core/daemon_jobs.rs:786`) → `CoreResponse::RunRerunAccepted`, driven by `crates/codegg-tui/src/commands/run_rerun.rs` (`start_run_rerun`, `:7`). The earlier claim that no `RunRerun` symbol remains was wrong. Separately, the `/shell-rerun` TUI command is now at `crates/codegg-tui/src/app/mod.rs:8498` and resolves a real id, emitting `ShellRerun { id }` (not `id: 0`) | `crates/codegg-tui/src/app/mod.rs`, `src/core/daemon_jobs.rs`, `crates/codegg-tui/src/commands/run_rerun.rs` |
 | B4 — "3 new in-module tests in `crates/codegg-git/src/process_policy.rs`" (line 345) | **0** tests there; the file is now a bare re-export shim. The canonical policy and its single `policy_tables_are_disjoint_and_unique` test live in `crates/egggit/src/process.rs:2265` | `crates/codegg-git/src/process_policy.rs`, `crates/egggit/src/process.rs:2265` |
 | Env-policy ownership — "Single source of truth: `codegg_git::process_policy`" (line 137) | Inverted: `egggit::process` is canonical; `codegg_git::process_policy` is documented as a compatibility re-export | `crates/codegg-git/src/process_policy.rs:1`-`:6` |
 | crate module maps (lines 37-101) | Now also contain `crates/codegg-git/src/workflow.rs`, `crates/egggit/src/process.rs`, `crates/egggit/src/subject.rs`, `crates/egggit/src/config_surface.rs`, and `crates/egggit/src/consistency.rs` | `ls crates/codegg-git/src crates/egggit/src` |
@@ -425,8 +425,8 @@ source-level `#[test]` / `#[tokio::test]` attribute count.
   remains". The *TUI-side* handler is indeed gone, but a live daemon-side
   rerun path exists: `CoreRequest::RunRerun` (`src/core/daemon_jobs.rs:786`)
   answered with `CoreResponse::RunRerunAccepted`, driven by
-  `src/tui/commands/run_rerun.rs`. The row now says so, and the
-  `/shell-rerun` command's current anchor (`src/tui/app/mod.rs:8498`) is
+  `crates/codegg-tui/src/commands/run_rerun.rs`. The row now says so, and the
+  `/shell-rerun` command's current anchor (`crates/codegg-tui/src/app/mod.rs:8498`) is
   given. The body's "TUI `RunRerun` is a placeholder" limitation is left as
   written: it was true of the polish-pass record.
 - **Re-verified the other drift values.** `codegg-git` 358 → **360**;

@@ -447,7 +447,7 @@ def check_network_intent_owner_wiring(root: Path) -> list[str]:
     #    principal's own policy onto the job before it runs. Each such site
     #    is listed with that reason, so the allowlist cannot grow silently.
     no_intent_in_scope = {
-        "src/tui/commands/test.rs": (
+        "crates/codegg-tui/src/commands/test.rs": (
             "the TUI has no authenticated intent in scope; the daemon stamps the "
             "principal's policy onto the payload at job admission"
         ),
@@ -473,7 +473,7 @@ def check_network_intent_owner_wiring(root: Path) -> list[str]:
         "src/interactive_process.rs",
         "src/lsp/m004.rs",
         "src/run_rerun.rs",
-        "src/tui/commands/test.rs",
+        "crates/codegg-tui/src/commands/test.rs",
     ):
         path = root / relative
         try:

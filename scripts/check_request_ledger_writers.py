@@ -55,7 +55,7 @@ STORE = "crates/codegg-core/src/session/request_ledger.rs"
 SEAM = "src/agent/provider_turn.rs"
 SCHEMA = "crates/codegg-core/src/session/schema.rs"
 STORAGE = "crates/codegg-core/src/storage/mod.rs"
-DOCTOR = "src/main.rs"
+DOCTOR = "crates/codegg-cli/src/main.rs"
 
 TABLE = "turn_request_ledger"
 BOUND = "MAX_REQUEST_LEDGER_ROWS_PER_SESSION"
@@ -86,7 +86,7 @@ def production_view(source: str) -> str:
 
     The hand-rolled counter this replaced read one such fixture as
     structural, never saw the module's own closing brace return its depth to
-    zero, and ran to end-of-file: in `src/main.rs` it dropped every line from
+    zero, and ran to end-of-file: in `crates/codegg-cli/src/main.rs` it dropped every line from
     the first test module onward, including the diagnostic's production
     `ledger_health()` call far below it.
     """

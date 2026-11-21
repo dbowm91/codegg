@@ -298,10 +298,10 @@ rejection, immutable origin attribution, bounded secret-free DTOs).
 ## Task composer, scheduling sheet, and Task view (M003)
 
 User-facing project Task mode for the reference TUI
-(`src/tui/commands/work_orders.rs`,
-`src/tui/app/state/work_orders.rs`,
-`src/tui/components/dialogs/task_schedule.rs`,
-`src/tui/components/dialogs/task_view.rs`):
+(`crates/codegg-tui/src/commands/work_orders.rs`,
+`crates/codegg-tui/src/app/state/work_orders.rs`,
+`crates/codegg-tui/src/components/dialogs/task_schedule.rs`,
+`crates/codegg-tui/src/components/dialogs/task_view.rs`):
 
 - `ComposerMode::Session | Task` is frontend submission state owned by
   prompt UI state, distinct from `InputMode::Insert | Normal` (which
@@ -373,9 +373,9 @@ User-facing project Task mode for the reference TUI
 ## Human external-trigger setup and one-time secret (C001)
 
 C001 completes the deferred M005 human surface without redesigning the
-trigger backend (`src/tui/commands/work_orders.rs`,
-`src/tui/components/dialogs/trigger_secret.rs`,
-`src/tui/app/state/work_orders.rs` `OneTimeBearer` /
+trigger backend (`crates/codegg-tui/src/commands/work_orders.rs`,
+`crates/codegg-tui/src/components/dialogs/trigger_secret.rs`,
+`crates/codegg-tui/src/app/state/work_orders.rs` `OneTimeBearer` /
 `OneTimeTriggerSecret`):
 
 - The scheduling continuation is `WorkOrderCreate` then, when the draft
@@ -441,8 +441,8 @@ One bounded daemon-owned aggregate for every authorized project
   assertion in `daemon_workspace_dashboard::tests`). No storage
   migration: the projection derives from canonical stores on
   request; caches are rebuildable and never authoritative.
-- TUI (`src/tui/commands/workspace_dashboard.rs`,
-  `src/tui/app/state/workspace_dashboard.rs`): one aggregate request
+- TUI (`crates/codegg-tui/src/commands/workspace_dashboard.rs`,
+  `crates/codegg-tui/src/app/state/workspace_dashboard.rs`): one aggregate request
   per refresh (no N+1 fan-out, fake-client counted in tests);
   M005 promotes the dashboard to the non-modal `Route::Workspace`
   primary view (the obsolete `Dialog::WorkspaceDashboard` modal is

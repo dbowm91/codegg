@@ -52,7 +52,7 @@ def main() -> int:
     if "--self-test" in sys.argv[1:]:
         return 0 if self_test() else 2
     exec_source = (ROOT / "src/exec.rs").read_text()
-    run_source = (ROOT / "src/main.rs").read_text()
+    run_source = (ROOT / "crates/codegg-cli/src/main.rs").read_text()
     errors = findings(exec_source, run_source)
     if errors:
         for error in errors:

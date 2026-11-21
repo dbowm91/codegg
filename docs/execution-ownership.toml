@@ -74,13 +74,13 @@ reason = "PythonScriptTool submits JobKind::Python via JobSubmissionService when
 entrypoint = "JobSubmissionService::submit"
 
 [[site]]
-path = "src/tui/commands/test.rs"
+path = "crates/codegg-tui/src/commands/test.rs"
 owner = "scheduler"
 reason = "TUI /test slash command dispatches CoreRequest::JobSubmit"
 entrypoint = "CoreRequest::JobSubmit"
 
 [[site]]
-path = "src/tui/commands/tasks.rs"
+path = "crates/codegg-tui/src/commands/tasks.rs"
 owner = "scheduler"
 reason = "TUI /tasks slash command submits durable jobs through protocol"
 entrypoint = "CoreRequest::JobSubmit"
@@ -149,7 +149,7 @@ reason = "Migrates legacy background tasks to ScheduleStore at startup"
 # ---------------------------------------------------------------------
 
 [[site]]
-path = "src/main.rs"
+path = "crates/codegg-cli/src/main.rs"
 owner = "standalone_compat"
 reason = "SubAgentPool wiring for --standalone, --stdio, daemon bootstrap, deprecated --core-transport inproc; `edit` spawns $VISUAL/$EDITOR on the resolved config path, an interactive user-controlled terminal session like the TUI open_external_editor site"
 
@@ -184,7 +184,7 @@ owner = "scheduler"
 reason = "daemon-owned finite human shell runs reserve the shared AdmissionController process slot before invoking ShellRuntime and retain bounded ephemeral state"
 
 [[site]]
-path = "src/tui/app/mod.rs"
+path = "crates/codegg-tui/src/app/mod.rs"
 owner = "interactive"
 reason = "open_external_editor spawns $EDITOR for user editing"
 

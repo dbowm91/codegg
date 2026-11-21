@@ -740,10 +740,10 @@ impl LspTool {
     /// Test-only: stage a pending candidate so a TUI test can exercise the
     /// real `preview_apply_request` export instead of a hand-built DTO.
     ///
-    /// `#[cfg(test)]` keeps this out of every downstream build — it is not a
-    /// second way for production code to populate the registry, only a way for
-    /// in-crate tests to reach the private registrar.
-    #[cfg(test)]
+    /// Available only in unit tests or the extracted TUI's opt-in test-support
+    /// build; it is not a production route for populating the registry.
+    #[cfg(any(test, feature = "tui-test-support"))]
+    #[doc(hidden)]
     pub fn register_preview_artifact_for_test(
         &self,
         artifact: egglsp::context::LspPreviewArtifact,

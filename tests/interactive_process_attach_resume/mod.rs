@@ -46,6 +46,3 @@ pub mod interactive_process_attach_resume;
 
 #[path = "interactive_process_sessions.inc"]
 pub mod interactive_process_sessions;
-
-#[path = "interactive_terminal_tui.inc"]
-pub mod interactive_terminal_tui;

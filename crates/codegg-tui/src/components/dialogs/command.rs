@@ -1,0 +1,411 @@
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::Frame;
+use std::sync::Arc;
+
+use super::super::super::theme::Theme;
+use super::super::component::{Component, DialogType};
+use super::super::section::Section;
+use crate::app::TuiMsg;
+use crate::command::{Command, CommandRegistry};
+use crossterm::event::KeyEvent;
+
+#[derive(Clone)]
+pub struct CommandPalette {
+    pub query: String,
+    pub filtered: Vec<Command>,
+    commands: Vec<Command>,
+    pub cursor: usize,
+    pub scroll: usize,
+    visible_height: usize,
+}
+
+impl CommandPalette {
+    pub fn new() -> Self {
+        Self::new_with_registry(&CommandRegistry::new())
+    }
+
+    pub fn new_with_registry(registry: &CommandRegistry) -> Self {
+        Self {
+            query: String::new(),
+            filtered: Vec::new(),
+            commands: registry.commands().to_vec(),
+            cursor: 0,
+            scroll: 0,
+            visible_height: 7,
+        }
+    }
+
+    pub fn set_visible_height(&mut self, height: usize) {
+        self.visible_height = height;
+    }
+
+    pub fn set_query(&mut self, query: &str) {
+        self.query = query.to_string();
+        let registry = CommandRegistry {
+            commands: self.commands.clone(),
+        };
+        self.filtered = registry
+            .filter(&self.query)
+            .into_iter()
+            .map(|(cmd, _)| cmd.clone())
+            .collect();
+        self.cursor = 0;
+        self.scroll = 0;
+    }
+
+    /// Replace the project-scoped catalog and re-filter the current query.
+    pub fn set_registry(&mut self, registry: &CommandRegistry) {
+        self.commands = registry.commands().to_vec();
+        let query = self.query.clone();
+        self.set_query(&query);
+    }
+
+    pub fn cursor_down(&mut self) {
+        if self.cursor < self.filtered.len().saturating_sub(1) {
+            self.cursor += 1;
+        }
+        self.clamp_scroll();
+    }
+
+    pub fn cursor_up(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+        self.clamp_scroll();
+    }
+
+    fn clamp_scroll(&mut self) {
+        let max_visible = self.visible_height;
+        if self.cursor >= self.scroll + max_visible {
+            self.scroll = self.cursor.saturating_sub(max_visible.saturating_sub(1));
+        }
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        }
+    }
+
+    pub fn selected(&self) -> Option<&Command> {
+        self.filtered.get(self.cursor)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.filtered.is_empty()
+    }
+
+    pub fn visible_count(&self) -> usize {
+        self.filtered.len()
+    }
+
+    pub fn render(&mut self, frame: &mut Frame, prompt_area: Rect, theme: &Arc<Theme>) {
+        if self.filtered.is_empty() {
+            let compl_w = 50.min(prompt_area.width.saturating_sub(2));
+            if compl_w < 3 {
+                return;
+            }
+            let max_h = 3u16;
+            let compl_h = max_h + 2;
+            let compl_area = Rect {
+                x: prompt_area.x + 1,
+                y: prompt_area.y.saturating_sub(compl_h),
+                width: compl_w,
+                height: compl_h,
+            };
+            frame.render_widget(ratatui::widgets::Clear, compl_area);
+            let inner = Section::plain(theme).draw(compl_area, frame.buffer_mut());
+            let hint = Span::styled(" No results ", Style::default().fg(theme.muted));
+            frame.render_widget(Paragraph::new(hint).alignment(Alignment::Center), inner);
+            return;
+        }
+
+        // Rows reserved by each block's own borders. The list uses
+        // `Borders::ALL` (top + bottom) and the hint bar uses `Borders::TOP`,
+        // so those rows must be added *on top of* the interior rows we intend
+        // to display. Previously `list_height = max_h + 1` handed the border
+        // only one row, leaving `max_h - 1` usable rows: at a single exact
+        // match (`max_h == 1`) that is zero rows, so the one command the user
+        // had just fully typed was clipped away and the popup looked empty.
+        // The hint bar had the same off-by-one and rendered no text at all.
+        const LIST_BORDER_ROWS: u16 = 2;
+        const HINT_BORDER_ROWS: u16 = 1;
+        const HINT_INTERIOR_ROWS: u16 = 1;
+        const CHROME_ROWS: u16 = LIST_BORDER_ROWS + HINT_BORDER_ROWS + HINT_INTERIOR_ROWS;
+        const MIN_POPUP_WIDTH: u16 = 3;
+
+        let compl_w = 50.min(prompt_area.width.saturating_sub(2));
+        if compl_w < MIN_POPUP_WIDTH {
+            return;
+        }
+
+        // The popup grows upward from the prompt, so the rows available for
+        // command entries are bounded by the space *above* the prompt rather
+        // than by the full screen height.
+        let max_item_rows = prompt_area
+            .y
+            .saturating_sub(CHROME_ROWS)
+            .min(self.visible_height as u16);
+        if max_item_rows == 0 {
+            return;
+        }
+
+        // `visible_height` doubles as the scroll clamp, so keep it in step with
+        // the number of rows actually rendered.
+        self.visible_height = max_item_rows as usize;
+        self.clamp_scroll();
+
+        let max_h = max_item_rows.min(self.filtered.len() as u16);
+        let list_height = max_h + LIST_BORDER_ROWS;
+        let hints_height = HINT_BORDER_ROWS + HINT_INTERIOR_ROWS;
+        let compl_h = list_height + hints_height;
+
+        let compl_area = Rect {
+            x: prompt_area.x + 1,
+            y: prompt_area.y.saturating_sub(compl_h),
+            width: compl_w,
+            height: compl_h,
+        };
+
+        frame.render_widget(ratatui::widgets::Clear, compl_area);
+
+        let list_area = Rect {
+            x: compl_area.x,
+            y: compl_area.y,
+            width: compl_area.width,
+            height: list_height,
+        };
+        let hints_area = Rect {
+            x: compl_area.x,
+            y: compl_area.y + list_height,
+            width: compl_area.width,
+            height: hints_height,
+        };
+
+        let items: Vec<ListItem> = self
+            .filtered
+            .iter()
+            .skip(self.scroll)
+            .take(max_h as usize)
+            .enumerate()
+            .map(|(i, cmd)| {
+                let is_selected = (i + self.scroll) == self.cursor;
+                let base_style = if is_selected {
+                    Style::default().fg(theme.background).bg(theme.primary)
+                } else {
+                    Style::default().fg(theme.foreground)
+                };
+
+                let name_style = if is_selected {
+                    base_style.add_modifier(Modifier::BOLD)
+                } else {
+                    base_style
+                };
+
+                let metadata_style = if is_selected {
+                    Style::default().fg(theme.background).bg(theme.muted)
+                } else {
+                    Style::default().fg(theme.muted)
+                };
+
+                let mut spans = vec![
+                    Span::styled(format!("{} ", cmd.domain), metadata_style),
+                    Span::styled(&cmd.name, name_style),
+                ];
+
+                if cmd.source_kind != crate::command::CommandSource::BuiltIn {
+                    spans.push(Span::raw(" ["));
+                    spans.push(Span::styled(
+                        bounded_label(&cmd.source_label(), 24),
+                        if is_selected {
+                            Style::default().fg(theme.background)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        },
+                    ));
+                    spans.push(Span::raw("]"));
+                }
+
+                if !cmd.aliases.is_empty() {
+                    spans.push(Span::raw(" ("));
+                    spans.push(Span::styled(
+                        cmd.aliases.join(", "),
+                        if is_selected {
+                            Style::default().fg(theme.background)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        },
+                    ));
+                    spans.push(Span::raw(")"));
+                }
+
+                if !cmd.description.is_empty() {
+                    spans.push(Span::raw(" - "));
+                    spans.push(Span::styled(
+                        &cmd.description,
+                        if is_selected {
+                            Style::default().fg(theme.background)
+                        } else {
+                            Style::default().fg(theme.secondary)
+                        },
+                    ));
+                }
+
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+
+        let inner = Section::plain(theme).draw(list_area, frame.buffer_mut());
+        frame.render_widget(List::new(items), inner);
+
+        let hint_style = Style::default().fg(theme.muted);
+        let hint_text = Line::from(vec![
+            Span::styled(" \u{2191}\u{2193} ", hint_style),
+            Span::styled("navigate", hint_style),
+            Span::styled(" \u{00B7} ", hint_style),
+            Span::styled("Enter ", hint_style),
+            Span::styled("select", hint_style),
+            Span::styled(" \u{00B7} ", hint_style),
+            Span::styled("Esc ", hint_style),
+            Span::styled("cancel", hint_style),
+        ]);
+        let hints_block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.background));
+        frame.render_widget(
+            Paragraph::new(hint_text)
+                .block(hints_block)
+                .alignment(Alignment::Center),
+            hints_area,
+        );
+    }
+}
+
+fn bounded_label(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut output: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        output.push('…');
+    }
+    output
+}
+
+impl Default for CommandPalette {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Component for CommandPalette {
+    fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
+        use crossterm::event::KeyCode;
+
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cursor_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cursor_down();
+            }
+            KeyCode::Esc => {
+                return Some(TuiMsg::CloseDialog);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg> {
+        match msg {
+            TuiMsg::CloseDialog => Some(TuiMsg::CloseDialog),
+            _ => None,
+        }
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render(frame, area, theme);
+    }
+
+    fn dialog_type(&self) -> DialogType {
+        DialogType::Context
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cursor_down_empty() {
+        let mut palette = CommandPalette::new();
+        palette.filtered = vec![];
+        palette.visible_height = 5;
+
+        palette.cursor_down();
+        assert_eq!(palette.cursor, 0);
+    }
+
+    #[test]
+    fn test_cursor_up_empty() {
+        let mut palette = CommandPalette::new();
+        palette.filtered = vec![];
+        palette.visible_height = 5;
+        palette.cursor = 1;
+
+        palette.cursor_up();
+        assert_eq!(palette.cursor, 0);
+    }
+
+    #[test]
+    fn test_cursor_clamp_scroll_empty() {
+        let mut palette = CommandPalette::new();
+        palette.filtered = vec![];
+        palette.visible_height = 3;
+        palette.scroll = 0;
+        palette.cursor = 0;
+
+        palette.cursor_down();
+        assert_eq!(palette.cursor, 0);
+    }
+
+    #[test]
+    fn test_is_empty_when_no_filtered() {
+        let palette = CommandPalette::new();
+        assert!(palette.is_empty());
+    }
+
+    #[test]
+    fn test_visible_count_empty() {
+        let palette = CommandPalette::new();
+        assert_eq!(palette.visible_count(), 0);
+    }
+
+    #[test]
+    fn test_selected_none_when_empty() {
+        let palette = CommandPalette::new();
+        assert!(palette.selected().is_none());
+    }
+
+    #[test]
+    fn test_cursor_down_no_wrap() {
+        let mut palette = CommandPalette::new();
+        palette.cursor = 0;
+        palette.visible_height = 5;
+        palette.filtered = vec![];
+
+        palette.cursor_down();
+        assert_eq!(palette.cursor, 0);
+    }
+
+    #[test]
+    fn test_cursor_up_no_wrap() {
+        let mut palette = CommandPalette::new();
+        palette.cursor = 0;
+        palette.visible_height = 5;
+        palette.filtered = vec![];
+
+        palette.cursor_up();
+        assert_eq!(palette.cursor, 0);
+    }
+}

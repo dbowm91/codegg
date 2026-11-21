@@ -1,0 +1,12 @@
+#![recursion_limit = "512"]
+pub mod common;
+#[path = "durable_schedule_tui_display_token.inc"]
+pub mod durable_schedule_tui_display_token;
+#[path = "identity_m003_daemon_authorization.inc"]
+pub mod identity_m003_daemon_authorization;
+#[path = "m007i_daemon_diff.inc"]
+pub mod m007i_daemon_diff;
+#[path = "presence_m003_observation.inc"]
+pub mod presence_m003_observation;
+#[path = "work_orders_m007_trajectory.inc"]
+pub mod work_orders_m007_trajectory;

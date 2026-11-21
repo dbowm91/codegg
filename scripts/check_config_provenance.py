@@ -29,7 +29,7 @@ This guard fails on four classes of drift.
   rather than a disclosure.
 
 A fifth check covers the subcommand: once `Commands::Config` exists in
-`src/main.rs`, its help must name `--provenance` and `--format`. Until then the
+`crates/codegg-cli/src/main.rs`, its help must name `--provenance` and `--format`. Until then the
 check reports PENDING instead of failing, because the catalog is useful before
 the command lands and a red guard that everyone ignores protects nothing. The
 self-test injects the variant and proves the check rejects a help text that
@@ -492,7 +492,7 @@ def check_fixtures() -> bool:
 
 def check_subcommand_help() -> bool:
     if not MAIN_MODULE.is_file():
-        print("  [SKIP] src/main.rs does not exist")
+        print("  [SKIP] crates/codegg-cli/src/main.rs does not exist")
         return True
     main_source = _read(MAIN_MODULE)
     if not has_config_command(main_source):

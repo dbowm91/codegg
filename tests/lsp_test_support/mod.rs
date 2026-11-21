@@ -22,6 +22,3 @@ pub mod lsp_completion_trajectory;
 
 #[path = "lsp_composite_stdio.inc"]
 pub mod lsp_composite_stdio;
-
-#[path = "lsp_read_delivery_m013.inc"]
-pub mod lsp_read_delivery_m013;

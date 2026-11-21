@@ -2028,7 +2028,7 @@ impl CoreDaemon {
                     // `SnapshotModels` request re-queried all providers and
                     // returned `[]` whenever any of them was slow — the TUI
                     // picker then rendered permanently empty. Mirrors the
-                    // standalone path in `src/main.rs`.
+                    // standalone path in `crates/codegg-cli/src/main.rs`.
                     discovery.initialize().await;
                     if discovery.needs_refresh().await {
                         let models = discovery.refresh(&registry).await;

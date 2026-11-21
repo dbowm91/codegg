@@ -1,0 +1,6108 @@
+#[cfg(feature = "server")]
+mod client;
+
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap_complete::{generate, Shell};
+use codegg::agent;
+use codegg::auth::AuthCli;
+use codegg::config::paths;
+use codegg::config::schema::Config;
+use codegg::core::CoreClient;
+use codegg::error::{AppError, ConfigError, StorageError};
+use codegg::exec::{ExecInput, ExecMode};
+use codegg::mcp;
+use codegg::memory::MemoryStore;
+use codegg::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
+use codegg::provider::{self, ProviderRegistry};
+use codegg::session::{MessageStore, Session, SessionStore};
+use codegg::skills::SkillIndex;
+use codegg::storage;
+use codegg::upgrade;
+use codegg_tui as tui;
+use serde::{Deserialize, Serialize};
+use std::env;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tracing_subscriber::util::SubscriberInitExt;
+
+// Shared execution-policy flags for root one-shot mode and `exec`.
+//
+// Both spellings resolve through the single
+// `codegg::policy_surface::resolve_cli_policy` validation authority:
+// `--yolo` is an exact alias for `--approval-mode yolo` and combining it
+// with a different explicit mode is rejected. When no flag is given the
+// root one-shot path keeps the stored preference (or built-in default)
+// while `exec` keeps its legacy permissive behavior; explicit modes map
+// to the same daemon policy contract in both.
+//
+// (Plain comments, not doc comments: Clap renders a flattened `Args`
+// struct's doc comment as a help header, which would displace `about`.)
+#[derive(Args, Clone, Debug, Default)]
+struct ExecutionPolicyArgs {
+    /// Approval mode for this invocation (interactive, automatic, yolo).
+    /// Maps to the same daemon policy contract as the TUI approval
+    /// selector. `--yolo` is an exact alias for `--approval-mode yolo`.
+    #[arg(long = "approval-mode", value_name = "MODE")]
+    approval_mode: Option<String>,
+
+    /// Sandbox profile for this invocation (read-only, workspace-write,
+    /// full-host). Orthogonal to `--approval-mode`: automatic modes never
+    /// imply full-host access.
+    #[arg(long = "sandbox", value_name = "PROFILE")]
+    sandbox: Option<String>,
+
+    /// Autonomous execution without approval prompts. Exact alias for
+    /// `--approval-mode yolo` (conflicts with a different explicit mode).
+    /// Sandbox containment still applies unless `--sandbox full-host` is
+    /// also given.
+    #[arg(long = "yolo")]
+    yolo: bool,
+}
+
+impl ExecutionPolicyArgs {
+    fn resolve(&self) -> Result<Option<codegg::policy_surface::CliPolicyOverride>, String> {
+        codegg::policy_surface::resolve_cli_policy(
+            self.approval_mode.as_deref(),
+            self.sandbox.as_deref(),
+            self.yolo,
+        )
+    }
+}
+
+/// Canonical `--format text|json` output selection shared by root one-shot
+/// mode and `exec`.
+fn resolve_output_format(format: OutputFormat, json_output: bool) -> OutputFormat {
+    if json_output || matches!(format, OutputFormat::Json) {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Text
+    }
+}
+
+fn merge_cli_policy_overrides(
+    root: Option<codegg::policy_surface::CliPolicyOverride>,
+    command: Option<codegg::policy_surface::CliPolicyOverride>,
+) -> Result<Option<codegg::policy_surface::CliPolicyOverride>, String> {
+    use codegg::policy_surface::CliPolicyOverride;
+    match (root, command) {
+        (None, None) => Ok(None),
+        (Some(policy), None) | (None, Some(policy)) => Ok(Some(policy)),
+        (Some(root), Some(command)) => {
+            let approval_mode = match (root.approval_mode, command.approval_mode) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err("top-level and ACP approval mode flags conflict".to_string());
+                }
+                (Some(value), _) | (_, Some(value)) => Some(value),
+                (None, None) => None,
+            };
+            let sandbox_profile = match (root.sandbox_profile, command.sandbox_profile) {
+                (Some(left), Some(right)) if left != right => {
+                    return Err("top-level and ACP sandbox flags conflict".to_string());
+                }
+                (Some(value), _) | (_, Some(value)) => Some(value),
+                (None, None) => None,
+            };
+            Ok(Some(CliPolicyOverride {
+                approval_mode,
+                sandbox_profile,
+            }))
+        }
+    }
+}
+
+/// Clap log-level mapping for `-v` counting.
+///
+/// Documented and tested exactly: no flag warns, `-v` informs, `-vv`
+/// debugs, `-vvv` and above traces.
+fn verbosity_log_level(verbose: u8) -> &'static str {
+    match verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    }
+}
+
+/// Feature-gated root examples: the default build must not advertise the
+/// `server`-gated `server` / remote `attach` commands. Applied at runtime
+/// (and to generated completions) because Clap `after_help` is a static
+/// attribute; every example below names a command that exists in the
+/// compiled feature set.
+#[cfg(feature = "server")]
+fn root_after_help() -> &'static str {
+    r#"EXAMPLES:
+    # Start a new session
+    codegg
+
+    # Resume last session
+    codegg -c
+
+    # Use specific model
+    codegg -m claude-sonnet-4-20250514
+
+    # Run a single prompt
+    codegg --run "Hello, write a hello world program"
+
+    # List available models
+    codegg models
+
+    # List models from specific provider
+    codegg models -p anthropic
+
+    # Diagnose a subsystem
+    codegg doctor search
+
+    # Manage the core daemon
+    codegg daemon status
+
+    # Attach to remote server (requires the `server` feature build)
+    codegg attach http://localhost:3000 --token YOUR_TOKEN
+
+    # Start server (requires the `server` feature build)
+    codegg server --host 0.0.0.0 --port 8080"#
+}
+
+/// Feature-gated root examples: the default build must not advertise the
+/// `server`-gated `server` / remote `attach` commands. Applied at runtime
+/// (and to generated completions) because Clap `after_help` is a static
+/// attribute; every example below names a command that exists in the
+/// compiled feature set.
+#[cfg(not(feature = "server"))]
+fn root_after_help() -> &'static str {
+    r#"EXAMPLES:
+    # Start a new session
+    codegg
+
+    # Resume last session
+    codegg -c
+
+    # Use specific model
+    codegg -m claude-sonnet-4-20250514
+
+    # Run a single prompt
+    codegg --run "Hello, write a hello world program"
+
+    # List available models
+    codegg models
+
+    # List models from specific provider
+    codegg models -p anthropic
+
+    # Diagnose a subsystem
+    codegg doctor search
+
+    # Manage the core daemon
+    codegg daemon status"#
+}
+
+#[derive(Parser, Clone, Debug)]
+#[command(
+    name = "codegg",
+    version,
+    about = "CodeGG, the Rust-native AI coding agent for terminal workflows"
+)]
+struct Cli {
+    /// Resume last session
+    #[arg(long, short = 'c', conflicts_with_all = ["session", "fork", "no_session"])]
+    continue_session: bool,
+
+    /// Open specific session
+    #[arg(long, short = 's', conflicts_with_all = ["continue_session", "fork", "no_session"])]
+    session: Option<String>,
+
+    /// Override model
+    #[arg(long, short = 'm')]
+    model: Option<String>,
+
+    #[command(flatten)]
+    policy: ExecutionPolicyArgs,
+
+    /// Override agent
+    #[arg(long, short = 'a')]
+    agent: Option<String>,
+
+    /// Ephemeral session (no persistence)
+    #[arg(long, conflicts_with_all = ["continue_session", "session", "fork"])]
+    no_session: bool,
+
+    /// Fork a session
+    #[arg(long, conflicts_with_all = ["continue_session", "session", "no_session"])]
+    fork: Option<String>,
+
+    /// Run a single prompt and exit
+    #[arg(long, short = 'p')]
+    run: Option<String>,
+
+    /// Output format for one-shot mode (text, json).
+    /// Canonical spelling is `--format`; `--output-format` is retained
+    /// as a compatibility alias.
+    #[arg(
+        long = "format",
+        alias = "output-format",
+        short = 'f',
+        default_value = "text"
+    )]
+    output_format: OutputFormat,
+
+    /// Hide status messages in non-interactive mode
+    #[arg(long, short = 'q')]
+    quiet: bool,
+
+    /// Set the working directory before startup; must exist.
+    #[arg(long = "cwd", value_name = "DIRECTORY")]
+    cwd: Option<PathBuf>,
+
+    /// Enable verbose output (no flag: warn; -v: info; -vv: debug;
+    /// -vvv and above: trace)
+    #[arg(long, short = 'v', action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    /// Core transport mode for TUI: inproc or stdio
+    ///
+    /// DEPRECATED: prefer `--standalone` (in-process) or `--stdio` (subprocess).
+    /// The singleton daemon is the default for ordinary TUI startup.
+    /// `socket` is still honored for explicit attach. Hidden from normal
+    /// help; see `architecture/core.md` for the transport model.
+    #[arg(long = "core-transport", value_enum, hide = true)]
+    core_transport: Option<CoreTransport>,
+
+    /// Run the core in-process without contacting the singleton daemon.
+    /// Visible non-production mode; global scheduling is not available.
+    /// Mutually exclusive with `--core-transport socket|stdio`.
+    #[arg(long = "standalone")]
+    standalone: bool,
+
+    /// Spawn a `core-stdio` subprocess and exchange JSONL over stdio.
+    /// Compatibility/testing mode; treated as standalone (does not touch
+    /// the singleton lock). Hidden from normal help; see
+    /// `architecture/core.md`.
+    #[arg(long = "stdio", hide = true)]
+    stdio: bool,
+
+    /// Core transport endpoint (required for socket mode), e.g. unix:///tmp/codegg-core.sock or npipe://codegg-core
+    /// Hidden from normal help; see `architecture/core.md`.
+    #[arg(long = "core-endpoint", hide = true)]
+    core_endpoint: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum Commands {
+    /// Run offline tool-selection advisor benchmarks and diagnostics
+    ToolAdvisor {
+        #[command(subcommand)]
+        command: ToolAdvisorCommand,
+    },
+    /// List available providers
+    Providers,
+    /// List available models
+    Models {
+        /// Filter by provider
+        #[arg(long, short = 'p')]
+        provider: Option<String>,
+    },
+    /// List sessions
+    Sessions {
+        /// Show archived sessions
+        #[arg(long)]
+        archived: bool,
+    },
+    /// View a specific session
+    Session {
+        /// Session ID
+        id: String,
+    },
+    /// Launch a session in an isolated worktree
+    ///
+    /// M006. Starts a new session, or forks an existing one, in a managed
+    /// checkout. The launch is durable and idempotent: a retry with the
+    /// same `--idempotency-key` converges on the original launch instead
+    /// of allocating a second checkout.
+    Launch {
+        /// The project to launch in
+        #[arg(long)]
+        project: String,
+        /// Fork this session instead of starting a new one
+        #[arg(long)]
+        fork: Option<String>,
+        /// Placement: `new` for a fresh managed checkout, or a worktree id
+        #[arg(long, default_value = "new")]
+        worktree: String,
+        /// Base branch or tag the new checkout is created from
+        #[arg(long)]
+        base: Option<String>,
+        /// Target branch for the new checkout
+        #[arg(long)]
+        branch: Option<String>,
+        /// Idempotency key. A retry with the same key converges.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Export a session to JSON
+    Export {
+        /// Session ID
+        id: String,
+        /// Output file path
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+    },
+    /// Import a session from JSON
+    Import {
+        /// Input file path
+        file: String,
+    },
+    /// Upgrade codegg to latest version
+    Upgrade,
+    /// Start the HTTP server
+    #[cfg(feature = "server")]
+    Server {
+        /// Host to bind to
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port to bind to
+        #[arg(long, short = 'p')]
+        port: Option<u16>,
+        /// Construct an independent core for the server instead of
+        /// proxying to the singleton daemon. Visible non-production mode.
+        #[arg(long = "standalone-core")]
+        standalone_core: bool,
+    },
+    /// Attach to a remote codegg server
+    #[cfg(feature = "server")]
+    Attach {
+        /// Server URL (e.g. http://localhost:3000)
+        url: String,
+        /// Authentication token
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Validate configuration files
+    Validate {
+        /// Path to config file (default: auto-detect)
+        #[arg(long)]
+        config: Option<String>,
+    },
+    /// Open the configuration file in $EDITOR (creating it if missing)
+    Edit {
+        /// Path to config file (default: the global config)
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Edit the project-local config (.codegg/codegg.jsonc) instead
+        #[arg(long, conflicts_with = "config")]
+        project: bool,
+
+        /// Override the editor instead of resolving $VISUAL/$EDITOR
+        #[arg(long)]
+        editor: Option<String>,
+    },
+    /// Execute a prompt in non-interactive mode (CI/CD)
+    Exec {
+        /// JSON input with prompt, model, and agent
+        #[arg(long)]
+        json: Option<String>,
+
+        /// Input file (reads from stdin if not specified)
+        #[arg(long)]
+        file: Option<String>,
+
+        /// Output format (text, json). Canonical spelling is `--format`;
+        /// `--json-output` is retained as a compatibility alias and also
+        /// selects JSON output when given.
+        #[arg(long = "format", value_enum)]
+        format: Option<OutputFormat>,
+
+        /// Output JSON format (compatibility alias for `--format json`)
+        #[arg(long, short = 'j')]
+        json_output: bool,
+
+        /// Suppress log messages
+        #[arg(long, short = 'q')]
+        quiet: bool,
+
+        /// Resume existing session
+        #[arg(long, short = 's')]
+        session: Option<String>,
+
+        #[command(flatten)]
+        policy: ExecutionPolicyArgs,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for (bash, zsh, fish, powershell)
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+        /// Output directory; must already exist. Writes to stdout when omitted.
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+    },
+    /// Manage MCP servers (add, list, remove, enable, debug)
+    Mcp {
+        #[command(subcommand)]
+        command: mcp::cli::McpCommand,
+    },
+    /// Run a deep research query
+    Research {
+        /// The research question
+        question: String,
+        /// Research mode
+        #[arg(long, default_value = "narrow-answer")]
+        mode: String,
+        /// Target audience
+        #[arg(long, default_value = "human")]
+        audience: String,
+        /// Research depth
+        #[arg(long, default_value = "medium")]
+        depth: String,
+        /// Output profiles (can be specified multiple times)
+        #[arg(long = "output")]
+        outputs: Vec<String>,
+        /// Sources to include (format: local, file:path, url:https://...)
+        #[arg(long = "source")]
+        sources: Vec<String>,
+        /// Allow network fetching
+        #[arg(long)]
+        allow_network: bool,
+    },
+    /// Manage the core daemon
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+    /// Attach to a running daemon via local Unix socket.
+    /// Deprecated compatibility spelling of `codegg daemon attach`;
+    /// hidden from normal help. Distinct from the feature-gated remote
+    /// HTTP `attach` command.
+    #[command(hide = true)]
+    AttachDaemon {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Session ID to attach to
+        #[arg(long)]
+        session: Option<String>,
+        /// Create a new session
+        #[arg(long)]
+        new: bool,
+    },
+    #[command(hide = true, name = "core-stdio")]
+    CoreStdio,
+    /// Run diagnostics for search, MCP, LSP, deterministic tools, providers,
+    /// credentials, and the session request ledger (default: all).
+    Doctor {
+        /// Restrict diagnostics to a single subsystem.
+        #[arg(value_enum)]
+        subsystem: Option<DoctorSubsystem>,
+        /// Deprecated compatibility spelling for the positional subsystem.
+        /// Hidden from normal help; prefer `codegg doctor [SUBSYSTEM]`.
+        #[arg(long = "subsystem", value_enum, hide = true)]
+        subsystem_flag: Option<DoctorSubsystem>,
+    },
+    /// Manage the user-level credential store (status, set-key, logout).
+    Auth {
+        #[command(subcommand)]
+        command: AuthSubcommand,
+    },
+    /// Show the effective configuration and which layer won each key.
+    /// `--provenance` names every layer's file and the values it overrode;
+    /// `--format json` emits the same attribution as a stable array.
+    Config {
+        #[command(subcommand)]
+        command: ConfigSubcommand,
+    },
+    /// Run an ACP v1 agent over newline-delimited JSON-RPC on stdio.
+    Acp {
+        #[command(flatten)]
+        policy: ExecutionPolicyArgs,
+    },
+    #[command(about = "Run one embedding-host session over newline-delimited JSON-RPC on stdio")]
+    Host {
+        #[arg(
+            long,
+            help = "Serve the protocol on stdin/stdout (the only v1 transport)"
+        )]
+        stdio: bool,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum ToolAdvisorCommand {
+    /// Show the effective advisor policy and decision backend without inference.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Evaluate the keyword/BM25 discovery baseline over a JSONL corpus.
+    Bench {
+        /// Optional JSONL dataset; defaults to the reviewed repository corpus.
+        #[arg(long)]
+        dataset: Option<String>,
+        /// Use BM25 instead of the keyword baseline.
+        #[arg(long)]
+        bm25: bool,
+        /// Emit the complete machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate corpus floors, leakage metadata, and frozen split coverage.
+    Lint {
+        #[arg(long)]
+        dataset: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect an SDM local artifact (requires the decision-runtime-sdm feature).
+    Inspect {
+        #[arg(long)]
+        model: String,
+    },
+    /// Inspect or manage explicitly captured local training data.
+    Data {
+        #[command(subcommand)]
+        command: ToolAdvisorDataCommand,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum ToolAdvisorDataCommand {
+    /// Show the effective capture state and spool location.
+    Status {
+        #[arg(long)]
+        root: Option<String>,
+    },
+    /// List locally captured events as JSON.
+    Inspect {
+        #[arg(long)]
+        root: Option<String>,
+    },
+    /// Export locally captured events to a JSONL file.
+    Export {
+        #[arg(long)]
+        root: Option<String>,
+        #[arg(long)]
+        output: String,
+    },
+    /// Purge locally captured events.
+    Purge {
+        #[arg(long)]
+        root: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum ConfigSubcommand {
+    /// Print the effective configuration.
+    ///
+    /// Values come from the same merge `Config::load` uses, and a credential
+    /// prints `(set)` or `(unset)`, never its value.
+    Show {
+        /// Name each layer's file and the layer that won every key
+        #[arg(long)]
+        provenance: bool,
+        /// Output format: text or json
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum AuthSubcommand {
+    /// List stored credentials (no plaintext, no ciphertext, no fingerprint).
+    Status,
+    /// Store an API key for a provider. Reads the key from stdin.
+    ///
+    /// Example:
+    ///   printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai
+    ///   printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai --account work
+    SetKey {
+        /// Provider id (e.g. openai, anthropic, xai). Must contain only
+        /// `[A-Za-z0-9_-]`.
+        provider: String,
+        /// Optional account id for multi-account stores. Must contain
+        /// only `[A-Za-z0-9_-]`.
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Remove stored credentials for a provider.
+    ///
+    /// Pass `--account '*'` to remove every account for the provider.
+    Logout {
+        /// Provider id (e.g. openai, anthropic, xai). Must contain only
+        /// `[A-Za-z0-9_-]`.
+        provider: String,
+        /// Optional account id. Use `'*'` to remove all accounts. Must
+        /// otherwise contain only `[A-Za-z0-9_-]`.
+        #[arg(long)]
+        account: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum DoctorSubsystem {
+    /// All subsystems.
+    All,
+    /// Web search/fetch backend (eggsearch).
+    Search,
+    /// Configured MCP servers.
+    Mcp,
+    /// Language Server Protocol subsystem.
+    Lsp,
+    /// Deterministic tools (eggsact) and preflight.
+    DeterministicTools,
+    /// Configured LLM providers (read-only listing, no network probes).
+    Providers,
+    /// User-level credential store (metadata only, never secrets).
+    Credentials,
+    /// Installation-owned runfiles (codegg siblings, versions, kernel probe).
+    Installation,
+    #[value(help = "Session request ledger (row count and digests, never bodies).")]
+    Session,
+}
+
+/// Resolve the `doctor` subsystem from the positional argument and the
+/// deprecated `--subsystem` compatibility flag.
+///
+/// The positional spelling wins when both are given identically; differing
+/// spellings are rejected rather than silently preferring one.
+fn resolve_doctor_subsystem(
+    positional: Option<DoctorSubsystem>,
+    flag: Option<DoctorSubsystem>,
+) -> Result<DoctorSubsystem, AppError> {
+    match (positional, flag) {
+        (Some(pos), Some(fl)) if pos != fl => Err(AppError::Other(anyhow::anyhow!(
+            "conflicting doctor subsystems: positional {pos:?} differs from --subsystem {fl:?} (use one spelling)"
+        ))),
+        (Some(pos), _) => {
+            if flag.is_some() {
+                eprintln!(
+                    "warning: --subsystem is deprecated; prefer `codegg doctor [SUBSYSTEM]`"
+                );
+            }
+            Ok(pos)
+        }
+        (None, Some(fl)) => {
+            eprintln!("warning: --subsystem is deprecated; prefer `codegg doctor [SUBSYSTEM]`");
+            Ok(fl)
+        }
+        (None, None) => Ok(DoctorSubsystem::All),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+enum CoreTransport {
+    Inproc,
+    Stdio,
+    Socket,
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum DaemonCommand {
+    /// Start the core daemon
+    Start {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Forcefully take the lock if the previous daemon is dead
+        #[arg(long)]
+        force_take_lock: bool,
+    },
+    /// Stop the running daemon
+    Stop {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    /// Show daemon status
+    Status {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    /// Show daemon logs
+    Logs {
+        /// Log file path (default: auto-detect)
+        #[arg(long)]
+        file: Option<String>,
+        /// Number of lines to show
+        #[arg(long, default_value = "50")]
+        lines: usize,
+    },
+    /// Show the daemon-owned scratch usage (M006)
+    ///
+    /// Measures the daemon's disposable scratch cache: tree count, total
+    /// size, age, and whether the reclaim path would accept each tree.
+    ScratchUsage {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Emit the raw report as JSON
+        #[arg(long)]
+        json: bool,
+        /// Run a fresh measurement instead of the daemon's last snapshot
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Dispose of one daemon-owned scratch tree (M007)
+    ScratchReclaim {
+        /// The opaque digest of the tree
+        #[arg(long)]
+        tree: String,
+        /// Actually remove the tree. Without this, nothing is removed.
+        #[arg(long)]
+        apply: bool,
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Emit the raw result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Attach to a running daemon via local Unix socket.
+    /// Canonical spelling; top-level `attach-daemon` remains as a hidden
+    /// compatibility alias. Distinct from the feature-gated remote HTTP
+    /// `attach` command.
+    Attach {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Session ID to attach to
+        #[arg(long)]
+        session: Option<String>,
+        /// Create a new session
+        #[arg(long)]
+        new: bool,
+    },
+}
+
+fn resolve_endpoint(endpoint: Option<String>) -> String {
+    codegg::core::instance::DaemonPaths::resolve_for_endpoint(endpoint.as_deref()).endpoint_uri()
+}
+
+/// The bounded wait for a daemon scratch report (M006).
+///
+/// The socket client applies no timeout of its own, so the CLI applies one.
+/// A report is a bounded measurement; a daemon that cannot answer inside the
+/// bound is reported as unavailable rather than hanging the command.
+const SCRATCH_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How many trees the human-readable scratch report prints.
+const SCRATCH_REPORT_TREE_ROWS: usize = 50;
+
+/// Fetch the daemon's scratch usage report over the local socket.
+///
+/// The daemon answers from its own snapshot unless a fresh measurement is
+/// asked for. The request names nothing: the daemon reports the trees it
+/// owns.
+async fn fetch_scratch_usage_report(
+    client: &codegg::core::transport::SocketCoreClient,
+    refresh: bool,
+) -> Result<codegg::protocol::scratch::ScratchUsageReportDto, String> {
+    let request = codegg::core::new_request(
+        "scratch-usage-1".into(),
+        CoreRequest::ScratchUsage {
+            request: codegg::protocol::scratch::ScratchUsageRequestDto { refresh },
+        },
+    );
+    let response = client
+        .request_bounded(request, SCRATCH_REPORT_TIMEOUT)
+        .await
+        .map_err(|error| {
+            // The socket server drops a frame it cannot decode, so a daemon that
+            // predates this request answers nothing at all. Hanging is not an
+            // acceptable degradation, so the bound turns that silence into a
+            // typed error.
+            format!(
+                "the running daemon does not support scratch usage ({error}); restart it to \
+                 upgrade"
+            )
+        })?;
+    match response {
+        CoreResponse::ScratchUsage { report } => Ok(report),
+        CoreResponse::Error { code, message } => Err(format!("{code}: {message}")),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// Fetch the daemon's verdict on one scratch tree.
+///
+/// The tree is named by its opaque digest, never by a path.
+async fn fetch_scratch_reclaim_result(
+    client: &codegg::core::transport::SocketCoreClient,
+    tree: &str,
+    apply: bool,
+) -> Result<codegg::protocol::scratch::ScratchReclaimResultDto, String> {
+    let request = codegg::core::new_request(
+        "scratch-reclaim-1".into(),
+        CoreRequest::ScratchReclaim {
+            request: codegg::protocol::scratch::ScratchReclaimRequestDto {
+                tree: tree.to_string(),
+                apply,
+            },
+        },
+    );
+    let response = client
+        .request_bounded(request, SCRATCH_REPORT_TIMEOUT)
+        .await
+        .map_err(|error| {
+            format!(
+                "the running daemon does not support scratch reclaim ({error}); restart it to \
+                 upgrade"
+            )
+        })?;
+    match response {
+        CoreResponse::ScratchReclaim { result } => Ok(result),
+        CoreResponse::Error { code, message } => Err(format!("{code}: {message}")),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// Print the daemon's verdict on one scratch tree.
+fn print_scratch_reclaim_result(result: &codegg::protocol::scratch::ScratchReclaimResultDto) {
+    println!(
+        "Scratch reclaim {}",
+        &result.digest[..12.min(result.digest.len())]
+    );
+    println!("  Verdict: {}", scratch_verdict_name(result.verdict));
+    println!("  Entries: {}", result.entry_count);
+    println!("  Size: {}", format_bytes(result.byte_count));
+    if result.quarantined {
+        println!("  Quarantined: the automatic path already refused this tree");
+    }
+    if let Some(refusal) = result.refusal {
+        println!(
+            "  Automatic-path refusal: {}",
+            scratch_refusal_name(refusal)
+        );
+    }
+    if result.dry_run {
+        println!("  Dry run: nothing was removed. Re-run with --apply to remove it.");
+    } else if result.removed {
+        println!("  Removed.");
+    }
+}
+
+/// The stable name of a reclaim verdict.
+fn scratch_verdict_name(
+    verdict: codegg::protocol::scratch::ScratchReclaimVerdictDto,
+) -> &'static str {
+    use codegg::protocol::scratch::ScratchReclaimVerdictDto;
+    match verdict {
+        ScratchReclaimVerdictDto::Reclaimable => "reclaimable",
+        ScratchReclaimVerdictDto::Refused => "refused",
+        ScratchReclaimVerdictDto::Leased => "leased (the tree is still in use)",
+        ScratchReclaimVerdictDto::Removed => "removed",
+        ScratchReclaimVerdictDto::Absent => "absent",
+    }
+}
+
+/// The stable name of a refusal reason.
+fn scratch_refusal_name(
+    refusal: codegg::protocol::scratch::ScratchReclaimRefusalDto,
+) -> &'static str {
+    use codegg::protocol::scratch::ScratchReclaimRefusalDto;
+    match refusal {
+        ScratchReclaimRefusalDto::SymbolicLink => "symbolic_link",
+        ScratchReclaimRefusalDto::NonRegularEntry => "non_regular_entry",
+        ScratchReclaimRefusalDto::OwnershipUnverifiable => "ownership_unverifiable",
+    }
+}
+
+fn print_scratch_usage_report(report: &codegg::protocol::scratch::ScratchUsageReportDto) {
+    println!(
+        "Scratch usage (measured {})",
+        format_epoch_millis(report.generated_at_ms)
+    );
+    println!("  Trees: {}", report.tree_count);
+    if report.unreported_trees > 0 {
+        println!("  Unreported trees: {}", report.unreported_trees);
+    }
+    println!("  Total size: {}", format_bytes(report.total_bytes));
+    let quarantined = report.trees.iter().filter(|tree| tree.quarantined).count();
+    let refused = report
+        .trees
+        .iter()
+        .filter(|tree| tree.reclaimable == Some(false))
+        .count();
+    let unknown = report
+        .trees
+        .iter()
+        .filter(|tree| tree.reclaimable.is_none())
+        .count();
+    println!("  Quarantined trees: {quarantined}");
+    println!("  Trees the reclaim path would refuse: {refused}");
+    if unknown > 0 {
+        println!("  Trees with no verdict (the walk did not finish reading them): {unknown}");
+    }
+    if report.truncated {
+        println!("  Note: the measurement hit a bound; the totals are partial");
+    }
+    if report.trees.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "  {:<14}  {:>10}  {:>5}  {:>8}  RECLAIMABLE",
+        "DIGEST", "SIZE", "FILES", "AGE"
+    );
+    for tree in report.trees.iter().take(SCRATCH_REPORT_TREE_ROWS) {
+        println!(
+            "  {:<14}  {:>10}  {:>5}  {:>8}  {}",
+            &tree.digest[..12.min(tree.digest.len())],
+            format_bytes(tree.total_bytes),
+            tree.file_count,
+            format_age(tree.newest_modified_ms),
+            match tree.reclaimable {
+                Some(true) => "yes".to_string(),
+                Some(false) => match tree.refusal {
+                    // The reason is the operator's only clue to which rule
+                    // refused the tree, and it is what distinguishes a tree
+                    // the daemon cannot prove it owns from one holding a
+                    // planted link.
+                    Some(refusal) => format!("no ({})", scratch_refusal_name(refusal)),
+                    None => "no".to_string(),
+                },
+                None => "unknown".to_string(),
+            },
+        );
+    }
+    if report.trees.len() > SCRATCH_REPORT_TREE_ROWS {
+        println!(
+            "  ... and {} more tree(s)",
+            report.trees.len() - SCRATCH_REPORT_TREE_ROWS
+        );
+    }
+}
+
+/// Format a byte count for the operator report.
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Format the age of a timestamp for the operator report.
+fn format_age(millis: Option<i64>) -> String {
+    let Some(millis) = millis else {
+        return "unknown".to_string();
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    let seconds = ((now - millis).max(0)) / 1000;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else {
+        format!("{}d", seconds / 86_400)
+    }
+}
+
+/// Format a measurement timestamp for the operator report.
+fn format_epoch_millis(millis: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(millis)
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Attach the TUI to a running daemon over the local Unix socket.
+async fn cmd_daemon_attach(
+    endpoint: Option<String>,
+    session: Option<String>,
+    new: bool,
+    cli: &Cli,
+) -> Result<(), AppError> {
+    let ep = resolve_endpoint(endpoint);
+    let mut cli_copy = cli.clone();
+    cli_copy.core_transport = Some(CoreTransport::Socket);
+    cli_copy.core_endpoint = Some(format!("unix://{}", ep));
+    if new {
+        cli_copy.continue_session = false;
+        cli_copy.session = None;
+    } else if let Some(sid) = session {
+        cli_copy.session = Some(sid);
+    }
+    launch_tui(&cli_copy).await
+}
+
+impl OutputFormat {
+    pub fn format(&self, content: &str) -> String {
+        match self {
+            OutputFormat::Text => content.to_string(),
+            OutputFormat::Json => serde_json::to_string(&serde_json::json!({
+                "response": content,
+            }))
+            .expect("serializing a CLI response string cannot fail"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod edit_command_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Build a throwaway directory tree containing executables named after
+    /// `names`, and return it joined with the given subdirectory as a PATH.
+    fn path_with_executables(dir: &Path, names: &[&str]) -> String {
+        for name in names {
+            let file = dir.join(name);
+            fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir.to_string_lossy().into_owned()
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("codegg-edit-{}-{}", tag, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn split_editor_command_handles_quotes_and_separators() {
+        assert_eq!(split_editor_command("vim"), Some(vec!["vim".to_string()]));
+        assert_eq!(
+            split_editor_command("code --wait"),
+            Some(vec!["code".to_string(), "--wait".to_string()])
+        );
+        assert_eq!(
+            split_editor_command("  hx   -w  "),
+            Some(vec!["hx".to_string(), "-w".to_string()])
+        );
+        assert_eq!(
+            split_editor_command("\"/opt/My Editor/hx\""),
+            Some(vec!["/opt/My Editor/hx".to_string()])
+        );
+        assert_eq!(
+            split_editor_command("'/opt/My Editor/hx' --wait"),
+            Some(vec!["/opt/My Editor/hx".to_string(), "--wait".to_string()])
+        );
+    }
+
+    #[test]
+    fn split_editor_command_rejects_blank_values() {
+        assert_eq!(split_editor_command(""), None);
+        assert_eq!(split_editor_command("   \t\n "), None);
+    }
+
+    #[test]
+    fn split_editor_command_keeps_unbalanced_quotes_usable() {
+        // An unbalanced quote must still yield one runnable command rather
+        // than a mangled argv that fails as "no such file".
+        assert_eq!(
+            split_editor_command("\"/opt/My Editor/hx"),
+            Some(vec!["/opt/My Editor/hx".to_string()])
+        );
+    }
+
+    #[test]
+    fn find_on_path_resolves_only_executable_files() {
+        let dir = tmp_dir("which");
+        let sub = dir.join("bin");
+        fs::create_dir_all(&sub).unwrap();
+        let path_var = path_with_executables(&sub, &["hx", "vim"]);
+
+        assert_eq!(
+            find_on_path("hx", Some(&path_var)).map(|p| p.file_name().unwrap().to_owned()),
+            Some("hx".into())
+        );
+
+        // Present but not executable must not resolve.
+        fs::write(sub.join("nano"), "not executable").unwrap();
+        assert_eq!(find_on_path("nano", Some(&path_var)), None);
+
+        // Absent entirely.
+        assert_eq!(find_on_path("emacs", Some(&path_var)), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_editor_prefers_visual_then_editor_then_flag() {
+        let dir = tmp_dir("precedence");
+        let path_var = path_with_executables(&dir, &["hx", "vim"]);
+
+        // The explicit flag outranks both environment variables.
+        assert_eq!(
+            resolve_editor(Some("nano"), Some("emacs"), Some("ed"), Some(&path_var)),
+            Some(vec!["nano".to_string()])
+        );
+        // $VISUAL outranks $EDITOR.
+        assert_eq!(
+            resolve_editor(None, Some("emacs"), Some("ed"), Some(&path_var)),
+            Some(vec!["emacs".to_string()])
+        );
+        // $EDITOR is used when $VISUAL is absent or blank.
+        assert_eq!(
+            resolve_editor(None, None, Some("ed"), Some(&path_var)),
+            Some(vec!["ed".to_string()])
+        );
+        assert_eq!(
+            resolve_editor(None, Some("   "), Some("ed"), Some(&path_var)),
+            Some(vec!["ed".to_string()])
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_editor_falls_back_in_declared_order() {
+        let dir = tmp_dir("fallback");
+
+        // With every candidate present, the first in EDITOR_FALLBACKS wins.
+        let all = path_with_executables(&dir, &EDITOR_FALLBACKS);
+        assert_eq!(
+            resolve_editor(None, None, None, Some(&all)),
+            Some(vec![dir.join("hx").to_string_lossy().into_owned()])
+        );
+
+        // With `hx` and `vim` absent, resolution skips to the next present
+        // candidate rather than failing. A separate directory keeps the
+        // executables from the case above out of PATH.
+        let tail_dir = tmp_dir("fallback-tail");
+        let tail = path_with_executables(&tail_dir, &["vi", "nano"]);
+        assert_eq!(
+            resolve_editor(None, None, None, Some(&tail)),
+            Some(vec![tail_dir.join("vi").to_string_lossy().into_owned()])
+        );
+
+        // An empty PATH leaves nothing to find.
+        assert_eq!(resolve_editor(None, None, None, None), None);
+        assert_eq!(resolve_editor(None, None, None, Some("")), None);
+        let empty_dir = tmp_dir("fallback-empty");
+        let no_editors = empty_dir.to_string_lossy().into_owned();
+        assert_eq!(
+            resolve_editor(None, None, None, Some(&no_editors)),
+            None,
+            "a directory with no editor binaries must not resolve"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&tail_dir);
+        let _ = fs::remove_dir_all(&empty_dir);
+    }
+
+    #[test]
+    fn resolve_editor_honours_an_environment_editor_that_is_missing() {
+        // The user asked for this editor; substituting another one would edit
+        // the file behind their back, so the missing binary must survive
+        // resolution and fail at spawn time instead.
+        assert_eq!(
+            resolve_editor(None, None, Some("definitely-not-installed"), Some("")),
+            Some(vec!["definitely-not-installed".to_string()])
+        );
+    }
+
+    #[test]
+    fn edit_target_prefers_an_explicit_path() {
+        let target = edit_target_path(Some("/tmp/explicit.jsonc"), false).unwrap();
+        assert_eq!(target, PathBuf::from("/tmp/explicit.jsonc"));
+    }
+
+    #[test]
+    fn edit_subcommand_parses_and_rejects_conflicting_targets() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["codegg", "edit", "--editor", "hx"]).expect("edit parses");
+        match cli.command {
+            Some(Commands::Edit {
+                config,
+                project,
+                editor,
+            }) => {
+                assert!(config.is_none());
+                assert!(!project);
+                assert_eq!(editor.as_deref(), Some("hx"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // `--project` and `--config` name different files; accepting both
+        // would make the target ambiguous.
+        assert!(
+            Cli::try_parse_from(["codegg", "edit", "--project", "--config", "/tmp/a.jsonc"])
+                .is_err(),
+            "--project must conflict with --config"
+        );
+    }
+
+    #[test]
+    fn new_config_template_parses_as_valid_config() {
+        // The file `edit` creates must not hand the user a parse error.
+        let parsed = paths::parse_config(NEW_CONFIG_TEMPLATE, Path::new("codegg.jsonc"));
+        assert!(parsed.is_ok(), "template must parse: {parsed:?}");
+    }
+}
+
+#[cfg(test)]
+mod output_format_tests {
+    use super::OutputFormat;
+
+    #[test]
+    fn json_round_trips_all_supported_string_content() {
+        let content = "quotes: \" \\\nline\ncarriage\rtab\tbackspace\u{0008}form-feed\u{000c}\u{0000}\u{001f} unicode: café 🥚";
+        let encoded = OutputFormat::Json.format(content);
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+
+        assert_eq!(value["response"], content);
+    }
+
+    #[test]
+    fn json_preserves_empty_strings_and_text_output() {
+        let encoded = OutputFormat::Json.format("");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+        assert_eq!(value["response"], "");
+        assert_eq!(
+            OutputFormat::Text.format("ordinary output"),
+            "ordinary output"
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_ledger_report_tests {
+    use super::{session_ledger_report_lines, Cli, Commands, DoctorSubsystem};
+    use clap::Parser;
+    use codegg::session::request_ledger::{
+        RequestLedgerHealth, TurnRequestAttempt, TurnRequestLedgerStore, TurnRequestOutcome,
+    };
+    use std::str::FromStr;
+
+    async fn ledger_pool() -> sqlx::SqlitePool {
+        let name = format!("doctor_ledger_{}", uuid::Uuid::new_v4().simple());
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+            "file:{name}?mode=memory&cache=shared"
+        ))
+        .expect("valid sqlite options")
+        .create_if_missing(true)
+        .busy_timeout(std::time::Duration::from_secs(10));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect in-memory sqlite");
+        codegg::session::schema::migrate(&pool)
+            .await
+            .expect("migrations run inside the helper");
+        pool
+    }
+
+    #[test]
+    fn an_empty_ledger_reports_no_rows() {
+        let lines = session_ledger_report_lines(&RequestLedgerHealth {
+            total_rows: 0,
+            last: None,
+        });
+        assert_eq!(lines, vec!["ledger: no ledger rows".to_string()]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_report_prints_the_last_digests_and_never_a_body() {
+        let store = TurnRequestLedgerStore::new(ledger_pool().await);
+        let id = store
+            .record_attempt(TurnRequestAttempt {
+                session_id: "session-doctor",
+                turn_index: 2,
+                attempt_index: 1,
+                attempt_id: "attempt-9",
+                model: "doctor-model",
+                effort: Some("high"),
+                system_digest: "system-digest",
+                tools_digest: "tools-digest",
+                message_digest: "message-digest",
+                message_count: 12,
+                section_digests: None,
+            })
+            .await
+            .expect("seed one attempt");
+        store
+            .settle_attempt(
+                &id,
+                TurnRequestOutcome::Failed,
+                Some("request body carrying SECRET-MARKER-9f3"),
+            )
+            .await
+            .expect("settle the seeded attempt");
+
+        let health = store.ledger_health().await.expect("read ledger health");
+        let rendered = session_ledger_report_lines(&health).join("\n");
+        assert!(rendered.contains("ledger: 1 row(s) retained"), "{rendered}");
+        assert!(rendered.contains("turn=2 attempt=1"), "{rendered}");
+        assert!(rendered.contains("outcome=failed"), "{rendered}");
+        assert!(rendered.contains("system=system-digest"), "{rendered}");
+        assert!(rendered.contains("tools=tools-digest"), "{rendered}");
+        assert!(rendered.contains("message=message-digest"), "{rendered}");
+        assert!(rendered.contains("body: present"), "{rendered}");
+        assert!(
+            !rendered.contains("SECRET-MARKER-9f3"),
+            "the diagnostic prints digests, never a body: {rendered}"
+        );
+    }
+
+    #[test]
+    fn the_session_subsystem_is_selectable() {
+        let cli = Cli::try_parse_from(["codegg", "doctor", "session"])
+            .expect("the session subsystem parses");
+        match cli.command {
+            Some(Commands::Doctor { subsystem, .. }) => {
+                assert_eq!(subsystem, Some(DoctorSubsystem::Session));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cli_surface_tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    fn root_long_help() -> String {
+        Cli::command()
+            .after_help(root_after_help())
+            .render_long_help()
+            .to_string()
+    }
+
+    fn doctor_long_help() -> String {
+        Cli::command()
+            .find_subcommand("doctor")
+            .expect("doctor subcommand exists")
+            .clone()
+            .render_long_help()
+            .to_string()
+    }
+
+    fn doctor_possible_values() -> Vec<String> {
+        let cmd = Cli::command();
+        let doctor = cmd
+            .find_subcommand("doctor")
+            .expect("doctor subcommand exists");
+        let arg = doctor
+            .get_arguments()
+            .find(|a| a.get_id() == "subsystem")
+            .expect("doctor positional subsystem exists");
+        let mut values: Vec<String> = arg
+            .get_possible_values()
+            .iter()
+            .map(|v| v.get_name().to_string())
+            .collect();
+        values.sort();
+        values
+    }
+
+    #[test]
+    fn verbosity_mapping_matches_help() {
+        assert_eq!(verbosity_log_level(0), "warn");
+        assert_eq!(verbosity_log_level(1), "info");
+        assert_eq!(verbosity_log_level(2), "debug");
+        assert_eq!(verbosity_log_level(3), "trace");
+        assert_eq!(verbosity_log_level(255), "trace");
+
+        let help = root_long_help();
+        assert!(
+            help.contains("-vvv"),
+            "verbose help must document the trace level"
+        );
+        assert!(help.contains("trace"), "verbose help must name trace");
+    }
+
+    #[test]
+    fn doctor_positional_and_compat_flag_parse() {
+        let cli = Cli::try_parse_from(["codegg", "doctor", "search"]).expect("positional parses");
+        match cli.command {
+            Some(Commands::Doctor {
+                subsystem,
+                subsystem_flag,
+            }) => {
+                assert_eq!(subsystem, Some(DoctorSubsystem::Search));
+                assert_eq!(subsystem_flag, None);
+                assert_eq!(
+                    resolve_doctor_subsystem(subsystem, subsystem_flag).expect("resolves"),
+                    DoctorSubsystem::Search
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["codegg", "doctor", "--subsystem", "search"])
+            .expect("compat flag parses");
+        match cli.command {
+            Some(Commands::Doctor {
+                subsystem,
+                subsystem_flag,
+            }) => {
+                assert_eq!(subsystem, None);
+                assert_eq!(subsystem_flag, Some(DoctorSubsystem::Search));
+                assert_eq!(
+                    resolve_doctor_subsystem(subsystem, subsystem_flag).expect("resolves"),
+                    DoctorSubsystem::Search
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(resolve_doctor_subsystem(None, None).expect("default") == DoctorSubsystem::All);
+        assert!(
+            resolve_doctor_subsystem(Some(DoctorSubsystem::Search), Some(DoctorSubsystem::Lsp))
+                .is_err(),
+            "differing positional and flag spellings must be rejected"
+        );
+    }
+
+    #[test]
+    fn doctor_advertised_subsystems_match_enum() {
+        assert_eq!(
+            doctor_possible_values(),
+            vec![
+                "all",
+                "credentials",
+                "deterministic-tools",
+                "installation",
+                "lsp",
+                "mcp",
+                "providers",
+                "search",
+                "session",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>(),
+        );
+
+        let help = doctor_long_help();
+        assert!(
+            !help.contains("--subsystem"),
+            "deprecated flag must stay hidden from normal doctor help"
+        );
+        assert!(
+            !help.contains("storage"),
+            "doctor help must not claim unimplemented storage diagnostics"
+        );
+    }
+
+    #[test]
+    fn default_help_excludes_feature_gated_commands() {
+        let cmd = Cli::command();
+        assert!(
+            cmd.find_subcommand("plugin").is_none(),
+            "orphan plugin CLI must stay unwired (removal disposition)"
+        );
+        #[cfg(not(feature = "server"))]
+        {
+            assert!(cmd.find_subcommand("server").is_none());
+            assert!(cmd.find_subcommand("attach").is_none());
+            assert!(
+                !root_after_help().contains("codegg attach"),
+                "default examples must not advertise remote attach"
+            );
+            assert!(
+                !root_after_help().contains("codegg server"),
+                "default examples must not advertise the gated server"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_advisor_help_contains_only_supported_operator_commands() {
+        let command = Cli::command();
+        let advisor = command
+            .find_subcommand("tool-advisor")
+            .expect("tool-advisor command exists");
+        let mut subcommands: Vec<_> = advisor
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name().to_owned())
+            .collect();
+        subcommands.sort();
+        assert_eq!(
+            subcommands,
+            vec!["bench", "data", "inspect", "lint", "status"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        let help = advisor.clone().render_long_help().to_string();
+        assert!(help.contains("inspect"));
+        assert!(!help.contains("sequence-encoder"));
+        assert!(!help.contains("requalify"));
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn all_feature_help_includes_gated_commands() {
+        let cmd = Cli::command();
+        assert!(cmd.find_subcommand("server").is_some());
+        assert!(cmd.find_subcommand("attach").is_some());
+        assert!(root_after_help().contains("codegg attach"));
+        assert!(root_after_help().contains("codegg server"));
+    }
+
+    #[test]
+    fn session_launch_conflicts_fail_at_parse_time() {
+        for args in [
+            vec!["codegg", "-c", "-s", "abc"],
+            vec!["codegg", "-c", "--fork", "abc"],
+            vec!["codegg", "-c", "--no-session"],
+            vec!["codegg", "-s", "abc", "--fork", "def"],
+            vec!["codegg", "-s", "abc", "--no-session"],
+            vec!["codegg", "--fork", "abc", "--no-session"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_err(),
+                "conflicting launch flags must fail: {args:?}"
+            );
+        }
+
+        for args in [
+            vec!["codegg", "-c"],
+            vec!["codegg", "-s", "abc"],
+            vec!["codegg", "--fork", "abc"],
+            vec!["codegg", "--no-session"],
+            vec!["codegg"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "single launch mode must parse: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn execution_policy_uses_one_shared_authority() {
+        // `--yolo` with a different explicit mode parses (alias surface)
+        // but is rejected by the single validation authority at
+        // resolution time, identically on both spellings.
+        let root = Cli::try_parse_from(["codegg", "--yolo", "--approval-mode", "interactive"])
+            .expect("root policy flags parse");
+        assert!(root.policy.resolve().is_err());
+
+        let exec =
+            Cli::try_parse_from(["codegg", "exec", "--yolo", "--approval-mode", "interactive"])
+                .expect("exec policy flags parse");
+        match exec.command {
+            Some(Commands::Exec { policy, .. }) => {
+                assert_eq!(
+                    policy.resolve(),
+                    root.policy.resolve(),
+                    "root and exec must share one resolution outcome"
+                );
+                assert!(policy.resolve().is_err());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let root_ok = Cli::try_parse_from(["codegg", "--yolo", "--sandbox", "workspace-write"])
+            .expect("root policy parses");
+        let exec_ok =
+            Cli::try_parse_from(["codegg", "exec", "--yolo", "--sandbox", "workspace-write"])
+                .expect("exec policy parses");
+        match exec_ok.command {
+            Some(Commands::Exec { policy, .. }) => {
+                assert_eq!(policy.resolve(), root_ok.policy.resolve());
+                assert!(policy.resolve().is_ok());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn acp_policy_flags_share_resolution_and_reject_conflicts() {
+        let command = Cli::try_parse_from([
+            "codegg",
+            "acp",
+            "--approval-mode",
+            "yolo",
+            "--sandbox",
+            "full-host",
+        ])
+        .expect("ACP policy flags parse");
+        let Some(Commands::Acp { policy }) = command.command else {
+            panic!("expected ACP command");
+        };
+        assert_eq!(
+            policy.resolve().unwrap(),
+            codegg::policy_surface::resolve_cli_policy(Some("yolo"), Some("full-host"), false)
+                .unwrap()
+        );
+
+        let conflict = Cli::try_parse_from([
+            "codegg",
+            "--approval-mode",
+            "interactive",
+            "acp",
+            "--approval-mode",
+            "yolo",
+        ])
+        .expect("each policy spelling parses before merged validation");
+        let Some(Commands::Acp { policy }) = conflict.command else {
+            panic!("expected ACP command");
+        };
+        assert!(merge_cli_policy_overrides(
+            conflict.policy.resolve().unwrap(),
+            policy.resolve().unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn output_format_compat_aliases() {
+        let cli = Cli::try_parse_from(["codegg", "--output-format", "json"])
+            .expect("legacy root spelling parses");
+        assert!(matches!(cli.output_format, OutputFormat::Json));
+
+        let cli =
+            Cli::try_parse_from(["codegg", "--format", "json"]).expect("canonical spelling parses");
+        assert!(matches!(cli.output_format, OutputFormat::Json));
+
+        let cli = Cli::try_parse_from(["codegg", "exec", "--json-output"])
+            .expect("legacy exec spelling parses");
+        match cli.command {
+            Some(Commands::Exec {
+                format,
+                json_output,
+                ..
+            }) => {
+                assert_eq!(format, None);
+                assert!(json_output);
+                assert!(matches!(
+                    resolve_output_format(format.unwrap_or(OutputFormat::Text), json_output),
+                    OutputFormat::Json
+                ));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["codegg", "exec", "--format", "json"])
+            .expect("canonical exec spelling parses");
+        match cli.command {
+            Some(Commands::Exec {
+                format,
+                json_output,
+                ..
+            }) => {
+                assert_eq!(format, Some(OutputFormat::Json));
+                assert!(!json_output);
+                assert!(matches!(
+                    resolve_output_format(format.unwrap_or(OutputFormat::Text), json_output),
+                    OutputFormat::Json
+                ));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(matches!(
+            resolve_output_format(OutputFormat::Text, false),
+            OutputFormat::Text
+        ));
+    }
+
+    #[test]
+    fn daemon_attach_canonical_and_compat_alias() {
+        Cli::try_parse_from(["codegg", "daemon", "attach", "--new"])
+            .expect("canonical daemon attach parses");
+        Cli::try_parse_from(["codegg", "attach-daemon", "--new"])
+            .expect("hidden compat alias still parses");
+
+        let cmd = Cli::command();
+        let compat = cmd
+            .find_subcommand("attach-daemon")
+            .expect("compat alias exists");
+        assert!(
+            compat.is_hide_set(),
+            "attach-daemon must stay hidden from normal help"
+        );
+    }
+
+    #[test]
+    fn host_stdio_parses_without_project_or_tui_state() {
+        let cli = Cli::try_parse_from(["codegg", "host", "--stdio"]).expect("host parses");
+        assert!(matches!(cli.command, Some(Commands::Host { stdio: true })));
+
+        let cli = Cli::try_parse_from(["codegg", "host"]).expect("bare host parses");
+        assert!(matches!(cli.command, Some(Commands::Host { stdio: false })));
+    }
+
+    #[test]
+    fn internal_transports_stay_parseable_but_hidden() {
+        for args in [
+            vec!["codegg", "--core-transport", "stdio"],
+            vec!["codegg", "--stdio"],
+            vec!["codegg", "--core-endpoint", "unix:///tmp/codegg-core.sock"],
+            vec!["codegg", "--standalone"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "transport spelling must still parse: {args:?}"
+            );
+        }
+
+        let cmd = Cli::command();
+        for hidden in ["core_transport", "stdio", "core_endpoint"] {
+            let arg = cmd
+                .get_arguments()
+                .find(|a| a.get_id().as_str() == hidden)
+                .unwrap_or_else(|| panic!("{hidden} flag still exists"));
+            assert!(
+                arg.is_hide_set(),
+                "{hidden} must stay hidden from normal help"
+            );
+        }
+    }
+
+    #[test]
+    fn documented_examples_parse_as_written() {
+        for args in [
+            vec!["codegg"],
+            vec!["codegg", "-c"],
+            vec!["codegg", "-s", "abc"],
+            vec!["codegg", "-m", "anthropic/model"],
+            vec!["codegg", "--run", "Hello, write a hello world program"],
+            vec!["codegg", "models"],
+            vec!["codegg", "models", "-p", "anthropic"],
+            vec!["codegg", "doctor", "search"],
+            vec!["codegg", "doctor", "providers"],
+            vec!["codegg", "doctor", "credentials"],
+            vec!["codegg", "daemon", "status"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "documented example must parse: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn server_examples_parse_as_written() {
+        for args in [
+            vec!["codegg", "attach", "http://localhost:3000"],
+            vec!["codegg", "server", "--host", "0.0.0.0", "--port", "8080"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "server example must parse: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_show_is_registered_with_both_operator_flags() {
+        let command = Cli::command();
+        let config = command
+            .find_subcommand("config")
+            .expect("config subcommand exists");
+        let mut subcommands: Vec<_> = config
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name().to_owned())
+            .collect();
+        subcommands.sort();
+        assert_eq!(
+            subcommands,
+            vec!["show"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>(),
+            "`config` exposes exactly the `show` subcommand"
+        );
+
+        let bare = Cli::try_parse_from(["codegg", "config", "show"]).expect("bare show parses");
+        let Some(Commands::Config { command }) = bare.command else {
+            panic!("expected the config command");
+        };
+        match command {
+            ConfigSubcommand::Show { provenance, format } => {
+                assert!(!provenance, "provenance is opt-in");
+                assert_eq!(format, OutputFormat::Text, "text is the default format");
+            }
+        }
+
+        let flagged = Cli::try_parse_from([
+            "codegg",
+            "config",
+            "show",
+            "--provenance",
+            "--format",
+            "json",
+        ])
+        .expect("both operator flags parse");
+        let Some(Commands::Config { command }) = flagged.command else {
+            panic!("expected the config command");
+        };
+        match command {
+            ConfigSubcommand::Show { provenance, format } => {
+                assert!(provenance, "--provenance must be recorded");
+                assert_eq!(format, OutputFormat::Json, "--format json must be recorded");
+            }
+        }
+    }
+
+    #[test]
+    fn config_show_reports_a_broken_layer_and_fails_the_run() {
+        let broken = std::path::PathBuf::from("/fixture/broken-global.jsonc");
+        let good = std::path::PathBuf::from("/fixture/project.jsonc");
+        let layers = codegg::config::provenance::layers_from_sources(&[
+            (
+                paths::ConfigLayerKind::Global,
+                broken,
+                "{ this is not a configuration document",
+            ),
+            (
+                paths::ConfigLayerKind::Project,
+                good,
+                r#"{"model": "fixture-model"}"#,
+            ),
+        ]);
+
+        let show = config_show(&layers, true, OutputFormat::Text).expect("the dump is produced");
+
+        assert_eq!(
+            show.failures.len(),
+            1,
+            "exactly one layer failed: {:?}",
+            show.failures
+        );
+        assert!(
+            show.failures[0].contains("broken-global.jsonc"),
+            "the failure must name the layer's path: {:?}",
+            show.failures
+        );
+        assert!(
+            show.body.contains("broken-global.jsonc"),
+            "the dump must name the broken layer: {}",
+            show.body
+        );
+        assert!(
+            show.body.contains("project.jsonc") && show.body.contains("fixture-model"),
+            "the layers that parsed must still print: {}",
+            show.body
+        );
+        assert!(
+            config_show_exit(&show).is_err(),
+            "a partially-parsed layer set must never exit successfully"
+        );
+
+        let clean =
+            config_show(&layers[1..], true, OutputFormat::Text).expect("the dump is produced");
+        assert!(
+            clean.failures.is_empty(),
+            "a layer set that parsed carries no failure: {:?}",
+            clean.failures
+        );
+        assert!(
+            config_show_exit(&clean).is_ok(),
+            "a complete dump must exit successfully"
+        );
+    }
+
+    #[test]
+    fn config_show_default_text_keeps_credential_values_redacted() {
+        let layers = codegg::config::provenance::layers_from_sources(&[(
+            paths::ConfigLayerKind::Project,
+            std::path::PathBuf::from("/fixture/project.jsonc"),
+            r#"{"model": "fixture-model", "server": {"token": "sk-do-not-print"}}"#,
+        )]);
+
+        let text = config_show(&layers, false, OutputFormat::Text).expect("the dump is produced");
+        let json = config_show(&layers, false, OutputFormat::Json).expect("the dump is produced");
+
+        for body in [&text.body, &json.body] {
+            assert!(
+                !body.contains("sk-do-not-print"),
+                "a credential value must never be printed: {body}"
+            );
+            assert!(
+                body.contains("server.token") && body.contains("(set)"),
+                "the credential key must print (set): {body}"
+            );
+        }
+        assert!(
+            text.body.contains("fixture-model"),
+            "a non-credential value still prints: {}",
+            text.body
+        );
+    }
+}
+
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<(), AppError> {
+    // Apply the feature-gated examples fragment at runtime so the
+    // rendered help only advertises commands in the compiled build.
+    let matches = Cli::command()
+        .after_help(root_after_help())
+        .try_get_matches_from(std::env::args())
+        .unwrap_or_else(|e| e.exit());
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+
+    // Apply `--cwd` before anything reads the filesystem, so config
+    // discovery, project-catalog lookup, and daemon attachment all resolve
+    // relative to it. Permitted CLI bootstrap code per
+    // `scripts/check_daemon_cwd_usage.py`: daemon-owned execution paths
+    // derive their directory from `ExecutionContext::workspace_root`
+    // instead of process-global cwd.
+    if let Some(dir) = cli.cwd.as_deref() {
+        std::env::set_current_dir(dir)
+            .map_err(|e| AppError::Other(anyhow::anyhow!("--cwd {}: {e}", dir.display())))?;
+    }
+
+    let log_level = verbosity_log_level(cli.verbose);
+
+    let env_log_level = std::env::var("RUST_LOG").ok();
+
+    let use_debug_file = env_log_level.is_some() || cli.verbose >= 2;
+
+    if use_debug_file {
+        if let Ok(log_file) = std::fs::File::create("codegg_debug.log") {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
+                )
+                .with_writer(std::sync::Mutex::new(log_file))
+                .init();
+        } else {
+            // Fallback to no-op subscriber if we can't create the file, to avoid stdout/stderr flood in TUI
+            tracing_subscriber::registry().init();
+        }
+    } else if matches!(
+        cli.command,
+        Some(Commands::CoreStdio) | Some(Commands::Acp { .. }) | Some(Commands::Host { .. })
+    ) {
+        // core-stdio reserves stdout for the JSONL protocol.  Keep tracing
+        // on stderr so a diagnostic can never corrupt a response frame.
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
+            )
+            .with_writer(std::io::stderr)
+            .init();
+    } else if cli.command.is_none() {
+        // Silent by default in TUI mode if no verbose flag
+        tracing_subscriber::registry().init();
+    } else {
+        // Subcommands may emit machine-readable output on stdout (`exec
+        // --format json`, `completions`, ...), so keep tracing on stderr for
+        // the same reason core-stdio does: a diagnostic must never corrupt a
+        // response frame.
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
+            )
+            .with_writer(std::io::stderr)
+            .init();
+    }
+
+    if let Some(command) = &cli.command {
+        match command {
+            Commands::ToolAdvisor { command } => cmd_tool_advisor(command).await?,
+            Commands::Providers => cmd_providers().await?,
+            Commands::Models { provider } => cmd_models(provider.clone()).await?,
+            Commands::Sessions { archived } => cmd_sessions(*archived).await?,
+            Commands::Session { id } => cmd_session_view(id).await?,
+            Commands::Launch {
+                project,
+                fork,
+                worktree,
+                base,
+                branch,
+                idempotency_key,
+            } => {
+                cmd_launch(
+                    project,
+                    fork.as_deref(),
+                    worktree,
+                    base.as_deref(),
+                    branch.as_deref(),
+                    idempotency_key.as_deref(),
+                )
+                .await?
+            }
+            Commands::Export { id, output } => cmd_export(id, output.as_deref()).await?,
+            Commands::Import { file } => cmd_import(file).await?,
+            Commands::Upgrade => cmd_upgrade().await?,
+            #[cfg(feature = "server")]
+            Commands::Server {
+                host,
+                port,
+                standalone_core,
+            } => {
+                let config = Config::load_or_default();
+                let port = port
+                    .or_else(|| config.server.as_ref().and_then(|s| s.port))
+                    .unwrap_or(3000);
+                cmd_server(host, port, *standalone_core).await?;
+            }
+            #[cfg(feature = "server")]
+            Commands::Attach { url, token } => {
+                cmd_attach(url, token.as_deref()).await?;
+            }
+            Commands::Doctor {
+                subsystem,
+                subsystem_flag,
+            } => {
+                cmd_doctor(resolve_doctor_subsystem(*subsystem, *subsystem_flag)?).await?;
+            }
+            Commands::Auth { command } => {
+                cmd_auth(command.clone())?;
+            }
+            Commands::Config { command } => {
+                cmd_config(command.clone())?;
+            }
+            Commands::Acp { policy } => {
+                let root_policy = cli.policy.resolve().map_err(|e| {
+                    AppError::Other(anyhow::anyhow!("invalid execution policy flags: {}", e))
+                })?;
+                let command_policy = policy.resolve().map_err(|e| {
+                    AppError::Other(anyhow::anyhow!("invalid ACP execution policy flags: {}", e))
+                })?;
+                let policy = merge_cli_policy_overrides(root_policy, command_policy)
+                    .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;
+                codegg::acp::run(policy).await?;
+            }
+            Commands::Host { stdio } => {
+                if !*stdio {
+                    return Err(AppError::Other(anyhow::anyhow!(
+                        "`codegg host` requires --stdio; it is the only v1 transport"
+                    )));
+                }
+                match codegg::host::run_stdio(tokio::io::stdin(), tokio::io::stdout()).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("host: {error}");
+                        std::process::exit(error.exit_code());
+                    }
+                }
+            }
+            Commands::Validate { config } => {
+                cmd_validate(config.as_deref()).await?;
+            }
+            Commands::Edit {
+                config,
+                project,
+                editor,
+            } => {
+                cmd_edit(config.as_deref(), *project, editor.as_deref())?;
+            }
+            Commands::Exec {
+                json,
+                file,
+                format,
+                json_output,
+                quiet,
+                session,
+                policy,
+            } => {
+                let policy = policy.resolve().map_err(|e| {
+                    AppError::Other(anyhow::anyhow!("invalid execution policy flags: {}", e))
+                })?;
+                cmd_exec(
+                    json.as_deref(),
+                    file.as_deref(),
+                    resolve_output_format(format.unwrap_or(OutputFormat::Text), *json_output),
+                    *quiet,
+                    session.as_deref(),
+                    policy,
+                )
+                .await?;
+            }
+            Commands::Completions { shell, output } => {
+                cmd_completions(*shell, output.as_deref())?;
+            }
+            Commands::Mcp { command } => {
+                mcp::cli::exec_mcp_command(command.clone())?;
+            }
+            Commands::Research {
+                question,
+                mode,
+                audience,
+                depth,
+                outputs,
+                sources,
+                allow_network,
+            } => {
+                cmd_research(
+                    question,
+                    mode,
+                    audience,
+                    depth,
+                    outputs,
+                    sources,
+                    *allow_network,
+                )
+                .await?;
+            }
+            Commands::Daemon { command } => match command {
+                DaemonCommand::Start {
+                    endpoint,
+                    force_take_lock,
+                } => {
+                    run_daemon(endpoint.clone(), *force_take_lock).await;
+                }
+                DaemonCommand::Stop { endpoint } => {
+                    #[cfg(unix)]
+                    {
+                        use codegg::core::instance::DaemonPaths;
+                        let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+                        let metadata = match codegg::core::instance::read_metadata_for_paths(&paths)
+                        {
+                            Some(metadata) => metadata,
+                            None => {
+                                return Err(AppError::Other(anyhow::anyhow!(
+                                "cannot safely stop daemon at {}: metadata is missing; refusing to use the legacy PID file without live identity evidence",
+                                paths.root.display()
+                            )));
+                            }
+                        };
+
+                        let client = codegg::core::transport::SocketCoreClient::connect(
+                        &paths.endpoint_uri(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        AppError::Other(anyhow::anyhow!(
+                            "cannot safely stop daemon at {}: endpoint {} is unreachable; no signal sent: {}",
+                            paths.root.display(),
+                            paths.endpoint_uri(),
+                            e
+                        ))
+                    })?;
+                        let live_daemon_id = client.daemon_id().await.map_err(|e| {
+                        AppError::Other(anyhow::anyhow!(
+                            "cannot safely stop daemon: endpoint did not provide live identity; no signal sent: {}",
+                            e
+                        ))
+                    })?;
+
+                        if live_daemon_id != metadata.daemon_id {
+                            return Err(AppError::Other(anyhow::anyhow!(
+                            "cannot safely stop daemon: live daemon identity {} does not match metadata identity {}; no signal sent",
+                            live_daemon_id, metadata.daemon_id
+                        )));
+                        }
+
+                        let pid = metadata.pid;
+                        let pid_for_signal = i32::try_from(pid).map_err(|_| {
+                        AppError::Other(anyhow::anyhow!(
+                            "daemon PID {} cannot be represented by this platform's pid_t; no signal sent",
+                            pid
+                        ))
+                    })?;
+                        let kill_result = signal_pid(pid_for_signal, libc::SIGTERM);
+                        if kill_result != 0 {
+                            return Err(AppError::Other(anyhow::anyhow!(
+                                "daemon identity {} was verified, but SIGTERM to PID {} failed: {}",
+                                metadata.daemon_id,
+                                pid,
+                                std::io::Error::last_os_error()
+                            )));
+                        }
+
+                        println!(
+                            "Sent SIGTERM to daemon (PID {}, generation {})",
+                            pid, metadata.generation
+                        );
+                        let shutdown_timeout = std::time::Duration::from_millis(
+                            Config::load_or_default()
+                                .daemon
+                                .and_then(|daemon| daemon.shutdown_timeout_ms)
+                                .unwrap_or(10_000),
+                        );
+                        let pid_file = paths.pid_file_path();
+                        let wait_result = tokio::time::timeout(shutdown_timeout, async {
+                            while paths.socket_path.exists()
+                                || paths.metadata_path.exists()
+                                || pid_file.exists()
+                            {
+                                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                            }
+                        })
+                        .await;
+                        if wait_result.is_err() {
+                            eprintln!(
+                            "Daemon did not finish graceful shutdown within {:?}; no force-kill was sent",
+                            shutdown_timeout
+                        );
+                        }
+                    }
+                    #[cfg(windows)]
+                    {
+                        let _ = endpoint;
+                        return Err(AppError::Other(anyhow::anyhow!(
+                            "graceful daemon stop is not yet available on Windows"
+                        )));
+                    }
+                }
+                DaemonCommand::Status { endpoint } => {
+                    use codegg::core::instance::DaemonPaths;
+                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+                    let pid_file = paths.pid_file_path();
+                    let md = codegg::core::instance::read_metadata_for_paths(&paths);
+                    match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
+                        .await
+                    {
+                        Ok(client) => {
+                            let req = codegg::core::new_request(
+                                "status-1".into(),
+                                CoreRequest::SnapshotDaemon,
+                            );
+                            match client.request(req).await {
+                                Ok(CoreResponse::SnapshotDaemon {
+                                    daemon_id,
+                                    uptime_secs,
+                                    active_sessions,
+                                    connected_clients,
+                                    ..
+                                }) => {
+                                    println!("Daemon is running");
+                                    println!("  Daemon ID: {}", daemon_id);
+                                    if let Some(ref m) = md {
+                                        println!("  Generation: {}", m.generation);
+                                        println!("  PID: {}", m.pid);
+                                        println!("  Started: {}", m.started_at.to_rfc3339());
+                                        println!("  Protocol: v{}", m.protocol_version);
+                                        println!("  Binary: {}", m.binary_version);
+                                    } else {
+                                        println!("  PID file: {}", pid_file.display());
+                                    }
+                                    println!("  Endpoint: {}", paths.endpoint_uri());
+                                    println!("  Uptime: {}s", uptime_secs);
+                                    println!("  Active sessions: {}", active_sessions.len());
+                                    println!("  Connected clients: {}", connected_clients.len());
+                                    for s in &active_sessions {
+                                        println!(
+                                            "    Session: {} ({})",
+                                            &s.session_id[..8.min(s.session_id.len())],
+                                            s.status
+                                        );
+                                    }
+                                    // M006: the scratch summary is one line,
+                                    // because this is the command an operator
+                                    // already runs. A daemon that cannot
+                                    // answer is not a reason to fail the
+                                    // status report.
+                                    if let Ok(report) =
+                                        fetch_scratch_usage_report(&client, false).await
+                                    {
+                                        println!(
+                                            "  Scratch: {} tree(s), {}",
+                                            report.tree_count,
+                                            format_bytes(report.total_bytes)
+                                        );
+                                    }
+                                }
+                                Ok(other) => {
+                                    println!(
+                                        "Daemon is running (unexpected response: {:?})",
+                                        other
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!("Daemon connected but failed to respond: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Daemon is not running or unreachable: {}", e);
+                            if let Some(ref m) = md {
+                                eprintln!(
+                                    "Metadata exists: id={}, generation={}, pid={}",
+                                    m.daemon_id, m.generation, m.pid
+                                );
+                            }
+                            if let Ok(pid) = tokio::fs::read_to_string(&pid_file).await {
+                                eprintln!("Stale PID file found: {}", pid.trim());
+                            }
+                        }
+                    }
+                }
+                DaemonCommand::ScratchReclaim {
+                    tree,
+                    apply,
+                    endpoint,
+                    json,
+                } => {
+                    use codegg::core::instance::DaemonPaths;
+                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+                    let client =
+                        codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
+                            .await
+                            .map_err(|error| {
+                                AppError::Other(anyhow::anyhow!(
+                                    "daemon is not running or unreachable: {error}"
+                                ))
+                            })?;
+                    let result = fetch_scratch_reclaim_result(&client, tree, *apply)
+                        .await
+                        .map_err(|message| AppError::Other(anyhow::anyhow!(message)))?;
+                    if *json {
+                        let encoded = serde_json::to_string_pretty(&result).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(
+                                "failed to encode the scratch reclaim result: {error}"
+                            ))
+                        })?;
+                        println!("{encoded}");
+                    } else {
+                        print_scratch_reclaim_result(&result);
+                    }
+                }
+                DaemonCommand::ScratchUsage {
+                    endpoint,
+                    json,
+                    refresh,
+                } => {
+                    use codegg::core::instance::DaemonPaths;
+                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+                    let client =
+                        codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
+                            .await
+                            .map_err(|error| {
+                                AppError::Other(anyhow::anyhow!(
+                                    "daemon is not running or unreachable: {error}"
+                                ))
+                            })?;
+                    let report = fetch_scratch_usage_report(&client, *refresh)
+                        .await
+                        .map_err(|message| AppError::Other(anyhow::anyhow!(message)))?;
+                    if *json {
+                        let encoded = serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(
+                                "failed to encode the scratch usage report: {error}"
+                            ))
+                        })?;
+                        println!("{encoded}");
+                    } else {
+                        print_scratch_usage_report(&report);
+                    }
+                }
+                DaemonCommand::Attach {
+                    endpoint,
+                    session,
+                    new,
+                } => {
+                    cmd_daemon_attach(endpoint.clone(), session.clone(), *new, &cli).await?;
+                }
+                DaemonCommand::Logs { file, lines } => {
+                    let log_path = file.clone().map(std::path::PathBuf::from).map_or_else(
+                        || codegg::core::instance::DaemonPaths::resolve().log_path,
+                        std::path::PathBuf::from,
+                    );
+                    match tokio::fs::read_to_string(&log_path).await {
+                        Ok(content) => {
+                            let all_lines: Vec<&str> = content.lines().collect();
+                            let start = all_lines.len().saturating_sub(*lines);
+                            for line in &all_lines[start..] {
+                                println!("{}", line);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Could not read log file {}: {}", log_path.display(), e);
+                            eprintln!("Daemon logs are written to stderr or a debug log file.");
+                            eprintln!(
+                                "Start the daemon with RUST_LOG=info or -vv to enable logging."
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            },
+            Commands::AttachDaemon {
+                endpoint,
+                session,
+                new,
+            } => {
+                eprintln!("warning: `attach-daemon` is deprecated; prefer `codegg daemon attach`");
+                cmd_daemon_attach(endpoint.clone(), session.clone(), *new, &cli).await?;
+            }
+            Commands::CoreStdio => {
+                run_core_stdio().await?;
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(prompt) = &cli.run {
+        run_single_shot(prompt, &cli).await?;
+        return Ok(());
+    }
+
+    launch_tui(&cli).await?;
+
+    Ok(())
+}
+
+async fn cmd_providers() -> Result<(), AppError> {
+    // Load config so the same config-aware path used by `cmd_models` and
+    // the TUI (`register_builtin_with_config`) takes effect here. This
+    // ensures `codegg providers` and `codegg models` agree on which
+    // providers are visible, including those sourced from the user
+    // credential store.
+    let config = Config::load_or_default();
+    let mut registry = ProviderRegistry::new();
+    let locators = codegg::core::session_selection::user_connection_credential_locators().await;
+    provider::register_builtin_with_config_connections(&mut registry, &config, &locators, None);
+
+    if registry.list().is_empty() {
+        println!(
+            "No providers configured. Set API keys, configure provider auth, or store a key with `codegg auth set-key <provider>`."
+        );
+        return Ok(());
+    }
+
+    println!("Available providers:\n");
+    for p in registry.list() {
+        println!("  {} - {}", p.id(), p.name());
+    }
+
+    Ok(())
+}
+
+async fn cmd_models(provider_filter: Option<String>) -> Result<(), AppError> {
+    let config = Config::load_or_default();
+    let mut registry = ProviderRegistry::new();
+    let locators = codegg::core::session_selection::user_connection_credential_locators().await;
+    provider::register_builtin_with_config_connections(&mut registry, &config, &locators, None);
+
+    let providers = registry.list();
+    let providers = match &provider_filter {
+        Some(f) => providers.into_iter().filter(|p| p.id() == f).collect(),
+        None => providers,
+    };
+
+    if providers.is_empty() {
+        if let Some(f) = &provider_filter {
+            println!("Provider not found: {}", f);
+            return Ok(());
+        }
+        println!(
+            "No providers configured. Set API keys, configure provider auth, or store a key with `codegg auth set-key <provider>`."
+        );
+        return Ok(());
+    }
+
+    for p in providers {
+        println!("{}:", p.name());
+        match p.models().await {
+            Ok(models) => {
+                for m in models {
+                    println!("  {} ({})", m.id, m.name);
+                }
+            }
+            Err(e) => {
+                println!("  Error: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_sessions(archived: bool) -> Result<(), AppError> {
+    let project_dir = env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
+    let store = SessionStore::new(pool);
+
+    let sessions = if archived {
+        store.list_all(&project_dir, None).await?
+    } else {
+        store.list(&project_dir, 50).await?
+    };
+
+    if sessions.is_empty() {
+        println!("No sessions found.");
+        return Ok(());
+    }
+
+    for s in sessions {
+        let status = if s.time_archived.is_some() {
+            "archived"
+        } else if s.parent_id.is_some() {
+            "fork"
+        } else {
+            "active"
+        };
+        println!(
+            "{}  {}  {}  {}",
+            &s.id[..8],
+            s.title,
+            status,
+            chrono::DateTime::from_timestamp_millis(s.time_updated)
+                .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_default()
+        );
+    }
+
+    Ok(())
+}
+
+/// M006: launch a session in an isolated managed checkout.
+///
+/// The launch goes through the daemon, because the daemon owns the
+/// durable launch record, the worktree service and the workspace
+/// registry. The CLI is a client of that service, not a second
+/// implementation of it.
+async fn cmd_launch(
+    project: &str,
+    fork: Option<&str>,
+    worktree: &str,
+    base: Option<&str>,
+    branch: Option<&str>,
+    idempotency_key: Option<&str>,
+) -> Result<(), AppError> {
+    use codegg::core::instance::DaemonPaths;
+    use codegg::core::transport::SocketCoreClient;
+    use codegg_protocol::core::{SessionLaunchIntentDto, SessionLaunchPlacementDto};
+
+    let placement = if worktree == "new" {
+        SessionLaunchPlacementDto::NewManagedCheckout {
+            base_ref: base.map(str::to_string),
+            target_branch: branch.map(str::to_string),
+        }
+    } else {
+        SessionLaunchPlacementDto::ExistingManagedWorktree {
+            worktree_id: worktree.to_string(),
+        }
+    };
+    let intent = if fork.is_some() {
+        SessionLaunchIntentDto::Fork
+    } else {
+        SessionLaunchIntentDto::New
+    };
+    // The idempotency key defaults to a fresh one, so two *different*
+    // launches are two different launches. A caller that wants to retry
+    // must pass the same key explicitly.
+    let idempotency_key = idempotency_key
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("cli-launch-{}", uuid::Uuid::new_v4()));
+
+    let paths = DaemonPaths::resolve_for_endpoint(None);
+    let client = SocketCoreClient::connect(&paths.endpoint_uri())
+        .await
+        .map_err(|error| {
+            AppError::Other(anyhow::anyhow!(
+                "cannot reach the daemon at {}: {error}",
+                paths.endpoint_uri()
+            ))
+        })?;
+    let request = codegg::core::new_request(
+        format!("cli-launch-{}", uuid::Uuid::new_v4()),
+        CoreRequest::SessionLaunch {
+            project_id: project.to_string(),
+            intent,
+            parent_session_id: fork.map(str::to_string),
+            placement,
+            idempotency_key,
+        },
+    );
+    match client.request(request).await {
+        Ok(CoreResponse::SessionLaunch {
+            launch_id,
+            session_id,
+            workspace_id,
+            worktree_id,
+            branch,
+            checkout_path,
+            stage,
+            converged,
+        }) => {
+            if converged {
+                println!("launch {launch_id} already completed; converged.");
+            } else {
+                println!("launch {launch_id} completed at stage {stage}.");
+            }
+            println!("  session:   {session_id}");
+            println!("  workspace: {workspace_id}");
+            println!("  worktree:  {worktree_id}");
+            if let Some(branch) = branch {
+                println!("  branch:    {branch}");
+            }
+            println!("  checkout:  {checkout_path}");
+            Ok(())
+        }
+        Ok(CoreResponse::Error { code, message }) => Err(AppError::Other(anyhow::anyhow!(
+            "session launch refused ({code}): {message}"
+        ))),
+        Ok(other) => Err(AppError::Other(anyhow::anyhow!(
+            "unexpected daemon response: {other:?}"
+        ))),
+        Err(error) => Err(AppError::Other(anyhow::anyhow!(
+            "session launch failed: {error}"
+        ))),
+    }
+}
+
+async fn cmd_session_view(id: &str) -> Result<(), AppError> {
+    let project_dir = env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
+    let store = SessionStore::new(pool);
+
+    let session = store
+        .get(id)
+        .await?
+        .ok_or_else(|| AppError::Storage(StorageError::NotFound(format!("session {}", id))))?;
+
+    println!("Session: {}", session.title);
+    println!("ID: {}", session.id);
+    println!("Project: {}", session.project_id);
+    println!("Directory: {}", session.directory);
+    println!(
+        "Status: {}",
+        if session.time_archived.is_some() {
+            "archived"
+        } else {
+            "active"
+        }
+    );
+    if let Some(parent) = &session.parent_id {
+        println!("Parent: {}", parent);
+    }
+    if let Some(url) = &session.share_url {
+        println!("Share URL: {}", url);
+    }
+    println!(
+        "Created: {}",
+        chrono::DateTime::from_timestamp_millis(session.time_created)
+            .map(|d| d.to_rfc2822())
+            .unwrap_or_default()
+    );
+    println!(
+        "Updated: {}",
+        chrono::DateTime::from_timestamp_millis(session.time_updated)
+            .map(|d| d.to_rfc2822())
+            .unwrap_or_default()
+    );
+
+    let children = store.children(id).await?;
+    if !children.is_empty() {
+        println!("\nForks ({}):", children.len());
+        for c in children {
+            println!("  {} - {}", &c.id[..8], c.title);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SessionExport {
+    session: Session,
+    messages: Vec<serde_json::Value>,
+    version: String,
+}
+
+async fn cmd_export(id: &str, output: Option<&str>) -> Result<(), AppError> {
+    let project_dir = env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
+    let session_store = SessionStore::new(pool.clone());
+    let message_store = codegg::session::MessageStore::new(pool);
+
+    let session = session_store
+        .get(id)
+        .await?
+        .ok_or_else(|| AppError::Storage(StorageError::NotFound(format!("session {}", id))))?;
+
+    let messages = message_store
+        .list(id)
+        .await?
+        .into_iter()
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    let export = SessionExport {
+        session,
+        messages,
+        version: "1".to_string(),
+    };
+
+    let json = serde_json::to_string_pretty(&export).map_err(AppError::Json)?;
+
+    let out_path = output
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("session-{}.json", id)));
+
+    tokio::fs::write(&out_path, json).await?;
+    println!("Exported session to {}", out_path.display());
+
+    Ok(())
+}
+
+async fn cmd_import(file: &str) -> Result<(), AppError> {
+    let content = tokio::fs::read_to_string(file).await?;
+    let export: SessionExport = serde_json::from_str(&content).map_err(AppError::Json)?;
+
+    let project_dir = env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
+    let session_store = SessionStore::new(pool.clone());
+    let message_store = codegg::session::MessageStore::new(pool);
+
+    let input = codegg::session::CreateSession {
+        project_id: export.session.project_id,
+        directory: export.session.directory,
+        title: Some(export.session.title),
+        parent_id: export.session.parent_id,
+        workspace_id: export.session.workspace_id,
+        agent: None,
+        model: None,
+        tags: None,
+        provider_connection_id: None,
+        provider_connection_revision: None,
+        model_catalog_revision: None,
+        selected_model_id: None,
+    };
+
+    let created = session_store.create(input).await?;
+
+    for msg_data in export.messages {
+        message_store.create(&created.id, msg_data).await?;
+    }
+
+    println!("Imported session as {}", created.id);
+
+    Ok(())
+}
+
+async fn cmd_upgrade() -> Result<(), AppError> {
+    println!("Checking for updates...");
+    println!("{}", upgrade::upgrade().await?);
+    Ok(())
+}
+
+async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> {
+    match command {
+        ToolAdvisorCommand::Status { json } => {
+            let config = Config::load_or_default();
+            let (engine, resolution) = codegg::tool_advisor::decision_engine_from_config(
+                config.tool_advisor.as_ref(),
+                config.decision_engine.as_ref(),
+            );
+            let mode = config
+                .tool_advisor
+                .as_ref()
+                .map(|advisor| codegg::tool_advisor::AdvisorMode::parse(advisor.mode.as_deref()))
+                .unwrap_or(codegg::tool_advisor::AdvisorMode::Off);
+            let status = serde_json::json!({
+                "policy_mode": format!("{mode:?}").to_lowercase(),
+                "backend": resolution.backend,
+                "state": format!("{:?}", resolution.state),
+                "capabilities": {
+                    "rank": resolution.capabilities.rank,
+                    "choice": resolution.capabilities.choice,
+                    "max_candidates": resolution.capabilities.max_candidates,
+                },
+                "detail": resolution.detail,
+                "promotion_qualified": resolution.promotion_qualified,
+                "engine_state": format!("{:?}", engine.state()),
+            });
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&status)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                );
+            } else {
+                println!(
+                    "advisor policy: {}",
+                    status["policy_mode"].as_str().unwrap_or("unknown")
+                );
+                println!(
+                    "decision backend: {} ({})",
+                    resolution.backend,
+                    status["state"].as_str().unwrap_or("unknown")
+                );
+                println!(
+                    "Rank: {}; Choice: {}; max candidates: {}",
+                    resolution.capabilities.rank,
+                    resolution.capabilities.choice,
+                    resolution.capabilities.max_candidates
+                );
+                println!("{}", resolution.detail);
+            }
+        }
+        ToolAdvisorCommand::Bench {
+            dataset,
+            bm25,
+            json,
+        } => {
+            let mode = if *bm25 {
+                codegg::tool::catalog::SearchMode::BM25
+            } else {
+                codegg::tool::catalog::SearchMode::Keyword
+            };
+            let report = codegg::tool_advisor::run_benchmark(
+                dataset.as_deref().map(std::path::Path::new),
+                mode,
+            )
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                );
+            } else {
+                print!("{}", codegg::tool_advisor::render_report(&report));
+            }
+        }
+        ToolAdvisorCommand::Lint { dataset, json } => {
+            let report = codegg::tool_advisor::lint_dataset(std::path::Path::new(dataset))
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                );
+            } else {
+                println!(
+                    "{} cases across {} semantic groups; tool-family holdout={} ({})",
+                    report.cases,
+                    report.semantic_groups,
+                    report.tool_family_holdout_family,
+                    report.tool_family_holdout_fingerprint
+                );
+            }
+        }
+        ToolAdvisorCommand::Inspect { model } => {
+            #[cfg(feature = "decision-runtime-sdm")]
+            {
+                use codegg_core::decision::DecisionEngine;
+
+                let engine = codegg::decision_sdm::SdmDecisionEngine::load(
+                    std::path::Path::new(model),
+                    None,
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error)))?;
+                let capabilities = engine.capabilities();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "digest": engine.digest(),
+                        "state": "ready",
+                        "capabilities": {
+                            "rank": capabilities.rank,
+                            "choice": capabilities.choice,
+                            "binary": capabilities.binary,
+                            "score": capabilities.score,
+                            "max_candidates": capabilities.max_candidates,
+                        },
+                    }))
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                );
+            }
+            #[cfg(not(feature = "decision-runtime-sdm"))]
+            {
+                let _ = model;
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "artifact inspection requires the decision-runtime-sdm build feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::Data { command } => {
+            let root_path = |root: &Option<String>| {
+                root.clone()
+                    .map(std::path::PathBuf::from)
+                    .or_else(codegg::tool_advisor::training_data::default_spool_root)
+                    .ok_or_else(|| {
+                        AppError::Other(anyhow::anyhow!("cannot resolve local data directory"))
+                    })
+            };
+            match command {
+                ToolAdvisorDataCommand::Status { root } => {
+                    let policy =
+                        codegg::tool_advisor::training_data::TrainingDataPolicy::from_config(
+                            Config::load_or_default().tool_advisor.as_ref(),
+                        )
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                    println!(
+                        "state: {:?}",
+                        codegg::tool_advisor::training_data::status(&policy)
+                    );
+                    println!("root: {}", root_path(root)?.display());
+                }
+                ToolAdvisorDataCommand::Inspect { root } => {
+                    let policy = codegg::tool_advisor::training_data::TrainingDataPolicy::default();
+                    let spool = codegg::tool_advisor::training_data::LocalSpoolSink::new(
+                        root_path(root)?,
+                        &policy,
+                    )
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&spool.inspect().map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                    );
+                }
+                ToolAdvisorDataCommand::Export { root, output } => {
+                    let policy = codegg::tool_advisor::training_data::TrainingDataPolicy::default();
+                    let spool = codegg::tool_advisor::training_data::LocalSpoolSink::new(
+                        root_path(root)?,
+                        &policy,
+                    )
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                    println!(
+                        "exported {} events",
+                        spool
+                            .export(std::path::Path::new(output))
+                            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                    );
+                }
+                ToolAdvisorDataCommand::Purge { root } => {
+                    let policy = codegg::tool_advisor::training_data::TrainingDataPolicy::default();
+                    let spool = codegg::tool_advisor::training_data::LocalSpoolSink::new(
+                        root_path(root)?,
+                        &policy,
+                    )
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                    println!(
+                        "purged {} events",
+                        spool
+                            .purge()
+                            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Editors probed on `PATH`, in preference order, when neither `$VISUAL` nor
+/// `$EDITOR` is set. This mirrors eggpool's `edit` command so the two tools
+/// resolve the same way on the same machine. `hx` leads because it is the
+/// editor CodeGG's own docs name first; `vi` stays ahead of `nano` because it
+/// is present on effectively every POSIX system, which makes it a more
+/// reliable default than the optional `nano`.
+const EDITOR_FALLBACKS: [&str; 4] = ["hx", "vim", "vi", "nano"];
+
+/// Header written into a freshly created config file so `edit` never hands an
+/// editor an empty buffer that parses as a valid but useless `{}`.
+const NEW_CONFIG_TEMPLATE: &str = "\
+// codegg configuration.
+//
+// JSONC: `//` and `/* */` comments are allowed. `${VAR}` is interpolated from
+// the environment. Validate after editing with `codegg validate`.
+{}
+";
+
+/// Split an `$EDITOR`-style value into argv.
+///
+/// `$EDITOR` is routinely multi-word (`code --wait`) and sometimes quoted
+/// (`"/opt/My Editor/hx"`), so a plain `split_whitespace` would look for a
+/// binary literally named `code --wait` and fail. This honours single and
+/// double quotes and treats an unquoted run of whitespace as an argument
+/// separator. Returns `None` when the value contains no usable command.
+fn split_editor_command(raw: &str) -> Option<Vec<String>> {
+    let mut argv: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut has_current = false;
+    let mut chars = raw.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    for c in chars.by_ref() {
+        match quote {
+            Some(q) if c == q => {
+                quote = None;
+            }
+            Some(_) => current.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                has_current = true;
+            }
+            None if c.is_whitespace() => {
+                if has_current {
+                    argv.push(std::mem::take(&mut current));
+                    has_current = false;
+                }
+            }
+            None => {
+                current.push(c);
+                has_current = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        // Unbalanced quote: fall back to the whole value as one command so a
+        // typo surfaces as "no such file" instead of a silently mangled argv.
+        // The stray delimiter is dropped first — leaving it in would put a
+        // literal `"` in the program name and never resolve.
+        let unquoted = raw
+            .trim()
+            .trim_start_matches(['\'', '"'])
+            .trim_end_matches(['\'', '"'])
+            .trim();
+        return (!unquoted.is_empty()).then(|| vec![unquoted.to_string()]);
+    }
+    if has_current {
+        argv.push(current);
+    }
+    (!argv.is_empty()).then_some(argv)
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Resolve `name` against an explicit `PATH` string.
+///
+/// `path_var` is a parameter rather than a direct `env::var("PATH")` read so
+/// the resolution logic stays testable without mutating process-global
+/// environment state.
+fn find_on_path(name: &str, path_var: Option<&str>) -> Option<PathBuf> {
+    let path_var = path_var?;
+    // A bare absolute or relative path is used as-is; only a bare command
+    // name is resolved through PATH.
+    let candidate = Path::new(name);
+    if candidate.components().count() > 1 || name.starts_with('/') {
+        return is_executable_file(candidate).then(|| candidate.to_path_buf());
+    }
+    path_var
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .find_map(|dir| {
+            let candidate = Path::new(dir).join(name);
+            is_executable_file(&candidate).then_some(candidate)
+        })
+}
+
+/// Decide which editor to launch.
+///
+/// Precedence: explicit `--editor`, then `$VISUAL`, then `$EDITOR`, then the
+/// first available binary in [`EDITOR_FALLBACKS`]. `$VISUAL` outranks
+/// `$EDITOR` per the usual Unix convention (git, sudo, crontab) because
+/// `$VISUAL` marks the full-screen editor the user prefers for interactive
+/// editing, while `$EDITOR` is often set to a line-oriented default.
+fn resolve_editor(
+    explicit: Option<&str>,
+    visual: Option<&str>,
+    editor_env: Option<&str>,
+    path_var: Option<&str>,
+) -> Option<Vec<String>> {
+    for candidate in [explicit, visual, editor_env].into_iter().flatten() {
+        if let Some(argv) = split_editor_command(candidate) {
+            return Some(argv);
+        }
+    }
+    EDITOR_FALLBACKS.iter().find_map(|name| {
+        find_on_path(name, path_var).map(|p| vec![p.to_string_lossy().into_owned()])
+    })
+}
+
+/// Decide which config file `edit` should open.
+///
+/// An explicit `--config` wins outright. Otherwise the project-local file is
+/// used when `--project` is passed or when one is discoverable from the
+/// working directory; the global config is the default target.
+fn edit_target_path(config: Option<&str>, project: bool) -> Result<PathBuf, AppError> {
+    if let Some(path) = config {
+        return Ok(PathBuf::from(path));
+    }
+    if project {
+        return paths::find_project_config()
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|dir| dir.join(".codegg").join("codegg.jsonc"))
+            })
+            .ok_or_else(|| {
+                AppError::Config(ConfigError::NotFound(
+                    "no project config found and the working directory is unavailable".to_string(),
+                ))
+            });
+    }
+    // A project config already present is the file the user's current work is
+    // actually driven by, so it is the more useful default than the global
+    // one. `edit` still creates whatever it opens.
+    if let Some(found) = paths::find_project_config() {
+        return Ok(found);
+    }
+    paths::global_config_path().ok_or_else(|| {
+        AppError::Config(ConfigError::NotFound(
+            "could not determine the config directory".to_string(),
+        ))
+    })
+}
+
+fn cmd_edit(config: Option<&str>, project: bool, editor: Option<&str>) -> Result<(), AppError> {
+    let target = edit_target_path(config, project)?;
+
+    // Create the file (and its directory) before launching so the editor gets
+    // a real path to write, rather than failing on a missing file.
+    let created = !target.exists();
+    if created {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                AppError::Config(ConfigError::NotFound(format!(
+                    "{}: {}",
+                    parent.display(),
+                    e
+                )))
+            })?;
+        }
+        std::fs::write(&target, NEW_CONFIG_TEMPLATE).map_err(|e| {
+            AppError::Config(ConfigError::NotFound(format!(
+                "{}: {}",
+                target.display(),
+                e
+            )))
+        })?;
+    }
+
+    let argv = resolve_editor(
+        editor,
+        std::env::var("VISUAL").ok().as_deref(),
+        std::env::var("EDITOR").ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+    )
+    .ok_or_else(|| {
+        AppError::Other(anyhow::anyhow!(
+            "no editor found. Set $VISUAL or $EDITOR, pass --editor, or install one of: {}",
+            EDITOR_FALLBACKS.join(", ")
+        ))
+    })?;
+
+    let (program, args) = argv
+        .split_first()
+        .expect("resolve_editor yields a non-empty argv");
+    let status = std::process::Command::new(program)
+        .args(args)
+        .arg(&target)
+        .status();
+
+    match status {
+        Ok(status) => {
+            if !status.success() {
+                let detail = status
+                    .code()
+                    .map(|c| format!("exit code {}", c))
+                    .unwrap_or_else(|| "a signal".to_string());
+                eprintln!("warning: editor '{}' terminated with {}", program, detail);
+            }
+        }
+        Err(e) => {
+            return Err(AppError::Other(anyhow::anyhow!(
+                "failed to launch editor '{}': {}. Fix $VISUAL/$EDITOR or pass --editor.",
+                program,
+                e
+            )));
+        }
+    }
+
+    println!(
+        "{} {}",
+        if created { "Created" } else { "Edited" },
+        target.display()
+    );
+
+    // Re-read after the editor exits. A broken config is reported loudly but
+    // does not fail the command: the edit itself succeeded, and the user may
+    // well be mid-way through fixing it.
+    let content = std::fs::read_to_string(&target).map_err(|e| {
+        AppError::Config(ConfigError::NotFound(format!(
+            "{}: {}",
+            target.display(),
+            e
+        )))
+    })?;
+    let interpolated = paths::interpolate_env_vars(&content);
+    match paths::parse_config(&interpolated, &target) {
+        Ok(config) => {
+            if let Err(errors) = config.validate() {
+                eprintln!(
+                    "Configuration parsed, but validation failed for {}:",
+                    target.display()
+                );
+                for error in &errors {
+                    eprintln!("  - {}", error);
+                }
+            } else {
+                println!("Configuration is valid.");
+            }
+        }
+        Err(e) => {
+            eprintln!("Configuration no longer parses: {}", e);
+            eprintln!("  fix it and re-run `codegg validate` to confirm.");
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_validate(config_path: Option<&str>) -> Result<(), AppError> {
+    match config_path {
+        Some(path) => {
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| AppError::Config(ConfigError::NotFound(format!("{}: {}", path, e))))?;
+            let interpolated = paths::interpolate_env_vars(&content);
+            let config = paths::parse_config(&interpolated, std::path::Path::new(path))?;
+            match config.validate() {
+                Ok(()) => {
+                    println!("Configuration is valid: {}", path);
+                    Ok(())
+                }
+                Err(errors) => {
+                    eprintln!("Configuration validation failed for {}:", path);
+                    for error in &errors {
+                        eprintln!("  - {}", error);
+                    }
+                    Err(AppError::Config(ConfigError::Parse(errors.join("; "))))
+                }
+            }
+        }
+        None => {
+            let config = Config::load()?;
+            match config.validate() {
+                Ok(()) => {
+                    println!("Configuration is valid.");
+                    Ok(())
+                }
+                Err(errors) => {
+                    eprintln!("Configuration validation failed:");
+                    for error in &errors {
+                        eprintln!("  - {}", error);
+                    }
+                    Err(AppError::Config(ConfigError::Parse(errors.join("; "))))
+                }
+            }
+        }
+    }
+}
+
+async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
+    use codegg::search_backend::bootstrap;
+
+    let config = Config::load()?;
+    println!("== Codegg doctor ==");
+    println!("config: loaded");
+
+    // Single-dispatch per subsystem; `All` runs every section below.
+    if matches!(subsystem, DoctorSubsystem::Installation) {
+        println!("\n== Installation ==");
+        print_installation_report();
+        return Ok(());
+    }
+
+    if matches!(subsystem, DoctorSubsystem::Providers) {
+        println!("\n== Providers ==");
+        print_providers_report(&config);
+        return Ok(());
+    }
+
+    if matches!(subsystem, DoctorSubsystem::Credentials) {
+        println!("\n== Credentials ==");
+        print_credentials_report();
+        return Ok(());
+    }
+
+    if matches!(subsystem, DoctorSubsystem::Mcp) {
+        println!("\n== MCP ==");
+        list_mcp_servers(&config);
+        return Ok(());
+    }
+
+    if matches!(subsystem, DoctorSubsystem::Lsp) {
+        println!("\n== LSP ==");
+        list_lsp_diagnostics(&config);
+        return Ok(());
+    }
+
+    if matches!(subsystem, DoctorSubsystem::DeterministicTools) {
+        println!("\n== Deterministic tools (eggsact) ==");
+        print_deterministic_tools_report(&config);
+        return Ok(());
+    }
+
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Search) {
+        println!("\n== Search backend ==");
+        let (_svc, report) = bootstrap::bootstrap_search_backend(&config).await;
+        for line in report.summary_lines() {
+            println!("{line}");
+        }
+    }
+
+    if matches!(
+        subsystem,
+        DoctorSubsystem::All | DoctorSubsystem::Installation
+    ) {
+        println!("\n== Installation ==");
+        print_installation_report();
+    }
+
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Mcp) {
+        println!("\n== MCP ==");
+        list_mcp_servers(&config);
+    }
+
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Lsp) {
+        println!("\n== LSP ==");
+        list_lsp_diagnostics(&config);
+    }
+
+    if matches!(
+        subsystem,
+        DoctorSubsystem::All | DoctorSubsystem::DeterministicTools
+    ) {
+        println!("\n== Deterministic tools (eggsact) ==");
+        print_deterministic_tools_report(&config);
+    }
+
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Providers) {
+        println!("\n== Providers ==");
+        print_providers_report(&config);
+    }
+
+    if matches!(
+        subsystem,
+        DoctorSubsystem::All | DoctorSubsystem::Credentials
+    ) {
+        println!("\n== Credentials ==");
+        print_credentials_report();
+    }
+
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Session) {
+        println!("\n== Session ledger ==");
+        print_session_ledger_report().await?;
+    }
+
+    Ok(())
+}
+
+/// Read-only provider listing for `doctor providers`.
+fn print_providers_report(config: &Config) {
+    let mut registry = ProviderRegistry::new();
+    provider::register_builtin_with_config(&mut registry, config);
+
+    let listed = registry.list();
+    if listed.is_empty() {
+        println!(
+            "No providers configured. Set API keys, configure provider auth, or store a key with `codegg auth set-key <provider>`."
+        );
+        return;
+    }
+
+    println!("Configured providers ({}):", listed.len());
+    for p in listed {
+        println!("  - {} ({})", p.id(), p.name());
+    }
+}
+
+/// Metadata-only credential listing for `doctor credentials`.
+///
+/// Reuses the user-level [`codegg::auth::CredentialStore`] read path also
+/// used by `codegg auth status`. Never prints secrets: only provider id,
+/// credential kind, account label, expiry, and scopes.
+fn print_credentials_report() {
+    let store = match codegg::auth::CredentialStore::at_default_location() {
+        Ok(store) => store,
+        Err(e) => {
+            println!("credential store unavailable: {e}");
+            return;
+        }
+    };
+    let records = store.list();
+    if records.is_empty() {
+        println!("No credentials stored.");
+        return;
+    }
+    println!("Stored credentials ({}):", records.len());
+    for rec in &records {
+        let account = rec.account_id.as_deref().unwrap_or("(default)");
+        let kind = match rec.kind {
+            codegg::auth::CredentialKind::ApiKey => "api_key",
+            codegg::auth::CredentialKind::BearerToken => "bearer",
+        };
+        let expires = rec
+            .expires_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_else(|| "never".to_string());
+        println!(
+            "  - {} [{}] account={} expires={} scopes={:?}",
+            rec.provider_id, kind, account, expires, rec.scopes
+        );
+    }
+}
+
+async fn print_session_ledger_report() -> Result<(), AppError> {
+    let paths = storage::DaemonPaths::default();
+    if !paths.catalog_db_path().exists() {
+        println!("ledger: no ledger rows");
+        return Ok(());
+    }
+    let pool = storage::init_daemon_catalog(&paths).await?;
+    let store = codegg::session::request_ledger::TurnRequestLedgerStore::new(pool.clone());
+    let health = match store.ledger_health().await {
+        Ok(health) => health,
+        Err(error) if codegg::session::request_ledger::is_missing_table(&error) => {
+            pool.close().await;
+            println!("ledger: no ledger rows");
+            return Ok(());
+        }
+        Err(error) => {
+            pool.close().await;
+            return Err(AppError::Other(anyhow::anyhow!(error.to_string())));
+        }
+    };
+    pool.close().await;
+    for line in session_ledger_report_lines(&health) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn session_ledger_report_lines(
+    health: &codegg::session::request_ledger::RequestLedgerHealth,
+) -> Vec<String> {
+    let Some(last) = health.last.as_ref() else {
+        return vec!["ledger: no ledger rows".to_string()];
+    };
+    vec![
+        format!("ledger: {} row(s) retained", health.total_rows),
+        format!(
+            "last attempt: session={} turn={} attempt={} id={} outcome={}",
+            last.session_id,
+            last.turn_index,
+            last.attempt_index,
+            last.attempt_id,
+            last.outcome.as_str()
+        ),
+        format!(
+            "last attempt selection: model={} effort={}",
+            last.model,
+            last.effort.as_deref().unwrap_or("none")
+        ),
+        format!(
+            "last attempt digests: system={} tools={} message={} messages={}",
+            last.system_digest, last.tools_digest, last.message_digest, last.message_count
+        ),
+        format!(
+            "last attempt body: {}",
+            if last.body.is_some() {
+                "present"
+            } else {
+                "absent"
+            }
+        ),
+    ]
+}
+
+/// One `config show` run: the dump to print and the layers that failed.
+struct ConfigShow {
+    /// The dump. It names every discovered layer, broken or not.
+    body: String,
+    /// One diagnostic per layer that failed; empty means the dump is complete.
+    failures: Vec<String>,
+}
+
+/// Render the `config show` dump from the discovered layers.
+///
+/// The merge is the engine's `analyze`, so values are the ones `Config::load`
+/// produces and credentials are already `(set)`/`(unset)`. `--provenance`
+/// selects the full text dump; JSON carries the attribution unconditionally,
+/// because its shape is the stable `{ path, value, layer, shadowed }` array.
+fn config_show(
+    layers: &[codegg::config::provenance::Layer],
+    provenance: bool,
+    format: OutputFormat,
+) -> Result<ConfigShow, AppError> {
+    let report = codegg::config::provenance::analyze(layers)
+        .map_err(|error| AppError::Other(anyhow::anyhow!(error)))?;
+
+    let body = match (provenance, format) {
+        (_, OutputFormat::Json) => codegg::config::provenance::render_json(&report),
+        (true, OutputFormat::Text) => codegg::config::provenance::render_text(&report),
+        (false, OutputFormat::Text) => render_effective_values(&report),
+    };
+
+    let failures = report
+        .layers
+        .iter()
+        .filter_map(|layer| {
+            layer.error.as_ref().map(|error| {
+                format!(
+                    "config layer {} {}: {error}",
+                    layer.kind,
+                    layer.path.display()
+                )
+            })
+        })
+        .collect();
+
+    Ok(ConfigShow { body, failures })
+}
+
+/// The default `config show` text: one `path = value` line per effective key.
+///
+/// It is `render_text` without the layer header and shadowed values, which is
+/// what `--provenance` adds. The values are already redacted.
+fn render_effective_values(report: &codegg::config::provenance::Report) -> String {
+    if report.entries.is_empty() {
+        return if report.layers.is_empty() {
+            "(no configuration file was found; every key is at its default)\n".to_string()
+        } else {
+            "effective keys: (none; every key is at its default)\n".to_string()
+        };
+    }
+    let mut out = String::new();
+    for entry in &report.entries {
+        out.push_str(&format!("{} = {}\n", entry.path, entry.value));
+    }
+    out
+}
+
+/// Decide the exit status of a run that already printed `show`.
+///
+/// A broken layer must never present as a clean result, so the caller prints
+/// the dump first and then fails here.
+fn config_show_exit(show: &ConfigShow) -> Result<(), AppError> {
+    if show.failures.is_empty() {
+        return Ok(());
+    }
+    for failure in &show.failures {
+        eprintln!("{failure}");
+    }
+    Err(AppError::Other(anyhow::anyhow!(
+        "{} configuration layer(s) failed to parse; the dump above is incomplete",
+        show.failures.len()
+    )))
+}
+
+fn cmd_config(command: ConfigSubcommand) -> Result<(), AppError> {
+    match command {
+        ConfigSubcommand::Show { provenance, format } => {
+            let layers = codegg::config::provenance::load_layers();
+            let show = config_show(&layers, provenance, format)?;
+            print!("{}", show.body);
+            config_show_exit(&show)
+        }
+    }
+}
+
+fn cmd_auth(command: AuthSubcommand) -> Result<(), AppError> {
+    let cli = AuthCli::new();
+    match command {
+        AuthSubcommand::Status => cli.status(),
+        AuthSubcommand::SetKey { provider, account } => {
+            let key = codegg::auth::cli::read_key_from_stdin()?;
+            if key.is_empty() {
+                return Err(AppError::Config(ConfigError::Invalid(
+                    "no key provided on stdin".to_string(),
+                )));
+            }
+            cli.set_key(&provider, account.as_deref(), &key)
+        }
+        AuthSubcommand::Logout { provider, account } => cli.logout(&provider, account.as_deref()),
+    }
+}
+
+fn list_mcp_servers(config: &Config) {
+    let Some(mcp) = config.mcp.as_ref() else {
+        println!("No MCP servers configured");
+        return;
+    };
+    if mcp.is_empty() {
+        println!("No MCP servers configured");
+        return;
+    }
+    for (name, entry) in mcp {
+        let enabled = entry.enabled.unwrap_or(true);
+        let server_type = entry
+            .inner
+            .as_ref()
+            .and_then(|c| c.server_type.clone())
+            .unwrap_or_else(|| "local".to_string());
+        let cmd = entry
+            .inner
+            .as_ref()
+            .and_then(|c| c.command.clone())
+            .unwrap_or_default();
+        let url = entry
+            .inner
+            .as_ref()
+            .and_then(|c| c.url.clone())
+            .unwrap_or_default();
+        let detail = if !url.is_empty() { url } else { cmd };
+        println!(
+            "  - {} [{}] enabled={} {}",
+            name, server_type, enabled, detail
+        );
+    }
+}
+
+fn list_lsp_diagnostics(config: &Config) {
+    use codegg::tool::RegistryBackendStatusKind;
+    use codegg::tool::ToolRegistry;
+
+    let registry = ToolRegistry::with_config(config);
+
+    // --- registry/backend state ---
+    let lsp_status = registry
+        .backend_report(None)
+        .into_iter()
+        .find(|r| r.domain == "lsp");
+
+    match &lsp_status {
+        Some(status) => {
+            let kind_label = match status.status {
+                RegistryBackendStatusKind::Active => "active",
+                RegistryBackendStatusKind::Disabled => "disabled",
+                RegistryBackendStatusKind::ConfiguredButUnavailable => "unavailable",
+                RegistryBackendStatusKind::FallbackToNative => "fallback-native",
+            };
+            println!(
+                "registry: {} (backend={}, kind={})",
+                status.tool, status.backend, kind_label
+            );
+        }
+        None => {
+            println!("registry: lsp not registered");
+        }
+    }
+
+    // --- agent exposure gate ---
+    let expose_lsp_tool = config
+        .experimental
+        .as_ref()
+        .and_then(|e| e.lsp_tool)
+        .unwrap_or(false);
+    println!("agent exposure gate: experimental.lsp_tool = {expose_lsp_tool}");
+
+    // --- model tool: visible only when registry-visible and gate allows ---
+    let lsp_in_definitions = registry.definitions().iter().any(|d| d.name == "lsp");
+    if lsp_in_definitions && expose_lsp_tool {
+        println!("model tool: exposed (native lsp)");
+    } else if lsp_in_definitions && !expose_lsp_tool {
+        println!("model tool: hidden (registry-visible but agent exposure gate is false)");
+    } else {
+        println!("model tool: hidden (lsp not in registry definitions)");
+    }
+}
+
+fn print_deterministic_tools_report(config: &Config) {
+    use codegg::tool::integrated_config::resolve_integrated_config;
+
+    let integrated = resolve_integrated_config(config);
+    let det = match &integrated.deterministic {
+        Some(d) => d,
+        None => {
+            println!("deterministic tools: not configured");
+            return;
+        }
+    };
+
+    println!("enabled: {}", det.enabled);
+    println!("backend: {}", det.backend);
+    println!("profile: {}", det.profile);
+    println!("expose_expert_tools: {}", det.expose_expert_tools);
+    println!("max_output_chars: {}", det.max_output_chars);
+
+    if !det.enabled {
+        println!("\nNote: deterministic tools are disabled. Enable with [deterministic_tools].enabled = true");
+        return;
+    }
+
+    // Try to create a runtime and probe tool count
+    let eggsact_config = codegg::eggsact::adapter::EggsactConfig {
+        profile: det.profile.clone(),
+        audience: det.model_audience.clone(),
+        max_output_chars: det.max_output_chars,
+    };
+    match codegg::eggsact::adapter::EggsactRuntime::new(eggsact_config) {
+        Ok(runtime) => {
+            let runtime = std::sync::Arc::new(runtime);
+            let (always_visible, deferred) =
+                codegg::tool::deterministic::build_eggsact_tools(runtime);
+            println!(
+                "model tools: {} always-visible, {} deferred",
+                always_visible.len(),
+                deferred.len()
+            );
+        }
+        Err(e) => {
+            println!("runtime: FAILED to initialize ({e})");
+        }
+    }
+
+    // Preflight status
+    if let Some(pf) = &integrated.preflight {
+        println!("\npreflight mode: {}", pf.mode);
+        println!("preflight enabled: {}", pf.enabled);
+    } else {
+        println!("\npreflight: not configured");
+    }
+}
+
+/// Secret-free installation/runfile report (self-contained-installation M002).
+///
+/// Covers the CodeGG executable location/version, expected sibling names
+/// and present/missing/invalid state, managed eggsearch version probe,
+/// sandbox helper resolvability plus the Landlock kernel probe, and the
+/// in-process eggsact contract line. Tool coverage itself stays in
+/// `doctor search`; this section owns the runfile data. Never prints
+/// credentials, keys, auth headers, or secret-bearing config.
+fn print_installation_report() {
+    let report = codegg::install::InstallationReport::describe();
+    for line in report.summary_lines() {
+        println!("{line}");
+    }
+    println!("Tool coverage: see `codegg doctor search` (MCP discovery is authoritative)");
+}
+
+fn cmd_completions(shell: Shell, output_dir: Option<&str>) -> Result<(), AppError> {
+    let mut cmd = Cli::command().after_help(root_after_help());
+    let name = cmd.get_name().to_string();
+
+    match output_dir {
+        Some(dir) => {
+            let dir_path = std::path::Path::new(dir);
+            if !dir_path.is_dir() {
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "Output directory does not exist: {}",
+                    dir
+                )));
+            }
+            let file_name = match shell {
+                Shell::Bash => format!("{}.bash", name),
+                Shell::Zsh => format!("_{}", name),
+                Shell::Fish => format!("{}.fish", name),
+                Shell::PowerShell => format!("{}.ps1", name),
+                Shell::Elvish => format!("{}.elv", name),
+                _ => format!("{}.sh", name),
+            };
+            let file_path = dir_path.join(&file_name);
+            let mut file = std::fs::File::create(&file_path).map_err(|e| {
+                AppError::Other(anyhow::anyhow!(
+                    "Failed to create file: {}: {}",
+                    file_path.display(),
+                    e
+                ))
+            })?;
+            generate(shell, &mut cmd, name, &mut file);
+            println!(
+                "Generated {} completions in: {}",
+                shell,
+                file_path.display()
+            );
+        }
+        None => {
+            let mut stdout = std::io::stdout();
+            generate(shell, &mut cmd, name, &mut stdout);
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_exec(
+    json_input: Option<&str>,
+    file_input: Option<&str>,
+    format: OutputFormat,
+    quiet: bool,
+    session: Option<&str>,
+    policy: Option<codegg::policy_surface::CliPolicyOverride>,
+) -> Result<(), AppError> {
+    let input_json = if let Some(path) = file_input {
+        tokio::fs::read_to_string(path).await?
+    } else if let Some(json_str) = json_input {
+        json_str.to_string()
+    } else {
+        let mut buffer = String::new();
+        std::io::stdin().read_to_string(&mut buffer)?;
+        buffer
+    };
+
+    let input: ExecInput = serde_json::from_str(&input_json)
+        .map_err(|e| AppError::Other(anyhow::anyhow!("Failed to parse exec input JSON: {}", e)))?;
+
+    // Explicit headless flags map to the same daemon policy contract as
+    // the TUI selector. Absent flags keep the legacy permissive exec
+    // behavior (documented compatibility alias for autonomous workspace
+    // execution).
+    let mut exec_mode = ExecMode::new(
+        quiet,
+        matches!(format, OutputFormat::Json),
+        session.map(String::from),
+    );
+    if let Some(policy) = policy {
+        exec_mode = exec_mode.with_policy(policy);
+    }
+    let output = exec_mode.run(input).await?;
+    exec_mode.print_output(&output);
+    std::process::exit(ExecMode::exit_code(&output));
+}
+
+async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
+    let config = Config::load_or_default();
+    let mut registry = ProviderRegistry::new();
+    let locators = codegg::core::session_selection::user_connection_credential_locators().await;
+    provider::register_builtin_with_config_connections(&mut registry, &config, &locators, None);
+
+    let default_model = config.model.clone().unwrap_or_default();
+    let model = cli.model.as_ref().unwrap_or(&default_model);
+    let (provider_id, model_name) = codegg::exec::ExecMode::parse_model(model);
+
+    let provider = registry
+        .get(&provider_id)
+        .ok_or_else(|| AppError::Other(anyhow::anyhow!("Provider not found: {}", provider_id)))?
+        .clone_box();
+
+    let cli_workspace_root = env::current_dir().map_err(|error| {
+        AppError::Other(anyhow::anyhow!(
+            "run mode requires a workspace root: {error}"
+        ))
+    })?;
+    let project_dir = cli_workspace_root.to_string_lossy().to_string();
+    let agents = agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir)))?;
+    let target_agent = cli
+        .agent
+        .as_deref()
+        .unwrap_or(config.default_agent.as_deref().unwrap_or("build"));
+    let selected_agent = agents
+        .iter()
+        .find(|a| a.name == target_agent)
+        .cloned()
+        .ok_or_else(|| AppError::Other(anyhow::anyhow!("Agent not found: {}", target_agent)))?;
+
+    // Phase 3: Apply safety envelope to prevent custom files from escalating
+    // permissions beyond session/config/hard policy bounds.
+    let session_rules = codegg::permission::PermissionRuleset::default();
+    // Operator-written levels only. The built-in `default_ruleset()` Ask list
+    // is a fallback for an unclaimed tool, not a decision the operator made,
+    // and clamping against it would discard the selected agent's own
+    // declarations.
+    let config_rules = codegg::permission::explicit_config_ruleset(Some(&config));
+    let hard_deny = vec![
+        "commit".to_string(),
+        "todowrite".to_string(),
+        "todoread".to_string(),
+    ];
+    let safe_agent =
+        selected_agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+
+    let permission_checker = codegg::permission::PermissionChecker::new(
+        Some(&config),
+        codegg::permission::approval::canonical_permission_store_path(),
+    )
+    // The selected agent's own declarations are live on the main loop. Wired
+    // before `with_active_mode` so an active built-in mode still narrows the
+    // same tool (`merge_rulesets` lets the later ruleset win a tie).
+    .with_agent_rules(safe_agent.permission_ruleset())
+    .with_active_mode(&config);
+    // Bootstraps the search backend (eggsearch by default) before the agent
+    // loop starts. Idempotent if already bootstrapped. The explicit
+    // runtime context (M005) flows into the registry so wrappers never
+    // consult the deprecated process-global slots at execution time.
+    let (search_runtime, _report) =
+        codegg::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
+    let mcp_service = search_runtime.mcp();
+    let tool_registry = codegg::tool::ToolRegistry::with_config_and_search_runtime_for_workspace(
+        &config,
+        search_runtime,
+        Some(cli_workspace_root.clone()),
+    );
+    let mut available_tools: Vec<String> = tool_registry
+        .list()
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    available_tools.sort();
+    // M005 C003: the CLI holds no managed checkout, so the fence contains
+    // native writers inside the project directory and mints no permit.
+    let writer_fence: Option<codegg::tool::writer_fence::SharedWriterFence> =
+        Some(std::sync::Arc::new(
+            codegg::tool::writer_fence::WorkspaceWriterFence::new(cli_workspace_root.clone()),
+        ));
+    let ledger_pool =
+        match storage::init_migrated_daemon_catalog(&storage::DaemonPaths::default()).await {
+            Ok(pool) => Some(pool),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "request ledger store unavailable; this run records no ledger row"
+                );
+                None
+            }
+        };
+    let session_id = match &ledger_pool {
+        Some(pool) => {
+            match create_cli_turn_session(pool, &cli_workspace_root, &safe_agent.name, &model_name)
+                .await
+            {
+                Ok(session) => session.id,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "ephemeral session unavailable; this run's pool-backed stores degrade"
+                    );
+                    uuid::Uuid::new_v4().to_string()
+                }
+            }
+        }
+        None => uuid::Uuid::new_v4().to_string(),
+    };
+    let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
+        agents.clone(),
+        provider,
+        permission_checker,
+        tool_registry,
+        config.clone(),
+        mcp_service,
+        ledger_pool,
+        std::sync::Arc::new(codegg::context::InMemoryArtifactStore::new()),
+        cli_workspace_root.clone(),
+        session_id,
+        writer_fence,
+        // The CLI holds no daemon scope, so there is no reservation to
+        // violate and processes stay unrestricted.
+        None,
+    );
+    agent_loop.set_workspace_id(codegg_core::workspace::WorkspaceId::new());
+    agent_loop.set_workspace_path_policy(
+        codegg_core::workspace_services::WorkspacePathPolicy::for_root(cli_workspace_root.clone()),
+    );
+    agent_loop.set_agent(&safe_agent.name)?;
+
+    // Top-level --approval-mode/--sandbox/--yolo map to the same
+    // daemon policy contract as the TUI selector through the single
+    // shared `ExecutionPolicyArgs` validation authority. Absent flags
+    // leave the built-in Interactive/WorkspaceWrite snapshot untouched.
+    match cli.policy.resolve() {
+        Ok(Some(policy)) => {
+            if let Some(mode) = policy.approval_mode {
+                agent_loop.set_approval_mode(mode);
+            }
+            if let Some(profile) = policy.sandbox_profile {
+                if profile.is_full_host() {
+                    eprintln!(
+                        "WARNING: --sandbox full-host disables CodeGG filesystem containment; the process has the OS user's host authority"
+                    );
+                }
+                agent_loop.set_sandbox_profile(profile);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            return Err(AppError::Other(anyhow::anyhow!(
+                "invalid execution policy flags: {}",
+                e
+            )));
+        }
+    }
+
+    let resolved_profile =
+        codegg::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
+    let adapter = codegg::model_profile::resolve_adapter(None, &model_name);
+    let ctx = codegg::agent::asset_context::AssetContextBuilder::new()
+        .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
+        .with_workspace_root(std::path::Path::new(&project_dir))
+        .build()?;
+    let mut runtime_blocks = Vec::new();
+    let instruction_resolution =
+        codegg::agent::instructions::ProjectInstructionResolver::with_defaults().resolve(&ctx);
+    if !instruction_resolution.merged.is_empty() {
+        runtime_blocks.push(codegg::agent::prompt::PromptBlock::optional(
+            codegg::agent::prompt::PromptBlockKind::ProjectInstructions,
+            "assets:instructions",
+            &instruction_resolution.merged,
+        ));
+    }
+    let compiled_prompt = codegg::agent::prompt::PromptCompiler::compile(
+        codegg::agent::prompt::PromptCompilerInput {
+            agent: &safe_agent,
+            model_profile: &resolved_profile,
+            config: &config,
+            tools: &available_tools,
+            skills: &[],
+            agents: &agents,
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            adapter_fingerprint: Some(&adapter.fingerprint),
+            runtime_blocks: &runtime_blocks,
+        },
+    );
+    agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
+    agent_loop.set_prompt_section_digests(codegg::agent::prompt::section_digests(
+        &compiled_prompt.blocks,
+    ));
+
+    let request = provider::ChatRequest {
+        messages: vec![provider::Message::User {
+            content: vec![provider::ContentPart::Text {
+                text: prompt.to_string().into(),
+            }],
+        }],
+        model: model_name.to_string(),
+        tools: None,
+        system: Some(compiled_prompt.text),
+        temperature: safe_agent.temperature,
+        top_p: safe_agent.top_p,
+        max_tokens: None,
+        response_format: None,
+        thinking_budget: safe_agent.thinking_budget,
+        reasoning_effort: safe_agent.reasoning_effort,
+        context: provider::ProviderRequestContext::default(),
+    };
+
+    let events = agent_loop.run(request).await?;
+    let mut processor = codegg::agent::processor::EventProcessor::new();
+    let mut final_usage = None;
+    for event in events {
+        if let provider::ChatEvent::Finish { usage, .. } = &event {
+            final_usage = Some((usage.input_tokens, usage.output_tokens));
+        }
+        processor.process(&event);
+    }
+    print!("{}", cli.output_format.format(processor.text()));
+    println!();
+    if !cli.quiet {
+        if let Some((input, output)) = final_usage {
+            eprintln!("\nTokens: {} input, {} output", input, output);
+        }
+    }
+
+    Ok(())
+}
+
+fn cli_project_id(workspace_root: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(workspace_root.to_string_lossy().as_bytes());
+    format!("cli-{:x}", hasher.finalize())
+}
+
+async fn create_cli_turn_session(
+    pool: &sqlx::SqlitePool,
+    workspace_root: &Path,
+    agent: &str,
+    model: &str,
+) -> Result<Session, StorageError> {
+    SessionStore::new(pool.clone())
+        .create(codegg::session::CreateSession {
+            project_id: cli_project_id(workspace_root),
+            directory: workspace_root.to_string_lossy().into_owned(),
+            title: Some("CLI run".to_string()),
+            parent_id: None,
+            workspace_id: None,
+            agent: Some(agent.to_string()),
+            model: Some(model.to_string()),
+            tags: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+        })
+        .await
+}
+
+async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
+    use codegg::core::instance::{
+        connect_or_start_daemon_with_descriptor, ConnectOrStartOptions, CoreRuntimeMode,
+    };
+
+    let project_dir = env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let config = Config::load_or_default();
+
+    // Resolve the runtime mode with explicit overrides winning over
+    // config, and the daemon-client mode being the default for plain
+    // `codegg` invocations.
+    let legacy_transport = cli.core_transport.map(|m| match m {
+        CoreTransport::Inproc => "inproc".to_string(),
+        CoreTransport::Stdio => "stdio".to_string(),
+        CoreTransport::Socket => "socket".to_string(),
+    });
+    let env_transport = std::env::var("CODEGG_CORE_TRANSPORT").ok();
+    let config_mode = config
+        .daemon
+        .as_ref()
+        .and_then(|d| d.mode)
+        .map(|m| match m {
+            codegg::config::schema::DaemonModeConfig::DaemonClient => CoreRuntimeMode::DaemonClient,
+            codegg::config::schema::DaemonModeConfig::StandaloneInproc => {
+                CoreRuntimeMode::StandaloneInproc
+            }
+            codegg::config::schema::DaemonModeConfig::StandaloneStdio => {
+                CoreRuntimeMode::StandaloneStdio
+            }
+        });
+
+    let runtime_mode: CoreRuntimeMode = if cli.standalone {
+        if legacy_transport.is_some() || cli.stdio {
+            eprintln!("--standalone conflicts with --core-transport or --stdio; ignoring transport override");
+        }
+        CoreRuntimeMode::StandaloneInproc
+    } else if cli.stdio {
+        CoreRuntimeMode::StandaloneStdio
+    } else if let Some(t) = legacy_transport.as_deref().or(env_transport.as_deref()) {
+        match t.to_lowercase().as_str() {
+            "inproc" => {
+                eprintln!(
+                    "warning: --core-transport inproc is deprecated; use --standalone instead"
+                );
+                CoreRuntimeMode::StandaloneInproc
+            }
+            "stdio" => {
+                eprintln!("warning: --core-transport stdio is deprecated; use --stdio instead");
+                CoreRuntimeMode::StandaloneStdio
+            }
+            "socket" => CoreRuntimeMode::DaemonClient,
+            _ => CoreRuntimeMode::DaemonClient,
+        }
+    } else {
+        config_mode.unwrap_or(CoreRuntimeMode::DaemonClient)
+    };
+
+    // Legacy `is_socket_mode` boolean preserved for downstream branches.
+    let is_socket_mode = runtime_mode.is_daemon_client();
+    let is_stdio_mode = runtime_mode.is_stdio();
+
+    let notification_mgr = codegg_tui::components::notification::NotificationManager::new(
+        config.notifications.clone().unwrap_or_default(),
+    );
+
+    // Boot the search backend (eggsearch by default) early so the
+    // McpService is available to any in-process agent loop. This call
+    // is idempotent: the daemon's TurnSubmit handler will reuse the
+    // same Arc<RwLock<McpService>> rather than spawning a second
+    // eggsearch process.
+    //
+    // `bootstrap_search_runtime` also hands back the owned context that
+    // `/research` needs to derive its network authorization from
+    // `[search].backend`. In socket mode the daemon owns the transport, so
+    // the CLI must not spawn a second eggsearch process.
+    let search_runtime = if is_socket_mode {
+        Some(codegg::search_backend::SearchRuntimeContext::from_config(
+            &config.search.clone().unwrap_or_default(),
+        ))
+    } else {
+        let (ctx, _report) =
+            codegg::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
+        Some(ctx)
+    };
+
+    // Only initialize heavy local resources for inproc/stdio modes.
+    // In socket mode the daemon owns the DB, providers, scheduler, etc.
+    let (pool, session_store, message_store, memory_store, user_prefs, model_ids, agents, snapshot) =
+        if is_socket_mode {
+            (None, None, None, None, None, Vec::new(), Vec::new(), None)
+        } else {
+            let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
+            let session_store = Arc::new(SessionStore::new(pool.clone()));
+            let message_store = Arc::new(MessageStore::new(pool.clone()));
+            let user_prefs = storage::UserPreferences::new(pool.clone());
+            let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Failed to initialize memory store: {}, continuing without persistent memory",
+                    e
+                );
+                MemoryStore::default()
+            }));
+
+            let mut registry = ProviderRegistry::new();
+            let locators =
+                codegg::core::session_selection::pool_connection_credential_locators(&pool).await;
+            provider::register_builtin_with_config_connections(
+                &mut registry,
+                &config,
+                &locators,
+                None,
+            );
+
+            let discovery = provider::discovery::ModelDiscoveryService::new(PathBuf::new())
+                .with_pool(pool.clone());
+            discovery.initialize().await;
+            let model_ids = if discovery.needs_refresh().await {
+                let models = discovery.refresh(&registry).await;
+                models
+                    .iter()
+                    .map(|m| format!("{}/{}", m.provider, m.id))
+                    .collect()
+            } else {
+                discovery.get_model_ids().await
+            };
+
+            // Build the explicit asset context once and use it for
+            // both the snapshot and the legacy agent list. The
+            // snapshot is the canonical type; the agent list is
+            // retained for legacy consumers that have not yet
+            // migrated.
+            let asset_ctx = codegg::agent::asset_context::AssetContextBuilder::new()
+                .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
+                .with_workspace_root(PathBuf::from(&project_dir))
+                .build()?;
+            let snapshot = codegg::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::new(
+                Arc::new(config.clone()),
+            )
+            .build(&asset_ctx)
+            .map_err(|e| AppError::Other(anyhow::anyhow!("snapshot build failed: {e}")))?;
+            let agents: Vec<codegg::agent::Agent> =
+                snapshot.agents().map(|(_, ra)| ra.agent.clone()).collect();
+            (
+                Some(pool),
+                Some(session_store),
+                Some(message_store),
+                Some(memory_store),
+                Some(user_prefs),
+                model_ids,
+                agents,
+                Some(Arc::new(snapshot)),
+            )
+        };
+
+    // The config must be threaded in, not re-derived: `App::with_config(.., None)`
+    // leaves `cfg` empty, and every field it seeds from `cfg` — most visibly
+    // `theme.name` — then silently falls back to a hardcoded default. That is
+    // why a theme change applied in the UI came back as `cyber-red` on the next
+    // launch even though `persist_theme_selection` had correctly written
+    // `theme.name` into the config file. This also makes `vim_mode`,
+    // `keybinds`, `watcher` and the shell settings honour the config instead of
+    // their defaults.
+    let mut app = tui::App::with_config(project_dir.clone(), Some(&config));
+    if let Some(ref ss) = session_store {
+        app.set_session_store(Arc::clone(ss));
+    }
+    if let Some(ref ms) = message_store {
+        app.set_message_store(Arc::clone(ms));
+    }
+    if let Some(ref up) = user_prefs {
+        app.set_preferences(up.clone());
+    }
+    if let Some(ref mm) = memory_store {
+        app.set_memory_store(mm.clone());
+    }
+    app.set_models(model_ids.clone());
+    // Lets the `/research` command reach the network under the same
+    // `[search].backend` authority as `websearch`.
+    if let Some(rt) = search_runtime {
+        app.set_search_runtime(rt);
+    }
+    // Daemon-client mode deliberately does not resolve project agents in the
+    // CLI process. Keep App's compiled-in agents as the rendering and input
+    // fallback until a daemon-owned asset snapshot is available; replacing
+    // them with the empty sentinel makes the header's active-agent lookup
+    // panic on the first frame.
+    app.set_agents(agents.clone());
+    app.agent_state.snapshot = snapshot.clone();
+    app.notification_manager = Some(notification_mgr);
+
+    if is_socket_mode {
+        // Pull theme from config only (no SQLite-backed preferences in socket mode)
+        // apply_persisted_preferences is skipped since there's no pool.
+    } else {
+        // Pull the user's saved theme and last-used model out of SQLite and
+        // apply them on top of the config-file defaults. Called once at
+        // startup; live changes go through the dedicated persist_* helpers.
+        app.apply_persisted_preferences();
+    }
+
+    // Build the subagent pool only for local modes. Scheduled work is owned
+    // by the durable scheduler attached to the core daemon.
+    if !is_socket_mode {
+        let mut subagent_registry = ProviderRegistry::new();
+        provider::register_builtin_with_config(&mut subagent_registry, &config);
+
+        let subagent_pool = crate::agent::worker::SubAgentPool::new(
+            &config,
+            agents,
+            subagent_registry,
+            session_store
+                .as_ref()
+                .ok_or_else(|| {
+                    AppError::Other(anyhow::anyhow!(
+                        "session_store missing in non-socket mode (is_socket_mode=false must initialize it)"
+                    ))
+                })?
+                .clone(),
+            pool.clone(),
+        )
+        .await;
+        app.subagent_pool = Some(Arc::new(subagent_pool));
+    }
+
+    // Create the shared LSP service early so it can be passed to both the
+    // TUI (for security review) and the daemon (for agent prompt context).
+    let lsp_service: Option<Arc<codegg::lsp::service::LspService>> = if !is_socket_mode {
+        Some(codegg::lsp::configured_service(&config).map_err(|error| {
+            AppError::Other(anyhow::anyhow!(
+                "invalid LSP process admission configuration: {error}"
+            ))
+        })?)
+    } else {
+        None
+    };
+
+    let core_client: Arc<dyn CoreClient> = if is_stdio_mode {
+        let exe = std::env::current_exe()
+            .map_err(|e| AppError::Other(anyhow::anyhow!("cannot resolve current exe: {}", e)))?;
+        let args = vec!["core-stdio".to_string()];
+        match codegg::core::transport::StdioCoreClient::spawn(
+            exe.to_string_lossy().as_ref(),
+            &args,
+            Some(std::path::Path::new(&project_dir)),
+        )
+        .await
+        {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                eprintln!("failed to initialize stdio core transport: {}", e);
+                eprintln!("stdio mode is standalone: it does not connect to the singleton daemon.");
+                std::process::exit(1);
+            }
+        }
+    } else if is_socket_mode {
+        // DaemonClient mode. Try to connect to an existing daemon; if
+        // `auto_start` is enabled (default true), spawn one and wait.
+        let paths =
+            codegg::core::instance::DaemonPaths::resolve_for_endpoint(cli.core_endpoint.as_deref());
+        let auto_start = config
+            .daemon
+            .as_ref()
+            .and_then(|d| d.auto_start)
+            .unwrap_or(true);
+        let startup_timeout = std::time::Duration::from_millis(
+            config
+                .daemon
+                .as_ref()
+                .and_then(|d| d.startup_timeout_ms)
+                .unwrap_or(10_000),
+        );
+        let outcome = connect_or_start_daemon_with_descriptor(
+            ConnectOrStartOptions {
+                paths,
+                autostart: auto_start,
+                startup_timeout,
+                poll_interval: std::time::Duration::from_millis(100),
+                executable: None,
+            },
+            codegg_client::FrontendDescriptor::new(
+                "codegg-tui",
+                codegg::protocol::frames::ClientKind::Tui,
+                codegg::core::transport::SocketCoreClient::tui_client_capabilities(),
+            ),
+        )
+        .await;
+        match outcome {
+            Ok(out) => {
+                app.ui_state.mode = codegg_tui::app::state::AppMode::RemoteCore {
+                    endpoint: out.endpoint.clone(),
+                };
+                Arc::new(out.client)
+            }
+            Err(e) => {
+                eprintln!("Daemon not available: {}", e);
+                eprintln!(
+                    "Start it manually with `codegg daemon start`, set [daemon].auto_start = true, \
+                     or pass --standalone for an in-process core."
+                );
+                std::process::exit(1);
+            }
+        }
+    } else {
+        // StandaloneInproc mode (explicit --standalone). Build a local core
+        // backed by the SQLite pool and stores we initialized above. The
+        // singleton daemon is not involved.
+        Arc::new(codegg::core::InprocCoreClient::new(
+            app.subagent_pool.clone(),
+            memory_store.as_ref().cloned(),
+            pool.clone(),
+            config.clone(),
+            lsp_service.clone(),
+        ))
+    };
+    // as one unit so the subscription can never be skipped. In
+    // socket mode the agent loop runs inside the daemon, so streaming text,
+    // turn completion, and turn failure only ever reach this process over
+    // this subscription. Without it the TUI optimistically showed "working"
+    // forever, even when the turn had already failed.
+    app.attach_core_client(core_client);
+
+    // M007-G (ADR-0057): the daemon is the single authority for the plugin
+    // catalogue, so the TUI builds a plugin manager only when no daemon is
+    // attached. This runs after `attach_core_client` so it sees the daemon.
+    app.init_plugin_manager().await;
+
+    // Top-level --approval-mode/--sandbox/--yolo seed the
+    // daemon-owned preference once at startup through the single shared
+    // `ExecutionPolicyArgs` validation authority (no expected revision: an
+    // explicit invocation wins over the stored preference). The flag
+    // itself is the deliberate act, so no blocking confirmation is
+    // collected here; FullHost is strongly warned on stderr and the
+    // startup restore notice below shows the daemon-resolved effective
+    // state inside the TUI.
+    match cli.policy.resolve() {
+        Ok(Some(policy)) => {
+            if policy.sandbox_profile.is_some_and(|p| p.is_full_host()) {
+                eprintln!(
+                    "WARNING: --sandbox full-host disables CodeGG filesystem containment; the process has the OS user's host authority and network is unrestricted"
+                );
+            }
+            if policy.approval_mode.is_some_and(|m| m.as_str() == "yolo") {
+                eprintln!(
+                    "note: yolo mode skips approval prompts for escalations; explicit denies and the configured sandbox remain enforced"
+                );
+            }
+            if let Some(client) = app.core_client.clone() {
+                let request = codegg::core::new_request(
+                    format!("cli-policy-override-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::RuntimePolicySet {
+                        approval_mode: policy.approval_mode.map(|m| m.as_str().to_string()),
+                        sandbox_profile: policy.sandbox_profile.map(|p| p.as_str().to_string()),
+                        expected_revision: None,
+                    },
+                );
+                match client.request(request).await {
+                    Ok(CoreResponse::ApprovalPreference { preference }) => {
+                        eprintln!(
+                            "runtime policy: approval={} sandbox={} (revision {})",
+                            preference.approval_mode.as_str(),
+                            preference.sandbox_profile.as_str(),
+                            preference.revision
+                        );
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        eprintln!(
+                            "warning: CLI policy override not applied ({}): {}",
+                            code, message
+                        );
+                    }
+                    Ok(other) => {
+                        eprintln!(
+                            "warning: CLI policy override got an unexpected response: {:?}",
+                            other
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("warning: CLI policy override request failed: {}", e);
+                    }
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("invalid policy flags: {}", e);
+            std::process::exit(2);
+        }
+    }
+
+    // Create a shared LspTool for security-review enrichment and other
+    // LSP-backed TUI operations.  Only in local (non-socket) mode —
+    // socket mode has no LspTool on the client side.
+    if !is_socket_mode {
+        if let Some(svc) = lsp_service {
+            app.lsp_tool = Some(std::sync::Arc::new(
+                codegg::tool::lsp::LspTool::with_cache_config(
+                    svc,
+                    codegg::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
+                )
+                .with_allowed_root(std::path::PathBuf::from(&project_dir)),
+            ));
+        }
+    }
+
+    if is_socket_mode {
+        let n = app.init_remote_core().await;
+        tracing::debug!("RemoteCore init: loaded {} models", n);
+    }
+
+    if let Some(agent_name) = &cli.agent {
+        if let Some(idx) = app
+            .agent_state
+            .agents
+            .iter()
+            .position(|a| a.name == *agent_name)
+        {
+            app.agent_state.current_agent = idx;
+        }
+    }
+
+    // Resolve the launch directory into typed project/workspace identities
+    // before anything session-scoped runs. The TUI opens in a compatibility
+    // tab that only carries the directory, and the daemon resolves a
+    // directory locator by catalog lookup only — it never registers on a
+    // miss. Without this bootstrap, launching CodeGG for the first time in a
+    // directory left every session-scoped request failing with
+    // `project_context_required`, and the startup session create failed
+    // silently. Both registration steps are idempotent, so a known
+    // directory re-resolves to the same ids. Failures are non-fatal: the TUI
+    // still renders and reports the specific error.
+    if app.core_client.is_some() && app.active_project_id().is_none() {
+        match app
+            .bootstrap_launch_project_context(std::path::Path::new(&project_dir))
+            .await
+        {
+            Ok(context) => {
+                tracing::debug!(
+                    project_id = %context.project_id,
+                    workspace_id = %context.workspace_id,
+                    "launch project context resolved"
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: could not register {} as a project: {e}",
+                    project_dir
+                );
+            }
+        }
+    }
+
+    // Deterministic integration seam: exercise ordinary daemon-client and
+    // TUI initialization without entering the terminal event loop. This is
+    // intentionally opt-in and test-only; normal invocations continue into
+    // the real event loop below. It sits after the launch-directory bootstrap
+    // so the probe observes the same catalog registration a real launch does.
+    if std::env::var_os("CODEGG_TUI_STARTUP_PROBE").is_some() {
+        println!("TUI startup probe reached event-loop boundary");
+        return Ok(());
+    }
+
+    if let Some(model) = &cli.model {
+        app.agent_state.current_model = model.clone();
+    }
+
+    let mut skills = SkillIndex::new();
+    skills.load(&project_dir).await?;
+
+    if let Some(skill_prompt) = cli.session.as_ref() {
+        if let Some(skill_body) = skills.activate(skill_prompt.trim_start_matches("skill:")) {
+            app.prompt_state.prompt.set_text(skill_body);
+        }
+    }
+
+    // The frontend command channel must exist before anything is enqueued
+    // on it. `run_event_loop` only installed one once it was already
+    // running, so the catalog refresh, manifest restore, and the git sidebar
+    // probe used to find a `None` sender and drop their work without a
+    // diagnostic. It has to be installed *before* session loading too:
+    // `set_session` ends with `start_refresh_git_sidebar`, which spawns
+    // through this channel. Binding the session first meant the startup
+    // probe was silently discarded, leaving `GitSidebarState::branch` at
+    // `None` forever and the sidebar permanently reading "not a git repo".
+    app.ensure_tui_cmd_channel();
+
+    if cli.no_session {
+        tui::run_event_loop(&mut app).await?;
+        return Ok(());
+    }
+
+    // The in-process store resolves the requested session id or creates a
+    // fork; attachment in every mode goes back through SessionLoad so the
+    // active tab adopts the daemon/core's canonical workspace binding.
+    use codegg_tui::app::InitialSessionRequest;
+    if let Some(ss) = &session_store {
+        if let Some(fork_id) = &cli.fork {
+            match ss.fork(fork_id).await {
+                Ok(forked) => {
+                    app.load_initial_session_via_core(InitialSessionRequest::Attach {
+                        session_id: forked.id,
+                    })
+                    .await;
+                }
+                Err(e) => {
+                    eprintln!("Failed to fork session: {}", e);
+                }
+            }
+        } else if let Some(session_id) = &cli.session {
+            match ss.get(session_id).await {
+                Ok(Some(session)) => {
+                    app.load_initial_session_via_core(InitialSessionRequest::Attach {
+                        session_id: session.id,
+                    })
+                    .await;
+                }
+                Ok(None) => {
+                    eprintln!("Session not found: {}", session_id);
+                }
+                Err(e) => {
+                    eprintln!("Failed to load session: {}", e);
+                }
+            }
+        } else if cli.continue_session {
+            match ss.list(&project_dir, 1).await {
+                Ok(sessions) if !sessions.is_empty() => {
+                    app.load_initial_session_via_core(InitialSessionRequest::Attach {
+                        session_id: sessions[0].id.clone(),
+                    })
+                    .await;
+                }
+                _ => {}
+            }
+        }
+    } else {
+        let request = if let Some(fork_id) = &cli.fork {
+            InitialSessionRequest::Fork {
+                session_id: fork_id.clone(),
+            }
+        } else if let Some(session_id) = &cli.session {
+            InitialSessionRequest::Attach {
+                session_id: session_id.clone(),
+            }
+        } else if cli.continue_session {
+            InitialSessionRequest::Continue {
+                project_dir: project_dir.clone(),
+            }
+        } else if cli.no_session {
+            InitialSessionRequest::None
+        } else {
+            InitialSessionRequest::New {
+                directory: project_dir.clone(),
+                title: None,
+            }
+        };
+        app.load_initial_session_via_core(request).await;
+    }
+
+    // The launch directory owns the session. Every session-scoped surface
+    // (chat, files, agents, models) resolves its binding through the active
+    // session, so opening CodeGG in a folder and having to press Ctrl+N before
+    // any of them respond reads as a broken install rather than a missing
+    // keystroke.
+    //
+    // The inproc branch above has no plain-launch case — it only acted for an
+    // explicit `--fork`/`--session`/`--continue` — so `--standalone` reached
+    // the event loop with no session at all. This closes that gap for every
+    // mode, and is a no-op whenever a session is already bound, which keeps
+    // the explicit-id paths exactly as they were.
+    if !cli.no_session {
+        app.ensure_launch_session();
+    }
+
+    // Kick off an async project catalog refresh so the eventual
+    // picker UI has bounded summaries available without blocking the
+    // event loop. The completion lands as a `ProjectCatalogRefreshed`
+    // TuiCommand and is ignored on older daemons (capability not
+    // advertised).
+    if let (Some(_), true) = (app.core_client.as_ref(), !cli.no_session) {
+        app.refresh_project_catalog();
+    }
+
+    // Milestone 4: kick off the manifest restore pipeline. This is
+    // a non-blocking enqueue; the actual restore happens on the
+    // TUI command channel.
+    if !cli.no_session {
+        #[allow(clippy::result_large_err)]
+        let send_result = app
+            .tui_cmd_tx
+            .as_ref()
+            .map(|tx| tx.try_send(codegg_tui::TuiCommand::ManifestRestoreRequested));
+        if let Some(Err(e)) = send_result {
+            tracing::warn!("failed to enqueue manifest restore request: {e}");
+        }
+    }
+
+    // M007: kick off the runtime-policy restore snapshot. The completion
+    // announces the daemon-restored approval/sandbox preference (and any
+    // ceiling narrowing) once; the TUI manifest model hint stays
+    // display-only and the daemon selection remains authoritative.
+    if !cli.no_session {
+        let request_id = app.policy_ui.request.begin();
+        #[allow(clippy::result_large_err)]
+        let send_result = app.tui_cmd_tx.as_ref().map(|tx| {
+            tx.try_send(codegg_tui::TuiCommand::PolicySnapshotRequested {
+                request_id,
+                reason: codegg_tui::commands::policy::PolicySnapshotReason::StartupRestore,
+            })
+        });
+        if let Some(Err(e)) = send_result {
+            tracing::warn!("failed to enqueue policy restore request: {e}");
+        }
+    }
+
+    tui::run_event_loop(&mut app).await
+}
+
+async fn cmd_research(
+    question: &str,
+    mode: &str,
+    audience: &str,
+    depth: &str,
+    outputs: &[String],
+    source_specs: &[String],
+    allow_network: bool,
+) -> Result<(), AppError> {
+    use codegg::research::coordinator::ResearchCoordinator;
+    use codegg::research::types::*;
+
+    let project_root = std::env::current_dir().map_err(AppError::Io)?;
+
+    let research_mode = match mode {
+        "landscape" => ResearchMode::Landscape,
+        "architecture-decision" => ResearchMode::ArchitectureDecision,
+        "library-evaluation" => ResearchMode::LibraryEvaluation,
+        "api-investigation" => ResearchMode::ApiInvestigation,
+        "debugging-investigation" => ResearchMode::DebuggingInvestigation,
+        "security-review" => ResearchMode::SecurityReview,
+        "spec-digest" => ResearchMode::SpecDigest,
+        "narrow-answer" => ResearchMode::NarrowAnswer,
+        _ => {
+            eprintln!("Unknown mode: {mode}. Use: landscape, architecture-decision, library-evaluation, api-investigation, debugging-investigation, security-review, spec-digest, narrow-answer");
+            std::process::exit(1);
+        }
+    };
+
+    let research_audience = match audience {
+        "human" => ResearchAudience::Human,
+        "agent-planner" => ResearchAudience::AgentPlanner,
+        "agent-coder" => ResearchAudience::AgentCoder,
+        "agent-reviewer" => ResearchAudience::AgentReviewer,
+        "agent-debugger" => ResearchAudience::AgentDebugger,
+        _ => {
+            eprintln!("Unknown audience: {audience}. Use: human, agent-planner, agent-coder, agent-reviewer, agent-debugger");
+            std::process::exit(1);
+        }
+    };
+
+    let research_depth = match depth {
+        "low" => ResearchDepth::Low,
+        "medium" => ResearchDepth::Medium,
+        "high" => ResearchDepth::High,
+        _ => {
+            eprintln!("Unknown depth: {depth}. Use: low, medium, high");
+            std::process::exit(1);
+        }
+    };
+
+    let output_profiles: Vec<ResearchOutputProfile> = if outputs.is_empty() {
+        vec![ResearchOutputProfile::HumanFullReport]
+    } else {
+        outputs
+            .iter()
+            .map(|o| match o.as_str() {
+                "human-full" => ResearchOutputProfile::HumanFullReport,
+                "human-brief" => ResearchOutputProfile::HumanBrief,
+                "agent-answer" => ResearchOutputProfile::AgentAnswer,
+                "agent-handoff" => ResearchOutputProfile::AgentHandoff,
+                "evidence-bundle" => ResearchOutputProfile::EvidenceBundle,
+                other => {
+                    eprintln!("Unknown output profile: {other}. Use: human-full, human-brief, agent-answer, agent-handoff, evidence-bundle");
+                    std::process::exit(1);
+                }
+            })
+            .collect()
+    };
+
+    let sources: Vec<ResearchSourceSpec> = source_specs
+        .iter()
+        .map(|s| {
+            if s == "local" {
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::Local,
+                    value: String::new(),
+                }
+            } else if let Some(path) = s.strip_prefix("file:") {
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::File,
+                    value: path.to_string(),
+                }
+            } else if let Some(url) = s.strip_prefix("url:") {
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::Url,
+                    value: url.to_string(),
+                }
+            } else if let Some(text) = s.strip_prefix("text:") {
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::Text,
+                    value: text.to_string(),
+                }
+            } else {
+                // Default to file
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::File,
+                    value: s.clone(),
+                }
+            }
+        })
+        .collect();
+
+    let max_sources = match research_depth {
+        ResearchDepth::Low => 8,
+        ResearchDepth::Medium => 30,
+        ResearchDepth::High => 80,
+    };
+
+    let request = ResearchRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        question: question.to_string(),
+        mode: research_mode,
+        audience: research_audience,
+        depth: research_depth,
+        output_profiles,
+        constraints: vec![],
+        sources,
+        existing_context_refs: vec![],
+        budget: ResearchBudget {
+            max_sources,
+            max_chunks_per_source: 20,
+            max_evidence_spans: 200,
+            max_model_calls: 0,
+            max_output_tokens: None,
+            allow_network,
+        },
+        created_at: chrono::Utc::now(),
+    };
+
+    let artifact_root = project_root.join(".codegg").join("research");
+    let coordinator = ResearchCoordinator::new(project_root, artifact_root);
+
+    eprintln!("Starting research run {}...", &request.id[..8]);
+    eprintln!("Question: {}", request.question);
+    eprintln!(
+        "Mode: {:?}, Depth: {:?}, Audience: {:?}",
+        request.mode, request.depth, request.audience
+    );
+
+    match coordinator.run(request).await {
+        Ok(result) => {
+            eprintln!("\nResearch completed successfully!");
+            eprintln!("Status: {:?}", result.status);
+            eprintln!(
+                "Sources: {}, Evidence: {}, Claims: {}, Contradictions: {}",
+                result.counts.sources,
+                result.counts.evidence_spans,
+                result.counts.claims,
+                result.counts.contradictions,
+            );
+            eprintln!("\nArtifacts:");
+            for output in &result.outputs {
+                eprintln!("  {:?}: {}", output.profile, output.path.display());
+            }
+            eprintln!("\nRun directory: {}", result.artifact_dir.display());
+        }
+        Err(e) => {
+            eprintln!("Research failed: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
+    use codegg::core::instance::{current_process_metadata, DaemonInstanceGuard, DaemonPaths};
+    use tokio_util::sync::CancellationToken;
+
+    let config = Config::load_or_default();
+    let project_dir = match config
+        .daemon
+        .as_ref()
+        .and_then(|d| d.project_scope.as_deref())
+    {
+        Some("user") => dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .to_string_lossy()
+            .to_string(),
+        _ => env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    };
+
+    // Resolve paths. Honor explicit --endpoint or CODEGG_CORE_ENDPOINT only
+    // when an alternate endpoint is genuinely requested; the default
+    // resolves to the user-scoped singleton location.
+    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+
+    // Step 1: acquire the singleton lock first, BEFORE binding the socket.
+    paths.ensure_root().unwrap_or_else(|e| {
+        eprintln!("Failed to prepare daemon home: {}", e);
+        std::process::exit(1);
+    });
+    let mut guard = match DaemonInstanceGuard::try_acquire(&paths) {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            // A healthy daemon is already running. Connect to it and exit 0.
+            match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri()).await {
+                Ok(_client) => {
+                    eprintln!(
+                        "Daemon already running (lock held at {}); not starting a second instance.",
+                        paths.lock_path.display()
+                    );
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    if force_take_lock {
+                        tracing::warn!(
+                            "Daemon lock is held but socket is unreachable: {}; --force-take-lock cannot override the authoritative lock",
+                            e
+                        );
+                        let pid_note = DaemonInstanceGuard::read_metadata(&paths.metadata_path)
+                            .map(|metadata| match pid_is_alive(metadata.pid) {
+                                Ok(true) => format!("metadata PID {} is alive", metadata.pid),
+                                Ok(false) => {
+                                    format!("metadata PID {} is not alive", metadata.pid)
+                                }
+                                Err(error) => format!(
+                                    "metadata PID {} could not be checked: {}",
+                                    metadata.pid, error
+                                ),
+                            })
+                            .unwrap_or_else(|| "metadata is missing".to_owned());
+                        eprintln!(
+                            "Cannot recover daemon endpoint while its advisory lock is held ({pid_note}); refusing to unlink the authoritative lock."
+                        );
+                        std::process::exit(1);
+                    }
+                    eprintln!(
+                        "Daemon lock is held but socket is unreachable: {}. \
+                         Refusing to remove the lock. Use 'codegg daemon status' for diagnostics.",
+                        e
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to acquire daemon lock: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Step 2: inspect any existing socket path before binding.
+    // The flock is authoritative for singleton ownership; this probe only
+    // avoids unlinking a live listener. No existence pre-check is relied
+    // upon for correctness — bind failures below are handled explicitly.
+    match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri()).await {
+        Ok(_client) => {
+            eprintln!(
+                "Existing socket {} responds to connection; refusing to unlink.",
+                paths.socket_path.display()
+            );
+            std::process::exit(1);
+        }
+        Err(_) => {
+            // Unix filesystem sockets can leave stale path entries. Named
+            // pipe objects are released by the OS when their handles close.
+            #[cfg(unix)]
+            match std::fs::remove_file(&paths.socket_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to remove stale socket {}: {}",
+                        paths.socket_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    // Step 3: build the runtime stack.
+    let catalog_paths = storage::DaemonPaths::default();
+    let pool = match storage::init_migrated_daemon_catalog(&catalog_paths).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to initialize storage: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let session_store = Arc::new(SessionStore::new(pool.clone()));
+    let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
+        tracing::warn!(
+            "Failed to initialize memory store: {}, continuing without persistent memory",
+            e
+        );
+        MemoryStore::default()
+    }));
+    let agents = match agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir))) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Failed to resolve agents: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut subagent_registry = ProviderRegistry::new();
+    // A sub-agent pool resolves providers with the same authority every other
+    // daemon path uses. Built without it, any provider a rotation left an
+    // orphan record for resolves to nothing here, and the daemon reports a
+    // "several credentials are stored" ambiguity at startup for a connection
+    // it is about to serve perfectly well.
+    let subagent_locators =
+        codegg::core::session_selection::pool_connection_credential_locators(&pool).await;
+    provider::register_builtin_with_config_connections(
+        &mut subagent_registry,
+        &config,
+        &subagent_locators,
+        None,
+    );
+    let subagent_pool = crate::agent::worker::SubAgentPool::new(
+        &config,
+        agents,
+        subagent_registry,
+        session_store,
+        Some(pool.clone()),
+    )
+    .await;
+    let subagent_pool = Arc::new(subagent_pool);
+    let daemon_id = format!("codegg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    let daemon = Arc::new(codegg::core::daemon::CoreDaemon::with_deps_and_identity(
+        codegg::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool,
+            Some(subagent_pool),
+            Some(memory_store),
+        )
+        .with_lsp_service(codegg::lsp::configured_service(&config).unwrap_or_else(
+            |error| {
+                eprintln!("Invalid LSP process admission configuration: {error}");
+                std::process::exit(1);
+            },
+        )),
+        daemon_id.clone(),
+        guard.generation.clone(),
+    ));
+    // C005 (ADR-0031): the serving daemon owns its delegated idle wake.
+    daemon.attach_idle_wake();
+    // M013: the serving daemon owns the LSP diagnostics cadence. Without it
+    // nothing ever calls the publisher, so the push stream stays permanently
+    // cold and every client reads that as "no diagnostics yet".
+    daemon.start_lsp_diagnostics_driver();
+
+    daemon.start_event_bridge();
+    daemon.recover_state().await;
+    if daemon.recover_jobs().await.is_none() {
+        tracing::error!(
+            "durable job recovery produced no report; previously scheduled work may not be recovered"
+        );
+    }
+    // C007: resolve any private Git index publication a prior daemon
+    // generation left in flight.
+    daemon.reconcile_git_index_publications().await;
+
+    // Step 4: bind the socket (now that we own the lock).
+    let listener = match codegg::core::transport::daemon_socket::bind_listener(&paths.socket_path) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Failed to bind daemon socket: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Step 5: write metadata atomically.
+    let metadata = current_process_metadata(
+        daemon.daemon_id.clone(),
+        guard.generation.clone(),
+        paths.socket_path.clone(),
+    );
+    if let Err(e) = guard.write_metadata(&metadata) {
+        tracing::warn!("Failed to write daemon metadata: {}", e);
+    }
+
+    // Backward-compat: also write the legacy PID file at <socket>.pid.
+    // New tooling should read daemon.json, but external scripts may rely
+    // on the pid file for `kill`. Deprecated: authoritative identity is the
+    // lock + metadata record.
+    let pid_file = paths.pid_file_path();
+    if let Err(error) = tokio::fs::write(&pid_file, std::process::id().to_string()).await {
+        tracing::warn!(pid_file = %pid_file.display(), %error, "failed to write legacy PID file");
+    }
+
+    tracing::info!(
+        "Starting core daemon (id={}, generation={}) on {}",
+        daemon.daemon_id,
+        guard.generation,
+        paths.socket_path.display()
+    );
+    println!(
+        "Core daemon listening on {} (id={})",
+        paths.socket_path.display(),
+        daemon.daemon_id
+    );
+
+    // Step 6: signal handling — graceful shutdown via CancellationToken.
+    let shutdown = CancellationToken::new();
+    let shutdown_signal = shutdown.clone();
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let Ok(mut sigint) = signal(SignalKind::interrupt()) else {
+                return;
+            };
+            let Ok(mut sigterm) = signal(SignalKind::terminate()) else {
+                return;
+            };
+            tokio::select! {
+                _ = sigint.recv() => {}
+                _ = sigterm.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "shutdown signal registration failed; graceful shutdown unavailable on this path");
+        }
+        tracing::info!("Received SIGINT/SIGTERM; shutting down daemon");
+        shutdown_signal.cancel();
+    });
+
+    let shutdown_timeout = std::time::Duration::from_millis(
+        config
+            .daemon
+            .as_ref()
+            .and_then(|daemon| daemon.shutdown_timeout_ms)
+            .unwrap_or(10_000),
+    );
+    let serve_result =
+        codegg::core::transport::daemon_socket::run_core_socket_with_listener_with_timeout(
+            Arc::clone(&daemon),
+            listener,
+            &paths.socket_path,
+            shutdown.clone(),
+            shutdown_timeout,
+        )
+        .await;
+
+    daemon.shutdown_jobs().await;
+    drop(daemon);
+
+    // Cleanup: drop pid, Unix socket, and metadata (in that order so observers
+    // never see socket-gone + PID-present). Windows pipe names are not files;
+    // dropping the listener closes the kernel object. Guard removes metadata.
+    let _ = std::fs::remove_file(&pid_file);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&paths.socket_path);
+    drop(guard);
+    if let Err(e) = serve_result {
+        eprintln!("Daemon error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+async fn run_core_stdio() -> Result<(), AppError> {
+    let project_dir = env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let catalog_paths = std::env::var_os("CODEGG_CORE_STDIO_CATALOG")
+        .map(std::path::PathBuf::from)
+        .map(|data_root| storage::DaemonPaths::with_overrides(Some(data_root), None))
+        .unwrap_or_default();
+    let pool = storage::init_migrated_daemon_catalog(&catalog_paths).await?;
+    let session_store = Arc::new(SessionStore::new(pool.clone()));
+    let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|_| MemoryStore::default()));
+    let mut config = Config::load_or_default();
+    if std::env::var_os("CODEGG_CORE_STDIO_CATALOG").is_some() {
+        // The isolated harness must not inherit an operator's rollout toggle;
+        // it is explicitly testing the production scheduler/executor path.
+        config.scheduler = Some(codegg::config::schema::SchedulerConfig {
+            enabled: Some(true),
+            rollout: Some(codegg::config::schema::SchedulerRolloutConfig::Mandatory),
+            ..Default::default()
+        });
+    }
+    let agents = agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir)))?;
+
+    let mut subagent_registry = ProviderRegistry::new();
+    // A sub-agent pool resolves providers with the same authority every other
+    // daemon path uses. Built without it, any provider a rotation left an
+    // orphan record for resolves to nothing here, and the daemon reports a
+    // "several credentials are stored" ambiguity at startup for a connection
+    // it is about to serve perfectly well.
+    let subagent_locators =
+        codegg::core::session_selection::pool_connection_credential_locators(&pool).await;
+    provider::register_builtin_with_config_connections(
+        &mut subagent_registry,
+        &config,
+        &subagent_locators,
+        None,
+    );
+    let subagent_pool = crate::agent::worker::SubAgentPool::new(
+        &config,
+        agents,
+        subagent_registry,
+        session_store,
+        Some(pool.clone()),
+    )
+    .await;
+    let subagent_pool = Arc::new(subagent_pool);
+    let deps = codegg::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+        pool.clone(),
+        Some(subagent_pool),
+        Some(memory_store),
+    )
+    .with_lsp_service(codegg::lsp::configured_service(&config).map_err(|error| {
+        AppError::Other(anyhow::anyhow!(
+            "invalid LSP process admission configuration: {error}"
+        ))
+    })?);
+    let core = codegg::core::InprocCoreClient::with_deps(deps, config);
+    core.initialize_recovery().await?;
+
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut lines = stdin.lines();
+    let mut stdout = tokio::io::stdout();
+    while let Some(line) = lines.next_line().await.map_err(AppError::Io)? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<RequestEnvelope<CoreRequest>>(trimmed) {
+            Ok(req) => core.request(req).await.unwrap_or(CoreResponse::Error {
+                code: "request_failed".to_string(),
+                message: "core request execution failed".to_string(),
+            }),
+            Err(e) => CoreResponse::Error {
+                code: "invalid_request".to_string(),
+                message: e.to_string(),
+            },
+        };
+        let out = serde_json::to_string(&response).map_err(AppError::Json)?;
+        stdout
+            .write_all(out.as_bytes())
+            .await
+            .map_err(AppError::Io)?;
+        stdout.write_all(b"\n").await.map_err(AppError::Io)?;
+        stdout.flush().await.map_err(AppError::Io)?;
+    }
+    core.shutdown_jobs().await;
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), AppError> {
+    if !standalone_core {
+        // Phase 1 invariant: the HTTP server must not silently construct a
+        // second production core. Proxying to the singleton daemon is the
+        // preferred default, but the full ServerState/CoreClient adapter
+        // lands in a later phase; until then we refuse to start the server
+        // without an explicit standalone opt-in.
+        eprintln!("Server mode requires an explicit --standalone-core flag in Phase 1.");
+        eprintln!(
+            "  --standalone-core : construct an independent server-side core (development only)."
+        );
+        eprintln!(
+            "  Daemon-proxying server mode will land in a later phase; tracked by the \
+             single-daemon roadmap."
+        );
+        std::process::exit(2);
+    }
+
+    eprintln!(
+        "warning: --standalone-core constructs an independent server-side core; \
+         this defeats the single-daemon invariant and is for development use only."
+    );
+
+    let project_dir = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let pool = match storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Failed to initialize storage for daemon: {}", e);
+            return codegg::server::run_server(host, port, None)
+                .await
+                .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)));
+        }
+    };
+    let session_store = Arc::new(SessionStore::new(pool.clone()));
+    let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
+        tracing::warn!("Failed to initialize memory store: {}", e);
+        MemoryStore::default()
+    }));
+    let config = Config::load_or_default();
+    let agents = match agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir))) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("Failed to resolve agents: {}, continuing without daemon", e);
+            return codegg::server::run_server(host, port, None)
+                .await
+                .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)));
+        }
+    };
+
+    let mut subagent_registry = ProviderRegistry::new();
+    // A sub-agent pool resolves providers with the same authority every other
+    // daemon path uses. Built without it, any provider a rotation left an
+    // orphan record for resolves to nothing here, and the daemon reports a
+    // "several credentials are stored" ambiguity at startup for a connection
+    // it is about to serve perfectly well.
+    let subagent_locators =
+        codegg::core::session_selection::pool_connection_credential_locators(&pool).await;
+    provider::register_builtin_with_config_connections(
+        &mut subagent_registry,
+        &config,
+        &subagent_locators,
+        None,
+    );
+    let subagent_pool = crate::agent::worker::SubAgentPool::new(
+        &config,
+        agents,
+        subagent_registry,
+        session_store,
+        Some(pool.clone()),
+    )
+    .await;
+    let subagent_pool = Arc::new(subagent_pool);
+    let daemon = Arc::new(codegg::core::daemon::CoreDaemon::with_deps(
+        codegg::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool,
+            Some(subagent_pool),
+            Some(memory_store),
+        )
+        .with_lsp_service(codegg::lsp::configured_service(&config).map_err(|error| {
+            AppError::Other(anyhow::anyhow!(
+                "invalid LSP process admission configuration: {error}"
+            ))
+        })?),
+    ));
+    // C005 (ADR-0031): the serving daemon owns its delegated idle wake.
+    daemon.attach_idle_wake();
+    // M013: the serving daemon owns the LSP diagnostics cadence. Without it
+    // nothing ever calls the publisher, so the push stream stays permanently
+    // cold and every client reads that as "no diagnostics yet".
+    daemon.start_lsp_diagnostics_driver();
+
+    daemon.start_event_bridge();
+    daemon.recover_state().await;
+    if daemon.recover_jobs().await.is_none() {
+        tracing::error!(
+            "durable job recovery produced no report; previously scheduled work may not be recovered"
+        );
+    }
+    // C007: resolve any private Git index publication a prior daemon
+    // generation left in flight.
+    daemon.reconcile_git_index_publications().await;
+
+    let serve_result = codegg::server::run_server(host, port, Some(Arc::clone(&daemon))).await;
+    daemon.shutdown_jobs().await;
+    drop(daemon);
+    serve_result.map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
+}
+
+#[cfg(feature = "server")]
+async fn cmd_attach(url: &str, token: Option<&str>) -> Result<(), AppError> {
+    crate::client::attach::run_attach(url, token)
+        .await
+        .map_err(|e| AppError::Other(anyhow::anyhow!("Client error: {}", e)))
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn signal_pid(pid: libc::pid_t, signal: libc::c_int) -> libc::c_int {
+    unsafe { libc::kill(pid, signal) }
+}
+
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> Result<bool, std::io::Error> {
+    let pid_i32 = match i32::try_from(pid) {
+        Ok(p) => p,
+        Err(_) => return Ok(false),
+    };
+    // Signal 0 checks liveness without sending a signal.
+    if signal_pid(pid_i32, 0) == 0 {
+        return Ok(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> Result<bool, std::io::Error> {
+    codegg_client::windows_is_process_alive(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn pid_is_alive(_pid: u32) -> Result<bool, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "process liveness is unavailable on this platform",
+    ))
+}
+
+#[cfg(test)]
+mod single_shot_ledger_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use codegg::agent::prompt::{PromptCompiler, PromptCompilerInput};
+    use codegg::agent::r#loop::AgentLoop;
+    use codegg::provider::{ChatEvent, EventStream, ModelInfo, Provider, ProviderError};
+
+    struct SilentProvider;
+
+    #[async_trait]
+    impl Provider for SilentProvider {
+        fn id(&self) -> &str {
+            "single-shot-silent"
+        }
+
+        fn name(&self) -> &str {
+            "Single Shot Silent"
+        }
+
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(Self)
+        }
+
+        async fn stream(
+            &self,
+            _request: &codegg::provider::ChatRequest,
+        ) -> Result<EventStream, ProviderError> {
+            Ok(Box::pin(futures_util::stream::iter(Vec::<
+                Result<ChatEvent, ProviderError>,
+            >::new())))
+        }
+
+        async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn compiled_single_shot_prompt() -> codegg::agent::prompt::CompiledPrompt {
+        let agents = codegg::agent::builtins::generated_builtin_agents();
+        let agent = agents
+            .iter()
+            .find(|agent| agent.name == "build")
+            .expect("the build agent is a built-in");
+        let config = Config::default();
+        let model_profile =
+            codegg::model_profile::ModelProfileResolver::new(&config).resolve("single-shot-model");
+        let adapter = codegg::model_profile::resolve_adapter(None, "single-shot-model");
+        PromptCompiler::compile(PromptCompilerInput {
+            agent,
+            model_profile: &model_profile,
+            config: &config,
+            tools: &["read".to_string()],
+            skills: &[],
+            agents: &agents,
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            adapter_fingerprint: Some(&adapter.fingerprint),
+            runtime_blocks: &[],
+        })
+    }
+
+    #[test]
+    fn the_single_shot_prompt_records_a_present_section_map() {
+        let compiled = compiled_single_shot_prompt();
+        let digests = codegg::agent::prompt::section_digests(&compiled.blocks);
+        assert!(
+            digests.contains_key("harness_contract"),
+            "the CLI's compiled prompt has a harness contract section"
+        );
+        assert!(
+            !digests.is_empty(),
+            "the CLI prompt is sectioned, so its recorded map is present and non-empty"
+        );
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let mut agent_loop = AgentLoop::new(
+            Vec::new(),
+            Box::new(SilentProvider),
+            codegg::permission::PermissionChecker::new(None, None),
+            codegg::tool::ToolRegistry::default(),
+            Config::default(),
+            None,
+            None,
+            Arc::new(codegg::context::InMemoryArtifactStore::new()),
+            workspace.path().to_path_buf(),
+            uuid::Uuid::new_v4().to_string(),
+            None,
+            None,
+        );
+        assert_eq!(
+            agent_loop.prompt_section_digests(),
+            None,
+            "the single-shot loop starts with no section identity"
+        );
+        agent_loop
+            .set_prompt_section_digests(codegg::agent::prompt::section_digests(&compiled.blocks));
+        assert_eq!(
+            agent_loop.prompt_section_digests(),
+            Some(&digests),
+            "the single-shot loop holds the compiled prompt's section map, not a rebuild"
+        );
+    }
+
+    struct RecordingProvider;
+
+    #[async_trait]
+    impl Provider for RecordingProvider {
+        fn id(&self) -> &str {
+            "single-shot-recording"
+        }
+
+        fn name(&self) -> &str {
+            "Single Shot Recording"
+        }
+
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(Self)
+        }
+
+        async fn stream(
+            &self,
+            _request: &codegg::provider::ChatRequest,
+        ) -> Result<EventStream, ProviderError> {
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(ChatEvent::TextDelta(Arc::new("recorded".to_string()))),
+                Ok(ChatEvent::Finish {
+                    stop_reason: Arc::new("stop".to_string()),
+                    usage: Default::default(),
+                }),
+            ])))
+        }
+
+        async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn single_shot_loop(
+        workspace: &std::path::Path,
+        session_id: &str,
+        pool: Option<sqlx::SqlitePool>,
+    ) -> AgentLoop {
+        AgentLoop::new(
+            Vec::new(),
+            Box::new(RecordingProvider),
+            codegg::permission::PermissionChecker::new(None, None),
+            codegg::tool::ToolRegistry::default(),
+            Config::default(),
+            None,
+            pool,
+            Arc::new(codegg::context::InMemoryArtifactStore::new()),
+            workspace.to_path_buf(),
+            session_id.to_string(),
+            None,
+            None,
+        )
+    }
+
+    fn single_shot_request() -> codegg::provider::ChatRequest {
+        codegg::provider::ChatRequest {
+            messages: vec![codegg::provider::Message::User {
+                content: vec![codegg::provider::ContentPart::Text {
+                    text: "single shot".to_string().into(),
+                }],
+            }],
+            model: "single-shot-model".to_string(),
+            tools: None,
+            system: Some("system".to_string()),
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: codegg::provider::ProviderRequestContext::default(),
+        }
+    }
+
+    async fn catalog_pool(root: &std::path::Path) -> sqlx::SqlitePool {
+        let paths =
+            codegg_core::storage::DaemonPaths::with_overrides(Some(root.to_path_buf()), None);
+        codegg::storage::init_migrated_daemon_catalog(&paths)
+            .await
+            .expect("migrated catalog")
+    }
+
+    fn rendered_text(events: &[ChatEvent]) -> String {
+        let mut processor = codegg::agent::processor::EventProcessor::new();
+        for event in events {
+            processor.process(event);
+        }
+        processor.text().to_string()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_single_shot_turn_records_its_attempt_in_the_ledger() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut agent_loop = single_shot_loop(workspace.path(), &session_id, Some(pool.clone()));
+        let sections =
+            codegg::agent::prompt::section_digests(&compiled_single_shot_prompt().blocks);
+        agent_loop.set_prompt_section_digests(sections.clone());
+
+        agent_loop
+            .run(single_shot_request())
+            .await
+            .expect("the one-shot turn completes");
+
+        let health = codegg::session::request_ledger::TurnRequestLedgerStore::new(pool)
+            .ledger_health()
+            .await
+            .expect("read the ledger the turn wrote");
+        assert_eq!(
+            health.total_rows, 1,
+            "a one-shot turn records exactly one ledger row for its one attempt"
+        );
+        let row = health.last.expect("the recorded attempt is readable");
+        assert_eq!(
+            row.session_id, session_id,
+            "the row names the invocation's own session"
+        );
+        assert_eq!(row.model, "single-shot-model");
+        assert_eq!(
+            row.section_digests.as_ref(),
+            Some(&sections),
+            "the compiled prompt's section identity is what the CLI threads into the loop"
+        );
+        assert_eq!(
+            row.outcome,
+            codegg::session::request_ledger::TurnRequestOutcome::Ok,
+            "the settled row reports the turn that actually finished"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_ledger_store_failure_leaves_the_turn_unchanged() {
+        let control_workspace = tempfile::tempdir().expect("control workspace");
+        let control_catalog = tempfile::tempdir().expect("control catalog root");
+        let control_pool = catalog_pool(control_catalog.path()).await;
+        let mut control = single_shot_loop(
+            control_workspace.path(),
+            "control-session",
+            Some(control_pool.clone()),
+        );
+        let control_events = control
+            .run(single_shot_request())
+            .await
+            .expect("the control turn completes");
+        let control_health =
+            codegg::session::request_ledger::TurnRequestLedgerStore::new(control_pool)
+                .ledger_health()
+                .await
+                .expect("read the control ledger");
+        assert_eq!(
+            control_health.total_rows, 1,
+            "the control turn recorded its attempt, so the comparison is not two silent no-ops"
+        );
+
+        let subject_workspace = tempfile::tempdir().expect("subject workspace");
+        let subject_catalog = tempfile::tempdir().expect("subject catalog root");
+        let subject_pool = catalog_pool(subject_catalog.path()).await;
+        sqlx::query("DROP TABLE turn_request_ledger")
+            .execute(&subject_pool)
+            .await
+            .expect("remove the ledger table to make the store fail");
+        let mut subject = single_shot_loop(
+            subject_workspace.path(),
+            "subject-session",
+            Some(subject_pool.clone()),
+        );
+        let subject_events = subject
+            .run(single_shot_request())
+            .await
+            .expect("a store failure must not fail the turn");
+
+        assert_eq!(
+            rendered_text(&subject_events),
+            rendered_text(&control_events),
+            "a store failure leaves the turn's output byte-identical"
+        );
+        assert_eq!(
+            subject_events.len(),
+            control_events.len(),
+            "a store failure leaves the turn's event sequence unchanged"
+        );
+        let error = codegg::session::request_ledger::TurnRequestLedgerStore::new(subject_pool)
+            .ledger_health()
+            .await
+            .expect_err("the removed table is the store failure under test");
+        assert!(
+            codegg::session::request_ledger::is_missing_table(&error),
+            "the failure is the absent store, not a different error: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_ledger_write_failure_leaves_the_turn_unchanged() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        sqlx::query(
+            "CREATE TRIGGER ledger_insert_refused BEFORE INSERT ON turn_request_ledger \
+             BEGIN SELECT RAISE(ABORT, 'injected ledger write failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("install the trigger that refuses every insert");
+        let refused = codegg::session::request_ledger::TurnRequestLedgerStore::new(pool.clone())
+            .record_attempt(codegg::session::TurnRequestAttempt {
+                session_id: "write-failure-session",
+                turn_index: 1,
+                attempt_index: 0,
+                attempt_id: "direct-probe",
+                model: "single-shot-model",
+                effort: None,
+                system_digest: "system",
+                tools_digest: "tools",
+                message_digest: "message",
+                message_count: 1,
+                section_digests: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(codegg::session::request_ledger::RequestLedgerError::Storage(message))
+                    if message.contains("injected ledger write failure")
+            ),
+            "the trigger must refuse a direct write: {refused:?}"
+        );
+        let mut agent_loop = single_shot_loop(
+            workspace.path(),
+            "write-failure-session",
+            Some(pool.clone()),
+        );
+
+        let events = agent_loop
+            .run(single_shot_request())
+            .await
+            .expect("a ledger write failure must not fail the turn");
+
+        assert_eq!(
+            rendered_text(&events),
+            "recorded",
+            "the provider's whole reply is delivered although the write was refused"
+        );
+        assert_eq!(
+            codegg::session::request_ledger::TurnRequestLedgerStore::new(pool)
+                .ledger_health()
+                .await
+                .expect("the ledger table itself is still readable")
+                .total_rows,
+            0,
+            "the refused insert leaves no row rather than a half-recorded attempt"
+        );
+    }
+
+    fn cli_usage_record(session_id: &str) -> codegg::session::UsageRecord {
+        codegg::session::UsageRecord {
+            id: format!("usage_{}", uuid::Uuid::new_v4().simple()),
+            session_id: session_id.to_string(),
+            provider: "single-shot-silent".to_string(),
+            model: "single-shot-model".to_string(),
+            input_tokens: 7,
+            output_tokens: 3,
+            cached_tokens: 0,
+            cost_usd: 0.0,
+            timestamp: 1,
+        }
+    }
+
+    fn cli_checkpoint_payload() -> codegg::session::continuation::ContinuationCheckpointPayload {
+        codegg::session::continuation::ContinuationCheckpointPayload::new(
+            serde_json::json!({"frame": "single-shot"}),
+        )
+        .expect("the probe payload is a bounded object")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_missing_session_row_refuses_the_pools_usage_and_checkpoint_stores() {
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let usage = codegg::session::UsageStore::new(pool.clone())
+            .insert(cli_usage_record("absent-session"))
+            .await;
+        assert!(
+            matches!(
+                &usage,
+                Err(StorageError::Database(message))
+                    if message.contains("FOREIGN KEY constraint failed")
+            ),
+            "the usage store's session foreign key is what the ephemeral row satisfies: {usage:?}"
+        );
+        let prepared = codegg::session::continuation::ContinuationCheckpointStore::new(pool)
+            .prepare("absent-session", None, cli_checkpoint_payload())
+            .await;
+        assert!(
+            matches!(
+                &prepared,
+                Err(StorageError::Database(message))
+                    if message.contains("FOREIGN KEY constraint failed")
+            ),
+            "the checkpoint store's session foreign key is the second refusal: {prepared:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_ephemeral_cli_session_admits_the_usage_and_checkpoint_stores() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let session =
+            create_cli_turn_session(&pool, workspace.path(), "build", "single-shot-model")
+                .await
+                .expect("the CLI creates its ephemeral session row");
+        codegg::session::UsageStore::new(pool.clone())
+            .insert(cli_usage_record(&session.id))
+            .await
+            .expect("the usage insert resolves against the ephemeral session");
+        let recorded = codegg::session::UsageStore::new(pool.clone())
+            .get_session_usage(&session.id)
+            .await
+            .expect("read the usage row back");
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the turn's usage is recorded once against its own session"
+        );
+        let prepared = codegg::session::continuation::ContinuationCheckpointStore::new(pool)
+            .prepare(&session.id, None, cli_checkpoint_payload())
+            .await
+            .expect("the checkpoint prepare resolves against the ephemeral session");
+        assert_eq!(
+            prepared.session_id, session.id,
+            "the durable checkpoint names the CLI turn's own session"
+        );
+        assert_eq!(
+            prepared.status.as_str(),
+            "prepared",
+            "a compacting CLI turn takes the durable path instead of degrading"
+        );
+    }
+
+    async fn settled_usage(
+        pool: &sqlx::SqlitePool,
+        session_id: &str,
+    ) -> Vec<codegg::session::UsageRecord> {
+        for _ in 0..100 {
+            let rows = codegg::session::UsageStore::new(pool.clone())
+                .get_session_usage(session_id)
+                .await
+                .expect("read the usage rows");
+            if !rows.is_empty() {
+                return rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        Vec::new()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_single_shot_turn_records_its_finish_usage_without_a_refusal() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let session =
+            create_cli_turn_session(&pool, workspace.path(), "build", "single-shot-model")
+                .await
+                .expect("the CLI creates its ephemeral session row");
+        let mut agent_loop = single_shot_loop(workspace.path(), &session.id, Some(pool.clone()));
+        let events = agent_loop
+            .run(single_shot_request())
+            .await
+            .expect("the one-shot turn completes");
+        assert_eq!(
+            rendered_text(&events),
+            "recorded",
+            "the turn reached the provider's Finish event, so a usage record was attempted"
+        );
+        let recorded = settled_usage(&pool, &session.id).await;
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the Finish usage is inserted against the ephemeral session without a refusal"
+        );
+        assert_eq!(
+            recorded[0].session_id, session.id,
+            "the usage row names the CLI turn's own session"
+        );
+
+        let degraded_workspace = tempfile::tempdir().expect("degraded workspace");
+        let degraded_catalog = tempfile::tempdir().expect("degraded catalog root");
+        let degraded_pool = catalog_pool(degraded_catalog.path()).await;
+        let mut degraded = single_shot_loop(
+            degraded_workspace.path(),
+            "absent-session",
+            Some(degraded_pool.clone()),
+        );
+        let degraded_events = degraded
+            .run(single_shot_request())
+            .await
+            .expect("the degraded turn still completes");
+        assert_eq!(
+            rendered_text(&degraded_events),
+            "recorded",
+            "the control turn reached the same Finish event"
+        );
+        assert!(
+            settled_usage(&degraded_pool, "absent-session")
+                .await
+                .is_empty(),
+            "without the session row the same Finish usage is refused and stays unrecorded"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_ephemeral_cli_session_shares_one_project_row_per_workspace() {
+        let workspace = tempfile::tempdir().expect("single-shot workspace");
+        let catalog = tempfile::tempdir().expect("catalog root");
+        let pool = catalog_pool(catalog.path()).await;
+        let first = create_cli_turn_session(&pool, workspace.path(), "build", "single-shot-model")
+            .await
+            .expect("the first CLI run creates its session");
+        let second = create_cli_turn_session(&pool, workspace.path(), "build", "single-shot-model")
+            .await
+            .expect("the second CLI run creates its own session");
+        assert_ne!(
+            first.id, second.id,
+            "each CLI run records its own ephemeral session"
+        );
+        assert_eq!(
+            first.project_id, second.project_id,
+            "the CLI workspace root is the project identity, so runs reuse one project row"
+        );
+        let project_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project")
+            .fetch_one(&pool)
+            .await
+            .expect("count the catalog's project rows");
+        assert_eq!(
+            project_rows, 1,
+            "a run costs one session row, not another project row"
+        );
+        let worktree: String = sqlx::query_scalar("SELECT worktree FROM project WHERE id = ?")
+            .bind(&first.project_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read the project row the session depends on");
+        assert_eq!(
+            worktree.as_str(),
+            workspace.path().to_string_lossy().as_ref(),
+            "the project row names the CLI workspace root"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_creation_failure_leaves_the_turn_unchanged() {
+        let control_workspace = tempfile::tempdir().expect("control workspace");
+        let control_catalog = tempfile::tempdir().expect("control catalog root");
+        let control_pool = catalog_pool(control_catalog.path()).await;
+        let control_session = create_cli_turn_session(
+            &control_pool,
+            control_workspace.path(),
+            "build",
+            "single-shot-model",
+        )
+        .await
+        .expect("the control run creates its session");
+        let mut control = single_shot_loop(
+            control_workspace.path(),
+            &control_session.id,
+            Some(control_pool),
+        );
+        let control_events = control
+            .run(single_shot_request())
+            .await
+            .expect("the control turn completes");
+        assert_eq!(
+            rendered_text(&control_events),
+            "recorded",
+            "the control turn really ran, so the comparison is not two silent no-ops"
+        );
+        let subject_workspace = tempfile::tempdir().expect("subject workspace");
+        let subject_catalog = tempfile::tempdir().expect("subject catalog root");
+        let subject_pool = catalog_pool(subject_catalog.path()).await;
+        sqlx::query(
+            "CREATE TRIGGER session_insert_refused BEFORE INSERT ON session \
+             BEGIN SELECT RAISE(ABORT, 'injected session creation failure'); END",
+        )
+        .execute(&subject_pool)
+        .await
+        .expect("install the trigger that refuses every session insert");
+        let refused = create_cli_turn_session(
+            &subject_pool,
+            subject_workspace.path(),
+            "build",
+            "single-shot-model",
+        )
+        .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(StorageError::Database(message))
+                    if message.contains("injected session creation failure")
+            ),
+            "the trigger must refuse the ephemeral session: {refused:?}"
+        );
+        let subject_session_id = uuid::Uuid::new_v4().to_string();
+        let mut subject = single_shot_loop(
+            subject_workspace.path(),
+            &subject_session_id,
+            Some(subject_pool.clone()),
+        );
+        let subject_events = subject
+            .run(single_shot_request())
+            .await
+            .expect("a session creation failure must not fail the turn");
+        assert_eq!(
+            rendered_text(&subject_events),
+            rendered_text(&control_events),
+            "the refused session leaves the turn's output byte-identical"
+        );
+        assert_eq!(
+            subject_events.len(),
+            control_events.len(),
+            "the refused session leaves the turn's event sequence unchanged"
+        );
+        assert_eq!(
+            codegg::session::request_ledger::TurnRequestLedgerStore::new(subject_pool)
+                .ledger_health()
+                .await
+                .expect("the ledger is readable without a session row")
+                .last
+                .expect("the degraded turn still records its attempt")
+                .session_id,
+            subject_session_id,
+            "the ledger records the turn under the CLI's own session id"
+        );
+    }
+}

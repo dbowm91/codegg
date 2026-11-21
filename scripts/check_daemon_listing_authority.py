@@ -6,7 +6,7 @@ authority: a same-spelled local path can describe a different machine's
 directory. All production TUI listing traffic goes through the
 daemon-owned `WorkspaceDirectoryList` request; the single shared walker
 lives in `src/directory_listing.rs` (used by the daemon handler and, via
-delegation, the presentation types in `src/tui/file_tree.rs`).
+delegation, the presentation types in `crates/codegg-tui/src/file_tree.rs`).
 
 This script rejects direct filesystem enumeration for listing purposes
 outside the two walker homes. Test fixtures that *create* files with
