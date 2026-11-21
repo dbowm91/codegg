@@ -12,14 +12,17 @@ Source subsystem roadmap:
 
 Repository baseline reviewed: `d8f1b4a289eaabd91fddcf7aa8d3078891e04e74`
 
+Descendant re-reviewed: `a6fa12efb`, then `e2eb96727`.
+
 Implementation commits:
 
 - `b05ba03a9` — freeze the pre-move theme projection and the 4,596-function scanner inventory
 - `d8f1b4a28` — move the TUI into `codegg-tui` and the product bin into `codegg-cli`
+- `e2eb96727` — keep `cargo build --bin codegg` resolving, and retarget the scoped-selection self-test off the deleted TUI path
 
 ## 1. Executive finding
 
-The root library no longer compiles the TUI, and it does not depend on `codegg-tui`. `codegg-tui` depends on the root library. The product bin `codegg` belongs to `codegg-cli`, which may depend on both. There is no `pub mod tui` and no re-export shim. The milestone is conditionally closed because the required link, the `tui_render` family run, `scripts/verify.sh quick`, and the hosted before/after `cfg(test)` run ids could not be produced here. That gap is operational. It is not a license to split `agent`, `tool`, `core`, or `scheduler`, and it does not discharge the deferred binary-topology item.
+The root library no longer compiles the TUI, and it does not depend on `codegg-tui`. `codegg-tui` depends on the root library. The product bin `codegg` belongs to `codegg-cli`, which may depend on both. There is no `pub mod tui` and no re-export shim. The required local link, the whole `tui_render` family, `cargo build --locked --bin codegg`, and `scripts/verify.sh quick` have now been run on this worktree and passed. The milestone stays conditionally closed because the hosted before/after `cfg(test)` run ids are still absent. The branch was not pushed. That remaining gap is operational. It is not a license to split `agent`, `tool`, `core`, or `scheduler`, and it does not discharge the deferred binary-topology item.
 
 A null effect on the 7-minute `cfg(test)` compile, if that is what the hosted pair later shows, is not a failure and does not open a further split. This closure does not quote a line count as a minute count. The closed throughput roadmap was not amended.
 
@@ -40,11 +43,12 @@ A null effect on the 7-minute `cfg(test)` compile, if that is what the hosted pa
 | Bundled theme bytes and frozen projection unchanged | review of `d8f1b4a28` | pass | `SemanticTheme` does not reference ratatui |
 | Security-review cancel still uses the moved task id | source review | pass | Receipt no longer stores `TuiTaskId`. Cancel still calls `TuiTaskRegistry::cancel`. The abort test was not executed |
 | Comment-line ceilings do not rise | re-bank after removing three comments this milestone added | pass | Global ceilings fell: 140142 to 140107 lines, 1249885 to 1249581 words, ratio 0.1355 to 0.1354. No predecessor comment-line ceiling rose |
-| `cargo test -p codegg-tui --test tui_render -- tui_render` | — | not run | Disk. See §10 |
-| `cargo test -p codegg --lib --features server` | earlier link attempt | fail | `ld: write() failed, errno=28`. Not a test assertion failure. Not re-run after the comment trim; free space was about 594Mi |
-| `cargo build --locked --bin codegg` | — | not run | Disk |
-| `scripts/verify.sh quick` | — | not run | Disk. A green check of the root library is not `quick` |
-| Hosted before/after `codegg` `cfg(test)` run ids | — | not run | Branch not pushed |
+| Whole `tui_render` family | `CARGO_BUILD_JOBS=2 cargo test -p codegg-tui --test tui_render --locked --offline -- --test-threads=4` on `a6fa12efb` | pass | Local. 1237 passed, 0 failed, 10.68s. The plan's §11 trailing `-- tui_render` selects one member of this family, so it was not used. The family command is the one the plan's §10 requires |
+| `interactive_process_attach_resume` | `cargo test -p codegg-tui --test interactive_process_attach_resume --locked --offline -- --test-threads=4` | pass | Local. 6 passed. Ownership maps moved TUI files here. Additional to the required family, not a substitute |
+| `cargo test -p codegg --lib --features server` | same flags, on `a6fa12efb` | pass | Local. 5174 passed, 0 failed, 5 ignored, 97.89s. An earlier link on a full volume failed with `ld: write() failed, errno=28`. That was not an assertion failure, and it is not the current result |
+| `cargo build --locked --bin codegg` | first attempt on `a6fa12efb` failed; re-run on `e2eb96727` | pass | The first attempt exited 101: no bin named `codegg` in the default-run packages. `e2eb96727` adds `crates/codegg-cli` to `default-members` and does not restore a root shim. The re-run, `cargo build --locked --offline --bin codegg`, exited 0. `target/debug/codegg` is present (454053072 bytes). The re-run was warm (0.53s) and did not rewrite those bytes. `cargo build --locked --offline -p codegg --bin codegg` still exits 101 |
+| `scripts/verify.sh quick` | first attempt on `a6fa12efb` failed; re-run on `e2eb96727` | pass | The first attempt failed in `scripts/scoped_selection.py --self-test`: it still named deleted `src/tui/app/mod.rs` and selected 0 targets. `e2eb96727` retargets that self-test to `src/server/mod.rs`. The re-run printed `Quick verification passed.` and exited 0. Its cargo step is `cargo check --workspace --all-targets --locked`, which selects `codegg-tui` and `codegg-cli`. This invocation finished warm in 0.97s and did not reprint unit names, so it is not a log of those crates compiling |
+| Hosted before/after `codegg` `cfg(test)` run ids | — | not run | Branch not pushed. Local `quick` is not this pair |
 
 ## 3. Production implementation evidence
 
@@ -69,11 +73,29 @@ python3 scripts/rust_test_scan.py --validate
 
 The library check finished in 2m 16s and did not compile `codegg-tui`. These commands are local. They are not hosted CI.
 
-### Commands not run
+### Descendant re-run
 
-`cargo test -p codegg --lib --features server`, `cargo test -p codegg-tui --test tui_render -- tui_render`, `cargo build --locked --bin codegg`, and `scripts/verify.sh quick` were not run to a pass. An earlier root-lib test link failed with `ld: write() failed, errno=28` while the data volume was full. After the successful library check, about 594Mi remained. Deleting apparent multi-gigabyte caches, including a fresh incremental directory and one file from another project's `target/`, did not free unique blocks. Those commands are not claimed as passed.
+Local. The family and library tests ran on `a6fa12efb`. The bin command and `quick` first failed there, then passed on `e2eb96727`. `CARGO_BUILD_JOBS=2`. Cargo tests and the bin build used `--locked --offline` and `--test-threads=4`. `scripts/verify.sh quick` is the script as written: it runs `cargo check --workspace --all-targets --locked` and does not pass `--offline`.
 
-Hosted before/after run ids are absent. The branch was not pushed.
+```bash
+cargo test -p codegg-tui --test tui_render --locked --offline -- --test-threads=4
+cargo test -p codegg-tui --test interactive_process_attach_resume --locked --offline -- --test-threads=4
+cargo test -p codegg --lib --features server --locked --offline -- --test-threads=4
+cargo build --locked --offline --bin codegg
+cargo build --locked --offline -p codegg --bin codegg
+scripts/verify.sh quick
+```
+
+Results, all local:
+
+- `tui_render` family: 1237 passed, 0 failed. The trailing `-- tui_render` in the plan's §11 selects one member, so it was not used.
+- `interactive_process_attach_resume`: 6 passed.
+- Root library with `server`: 5174 passed, 0 failed, 5 ignored. An earlier link on a full volume failed with `ld: write() failed, errno=28`. That was not an assertion failure. It is not this result.
+- Workspace `cargo build --locked --offline --bin codegg`: the `a6fa12efb` attempt exited 101 because `codegg-cli` was not a default member. After `e2eb96727`, the same command exited 0. `target/debug/codegg` is present (454053072 bytes). The passing invocation was warm (0.53s) and did not rewrite those bytes. No root shim was added.
+- `cargo build --locked --offline -p codegg --bin codegg`: exit 101, `no bin target named codegg in codegg package`. That failure is intended.
+- `scripts/verify.sh quick`: the `a6fa12efb` attempt failed because the scoped-selection self-test still named deleted `src/tui/app/mod.rs` and selected 0 targets. After `e2eb96727`, the re-run printed `Quick verification passed.` and exited 0. The cargo step finished warm in 0.97s and did not reprint unit names. The command still selects every workspace member, including `codegg-tui` and `codegg-cli`. This log does not show those crates compiling.
+
+Hosted before/after run ids are absent. The branch was not pushed. None of the commands above is a hosted `CI / verify` run.
 
 ## 5. Invariant review
 
@@ -87,7 +109,7 @@ No new restart or reconnect protocol. Attach moved with the bin package. The tra
 
 ## 7. Migration and compatibility review
 
-`codegg::tui` is not a supported path. `cargo build -p codegg --bin codegg` no longer resolves; the bin name `codegg` is owned by `codegg-cli`. Bundled theme files were not changed. No schema, protocol, or config migration. No separate daemon/TUI distribution.
+`codegg::tui` is not a supported path. `cargo build -p codegg --bin codegg` no longer resolves; the bin name `codegg` is owned by `codegg-cli`. `cargo build --bin codegg` from the workspace resolves because `e2eb96727` puts `crates/codegg-cli` in `default-members`. That is not a root bin, and the negative `-p codegg --bin codegg` check still exits 101. Bundled theme files were not changed. No schema, protocol, or config migration. No separate daemon/TUI distribution.
 
 ## 8. Security review
 
@@ -99,21 +121,22 @@ Architecture notes that called the TUI a root module were corrected to the one-w
 
 ## 10. Unresolved findings
 
+The local link, family, bin, and `quick` condition in the previous revision of this record was discharged on `e2eb96727`. The earlier disk-full linker error was not an assertion failure. The first bin attempt and the first `quick` attempt failed for the reasons in §4, and those failures were fixed rather than recorded as passes.
+
 | Severity | Finding | Future evidence |
 |---|---|---|
-| medium | Required local link and family runs did not execute | `cargo test -p codegg-tui --test tui_render -- tui_render`, `cargo test -p codegg --lib --features server`, `cargo build --locked --bin codegg`, and `scripts/verify.sh quick`, on a volume that can link. A disk-full linker error is not a pass |
-| medium | Hosted before/after `cfg(test)` run ids are absent | One hosted `CI / verify` run id before this commit and one after, with the runner note that one pair is not a precise effect size. State whether the root unit still contains the TUI (it must not) and whether the workspace job still builds the TUI crate (it must) |
+| medium | Hosted before/after `cfg(test)` run ids are absent | One hosted `CI / verify` run id before the move and one after, with the runner note that one pair is not a precise effect size. State whether the root unit still contains the TUI (it must not) and whether the workspace job still builds the TUI crate (it must). Local `quick` does not discharge this |
 | low | Forty-nine ratio ceilings rose with unchanged comment-line counts | No further action unless a later edit adds comment lines. Do not raise a comment-line ceiling to absorb it |
 
 No high-severity product defect was confirmed. The missing evidence is operational.
 
 ## 11. Roadmap disposition
 
-Milestone 002 is conditionally closed. Milestone 001 stays conditionally closed on its own hosted helper-step run id. The roadmap stays active until both conditions are met. A null compile effect does not add a third milestone. The deferred binary-topology item stays deferred.
+Milestone 002 is conditionally closed. The local link, family, bin, and `quick` evidence is recorded above. Milestone 001 stays conditionally closed on its own hosted helper-step run id. The roadmap stays active until both hosted conditions are met. A null compile effect does not add a third milestone. The deferred binary-topology item stays deferred.
 
 ## 12. Registry updates
 
-- The active implementation-plan row for 002 is removed.
-- 002 is recorded under recently closed or conditionally closed work.
-- The subsystem row names both milestones as conditionally closed.
-- Unblock audit: no registered plan in Blocked work listed 002 as a hard or interface dependency. 001's hosted-run condition is unchanged. The deferred binary-topology item is not discharged. This closure unblocks nothing.
+- The active implementation-plan row for 002 stays removed.
+- 002 stays under recently closed or conditionally closed work. Its note now says the local conditions are discharged and the hosted run ids are not.
+- The subsystem row names both milestones as conditionally closed. 002's remaining condition is the hosted pair only.
+- Unblock audit, repeated after the local evidence: no registered plan in Blocked work listed 002 as a hard or interface dependency. 001's hosted-run condition is unchanged. The deferred binary-topology item is not discharged. This record unblocks nothing.
