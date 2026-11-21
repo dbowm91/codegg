@@ -1,6 +1,9 @@
 [workspace]
 members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-host-protocol", "crates/codegg-sdk", "crates/codegg-client", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp", "crates/codegg-git", "crates/codegg-document", "crates/codegg-sandbox", "crates/codegg-sandbox-helper", "crates/codegg-tui", "crates/codegg-cli"]
-default-members = [".", "crates/codegg-sandbox-helper"]
+# The product bin lives in `codegg-cli`. It stays a default member so
+# `cargo build --bin codegg` still resolves. `cargo build -p codegg --bin codegg`
+# does not, and a root shim must not restore it.
+default-members = [".", "crates/codegg-sandbox-helper", "crates/codegg-cli"]
 # `crates/eggwork-test-node` is a standalone test-fixture workspace (own
 # lockfile): it must resolve `eggwork-server` without this workspace's
 # `sqlx` sqlite linkage (see dev-dependencies comment above).

@@ -657,7 +657,7 @@ def _self_test() -> int:
         # for exactly the case where a change touches two areas at once.
         both = select(
             base,
-            ["crates/eggsentry/src/command.rs", "src/tui/app/mod.rs"],
+            ["crates/eggsentry/src/command.rs", "src/server/mod.rs"],
         )
         root = next((m for m in both["members"] if m["name"] == "codegg"), None)
         if root is None:
@@ -673,7 +673,7 @@ def _self_test() -> int:
 
         # A change confined to the root package's own source must stay
         # precise: the root package has no dependents, so nothing is pulled in.
-        root_only = select(base, ["src/tui/app/mod.rs"])
+        root_only = select(base, ["src/server/mod.rs"])
         root_targets = next(
             (m for m in root_only["members"] if m["name"] == "codegg"), None
         )
