@@ -80,3 +80,92 @@ impl From<SemanticTheme> for Theme {
         Theme::from(&s)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::theme::registry::{ThemeRegistry, BUILTIN_THEME_FILES};
+
+    fn color_token(color: ratatui::style::Color) -> String {
+        match color {
+            ratatui::style::Color::Rgb(r, g, b) => format!("rgb({r},{g},{b})"),
+            other => format!("debug:{other:?}"),
+        }
+    }
+
+    fn field(out: &mut String, name: &str, value: &str) {
+        out.push_str(name);
+        out.push('=');
+        out.push_str(value);
+        out.push('\n');
+    }
+
+    fn project_text() -> String {
+        let registry = ThemeRegistry::load_builtins();
+        let mut themes = registry.all_tui_themes();
+        themes.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut out = String::new();
+        field(
+            &mut out,
+            "bundled_files",
+            &BUILTIN_THEME_FILES.len().to_string(),
+        );
+        field(&mut out, "projected", &themes.len().to_string());
+        for theme in &themes {
+            field(&mut out, "id", &theme.id);
+            field(&mut out, "name", &theme.name);
+            field(&mut out, "background", &color_token(theme.background));
+            field(&mut out, "foreground", &color_token(theme.foreground));
+            field(&mut out, "primary", &color_token(theme.primary));
+            field(&mut out, "secondary", &color_token(theme.secondary));
+            field(&mut out, "success", &color_token(theme.success));
+            field(&mut out, "warning", &color_token(theme.warning));
+            field(&mut out, "error", &color_token(theme.error));
+            field(&mut out, "muted", &color_token(theme.muted));
+            field(&mut out, "border", &color_token(theme.border));
+            field(&mut out, "selection", &color_token(theme.selection));
+            field(&mut out, "selection_dim", &color_token(theme.selection_dim));
+            field(
+                &mut out,
+                "selection_text",
+                &color_token(theme.selection_text),
+            );
+            field(&mut out, "accent_text", &color_token(theme.accent_text));
+            field(&mut out, "alternate_bg", &color_token(theme.alternate_bg));
+            field(&mut out, "input_bg", &color_token(theme.input_bg));
+            field(&mut out, "code_theme", &theme.code_theme);
+            field(&mut out, "link", &color_token(theme.link));
+        }
+        out
+    }
+
+    fn fixture_path() -> std::path::PathBuf {
+        let relative = std::path::Path::new("tests/fixtures/tui-theme-projection/bundled.txt");
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        loop {
+            let candidate = dir.join(relative);
+            if candidate.is_file() {
+                return candidate;
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+    }
+
+    #[test]
+    fn bundled_theme_ratatui_projection_matches_the_frozen_fixture() {
+        let path = fixture_path();
+        let projected = project_text();
+        let frozen = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "frozen theme projection missing at {}: {error}",
+                path.display()
+            )
+        });
+        assert_eq!(
+            frozen, projected,
+            "bundled theme projection drifted from the pre-move fixture"
+        );
+    }
+}
