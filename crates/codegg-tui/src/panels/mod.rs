@@ -1410,6 +1410,28 @@ impl SidePanelHost {
             .map(hosted::HostPanel::has_content)
     }
 
+    /// Whether `id`'s placeholder is still reporting a load in flight.
+    ///
+    /// A completion path reads this to decide whether the panel is *waiting*
+    /// for the answer it is delivering. A panel that was never asked, or that
+    /// already holds a box, must not have its state rewritten by an unrelated
+    /// answer.
+    pub fn panel_is_loading(&self, id: SidePanelId) -> bool {
+        matches!(
+            self.placeholder_state(id),
+            Some(hosted::PlaceholderState::Loading)
+        )
+    }
+
+    /// What `id` is saying while it holds no box, for a caller that has to
+    /// settle that state rather than merely test it.
+    pub fn placeholder_state(&self, id: SidePanelId) -> Option<&hosted::PlaceholderState> {
+        self.hosted
+            .iter()
+            .find(|panel| panel.id() == id)
+            .and_then(hosted::HostPanel::placeholder_state)
+    }
+
     /// Record what happened when the command layer last tried to fill `id`.
     ///
     /// The placeholder is how a panel admits that it did nothing, so the layer

@@ -83,6 +83,17 @@ impl HostPanel {
         !self.widget.is_placeholder()
     }
 
+    /// What this panel is saying while nothing has been adopted into it.
+    ///
+    /// None once a real box is mounted: the placeholder is off screen, so its
+    /// last state no longer describes anything the reader can see.
+    pub fn placeholder_state(&self) -> Option<&PlaceholderState> {
+        self.widget
+            .as_any()
+            .downcast_ref::<Placeholder>()
+            .map(|placeholder| &placeholder.state)
+    }
+
     /// Hand the mounted component of an open box to this panel.
     pub fn adopt(&mut self, widget: Box<dyn Component>) {
         self.widget = widget;
@@ -196,7 +207,7 @@ impl SidePanel for HostPanel {
 /// The manager sets this when it tries to fill a panel, so the column can say
 /// what actually happened instead of asserting that nothing is loaded. It is
 /// deliberately a **state**, never an instruction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlaceholderState {
     /// Nothing has been committed to this panel yet, so there is nothing to
     /// report beyond the fact that it is empty.
@@ -209,6 +220,16 @@ pub enum PlaceholderState {
     /// is the toast's job, which is transient and already gone by the time the
     /// user looks at the column again.
     Cannot(&'static str),
+    /// The load finished and the honest answer is that there is nothing to
+    /// show. Distinct from Idle (nothing was asked for) and from Cannot (the
+    /// panel would act if it could): an empty answer is an answer, and a panel
+    /// that kept saying "Loading" after one arrived was telling the user to
+    /// wait for a reply already delivered.
+    Empty(&'static str),
+    /// The load failed. Owned rather than a static label because the reason is
+    /// the daemon's own words — a code and a message — and replacing them with
+    /// a generic label would hide which refusal happened.
+    Failed(String),
 }
 
 /// What is mounted when a panel has no adopted box.
@@ -232,7 +253,7 @@ impl Placeholder {
     /// Headline plus explanation, in that order.
     fn lines(&self) -> Vec<ratatui::text::Line<'static>> {
         let bold = Style::default().add_modifier(ratatui::style::Modifier::BOLD);
-        match self.state {
+        match &self.state {
             PlaceholderState::Idle => vec![
                 ratatui::text::Line::from(""),
                 ratatui::text::Line::from("Nothing loaded.").style(bold),
@@ -250,7 +271,20 @@ impl Placeholder {
                 ratatui::text::Line::from(format!("{} can't open here.", self.id.label()))
                     .style(bold),
                 ratatui::text::Line::from(""),
-                ratatui::text::Line::from(reason),
+                ratatui::text::Line::from(*reason),
+            ],
+            PlaceholderState::Empty(reason) => vec![
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from("Nothing to show.").style(bold),
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from(*reason),
+            ],
+            PlaceholderState::Failed(reason) => vec![
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from(format!("{} couldn't load.", self.id.label()))
+                    .style(bold),
+                ratatui::text::Line::from(""),
+                ratatui::text::Line::from(reason.clone()),
             ],
         }
     }
@@ -362,7 +396,7 @@ mod tests {
             PlaceholderState::Cannot("nothing to show yet"),
         ] {
             let mut placeholder = Placeholder::new(SidePanelId::Files);
-            placeholder.state = state;
+            placeholder.state = state.clone();
             let text = rendered(&mut placeholder, SidePanelId::Files.label(), true);
             assert!(
                 text.contains("Files ●"),
@@ -395,7 +429,7 @@ mod tests {
                 PlaceholderState::Cannot("nothing to show yet"),
             ] {
                 let mut placeholder = Placeholder::new(id);
-                placeholder.state = state;
+                placeholder.state = state.clone();
                 let text = rendered(&mut placeholder, "x", false);
                 assert!(
                     !text.contains("Shift+←"),

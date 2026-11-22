@@ -267,6 +267,15 @@ pub(crate) fn select_panel(app: &mut App, id: SidePanelId) -> SelectOutcome {
         );
         panel_host.select(id, &mut ctx);
     }
+    if id == SidePanelId::Terminal && app.panel_host.is_visible_at(app.panel_host.placement()) {
+        // Selecting the terminal is a load, and a loaded terminal is for
+        // typing. This is the only seam every route into the panel passes
+        // through — the manager, a saved hotkey, the dock gesture, and the
+        // reveal — so the readiness rule lives here rather than in each one.
+        // A selection into a collapsed edge loads nothing the user can see,
+        // so it does not start a process either.
+        crate::commands::interactive_terminal::ready_terminal_panel(app);
+    }
     sync_workspace_focus(app);
     SelectOutcome::Selected
 }

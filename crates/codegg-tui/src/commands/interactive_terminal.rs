@@ -173,22 +173,29 @@ pub(crate) fn terminal_core_client(
 // ── Create ──────────────────────────────────────────────────────────
 
 /// Start an interactive terminal from `/terminal-create <argv...>`.
-pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) {
+///
+/// Returns whether the request actually began. The panel route needs that
+/// answer: it records "a shell is being created for this panel" in one bit,
+/// and that bit gates the next attempt. Setting it for a create that was
+/// refused before dispatch would leave the panel permanently mid-create, so
+/// every later select and `i` returned through the guard and the surface
+/// could never recover.
+pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) -> bool {
     if argv.is_empty() {
         app.messages_state
             .toasts
             .warning("Usage: /terminal-create <command> [args...]");
-        return;
+        return false;
     }
     let workspace_id = match resolve_terminal_workspace(app) {
         Ok(workspace_id) => workspace_id,
         Err(error) => {
             app.messages_state.toasts.error(&error);
-            return;
+            return false;
         }
     };
     let Some(core_client) = terminal_core_client(app, TerminalOperation::Create) else {
-        return;
+        return false;
     };
     let request_id = app.dialog_state.terminal_request.begin();
     let command_label = argv.join(" ");
@@ -249,6 +256,7 @@ pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) {
             Some(result)
         },
     );
+    true
 }
 
 /// argv for the everyday interactive shell.
@@ -295,8 +303,10 @@ pub(crate) fn spawn_default_terminal_for_panel(app: &mut App) {
         // race the first to become the active handle and orphan a shell.
         return;
     }
-    app.terminal_panel_spawn = true;
-    start_terminal_create(app, default_shell_argv());
+    // Only an in-flight create may set the bit. A refusal (no client, no
+    // workspace) reports itself and leaves it clear, so the next select or
+    // `i` retries instead of being swallowed by the guard above.
+    app.terminal_panel_spawn = start_terminal_create(app, default_shell_argv());
 }
 
 /// Match the PTY to the usable dialog area, with a minimum useful viewport.
@@ -669,6 +679,17 @@ pub(crate) fn apply_terminal_attach_finished(
         // leave two views of one PTY fighting over the keyboard.
         app.terminal_panel_spawn = false;
         app.panel_host.show_terminal(Some(&handle));
+        // The load is finished, so the panel is for typing: a shell the user
+        // asked for starts ready for its first key rather than waiting for a
+        // second `i`. Scoped to the panel that actually holds the keyboard —
+        // an attach that lands after the user has left the column, or behind
+        // an open dialog, shows the terminal without stealing focus back.
+        if app.panel_host.is_focused()
+            && app.panel_host.active() == crate::panels::SidePanelId::Terminal
+            && app.focus_manager.is_empty()
+        {
+            let _ = app.interactive_terminals.focus(&handle);
+        }
     } else {
         handle_terminal_show(app, handle);
     }
@@ -1805,9 +1826,44 @@ pub(crate) fn focus_terminal_panel(app: &mut App, handle: &str) {
     // replaced. Typing into either used to produce `interactive_not_running`
     // with no way forward from the surface the user was standing on.
     if app.interactive_terminals.is_live(handle) {
+        // Route the completion back to the panel. Re-attaching from the
+        // panel used to clear the panel bit, so its completion opened the
+        // terminal box over the column the user was reading — the exact
+        // surface they had just asked to type into.
+        app.terminal_panel_spawn = true;
         start_terminal_attach(app, handle.to_string());
     } else {
         spawn_default_terminal_for_panel(app);
+    }
+}
+
+/// Make the terminal panel ready for the next key.
+///
+/// Selecting the panel is a load, and a terminal that has loaded is for
+/// typing. A live attachment takes the PTY keyboard; a live but detached
+/// process is re-attached first; an empty panel starts the default shell.
+///
+/// An exited or gone handle is left on screen for reading. Its output is the
+/// post-mortem the user came for, and replacing it on sight would throw that
+/// away — `i` is the deliberate gesture that starts a replacement.
+pub(crate) fn ready_terminal_panel(app: &mut App) {
+    let Some(handle) = app.panel_host.terminal_handle().map(str::to_string) else {
+        spawn_default_terminal_for_panel(app);
+        return;
+    };
+    if app.interactive_terminals.view(&handle).is_none() {
+        // The view is gone, so the handle cannot come back. Drop it and start
+        // the shell the panel exists for.
+        app.panel_host.forget_terminal(&handle);
+        spawn_default_terminal_for_panel(app);
+        return;
+    }
+    if app.interactive_terminals.focus(&handle) {
+        return;
+    }
+    if app.interactive_terminals.is_live(&handle) {
+        app.terminal_panel_spawn = true;
+        start_terminal_attach(app, handle);
     }
 }
 
@@ -2605,10 +2661,10 @@ mod tests {
             "typing at a focused terminal leaves it focused; `i` is program input, not a toggle"
         );
 
-        // The panel half: same gesture, opposite meaning, because a docked
-        // surface is something the user is looking at rather than typing into.
-        // `terminal_panel_spawn` is the one bit of correlation the panel route
-        // uses, so it has to be set before the attach lands.
+        // The panel half: the same completion, but no surface here holds the
+        // keyboard, so readiness must not steal it. `terminal_panel_spawn` is
+        // the one bit of correlation the panel route uses, so it has to be set
+        // before the attach lands.
         let mut app = test_app();
         app.terminal_panel_spawn = true;
         let request_id = app.dialog_state.terminal_request.begin();
@@ -2623,11 +2679,115 @@ mod tests {
         );
         assert!(
             !app.interactive_terminals.is_focused("h-panel"),
-            "a terminal handed to the docked panel must not arrive holding the keyboard"
+            "an attach that lands with the panel off the keyboard must not steal focus"
         );
         assert!(
             app.ui_state.dialog != crate::Dialog::Terminal,
             "the panel route must not also raise the box"
+        );
+    }
+
+    /// The panel's load must leave it ready for the next key.
+    ///
+    /// Focus is scoped to the surface that holds the keyboard: this pins the
+    /// positive half, and the test above pins the negative one (an attach that
+    /// lands while the panel is off the keyboard shows the shell without
+    /// taking it back).
+    #[test]
+    fn a_panel_attach_focuses_the_terminal_the_panel_is_showing() {
+        use crate::panels::{PanelPlacement, SidePanelId};
+
+        let mut app = test_app();
+        app.ui_state.sidebar_visible = true;
+        app.panel_host
+            .dock(SidePanelId::Terminal, PanelPlacement::Right);
+        assert!(app.panel_host.focus(), "the panel must hold the keyboard");
+        app.terminal_panel_spawn = true;
+        let request_id = app.dialog_state.terminal_request.begin();
+        apply_terminal_attach_finished(
+            &mut app,
+            request_id,
+            "h-ready".to_string(),
+            Some("a-ready".to_string()),
+            Some(test_chunk("$ ")),
+            None,
+            None,
+        );
+
+        assert!(
+            app.interactive_terminals.is_focused("h-ready"),
+            "a shell that finished loading into the focused terminal panel is ready for the \
+             next key; a second `i` must not be what makes it typeable"
+        );
+        assert_eq!(
+            app.ui_state.dialog,
+            crate::Dialog::None,
+            "the panel route must not raise the box over the column it just filled"
+        );
+    }
+
+    #[test]
+    fn a_failed_panel_attach_does_not_keep_the_panel_mid_create() {
+        use crate::panels::{PanelPlacement, SidePanelId};
+
+        let mut app = test_app();
+        app.panel_host
+            .dock(SidePanelId::Terminal, PanelPlacement::Right);
+        assert!(app.panel_host.focus());
+        app.terminal_panel_spawn = true;
+        let request_id = app.dialog_state.terminal_request.begin();
+        apply_terminal_attach_finished(
+            &mut app,
+            request_id,
+            "h-fail".to_string(),
+            None,
+            None,
+            None,
+            Some("attach request failed".to_string()),
+        );
+
+        assert!(
+            !app.interactive_terminals.is_focused("h-fail"),
+            "a failed attach must not report an input-ready panel"
+        );
+        assert!(
+            !app.terminal_panel_spawn,
+            "a failed attach must clear the panel route so the next select can retry"
+        );
+    }
+
+    /// A create refused *before dispatch* must not leave the panel looking
+    /// mid-create. The guard that stops a second shell keys off that bit, so a
+    /// refusal that kept it set made every later select and `i` return through
+    /// the guard: one toast, then permanent silence.
+    /// A second select while the first create is in flight must not mint a
+    /// second shell. The guard is the same bit the completion clears, and the
+    /// select path now reaches it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_select_during_an_in_flight_create_does_not_start_another_shell() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let mut app = pull_test_panel_app(dir.path(), marker_shell()).await;
+        // The fixture has started one create and set the panel route. This
+        // select sees no handle yet, so it must return through the guard
+        // rather than starting a second shell.
+        ready_terminal_panel(&mut app);
+
+        await_terminal_create(&mut app).await;
+        drain_tui_commands(&mut app).await;
+        assert_eq!(
+            app.interactive_terminals.len(),
+            1,
+            "two creates would leave two views and one orphaned shell"
+        );
+    }
+
+    #[test]
+    fn a_refused_create_does_not_leave_the_panel_mid_create() {
+        let mut app = test_app();
+        super::spawn_default_terminal_for_panel(&mut app);
+        assert!(
+            !app.terminal_panel_spawn,
+            "a create refused before dispatch must clear the in-flight bit"
         );
     }
 

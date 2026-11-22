@@ -802,10 +802,13 @@ run_scoped() {
     fi
 
     echo "==> Scope"
-    printf '%s\n' "$selection" | python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format text
+    # Here-string, not a pipe: the formatter stops reading once it has parsed
+    # the selection, and with `pipefail` a large selection made `printf` take
+    # SIGPIPE (141) before the widened pass could start.
+    python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format text <<< "$selection"
 
     # The workspace-wide widening case: run the ordinary workspace test pass.
-    if printf '%s' "$selection" | grep -q '"widen_workspace": true'; then
+    if grep -q '"widen_workspace": true' <<< "$selection"; then
         echo "==> Scope widened to the whole workspace; running the workspace-wide pass"
         echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run --workspace --locked --profile ci"
         (cd "$REPO_ROOT" && cargo nextest run --workspace --locked --profile ci)

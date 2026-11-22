@@ -249,6 +249,13 @@ pub fn is_live_state(state: &str) -> bool {
     if state.is_empty() {
         return true;
     }
+    // A cancellation that has been *requested* is not a cancellation that
+    // happened: `cancelling` is a live run winding down. Checked before the
+    // terminal tokens because `contains("cancel")` would otherwise fold the
+    // two together and report a running child as finished.
+    if state == "cancelling" {
+        return true;
+    }
     if TERMINAL_STATES
         .iter()
         .any(|terminal| state.contains(terminal))
@@ -274,6 +281,7 @@ const TERMINAL_STATES: &[&str] = &[
     "expired",
     "timed_out",
     "timeout",
+    "interrupt",
 ];
 
 /// Minimal shape the overlay needs from a todo, so this module does not depend
@@ -537,6 +545,70 @@ mod tests {
             .find(|r| matches!(r, TaskRow::Subagent { .. }))
             .expect("a subagent row");
         assert_eq!(activatable_target(body), Some("child-1"));
+    }
+
+    /// Both the overlay and the sessions dialog filter through
+    /// SubagentRow::is_running, which now reads the producer's whole live
+    /// vocabulary. A child that has been dispatched but not started is the
+    /// case that used to vanish exactly when the user opened Ctrl+T.
+    /// Ctrl+T must not deny work the Session panel is still showing just
+    /// because the projection stream has not spoken this frame. A missing
+    /// snapshot used to become an empty vector.
+    #[test]
+    fn the_overlay_keeps_adopted_rows_when_no_snapshot_is_available() {
+        use crate::app::App;
+
+        let mut app = App::new_for_testing("tasks-fallback".to_string());
+        assert!(
+            app.projection_client.active_snapshot().is_none(),
+            "the premise: this app holds no projection snapshot"
+        );
+        let adopted = SubagentRow {
+            task_id: "7".into(),
+            child_instance_id: Some("child-adopted".into()),
+            agent: "explore".into(),
+            status: "created".into(),
+            ..SubagentRow::default()
+        };
+        app.ui_state.subagents.set_rows(vec![adopted]);
+
+        let rows = app.task_rows();
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, TaskRow::Subagent { .. })),
+            "a missing snapshot is not evidence of emptiness; the overlay must keep the rows \
+             the Session panel already shows"
+        );
+    }
+
+    #[test]
+    fn a_created_child_reaches_the_overlay() {
+        let created = SubagentRow {
+            task_id: "7".into(),
+            child_instance_id: Some("child-created".into()),
+            agent: "explore".into(),
+            status: "created".into(),
+            ..SubagentRow::default()
+        };
+        let finished = SubagentRow {
+            child_instance_id: Some("child-finished".into()),
+            status: "completed".into(),
+            ..created.clone()
+        };
+
+        let rows = build_task_rows(&[], &[created, finished], &[]);
+        let subagents: Vec<String> = rows
+            .iter()
+            .filter_map(|row| match row {
+                TaskRow::Subagent { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            subagents,
+            vec!["explore".to_string()],
+            "a dispatched child is live; a completed one is not"
+        );
     }
 
     #[test]

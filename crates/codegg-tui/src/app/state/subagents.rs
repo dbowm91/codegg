@@ -15,6 +15,7 @@
 //! the mouse hit geometry, and reconciles the two on every arriving snapshot.
 
 use crate::app::state::subagent_tabs::{SubagentTabId, SubagentTabState, SubagentTabs};
+use crate::app::state::tasks::is_live_state;
 use crate::wrap::ellipsize_to_width;
 use codegg::protocol::projection::dto::AgentRunTranscriptProjection;
 
@@ -125,22 +126,19 @@ impl SubagentRow {
         }
     }
 
-    /// Whether this row is still running.
+    /// Whether this row is still work the session is waiting on.
     ///
-    /// The projection spells statuses inconsistently across producers, so
-    /// this matches on the lowercase token rather than an exact string; a
-    /// status the producer invents later defaults to *not* running, which
-    /// keeps a stale row from claiming to be live.
+    /// One rule for subagent and job rows ([is_live_state]), because the two
+    /// used to disagree. This predicate listed a handful of "live" tokens and
+    /// called everything else finished, while the job predicate called every
+    /// state it did not recognise live. The producer's real vocabulary is
+    /// `created`, `queued`, `preparing`, `running`, `waiting`,
+    /// `cancelling`, and four terminal states — so four live states were
+    /// hidden: a child that had been dispatched but not started, or one
+    /// waiting for an answer, disappeared from the overlay and the sessions
+    /// dialog exactly while it was the thing the user was waiting for.
     pub fn is_running(&self) -> bool {
-        let status = self.status.trim().to_ascii_lowercase();
-        status.is_empty()
-            || status.contains("running")
-            || status.contains("in_progress")
-            || status.contains("in-progress")
-            || status.contains("active")
-            || status.contains("pending")
-            || status.contains("queued")
-            || status.contains("started")
+        is_live_state(&self.status)
     }
 
     /// The single buffer row for this subagent, ellipsized to `width`.
@@ -443,6 +441,26 @@ mod tests {
             assert!(
                 !row(status).is_running(),
                 "{status} should not count as running"
+            );
+        }
+    }
+
+    /// The producer's durable run vocabulary is wider than the old "live"
+    /// list, and every one of these four is a child the user is waiting on.
+    /// They used to be filtered out of Ctrl+T and the sessions dialog while
+    /// the Session panel still listed them.
+    #[test]
+    fn a_dispatched_or_waiting_child_is_not_mistaken_for_finished() {
+        for status in ["created", "preparing", "waiting", "cancelling", "queued"] {
+            assert!(
+                row(status).is_running(),
+                "{status} is a live run state and must not be hidden"
+            );
+        }
+        for status in ["completed", "failed", "interrupted", "cancelled"] {
+            assert!(
+                !row(status).is_running(),
+                "{status} is terminal and must not claim to be live"
             );
         }
     }

@@ -1240,6 +1240,11 @@ to move that column's own content. If the process behind the panel has exited,
 `i` starts a fresh shell instead, the panel never leaves you staring at a dead
 one.
 
+Selecting the panel with nothing behind it starts a shell, and a shell that has
+just finished loading is already taking your keys: the first character you type
+reaches the process, with no extra `i`. `Esc` still hands the keyboard back to
+the panel, and `i` takes it again.
+
 The line of keys above the composer describes whatever is holding your keyboard,
 so it appears while the terminal panel has it and leaves with it: once you have
 handed the keyboard back to the conversation, the terminal's own verbs are gone

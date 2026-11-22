@@ -12408,9 +12408,9 @@ impl App {
                 content: todo.content.clone(),
             })
             .collect();
-        let session_work = self
-            .projection_client
-            .active_snapshot()
+        let snapshot = self.projection_client.active_snapshot();
+        let session_work = snapshot
+            .as_ref()
             .map(|(_, snapshot)| crate::app::state::session_work::select_session_work(snapshot))
             .unwrap_or_default();
         let jobs: Vec<crate::app::state::tasks::JobLike> = session_work
@@ -12418,10 +12418,18 @@ impl App {
             .filter(|work| work.is_live())
             .filter_map(|work| work.job.clone())
             .collect();
-        let subagents: Vec<crate::app::state::subagents::SubagentRow> = session_work
-            .iter()
-            .filter_map(|work| work.subagent.clone())
-            .collect();
+        let subagents: Vec<crate::app::state::subagents::SubagentRow> = if snapshot.is_some() {
+            session_work
+                .iter()
+                .filter_map(|work| work.subagent.clone())
+                .collect()
+        } else {
+            // No snapshot is not evidence that nothing is running. The rows
+            // adopted from the last snapshot are what the Session panel is
+            // still showing, so building the overlay from an empty vector
+            // would make Ctrl+T deny work the column beside it lists.
+            self.ui_state.subagents.rows.clone()
+        };
         let mut rows = crate::app::state::tasks::build_task_rows(&todos, &subagents, &jobs);
         for row in &mut rows {
             if let crate::app::state::tasks::TaskRow::Subagent {

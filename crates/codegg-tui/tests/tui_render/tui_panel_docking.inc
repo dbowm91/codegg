@@ -364,6 +364,65 @@ async fn an_unknown_handle_does_not_stop_the_panel_from_starting_one() {
     assert!(app.panel_host.is_focused());
 }
 
+/// The reported defect: selecting the Terminal panel must leave a live shell
+/// able to take the next key, without a second `i`.
+#[tokio::test(flavor = "current_thread")]
+async fn selecting_the_terminal_panel_leaves_a_live_shell_ready_for_typing() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-ready", &["$ "]);
+    choose_by_label(&mut app, SidePanelId::Terminal);
+
+    assert_eq!(app.panel_host.terminal_handle(), Some("t-ready"));
+    assert!(
+        app.interactive_terminals.is_focused("t-ready"),
+        "a live attached terminal is the panel's content; loading it is asking to type"
+    );
+
+    // The key is the receipt: it must be queued as PTY input rather than
+    // swallowed as terminal navigation. This app has no daemon client, so the
+    // flush puts the bytes back in the queue — which is exactly the input the
+    // panel handed to the controller.
+    app.on_key(plain('a'));
+    let mut typed = Vec::new();
+    while let Some(bytes) = app.interactive_terminals.take_pending_input("t-ready") {
+        typed.extend_from_slice(&bytes);
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&typed),
+        "a",
+        "the first key after loading the panel belongs to the shell"
+    );
+}
+
+/// `Esc` hands the keyboard back to the panel; `i` returns to input on the
+/// same panel and must not raise the terminal box over it.
+#[tokio::test(flavor = "current_thread")]
+async fn escaping_a_loaded_terminal_and_pressing_i_returns_to_input() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-return", &["$ "]);
+    choose_by_label(&mut app, SidePanelId::Terminal);
+    assert!(app.interactive_terminals.is_focused("t-return"));
+
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !app.interactive_terminals.is_focused("t-return"),
+        "Esc reads; it must not leave the PTY owning the keyboard"
+    );
+
+    app.on_key(plain('i'));
+    assert!(
+        app.interactive_terminals.is_focused("t-return"),
+        "`i` after Esc puts the keyboard back on the process"
+    );
+    assert_eq!(
+        app.ui_state.dialog,
+        codegg_tui::Dialog::None,
+        "the panel route must not raise the box"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn clearing_an_unknown_terminal_does_not_invent_state() {
     let mut app = test_app();
@@ -667,7 +726,11 @@ async fn scrolling_back_reaches_output_that_left_the_screen() {
     );
 }
 
-/// Select the Terminal panel and put the keyboard on it in Normal mode.
+/// Select the Terminal panel and put it in reading mode.
+///
+/// Loading a live terminal puts the PTY on the keyboard, so the helper hands
+/// it back with `Esc`: these tests drive the reading verbs (`j`/`k`/`v`/`x`/`d`),
+/// which are exactly what Insert mode sends to the process instead.
 ///
 /// `choose_nth` alone is not enough for the navigation tests: it selects the
 /// panel, but a panel is only consulted for keys when it is both focused *and*
@@ -675,6 +738,13 @@ async fn scrolling_back_reaches_output_that_left_the_screen() {
 fn focus_terminal_panel(app: &mut App) {
     choose_nth(app, SidePanelId::Terminal.index());
     app.ui_state.input_mode = InputMode::Normal;
+    let typing = app
+        .panel_host
+        .terminal_handle()
+        .is_some_and(|handle| app.interactive_terminals.is_focused(handle));
+    if typing {
+        app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    }
     assert!(
         app.panel_host.is_focused(),
         "the terminal panel must hold the keyboard for these keys to reach it"
@@ -1519,39 +1589,52 @@ async fn resize_mode_is_a_normal_mode_gesture() {
 /// The reported failure, on the panel: `/terminal`, dock it with `Shift+H`,
 /// and the box appears in the left column — but typing does nothing.
 ///
-/// The daemon-bound send drains the queue into a request, and the test app has
-/// no `CoreClient`, so the observable proof that a keystroke reached the PTY
-/// send seam is the refusal it produces. A key that were consumed as panel
-/// navigation instead would queue nothing and produce no such refusal at all.
+/// Loading the panel is a request to type, so the PTY owns the first key with
+/// no second `i`. The test app has no `CoreClient`, so the daemon-bound send
+/// puts the bytes back in the controller's queue: that queue is the proof the
+/// keystroke reached the input seam instead of being eaten as panel
+/// navigation.
 #[tokio::test(flavor = "current_thread")]
-async fn a_docked_terminal_panel_accepts_typing_after_i() {
+async fn a_docked_terminal_panel_accepts_typing_as_soon_as_it_loads() {
+    fn typed(app: &mut App, handle: &str) -> String {
+        let mut bytes = Vec::new();
+        while let Some(pending) = app.interactive_terminals.take_pending_input(handle) {
+            bytes.extend_from_slice(&pending);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
     let mut app = test_app();
     app.ui_state.sidebar_visible = true;
     attach_terminal(&mut app, "t-type", &["$ "]);
-    focus_terminal_panel(&mut app);
+    // Select without the reading-mode helper: this test is about the state
+    // the panel loads in.
+    choose_by_label(&mut app, SidePanelId::Terminal);
 
-    // Normal mode: `i` is the way in.
     assert!(
-        !app.interactive_terminals.is_focused("t-type"),
-        "the panel starts viewing, not focused"
+        app.interactive_terminals.is_focused("t-type"),
+        "a live attached terminal is input-ready when its panel loads"
     );
+    app.on_key(plain('l'));
+    assert_eq!(
+        typed(&mut app, "t-type"),
+        "l",
+        "the first key must be routed as PTY input, not eaten as panel navigation"
+    );
+
+    // The explicit route still works after the keyboard is handed back.
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.interactive_terminals.is_focused("t-type"));
     app.on_key(plain('i'));
     assert!(
         app.interactive_terminals.is_focused("t-type"),
-        "`i` is the documented way into the PTY"
+        "`i` is still the way back into the PTY"
     );
-
-    // A printable key must now reach the PTY send seam. With no daemon the
-    // send reports that it could not be delivered — which is exactly the
-    // evidence that the bytes were routed as input rather than swallowed as
-    // navigation.
     app.on_key(plain('l'));
-    assert!(
-        app.messages_state
-            .toasts
-            .iter()
-            .any(|toast| toast.message.contains("terminal input dropped")),
-        "typing after `i` must be routed as PTY input, not eaten as panel navigation"
+    assert_eq!(
+        typed(&mut app, "t-type"),
+        "l",
+        "typing after `i` must be routed as PTY input again"
     );
 }
 
@@ -1674,7 +1757,8 @@ async fn the_terminal_hint_row_only_exists_while_the_panel_holds_the_keyboard() 
     );
     let focused_prompt = composer_row(&focused);
 
-    // `Shift+←` is the way out of a right-hand column.
+    // The helper already handed the keyboard back with `Esc`; `Shift+←` is
+    // the way out of a right-hand column from there.
     app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
     assert!(
         !app.panel_host.is_focused(),

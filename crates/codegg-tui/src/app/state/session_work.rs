@@ -399,6 +399,124 @@ mod tests {
         assert_eq!(program.job.as_ref().unwrap().kind, "rust tool program");
     }
 
+    /// One derivation, three surfaces: the Session panel, the sessions
+    /// dialog, and Ctrl+T must all carry a child the projection vouches for,
+    /// whatever live token its durable run happens to be in.
+    #[test]
+    fn a_created_child_reaches_all_three_named_surfaces() {
+        use crate::app::state::tasks::{build_task_rows, TaskRow};
+        use crate::components::dialogs::session::{SessionDialog, SubagentListRow};
+        use crate::components::sidebar::{SidebarSubagent, SidebarWidget};
+        use std::sync::Arc;
+
+        let mut snapshot = idle_snapshot();
+        snapshot.subagents.push_back(AgentTreeNodeProjection {
+            child_instance_id: "child-live".into(),
+            originating_turn_id: Some("turn-1".into()),
+            task_id: 7,
+            agent: "explore".into(),
+            description: "audit the panels".into(),
+            status: AgentTreeStatus::Running,
+            parent_task_id: None,
+            created_at: 1,
+            completed_at: None,
+            result_summary: None,
+            display_name: Some("Sally".into()),
+            profile: None,
+            usefulness: None,
+            run_id: Some("run-live".into()),
+        });
+        // The durable run is the record that wins the merge, and its token is
+        // the one that used to hide the child.
+        snapshot.agent_runs.push_back(AgentRunSummary {
+            run_id: "run-live".into(),
+            task_id: "task-uuid".into(),
+            project_id: "project-fixture".into(),
+            repository_id: None,
+            workspace_id: "workspace-fixture".into(),
+            job_id: None,
+            parent_run_id: None,
+            agent: "explore".into(),
+            status: "created".into(),
+            depth: 1,
+            worktree_id: None,
+            read_only_worktree: false,
+            branch: None,
+            base_commit: None,
+            result_commit: None,
+            validation_summary: None,
+            group_id: None,
+            attention_required: false,
+            terminal_summary: None,
+            control_status: "available".into(),
+            progress: None,
+            failure_class: None,
+            updated_at: 2,
+            transcript: None,
+        });
+
+        let work = select_session_work(&snapshot);
+        let child = work
+            .iter()
+            .find(|row| row.child_instance_id.as_deref() == Some("child-live"))
+            .expect("the selector keeps a session-owned child");
+        assert_eq!(
+            child.status, "created",
+            "the durable run status wins the merge"
+        );
+        let rows: Vec<_> = work.iter().filter_map(|row| row.subagent.clone()).collect();
+
+        // Ctrl+T, and the sessions dialog, build from the same overlay rows.
+        let overlay = build_task_rows(&[], &rows, &[]);
+        assert!(
+            overlay
+                .iter()
+                .any(|row| { matches!(row, TaskRow::Subagent { label, .. } if label == "Sally") }),
+            "Ctrl+T must show the live child"
+        );
+
+        let list_rows: Vec<SubagentListRow> = rows
+            .iter()
+            .map(|row| SubagentListRow {
+                task_id: row.task_id.clone(),
+                child_instance_id: row.child_instance_id.clone(),
+                run_id: row.run_id.clone(),
+                job_id: None,
+                label: row.label().to_string(),
+                agent: row.agent.clone(),
+                description: row.description.clone(),
+                profile: row.descriptor().map(str::to_string),
+                status: row.status.clone(),
+            })
+            .collect();
+        let mut dialog = SessionDialog::new(Arc::new(crate::theme::Theme::default()));
+        dialog.set_pending_rows(list_rows, Vec::new());
+        assert_eq!(
+            dialog.subagent_rows().len(),
+            1,
+            "the sessions dialog must show the live child"
+        );
+
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_subagents(
+            rows.iter()
+                .map(|row| SidebarSubagent {
+                    task_id: row.task_id.clone(),
+                    child_instance_id: row.child_instance_id.clone(),
+                    name: row.label().to_string(),
+                    agent: row.agent.clone(),
+                    status: row.status.clone(),
+                    profile: row.descriptor().map(str::to_string),
+                })
+                .collect(),
+        );
+        assert_eq!(
+            sidebar.subagent_total, 1,
+            "the Session panel must list the live child"
+        );
+        assert_eq!(sidebar.subagents.len(), 1);
+    }
+
     #[test]
     fn session_owned_children_do_not_hide_legacy_turn_local_children() {
         let mut snapshot = idle_snapshot();
