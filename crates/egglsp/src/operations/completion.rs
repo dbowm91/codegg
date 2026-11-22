@@ -457,7 +457,7 @@ impl LspOperations {
         )
         .await?;
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
-        self.semantic_tokens_with_key(&key, file_path, max_tokens)
+        self.semantic_tokens_with_key(&key, file_path, max_tokens, None)
             .await
     }
 
@@ -475,7 +475,39 @@ impl LspOperations {
             crate::capability::LspSemanticOperation::SemanticTokens,
         )
         .await?;
-        self.semantic_tokens_with_key(key, file_path, max_tokens)
+        self.semantic_tokens_with_key(key, file_path, max_tokens, None)
+            .await
+    }
+
+    /// Read-only `textDocument/semanticTokens/range` against an already-warm
+    /// client. It refuses without sending any request unless the server
+    /// explicitly advertises range support.
+    pub async fn semantic_tokens_for_warm_client_in_range(
+        &self,
+        key: &str,
+        file_path: &Path,
+        range: Range,
+        max_tokens: usize,
+    ) -> Result<Vec<DecodedSemanticToken>, LspError> {
+        self.require_capability_for_key(
+            key,
+            crate::capability::LspSemanticOperation::SemanticTokens,
+        )
+        .await?;
+        let supports_range = self
+            .service
+            .effective_capabilities_for_key(key)
+            .await
+            .is_some_and(|snapshot| snapshot.details.supports_semantic_tokens_range);
+        if !supports_range {
+            return Err(LspError::Unavailable(
+                crate::capability::LspUnavailable::new(
+                    crate::capability::LspSemanticOperation::SemanticTokens,
+                    "server does not advertise semanticTokensProvider range support",
+                ),
+            ));
+        }
+        self.semantic_tokens_with_key(key, file_path, max_tokens, Some(range))
             .await
     }
 
@@ -484,21 +516,33 @@ impl LspOperations {
         key: &str,
         file_path: &Path,
         max_tokens: usize,
+        range: Option<Range>,
     ) -> Result<Vec<DecodedSemanticToken>, LspError> {
         let uri = url_to_uri(&url::Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?)?;
 
-        let params = serde_json::to_value(SemanticTokensParams {
-            text_document: TextDocumentIdentifier { uri },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        })?;
+        let (method, params) = match range {
+            Some(range) => (
+                "textDocument/semanticTokens/range",
+                serde_json::to_value(SemanticTokensRangeParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    range,
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })?,
+            ),
+            None => (
+                "textDocument/semanticTokens/full",
+                serde_json::to_value(SemanticTokensParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })?,
+            ),
+        };
 
-        let resp = self
-            .service
-            .send_request(key, "textDocument/semanticTokens/full", params)
-            .await?;
+        let resp = self.service.send_request(key, method, params).await?;
 
         if resp.is_null() {
             return Ok(Vec::new());

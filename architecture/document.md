@@ -176,6 +176,27 @@ it retries a stale managed mirror from the registry before semantic work.
 Mirror failure is reported as `lsp_degraded`; it never rejects or rolls back
 canonical editor text.
 
+**The interactive open response is document authority, not publication**
+(ADR-0065). Workspace `DocumentOpen` returns after authorization, the
+document open, and `refresh_external_disk` — the repository-locked,
+path-validated disk re-read. It does not await the managed-document push. The
+publication that gates the requested file's `didOpen` continues on its own
+task under the interactive readiness policy, so a cold server cannot hold the
+editor on an empty buffer for a profile diagnostics timeout.
+
+`CoreResponse::DocumentSnapshot` therefore carries `lsp_sync`:
+`pending` / `synced` / `degraded` / `unavailable`, `#[serde(default)]`. A
+payload that omits the field decodes as `legacy`, meaning the sender *did*
+await its sync and `lsp_degraded: false` meant that wait completed without
+error — a missing field is never `pending`. `lsp_degraded` is true only for
+`degraded` and `unavailable`, so `false` on a new open response means
+"nothing has failed yet", **not** "the server has this revision".
+`DocumentChanged`, `DocumentSaved`, and `DocumentReloaded` keep their awaited
+sync and do not carry the field. `DocumentChanged` still means the document
+revision committed: the language-server notification that follows it is
+debounced in `egglsp` and is not part of that response. The global-agent scope
+is intentionally outside workspace LSP publication and answers `unavailable`.
+
 `DocumentSave` holds the document operation gate and workspace repository lock,
 revalidates the relative target, rereads its SHA-256, and writes through a
 synced sibling temporary file plus atomic rename. A disk-base mismatch writes

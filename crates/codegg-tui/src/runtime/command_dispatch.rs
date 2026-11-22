@@ -1964,6 +1964,18 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, generation, result, state,
             );
         }
+        TuiCommand::EditorLspSyncSettled {
+            generation,
+            document_id,
+            sync,
+        } => {
+            super::super::commands::editor::apply_editor_lsp_sync_settled(
+                app,
+                generation,
+                document_id,
+                sync,
+            );
+        }
         TuiCommand::EditorOperationFinished {
             request_id,
             generation,

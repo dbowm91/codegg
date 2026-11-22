@@ -6456,6 +6456,26 @@ unknown extension is a plain render, not an error. `theme.code_theme` is
 already light/dark-correct (`select_code_theme`), so the scan's palette
 cannot invert against the surrounding UI.
 
+The default grammar and theme sets are **loaded off the render thread**
+(`ensure_highlight_assets`, started when an editor attaches and kicked by the
+first span request). A frame never waits for them: until the load lands the
+editor paints plain text plus the gutter, which is the same degradation as a
+file with no bundled grammar, and `EditorHighlight`'s draw path can only read
+the handle (`assets()`), never force it. A bounded
+`wait_for_highlight_assets` exists for integration tests, which link the
+library without the `cfg(test)` loader; the shipped path has no such wait.
+
+**The semantic read is a viewport window, not a file dump.**
+`request_editor_semantic_tokens` sends
+`textDocument/semanticTokens/range` for a bounded window from
+`presentation.viewport_line` (`SEMANTIC_TOKEN_VIEWPORT_LINES`, 160 lines),
+so an ordinary 800-line file is coloured past the point a 1000-token
+full-document response would have been cut. A scroll arms the same quiet
+period an edit uses, so a scroll burst is one read. The response still
+respects `MAX_LSP_SEMANTIC_TOKENS`: a window that truncates page-sized token
+density keeps the existing "highlighting truncated" caveat, the cap is not
+raised, and lines the response did not cover stay on the syntect floor.
+
 **Async discipline.** Every controller round trip (open, save, reload,
 resync, close) is spawned with `spawn_scoped_registered_tui_task` and carries
 both a request id and a generation counter. A completion whose generation
@@ -6669,20 +6689,47 @@ The line number and the column are gone: they restated the caret, which is
 already on screen.
 
 **The cluster reads as one story, left to right.** The **persistent signals**
-come first — the modified state, the scope badge, writable or read-only, the
-LSP semantic-coverage note, the "line too long" marker — then the **transient
-disclosure** (the find note, the search count, the history position), then the
-**notice**, then the **armed prefix**. The armed prefix is **last**, at the far
+come first — the modified state, the language-server state, the scope badge,
+writable or read-only, the LSP semantic-coverage note, the "line too long"
+marker — then the **transient disclosure** (the find note, the search count,
+the history position), then the **notice**, then the **armed prefix**. The armed prefix is **last**, at the far
 right of the row: it is the one element that appears and disappears on its
 own, so it gets a home nothing else competes for, and "did my `g` register?" is
 a question that has to be answered at a glance.
+
+The server-state word is `lsp…` while publication or diagnostics are warming;
+`lsp` requires both a `Synced` document witness and `Ready` diagnostics.
+`lsp degraded`, `lsp unavailable`, and `no lsp` remain distinct. A legacy
+snapshot without a sync witness is not labeled warming. A **safety status**
+(a disk conflict, a lost document, a dead transport, a resync requirement, or a
+read-only attachment) is a *caveat*, not routine status: it takes the caveat
+weight, so it outranks the server-state word instead of being squeezed out by
+it. `EditorStatus::is_caveat` is the single classifier, and the renderer reads
+it through `EditorWidget::status_caveat`. The `F2` list stays manual. The TUI has no bounded editor-readable `$/progress` source, so indexing
+and progress prose are skipped rather than inferred.
+
+**The Insert-mode completion request is a schedule, not an accept path**
+(M004). After an Insert-mode edit changes the document, `handle_editor_key`
+arms one deadline (200 ms, `EDITOR_COMPLETION_DEBOUNCE`) on the editor state.
+A newer edit, leaving Insert, closing or switching the document, a generation
+bump, or any explicit trigger (`F8`, Insert `Ctrl-x`, `:complete`) cancels it,
+and the explicit triggers call `start_editor_completion` immediately instead.
+`service_editor_completion_debounce` re-checks the generation, the active
+editor view, the Insert mode, the local document revision and the completion
+scope before it issues anything; a mismatch drops the schedule without a
+request. The fired request reuses the explicit path and the existing popup.
+Acceptance is unchanged: nothing is inserted on arrival, and a candidate
+applies only on the explicit key through the revision witness. The timer is
+what arms the idle timed loop — without that, the deadline would not fire
+until the next keypress, the same trap as the exit-arm window.
 
 **The two slots never overlap, and the cluster is fitted by rank.** The path
 keeps what it needs up to a third of the row and the cluster takes the rest;
 when the cluster still does not fit, `fit_cluster` drops the **least important
 group** first (`ClusterWeight` in `crates/codegg-tui/src/components/editor.rs`) — busy, then
-the modified state, then the writability marker, then the scope badge, then the
-disclosure — and a group that is still too wide on its own is cut from the
+the modified state, then the server state, then the writability marker, then
+the scope badge, then the disclosure — and a group that is still too wide on
+its own is cut from the
 **right**, because the head of a sentence is the part that answers the question
 ("3 matches · partial" beats "· n/N next/prev"). A caveat ("line too long",
 "highlighting truncated") outranks all of them: dropping a caveat is not a
@@ -8035,12 +8082,16 @@ successful save, and on F2. The TUI installs its loss-aware event receiver
 before the project subscription, then performs an authoritative
 `LspDiagnosticsGet`; the status-free subscription snapshot is only a stream
 baseline and can never be shown as `Ready`. F2 opens a bounded list with
-severity, message, and source range; gutter markers identify lines with
-diagnostics. A `Ready` result replaces the complete current-file set,
+severity, message, and source range; the editor also underlines the covered
+text with a theme severity color while keeping the gutter marker. This inline
+underline is presentation of that same retained Ready snapshot, not another
+authority. A `Ready` result replaces the complete current-file set,
 including clearing it when empty. `NotReady`, request failure, stream gap,
 and transport loss preserve the last complete set and mark it stale where
-one exists. A gap releases and recreates the authorized subscription; there
-is no frontend readiness polling.
+one exists. Underlines use the existing bounded UTF-16 position conversion,
+clip to the line slice already read for the viewport, and refuse an over-budget
+line without allocating another row. A gap releases and recreates the
+authorized subscription; there is no frontend readiness polling.
 
 F3 requests hover, F4 definition, F5 references, F6 document symbols, and F7
 workspace symbol search for the word at the cursor. Results are bounded and
@@ -8263,6 +8314,15 @@ make completion unreachable from a terminal that can send function keys. While o
 so a keystroke is never both typed and interpreted as popup input. `Esc`
 dismisses and preserves the editing mode — it never quits the editor — and
 a re-trigger supersedes the in-flight request by request id.
+
+The debounced Insert-completion path schedules the same request after a
+200 ms quiet interval following a document-changing edit; a newer edit resets
+the deadline. It is a request schedule, not an accept path. The due timer is
+serviced by the event-loop timed pump, which wakes while a schedule is pending
+without requiring another keypress, then calls the existing
+`start_editor_completion` path. Explicit `F8`, Insert `Ctrl-x`, and
+`:complete` supersede the idle schedule. Mode/route/document changes cancel it.
+The reply remains advisory and no candidate is inserted on arrival.
 
 The selection is advisory until acceptance. `Enter` re-validates scope,
 generation, attachment identity, and revision against the current state,

@@ -13,6 +13,16 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 - Read-only typing help (signature help) — bounded via `SignatureHelpSummary` with parameter offsets resolved against signature labels and per-item documentation truncated to 2000 chars
 - Bounded completion (`completion`) — capability-gated, returns `CompletionCandidate` DTOs with raw edit payloads stripped, capped via `max_candidates` (default 200)
 - Bounded semantic tokens (`semanticTokens`) — capability-gated, decodes the delta-encoded stream against the server's legend and returns `DecodedSemanticToken` DTOs (capped via `max_tokens`, default 1000)
+
+Interactive editor highlighting carries a zero-based, end-exclusive viewport
+line range on the existing `LspReadGet` semantic-token pull. When the warm
+server advertises semantic-token range support, the daemon issues
+`textDocument/semanticTokens/range`; the full read remains the small-document
+path for requests without a range. The `MAX_LSP_SEMANTIC_TOKENS` cap is
+unchanged at 1000, and overflow is discarded with the existing truncation
+caveat. A ranged request is unsupported when the server lacks range support;
+it does not fall back to a full-file read.
+
 - Preview-only semantic edits (renamePreview, formatPreview, sourceActionPreview) — returns unified-diff patches, never writes files
 - Preview-only code actions (`codeActionSummaries`, `codeActionPreview`) — bounded summaries first, then lazy single-action preview; command-only actions are rejected via `LspError::CommandOnlyCodeAction`
 - Temporary overlays (semanticCheckPreview) — accepts full content or a single-file unified diff patch, applies it in memory via OverlaySession, collects diagnostics/symbols, restores disk view, never writes files
@@ -547,6 +557,39 @@ Per-client generation is tracked in `generation_map: Arc<Mutex<HashMap<String, u
 | `WarmupDelay { duration }` | Fixed warmup delay after initialization |
 
 `LspClient` tracks `ProgressState` (active `$/progress` tokens + last progress timestamp) and exposes `progress_snapshot()`, `wait_for_progress_end(timeout)`, `wait_for_first_diagnostics(timeout)`, and `operational_summary()`. These back the `WaitForProgressEndOrTimeout` and `WaitForDiagnosticsOrTimeout` policies.
+
+**The interactive open path does not use the profile wait** (ADR-0065 §3).
+`LspService::set_managed_document_interactive` acquires its client through
+`get_or_create_client_with_readiness(path, Some(InitializedIsReady))`, so the
+requested file's `didOpen` is not sequenced behind a `publishDiagnostics` that
+only that `didOpen` could cause. The override is applied to the attempt's
+`LspClientDescriptor` by `apply_readiness_override`, which replaces the
+profile policy for that attempt and nothing else: `None` leaves the profile
+constant untouched, and qualification/restart callers pass `None`. It is
+narrowing-only — it can shorten a wait, never add one — so a caller that must
+observe the profile policy calls `wait_for_readiness` after publication, the
+same post-publish gate restart uses. Every profile constant above is
+unchanged; this is a caller-side policy, not a profile edit.
+
+**Managed `didChange` is debounced; `didOpen` is not** (TUI editor IDE presence
+M006). `LspService::schedule_managed_document_change` is the only debounced
+entry point, and only a document the server has already opened reaches it: an
+unopened document takes the immediate `set_managed_document_for_key` path, so
+an interactive open's `didOpen` is never parked behind a timer. An opened
+document's push is coalesced for `MANAGED_DID_CHANGE_DEBOUNCE_INTERVAL`
+(100 ms) and carries the latest committed text; each schedule replaces the
+previous one by generation and aborts the superseded timer. A push is
+attempted at most twice (`MANAGED_DID_CHANGE_RETRY_DELAY`, 25 ms) — bounded,
+never a retry loop. Full text stays the wire shape.
+
+`close_file` and `save_file` cancel a pending change before acting, so neither
+can be satisfied by a delayed notification and neither rides the timer. The
+sync witness follows the push, not the edit: it is recorded only after a
+successful delivery, it is raise-only so a late success cannot lower a newer
+witness, and a failure clears it only while that revision is still the newest
+scheduled one (`DocumentService::is_lsp_publication_revision_current`). The
+ordering metadata lives in `DocumentService`, not here: this crate debounces
+the notification, the daemon owns which revision the document is at.
 
 `LspOperationalState::context_note()` returns `None` for `Ready` and a bounded `Some("LSP state: ...")` for every other state. The note is appended to `SemanticContextResponse.notes`, `SecurityContextPacket.notes`, and hunk source context summary lines so root workflows expose the operational state explicitly. Restarting/failed/degraded states are not silently treated as ready.
 

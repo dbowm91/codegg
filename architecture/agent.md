@@ -469,12 +469,18 @@ follows OpenCode's model-visible per-call timeout; like OpenCode and Codex,
 CodeGG has no total turn deadline (see below).
 
 Note there is still no *total turn deadline*: `ExecutionLimits.timeout`
-(default 600s) is only consulted after a turn completes, and the batch itself
-is awaited without an outer wrapper. Neither OpenCode nor Codex CLI imposes one
-either — Codex instead yields a `session_id` at `yield_time_ms` and lets the
-model poll. A hard turn deadline is deliberately not added: it kills exactly the
-long builds this section exists to protect. Closing that gap, if wanted, should
-adopt yield-and-resume rather than a wall-clock cut-off.
+(default 600s) is checked at the **provider-iteration boundary** — never around
+an in-flight tool batch — and the batch itself is awaited without an outer
+wrapper. A check that fires retains its reason and publishes it as the turn's
+`stop_reason`, after at most one tool-stripped summary call, so a turn that ran
+out of budget is not reported as an ordinary completion. The follow-up drain
+that processes queued continuation prompts calls the same check before each of
+its own provider calls, so a follow-up cannot outlive the turn that drains it.
+Neither OpenCode nor Codex CLI imposes a total deadline either — Codex instead
+yields a `session_id` at `yield_time_ms` and lets the model poll. A hard turn
+deadline is deliberately not added: it kills exactly the long builds this
+section exists to protect. Closing that gap, if wanted, should adopt
+yield-and-resume rather than a wall-clock cut-off.
 
 ### Durable run control
 
@@ -635,6 +641,28 @@ pub struct ExecutionLimits {
     pub timeout: Duration,     // Default: 600 seconds
 }
 ```
+
+`check_limits` retains the reason it returns. That reason is published on
+`CoreEvent::TurnCompleted.stop_reason` and `AppEvent::AgentFinished.stop_reason`
+instead of the previous provider finish (an interrupt or cancel still wins and
+publishes `interrupted`). The token cap reads `AgentLoopState::total_tokens`,
+which mirrors the run's provider-reported usage as each `Finish` arrives; a run
+that reports no usage never trips it. The capability bound is `max_turns`: each
+provider iteration consumes one turn, so a trajectory that needs hundreds of
+provider rounds still stops at 100 — visibly, and with a reason the next turn can
+read.
+
+Three tool-result classifications are part of the same contract:
+
+- An MCP `tools/call` response with `isError: true` is a failed tool result
+  (`ToolError`) with the server text retained and marked, not a successful result
+  carrying error text.
+- An exhausted `stop_reason=tool_calls` response with no parseable call fails the
+  turn with the existing bounded 600-character diagnostic; it does not publish a
+  completed turn.
+- A batch of `question` calls keeps one receiver per question, and cleanup is
+  scoped by each question id (`unregister_scoped`), so one answer cannot fill a
+  sibling's result.
 
 ### ResolvedAgentExecutionProfile (`src/agent/definition.rs` — re-exported via `mod.rs`)
 

@@ -13,7 +13,7 @@ use super::r#loop::AgentLoop;
 use crate::agent::processor::EventProcessor;
 use crate::bus::events::AppEvent;
 use crate::error::AppError;
-use crate::provider::{ChatEvent, ChatRequest};
+use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message};
 use futures_util::FutureExt;
 
 /// Extract provider-reported usage from a completed turn's events.
@@ -24,6 +24,7 @@ use futures_util::FutureExt;
 /// completion event that crosses the process boundary to the TUI.
 pub(super) fn turn_usage(
     events: &[ChatEvent],
+    retained_stop_reason: Option<&str>,
 ) -> (
     String,
     Option<usize>,
@@ -31,27 +32,68 @@ pub(super) fn turn_usage(
     Option<usize>,
     Option<usize>,
 ) {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| {
-            if let ChatEvent::Finish { stop_reason, usage } = event {
-                Some((
-                    stop_reason.to_string(),
-                    Some(usage.input_tokens),
-                    Some(usage.output_tokens),
-                    usage.cached_tokens,
-                    if usage.reasoning_tokens > 0 {
-                        Some(usage.reasoning_tokens)
-                    } else {
-                        None
-                    },
-                ))
+    let last_finish = events.iter().rev().find_map(|event| {
+        if let ChatEvent::Finish { stop_reason, usage } = event {
+            Some((stop_reason, usage))
+        } else {
+            None
+        }
+    });
+
+    // A retained reason (a spent turn budget, a terminal classification) wins
+    // over the provider's own finish reason: the last response may well have
+    // announced tool calls that the loop never executed. A real provider
+    // finish with no retained reason keeps its own reason, unchanged.
+    let stop_reason = retained_stop_reason
+        .map(str::to_owned)
+        .or_else(|| last_finish.map(|(reason, _)| reason.to_string()))
+        .unwrap_or_else(|| "completed".to_string());
+
+    match last_finish.map(|(_, usage)| usage) {
+        Some(usage) => (
+            stop_reason,
+            Some(usage.input_tokens),
+            Some(usage.output_tokens),
+            usage.cached_tokens,
+            if usage.reasoning_tokens > 0 {
+                Some(usage.reasoning_tokens)
             } else {
                 None
-            }
-        })
-        .unwrap_or_else(|| ("completed".to_string(), None, None, None, None))
+            },
+        ),
+        None => (stop_reason, None, None, None, None),
+    }
+}
+
+/// Whether a published stop reason names a spent execution budget.
+///
+/// The strings are the ones [`AgentLoop::check_limits`] produces. Consumers
+/// that branch on a *kind* (the daemon notification bridge) must classify
+/// these as "not finished", not as an ordinary completion; matching the
+/// reason text here keeps one vocabulary instead of a second enum.
+pub(crate) fn is_budget_stop_reason(reason: &str) -> bool {
+    const BUDGET_REASONS: [&str; 5] = [
+        "max turns",
+        "max steps",
+        "max tool calls",
+        "max tokens",
+        "timeout (",
+    ];
+    BUDGET_REASONS
+        .iter()
+        .any(|budget| reason.starts_with(budget))
+}
+
+/// Whether a limit stop may spend one final provider call to summarize.
+///
+/// `max steps` already injected its tool-stripped termination instruction on
+/// the iteration before the break, and the timeout check only returns once the
+/// deadline has elapsed — that call would either duplicate the existing
+/// summary or start a provider request after the bound that exists to stop it.
+pub(super) fn limit_stop_allows_summary(reason: &str) -> bool {
+    reason.starts_with("max turns")
+        || reason.starts_with("max tool calls")
+        || reason.starts_with("max tokens")
 }
 
 impl AgentLoop {
@@ -65,10 +107,17 @@ impl AgentLoop {
             }
         });
 
-        let (stop_reason_str, input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
-            if let Some((stop_reason, usage)) = last_finish {
-                (
-                    stop_reason.to_string(),
+        // Precedence: an interrupt or cancel is always `interrupted` (even
+        // when a provider finish is present), then the reason the loop
+        // retained when a limit stopped it, then the provider's own finish,
+        // then the literal `completed` for a finish-less success.
+        let stop_reason_str = self
+            .turn_stop_reason()
+            .or_else(|| last_finish.map(|(stop_reason, _)| stop_reason.to_string()))
+            .unwrap_or_else(|| "completed".to_string());
+        let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
+            match last_finish.map(|(_, usage)| usage) {
+                Some(usage) => (
                     Some(usage.input_tokens),
                     Some(usage.output_tokens),
                     usage.cached_tokens,
@@ -77,13 +126,8 @@ impl AgentLoop {
                     } else {
                         None
                     },
-                )
-            } else if self.steering.load(Ordering::SeqCst)
-                || self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow())
-            {
-                ("interrupted".to_string(), None, None, None, None)
-            } else {
-                ("completed".to_string(), None, None, None, None)
+                ),
+                None => (None, None, None, None),
             };
 
         crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
@@ -214,6 +258,18 @@ impl AgentLoop {
             return Ok(());
         }
 
+        // A loop-budget stop is not "the model finished". Continuing would
+        // relaunch an identical capped loop, so the continuation decision
+        // reads the reason the loop retained instead of guessing.
+        if let Some(reason) = self.turn_stop_reason() {
+            tracing::info!(
+                session_id = %self.session_id,
+                reason = %reason,
+                "goal continuation skipped: the turn stopped without finishing"
+            );
+            return Ok(());
+        }
+
         // Bounded safety: don't run the continuation loop forever even
         // if the runtime returns Continue on every tick. Normal stagnation
         // exits well before this via replan/AwaitingUser; the cap is only an
@@ -234,6 +290,16 @@ impl AgentLoop {
         let mut consecutive_no_progress: u8 = 0;
 
         for _ in 0..MAX_CONTINUATIONS {
+            // A continuation prompt that could not be queued marks the turn
+            // as not-processed; another iteration would only repeat the drop.
+            if let Some(reason) = self.retained_stop_reason.clone() {
+                tracing::info!(
+                    session_id = %self.session_id,
+                    reason = %reason,
+                    "goal continuation stopped after an unqueued prompt"
+                );
+                return Ok(());
+            }
             // User steering/cancellation interrupts continuation normally and
             // is never converted into blocker progression.
             if self.steering.load(Ordering::SeqCst)
@@ -271,7 +337,7 @@ impl AgentLoop {
                 if let Some(prompt) = budget_decision.prompt {
                     // Final wrap-up prompt (e.g. budget-limited).
                     if let Err(error) = self.follow_up_tx.try_send(prompt) {
-                        tracing::warn!(?error, "goal wrap-up prompt dropped");
+                        self.note_follow_up_drop("goal wrap-up prompt", &error);
                     }
                     self.drain_follow_up(request, all_events, processor).await?;
                 } else {
@@ -332,7 +398,7 @@ impl AgentLoop {
                     );
                     let prompt = crate::goal::runtime::build_continuation_prompt(&goal);
                     if let Err(error) = self.follow_up_tx.try_send(prompt) {
-                        tracing::warn!(?error, "goal continuation prompt dropped");
+                        self.note_follow_up_drop("goal continuation prompt", &error);
                     }
                     self.drain_follow_up(request, all_events, processor).await?;
                     self.account_goal_for_turn().await;
@@ -364,7 +430,7 @@ impl AgentLoop {
                         &fingerprint,
                     );
                     if let Err(error) = self.follow_up_tx.try_send(prompt) {
-                        tracing::warn!(?error, "goal wait prompt dropped");
+                        self.note_follow_up_drop("goal wait prompt", &error);
                     }
                     self.drain_follow_up(request, all_events, processor).await?;
                     self.account_goal_for_turn().await;
@@ -403,7 +469,7 @@ impl AgentLoop {
                         codegg_core::goal::progress::GoalStagnationStep::ContinueWithNudge => {
                             let prompt = crate::goal::runtime::build_continuation_prompt(&goal);
                             if let Err(error) = self.follow_up_tx.try_send(prompt) {
-                                tracing::warn!(?error, "goal nudge prompt dropped");
+                                self.note_follow_up_drop("goal nudge prompt", &error);
                             }
                             self.drain_follow_up(request, all_events, processor).await?;
                             self.account_goal_for_turn().await;
@@ -415,7 +481,7 @@ impl AgentLoop {
                                 consecutive_no_progress,
                             );
                             if let Err(error) = self.follow_up_tx.try_send(prompt) {
-                                tracing::warn!(?error, "goal replan prompt dropped");
+                                self.note_follow_up_drop("goal replan prompt", &error);
                             }
                             self.drain_follow_up(request, all_events, processor).await?;
                             self.account_goal_for_turn().await;
@@ -475,6 +541,129 @@ impl AgentLoop {
             }
         }
         tracing::warn!("goal continuation hit MAX_CONTINUATIONS={MAX_CONTINUATIONS}, halting");
+        Ok(())
+    }
+
+    /// Record the reason this run stopped when it is not the provider's own
+    /// finish reason.
+    ///
+    /// First writer wins: the cause that stopped the loop is the cause that is
+    /// published, and a later bookkeeping stop (a follow-up drain that finds
+    /// the budget already spent) must not rewrite it.
+    pub(super) fn record_stop_reason(&mut self, reason: String) {
+        if self.retained_stop_reason.is_none() {
+            self.retained_stop_reason = Some(reason);
+        }
+    }
+
+    /// The stop reason this run publishes instead of the provider's finish.
+    ///
+    /// An interrupt or cancel is reported as `interrupted` regardless of the
+    /// retained limit string, so the user's own control is never relabeled as
+    /// a budget stop. `None` means the provider finish (or `completed`) still
+    /// describes the turn.
+    pub(super) fn turn_stop_reason(&self) -> Option<String> {
+        if self.steering.load(Ordering::SeqCst)
+            || self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow())
+        {
+            return Some("interrupted".to_string());
+        }
+        self.retained_stop_reason.clone()
+    }
+
+    /// Make an unqueued continuation prompt part of the turn result.
+    ///
+    /// A warn log is not a record a consumer can see: the prompt was never
+    /// queued, so the work it described did not happen. Retaining a reason
+    /// keeps the turn from publishing a plain `completed`, and the reason
+    /// names the drop. Channel capacity is not raised.
+    fn note_follow_up_drop(
+        &mut self,
+        what: &str,
+        error: &tokio::sync::mpsc::error::TrySendError<String>,
+    ) {
+        tracing::error!(
+            ?error,
+            what,
+            "follow-up prompt was not queued; reporting the turn as not processed"
+        );
+        self.record_stop_reason(format!("{what} dropped: follow-up channel unavailable"));
+    }
+
+    /// Stop accepting new follow-up prompts into this turn's channel.
+    ///
+    /// The live-turn registration is what routes a follow-up into this
+    /// loop's channel. Removing it before the final drain means a prompt that
+    /// arrives after that drain is rejected at the delivery boundary instead
+    /// of being accepted into a channel whose receiver is about to be dropped.
+    /// The registration's own unregister after `run()` returns stays as the
+    /// idempotent backstop.
+    pub(super) async fn close_follow_up_intake(&self) {
+        let (Some(control), Some(turn_id)) = (&self.services.run_control, self.turn_id.as_ref())
+        else {
+            return;
+        };
+        if self.session_id.is_empty() {
+            return;
+        }
+        let owner = crate::agent::run_control::LiveTurnOwner {
+            session_id: self.session_id.clone(),
+            turn_id: turn_id.clone(),
+        };
+        control
+            .unregister_live_turn(&owner, &self.follow_up_tx)
+            .await;
+    }
+
+    /// Spend one tool-stripped provider call so a budget stop can summarize.
+    ///
+    /// This is the shape the `agent.steps` cap already uses: a control
+    /// instruction, an assistant stub, and no tools. It is called at most once
+    /// per run, from the loop break, and never dispatches a tool batch or
+    /// re-enters the summary.
+    pub(super) async fn summarize_budget_stop(
+        &mut self,
+        request: &mut ChatRequest,
+        all_events: &mut Vec<ChatEvent>,
+        processor: &mut EventProcessor,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+        reason: &str,
+    ) -> Result<(), AppError> {
+        let system = format!(
+            "CRITICAL - EXECUTION BUDGET REACHED\n\nThis turn stopped because {reason}. Tools are no longer available. Provide a short summary of what you completed and what remains, then exit."
+        );
+        crate::model_profile::policy::push_control_instruction(
+            &mut request.messages,
+            model_profile,
+            &system,
+        );
+        request.messages.push(Message::Assistant {
+            content: vec![ContentPart::Text {
+                text: "Here is a summary of my work so far:".to_string().into(),
+            }],
+            tool_calls: vec![],
+        });
+        let tools = request.tools.take();
+        self.lifecycle
+            .set_phase(crate::agent::coordinator::TurnPhase::ProviderInvocation);
+        let turn_retry = crate::provider::RetryContext::for_operation();
+        let received =
+            crate::agent::provider_turn::ProviderTurnAdapter::receive_with_retry_context(
+                self,
+                request,
+                Some(turn_retry),
+            )
+            .await;
+        request.tools = tools;
+        let events = received?;
+        for event in &events {
+            processor.process(event);
+        }
+        all_events.extend(events);
+        if let Some(message) = processor.to_assistant_message() {
+            request.messages.push(message);
+        }
+        processor.reset();
         Ok(())
     }
 
@@ -612,8 +801,145 @@ impl AgentLoop {
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::r#loop::AgentLoopState;
-    use std::time::Instant;
+    use super::*;
+    use crate::agent::processor::EventProcessor;
+    use crate::agent::r#loop::{AgentLoop, AgentLoopState};
+    use crate::bus::events::AppEvent;
+    use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, Provider, ProviderError};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone)]
+    struct RecordingProvider {
+        calls: Arc<AtomicUsize>,
+        tools_seen: Arc<Mutex<Vec<bool>>>,
+        script: Arc<Mutex<std::collections::VecDeque<Vec<Result<ChatEvent, ProviderError>>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for RecordingProvider {
+        fn id(&self) -> &str {
+            "turn-completion-recording"
+        }
+
+        fn name(&self) -> &str {
+            "turn-completion-recording"
+        }
+
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+
+        async fn stream(
+            &self,
+            request: &ChatRequest,
+        ) -> Result<crate::provider::EventStream, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.tools_seen
+                .lock()
+                .expect("tools_seen mutex")
+                .push(request.tools.is_some());
+            let events = self
+                .script
+                .lock()
+                .expect("script mutex")
+                .pop_front()
+                .unwrap_or_default();
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+
+        async fn models(&self) -> Result<Vec<crate::provider::ModelInfo>, ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn recording_provider(
+        script: Vec<Vec<Result<ChatEvent, ProviderError>>>,
+    ) -> (RecordingProvider, Arc<AtomicUsize>, Arc<Mutex<Vec<bool>>>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let tools_seen = Arc::new(Mutex::new(Vec::new()));
+        let provider = RecordingProvider {
+            calls: calls.clone(),
+            tools_seen: tools_seen.clone(),
+            script: Arc::new(Mutex::new(script.into())),
+        };
+        (provider, calls, tools_seen)
+    }
+
+    fn finish(stop_reason: &str, input_tokens: usize, output_tokens: usize) -> ChatEvent {
+        ChatEvent::Finish {
+            stop_reason: Arc::new(stop_reason.to_string()),
+            usage: crate::provider::TokenUsage {
+                input_tokens,
+                output_tokens,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn test_loop(provider: Box<dyn Provider>) -> (AgentLoop, tempfile::TempDir) {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let session_id = format!("turn-completion-{}", uuid::Uuid::new_v4());
+        let agent_loop = AgentLoop::new(
+            Vec::new(),
+            provider,
+            crate::permission::PermissionChecker::new(None, None),
+            crate::tool::ToolRegistry::default(),
+            crate::config::schema::Config::default(),
+            None,
+            None,
+            Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.path().to_path_buf(),
+            session_id,
+            None,
+            None,
+        );
+        (agent_loop, workspace)
+    }
+
+    fn test_request(tools: Option<Vec<crate::provider::ToolDefinition>>) -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: "test prompt".to_string().into(),
+                }],
+            }],
+            model: "test/model".to_string(),
+            tools,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        }
+    }
+
+    async fn receive_finished(
+        receiver: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+        expected_session: &str,
+    ) -> String {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match receiver.recv().await {
+                    Ok(AppEvent::AgentFinished {
+                        session_id,
+                        stop_reason,
+                        ..
+                    }) if session_id == expected_session => return stop_reason,
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("global event bus closed before AgentFinished")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("AgentFinished is published before timeout")
+    }
 
     #[test]
     fn accounting_deltas_are_distinct_from_cumulative_limits() {
@@ -645,5 +971,111 @@ mod tests {
         state.unaccounted_output_tokens = 0;
         assert_eq!(state.tool_call_count, 5);
         assert_eq!(state.unaccounted_tool_calls, 0);
+    }
+
+    #[test]
+    fn turn_usage_prefers_the_retained_limit_reason() {
+        let events = vec![finish("tool_calls", 120, 35)];
+        let retained = turn_usage(&events, Some("max turns (100) reached"));
+        assert_eq!(retained.0, "max turns (100) reached");
+        assert_eq!(retained.1, Some(120));
+        assert_eq!(retained.2, Some(35));
+        assert_eq!(turn_usage(&events, None).0, "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn publish_agent_finished_reports_the_retained_reason() {
+        let (provider, _, _) = recording_provider(Vec::new());
+        let (mut agent_loop, _workspace) = test_loop(Box::new(provider));
+        let session_id = agent_loop.session_id.clone();
+        let mut receiver = crate::bus::global::GlobalEventBus::subscribe();
+        let events = vec![finish("tool_calls", 120, 35)];
+
+        agent_loop.record_stop_reason("max turns (100) reached".to_string());
+        agent_loop.publish_agent_finished(&events);
+
+        assert_eq!(
+            receive_finished(&mut receiver, &session_id).await,
+            "max turns (100) reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_outranks_a_retained_limit_reason() {
+        let (provider, _, _) = recording_provider(Vec::new());
+        let (mut agent_loop, _workspace) = test_loop(Box::new(provider));
+        let session_id = agent_loop.session_id.clone();
+        let mut receiver = crate::bus::global::GlobalEventBus::subscribe();
+
+        agent_loop.record_stop_reason("max turns (100) reached".to_string());
+        agent_loop.steering.store(true, Ordering::SeqCst);
+        agent_loop.publish_agent_finished(&[finish("tool_calls", 120, 35)]);
+
+        assert_eq!(
+            receive_finished(&mut receiver, &session_id).await,
+            "interrupted"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_summary_handoff_removes_tools_and_runs_once() {
+        let (provider, calls, tools_seen) =
+            recording_provider(vec![vec![Ok(finish("stop", 12, 4))]]);
+        let (mut agent_loop, _workspace) = test_loop(Box::new(provider));
+        let mut request = test_request(Some(vec![crate::provider::ToolDefinition {
+            name: "read".to_string(),
+            description: "read files".to_string(),
+            parameters: serde_json::json!({"type":"object"}),
+            defer_loading: None,
+        }]));
+        let mut all_events = Vec::new();
+        let mut processor = EventProcessor::new();
+        let config = crate::config::schema::Config::default();
+        let profile =
+            crate::model_profile::ModelProfileResolver::new(&config).resolve(&request.model);
+
+        agent_loop
+            .summarize_budget_stop(
+                &mut request,
+                &mut all_events,
+                &mut processor,
+                &profile,
+                "max turns (1) reached",
+            )
+            .await
+            .expect("the bounded summary call completes");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            tools_seen.lock().expect("tools_seen mutex").as_slice(),
+            &[false]
+        );
+        assert!(
+            request.tools.is_some(),
+            "the original tool surface is restored"
+        );
+        assert!(all_events
+            .iter()
+            .any(|event| matches!(event, ChatEvent::Finish { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_normal_finish_still_completes() {
+        let (provider, _, _) = recording_provider(Vec::new());
+        let (mut agent_loop, _workspace) = test_loop(Box::new(provider));
+        let session_id = agent_loop.session_id.clone();
+        let mut receiver = crate::bus::global::GlobalEventBus::subscribe();
+        let events = vec![finish("stop", 3, 2)];
+
+        assert_eq!(turn_usage(&events, None).0, "stop");
+        agent_loop.publish_agent_finished(&events);
+        assert_eq!(receive_finished(&mut receiver, &session_id).await, "stop");
+
+        assert_eq!(turn_usage(&[], None).0, "completed");
+        agent_loop.publish_agent_finished(&[]);
+        assert_eq!(
+            receive_finished(&mut receiver, &session_id).await,
+            "completed"
+        );
     }
 }

@@ -68,6 +68,23 @@ pub enum EditorStatus {
 }
 
 impl EditorStatus {
+    /// Whether this state is a safety caveat rather than routine status.
+    ///
+    /// A conflict, a lost document, a dead transport, or a read-only
+    /// attachment is something the reader must act on, so it outranks the
+    /// chrome cluster's informational groups (including the server-state
+    /// word). Routine states — synced, locally dirty, flushing — do not.
+    pub fn is_caveat(&self) -> bool {
+        matches!(
+            self,
+            EditorStatus::Conflict
+                | EditorStatus::Disconnected
+                | EditorStatus::GoneWithDraft
+                | EditorStatus::ResyncRequired
+                | EditorStatus::ReadOnly
+        )
+    }
+
     /// Map a controller state onto its presentation.
     pub fn from_state(state: &DocumentState) -> Self {
         match state {
@@ -254,6 +271,14 @@ impl EditorNotice {
     }
 }
 
+/// One generation- and local-revision-bound idle completion schedule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorCompletionDebounce {
+    pub generation: u64,
+    pub local_revision: codegg_document::DocumentRevision,
+    pub due_at: std::time::Instant,
+}
+
 /// The editor's frontend state for the current attachment.
 pub struct EditorState {
     /// The attached document session, or `None` when nothing is open.
@@ -276,6 +301,14 @@ pub struct EditorState {
     /// Bumped on close and on every document switch, so a completion for a
     /// previous attachment is discarded.
     pub generation: u64,
+    /// The open generation for which the one-shot LSP sync settlement was
+    /// already scheduled, if any. Prevents a second read for the same open.
+    pub lsp_sync_settlement_generation: Option<u64>,
+    /// Cancellation for the current one-shot settlement read.
+    pub lsp_sync_settlement_cancel: Option<tokio_util::sync::CancellationToken>,
+    /// One diagnostics refresh allowed after settlement reports Synced, if
+    /// the initial diagnostics subscription completed before that witness.
+    pub lsp_sync_settlement_diagnostics_retry: Option<u64>,
     /// Lifecycle operation in flight, if any.
     pub operation: Option<EditorOperation>,
     /// Last surfaced controller error, if any.
@@ -313,6 +346,7 @@ pub struct EditorState {
     /// See [`EditorState::arm_semantic_refresh`]. `None` means nothing is
     /// pending, so the render pump does no work at all in the common case.
     pub semantic_refresh_due_at: Option<std::time::Instant>,
+    pub completion_debounce: Option<EditorCompletionDebounce>,
     /// Server-free syntax highlighting for the attached document.
     ///
     /// The always-available floor under the LSP semantic tokens: a bounded
@@ -330,9 +364,13 @@ impl Default for EditorState {
             scope: codegg_protocol::document::DocumentScope::default(),
             request: AsyncUiRequestState::new(),
             generation: 0,
+            lsp_sync_settlement_generation: None,
+            lsp_sync_settlement_cancel: None,
+            lsp_sync_settlement_diagnostics_retry: None,
             operation: None,
             notice: None,
             semantic_refresh_due_at: None,
+            completion_debounce: None,
             status: EditorStatus::Closed,
             wants_writer: false,
             close_after_save: false,
@@ -424,6 +462,42 @@ impl EditorState {
         }
     }
 
+    /// Arm one idle completion request for the current local document revision.
+    pub fn arm_completion_debounce(
+        &mut self,
+        local_revision: codegg_document::DocumentRevision,
+        due_at: std::time::Instant,
+    ) {
+        self.completion_debounce = Some(EditorCompletionDebounce {
+            generation: self.generation,
+            local_revision,
+            due_at,
+        });
+    }
+
+    /// Consume the pending completion schedule only after its idle interval.
+    pub fn take_completion_debounce_due(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<EditorCompletionDebounce> {
+        if self
+            .completion_debounce
+            .is_some_and(|schedule| now >= schedule.due_at)
+        {
+            self.completion_debounce.take()
+        } else {
+            None
+        }
+    }
+
+    pub fn completion_debounce_is_armed(&self) -> bool {
+        self.completion_debounce.is_some()
+    }
+
+    pub fn cancel_completion_debounce(&mut self) {
+        self.completion_debounce = None;
+    }
+
     /// Disarm any armed multi-key prefix.
     ///
     /// Called wherever the surface the pending key was aimed at stops being the
@@ -442,8 +516,30 @@ impl EditorState {
     /// Called when the editor closes or switches documents. Bumping the
     /// generation means a completion that arrives afterwards is discarded
     /// rather than applied to the new attachment.
-    pub fn detach(&mut self) {
+    /// Advance the editor attachment generation and cancel its one-shot LSP
+    /// settlement, if one is in flight.
+    pub fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.cancel_completion_debounce();
+        self.lsp_sync_settlement_generation = None;
+        self.lsp_sync_settlement_diagnostics_retry = None;
+        if let Some(cancel) = self.lsp_sync_settlement_cancel.take() {
+            cancel.cancel();
+        }
+    }
+
+    /// Claim the one allowed settlement read for this open generation.
+    pub fn begin_lsp_sync_settlement(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.lsp_sync_settlement_generation == Some(generation)
+        {
+            return false;
+        }
+        self.lsp_sync_settlement_generation = Some(generation);
+        true
+    }
+
+    pub fn detach(&mut self) {
+        self.bump_generation();
         self.request.cancel();
         self.operation = None;
         // A pending refresh belongs to the document being closed. Firing it
@@ -600,6 +696,27 @@ mod tests {
         assert!(state.session.is_none());
         assert!(state.path.is_none());
         assert_eq!(state.status, EditorStatus::Closed);
+    }
+
+    #[test]
+    fn settlement_is_one_shot_and_generation_bump_cancels_it() {
+        let mut state = EditorState::default();
+        state.generation = 7;
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        assert!(state.begin_lsp_sync_settlement(7));
+        assert!(!state.begin_lsp_sync_settlement(7));
+        state.lsp_sync_settlement_cancel = Some(cancel.clone());
+        state.bump_generation();
+
+        assert!(cancel.is_cancelled(), "a generation bump cancels the read");
+        assert_eq!(state.lsp_sync_settlement_generation, None);
+        assert!(
+            !state.begin_lsp_sync_settlement(7),
+            "the old generation is stale"
+        );
+        assert!(state.begin_lsp_sync_settlement(8));
+        assert!(!state.begin_lsp_sync_settlement(8));
     }
 
     #[test]

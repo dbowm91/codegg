@@ -18,7 +18,10 @@
 
 use std::sync::Arc;
 
-use codegg::protocol::lsp::LspSemanticTokenDto;
+use codegg::protocol::lsp::{
+    LspDiagnosticDto, LspDiagnosticsResultDto, LspDiagnosticsStatus, LspFileDiagnosticsDto,
+    LspRangeDto, LspSemanticTokenDto,
+};
 use codegg_document::{
     DocumentBuffer, DocumentLimits, DocumentSnapshot, TextEdit, TextTransaction,
 };
@@ -27,7 +30,9 @@ use codegg_tui::document_session::TuiDocumentPresentation;
 use codegg_tui::editor::{gutter_width, EditorMode, EditorPrefix};
 use codegg_tui::editor_completion::EditorCompletionState;
 use codegg_tui::editor_highlight::EditorHighlight;
-use codegg_tui::editor_lsp::{validate_semantic_tokens, EditorLspState};
+use codegg_tui::editor_lsp::{
+    validate_semantic_tokens, DiagnosticsViewStatus, EditorLspScope, EditorLspState,
+};
 use codegg_tui::helix_selection::SelectionMode;
 use codegg_tui::render_cost::{self, RenderCost};
 use codegg_tui::theme::Theme;
@@ -83,6 +88,7 @@ fn draw(fixture: &mut Fixture, snapshot: &DocumentSnapshot, width: u16, height: 
             EditorWidget {
                 path: "src/lib.rs",
                 status: "synced",
+                status_caveat: false,
                 notice: None,
                 find_note: "",
                 count_label: "",
@@ -111,6 +117,64 @@ fn draw(fixture: &mut Fixture, snapshot: &DocumentSnapshot, width: u16, height: 
         })
         .expect("the frame draws");
     terminal.backend().buffer().clone()
+}
+
+fn editor_lsp_scope(generation: u64) -> EditorLspScope {
+    EditorLspScope {
+        generation,
+        session_id: "session-1".into(),
+        project_id: "project-1".into(),
+        workspace_id: "workspace-1".into(),
+        path: "src/lib.rs".into(),
+    }
+}
+
+fn editor_diagnostic(
+    path: &str,
+    start_column: u32,
+    end_column: u32,
+    severity: u32,
+) -> LspDiagnosticDto {
+    LspDiagnosticDto {
+        range: LspRangeDto {
+            path: path.into(),
+            workspace_relative_path: None,
+            start_line: 0,
+            start_column,
+            end_line: 0,
+            end_column,
+        },
+        severity,
+        tag: 0,
+        code: None,
+        message: "diagnostic".into(),
+        source: None,
+    }
+}
+
+fn diagnostics_result(
+    scope: &EditorLspScope,
+    status: LspDiagnosticsStatus,
+    diagnostics: Vec<LspDiagnosticDto>,
+) -> LspDiagnosticsResultDto {
+    let files = if status == LspDiagnosticsStatus::Ready {
+        vec![LspFileDiagnosticsDto {
+            path: scope.path.clone(),
+            sequence: 1,
+            digest: "digest".into(),
+            diagnostics,
+            post_restart: false,
+            truncated: false,
+        }]
+    } else {
+        Vec::new()
+    };
+    LspDiagnosticsResultDto {
+        project_id: scope.project_id.clone(),
+        status,
+        files,
+        truncated: false,
+    }
 }
 
 /// The cost of a piece of work, measured as the difference of two snapshots.
@@ -185,6 +249,13 @@ fn rows_with_a_thousand_tokens() -> (DocumentSnapshot, EditorLspState) {
 
 /// A 5,000-line document, scanned into the highlighter's cache.
 fn five_thousand_lines() -> (DocumentBuffer, EditorHighlight) {
+    // The default grammar sets load off the render thread, so an integration
+    // test waits for them once here instead of racing the background load.
+    // A frame never waits: it paints plain text until the load lands.
+    assert!(
+        codegg_tui::editor_highlight::wait_for_highlight_assets(std::time::Duration::from_secs(30)),
+        "the bundled grammar sets load within the fixture budget"
+    );
     let text: String = (0..5_000)
         .map(|index| format!("let value_{index} = {index};\n"))
         .collect();
@@ -677,6 +748,203 @@ fn every_fixture_draws_its_document() {
             "{name}: the frame must draw its document; expected {needle:?} in:\n{text}"
         );
     }
+}
+
+/// A Ready snapshot paints severity underlines beside the existing gutter;
+/// NotReady keeps that complete draw, and Ready-empty clears it without
+/// changing the viewport geometry or opening F2.
+#[test]
+fn ready_diagnostics_underline_text_and_not_ready_preserves_the_gutter() {
+    let scope = editor_lsp_scope(1);
+    let mut fixture = Fixture::with_lsp(EditorLspState::default());
+    fixture.lsp.reset_for_scope(scope.clone());
+    let request = fixture.lsp.begin_diagnostics(&scope).unwrap();
+    assert!(fixture.lsp.apply_diagnostics(
+        request,
+        &scope,
+        Some(diagnostics_result(
+            &scope,
+            LspDiagnosticsStatus::Ready,
+            vec![
+                editor_diagnostic("src/lib.rs", 3, 7, 1),
+                editor_diagnostic("src/lib.rs", 8, 11, 2),
+            ],
+        )),
+        None,
+    ));
+
+    let snapshot = DocumentBuffer::new("fn main() {}\n").snapshot();
+    let ready = draw(&mut fixture, &snapshot, WIDTH, HEIGHT);
+    let theme = Theme::default();
+    assert!(
+        (0..WIDTH).any(|x| ready[(x, 1)].symbol() == "!"),
+        "the error gutter marker remains: {}",
+        buffer_text(&ready)
+    );
+    let error = &ready[(7, 1)]; // text begins at column 4; main starts at 3
+    let warning = &ready[(12, 1)]; // the warning begins at document column 8
+    assert!(error
+        .modifier
+        .contains(ratatui::style::Modifier::UNDERLINED));
+    assert_eq!(error.fg, theme.error);
+    assert!(warning
+        .modifier
+        .contains(ratatui::style::Modifier::UNDERLINED));
+    assert_eq!(warning.fg, theme.warning);
+    assert_eq!(
+        fixture.lsp.panel, None,
+        "inline presentation does not open F2"
+    );
+    let rows = fixture.presentation.visible_lines;
+
+    let request = fixture.lsp.begin_diagnostics(&scope).unwrap();
+    assert!(fixture.lsp.apply_diagnostics(
+        request,
+        &scope,
+        Some(diagnostics_result(
+            &scope,
+            LspDiagnosticsStatus::NotReady,
+            Vec::new(),
+        )),
+        None,
+    ));
+    assert_eq!(
+        fixture.lsp.diagnostics_status,
+        DiagnosticsViewStatus::NotReady
+    );
+    let retained = draw(&mut fixture, &snapshot, WIDTH, HEIGHT);
+    assert!(
+        (0..WIDTH).any(|x| retained[(x, 1)].symbol() == "!"),
+        "NotReady preserves the gutter marker"
+    );
+    assert!(retained[(7, 1)]
+        .modifier
+        .contains(ratatui::style::Modifier::UNDERLINED));
+    assert_eq!(retained[(7, 1)].fg, theme.error);
+    assert_eq!(
+        fixture.presentation.visible_lines, rows,
+        "no row is allocated"
+    );
+
+    let request = fixture.lsp.begin_diagnostics(&scope).unwrap();
+    assert!(fixture.lsp.apply_diagnostics(
+        request,
+        &scope,
+        Some(diagnostics_result(
+            &scope,
+            LspDiagnosticsStatus::Ready,
+            Vec::new(),
+        )),
+        None,
+    ));
+    let empty = draw(&mut fixture, &snapshot, WIDTH, HEIGHT);
+    assert!((0..WIDTH).all(|x| empty[(x, 1)].symbol() != "!"));
+    assert!(!empty[(7, 1)]
+        .modifier
+        .contains(ratatui::style::Modifier::UNDERLINED));
+    assert_eq!(fixture.presentation.visible_lines, rows);
+    assert_eq!(fixture.lsp.panel, None);
+}
+
+/// Old-generation and wrong-path entries cannot paint the open document.
+#[test]
+fn diagnostics_are_fenced_by_editor_generation_and_range_path() {
+    let old_scope = editor_lsp_scope(1);
+    let current_scope = editor_lsp_scope(2);
+    let mut fixture = Fixture::with_lsp(EditorLspState::default());
+    fixture.lsp.reset_for_scope(old_scope.clone());
+    let old_request = fixture.lsp.begin_diagnostics(&old_scope).unwrap();
+
+    fixture.lsp.reset_for_scope(current_scope.clone());
+    let current_request = fixture.lsp.begin_diagnostics(&current_scope).unwrap();
+    assert!(fixture.lsp.apply_diagnostics(
+        current_request,
+        &current_scope,
+        Some(diagnostics_result(
+            &current_scope,
+            LspDiagnosticsStatus::Ready,
+            vec![editor_diagnostic("src/lib.rs", 3, 7, 2)],
+        )),
+        None,
+    ));
+    let snapshot = DocumentBuffer::new("fn main() {}\n").snapshot();
+    let theme = Theme::default();
+    let current = draw(&mut fixture, &snapshot, WIDTH, HEIGHT);
+    assert_eq!(current[(7, 1)].fg, theme.warning);
+    assert!(current[(7, 1)]
+        .modifier
+        .contains(ratatui::style::Modifier::UNDERLINED));
+
+    assert!(!fixture.lsp.apply_diagnostics(
+        old_request,
+        &old_scope,
+        Some(diagnostics_result(
+            &old_scope,
+            LspDiagnosticsStatus::Ready,
+            vec![editor_diagnostic("src/lib.rs", 3, 7, 1)],
+        )),
+        None,
+    ));
+    let after_stale = draw(&mut fixture, &snapshot, WIDTH, HEIGHT);
+    assert_eq!(after_stale[(7, 1)].fg, theme.warning);
+    assert!(after_stale[(7, 1)]
+        .modifier
+        .contains(ratatui::style::Modifier::UNDERLINED));
+
+    let request = fixture.lsp.begin_diagnostics(&current_scope).unwrap();
+    assert!(fixture.lsp.apply_diagnostics(
+        request,
+        &current_scope,
+        Some(diagnostics_result(
+            &current_scope,
+            LspDiagnosticsStatus::Ready,
+            vec![editor_diagnostic("src/other.rs", 3, 7, 1)],
+        )),
+        None,
+    ));
+    let wrong_path = draw(&mut fixture, &snapshot, WIDTH, HEIGHT);
+    assert!((0..WIDTH).all(|x| wrong_path[(x, 1)].symbol() != "!"));
+    assert!((0..WIDTH).all(|x| wrong_path[(x, 1)].symbol() != "▲"));
+    assert!(!wrong_path[(7, 1)]
+        .modifier
+        .contains(ratatui::style::Modifier::UNDERLINED));
+}
+
+/// The server-state word is visible on the existing chrome row, without
+/// opening the diagnostics panel.
+#[test]
+fn pending_and_degraded_server_state_render_without_opening_f2() {
+    let mut lsp = EditorLspState::default();
+    lsp.scope = Some(codegg_tui::editor_lsp::EditorLspScope {
+        generation: 1,
+        session_id: "session-1".into(),
+        project_id: "project-1".into(),
+        workspace_id: "workspace-1".into(),
+        path: "src/lib.rs".into(),
+    });
+    lsp.lsp_sync = Some(codegg::protocol::core::DocumentLspSync::Pending);
+    lsp.diagnostics_status = codegg_tui::editor_lsp::DiagnosticsViewStatus::NotReady;
+    let snapshot = DocumentBuffer::new("fn main() {}\n").snapshot();
+    let mut fixture = Fixture::with_lsp(lsp);
+
+    let pending = draw(&mut fixture, &snapshot, WIDTH, HEIGHT);
+    let pending_text = buffer_text(&pending);
+    assert!(
+        pending_text.contains("lsp…"),
+        "pending status missing:\n{pending_text}"
+    );
+    assert!(!pending_text.contains("Diagnostics ·"));
+    assert_eq!(fixture.lsp.panel, None, "status never opens F2");
+
+    fixture.lsp.lsp_sync = Some(codegg::protocol::core::DocumentLspSync::Degraded);
+    fixture.lsp.diagnostics_status = codegg_tui::editor_lsp::DiagnosticsViewStatus::Ready;
+    let degraded = draw(&mut fixture, &snapshot, WIDTH, HEIGHT);
+    let degraded_text = buffer_text(&degraded);
+    assert!(
+        degraded_text.contains("lsp degraded"),
+        "degraded status missing:\n{degraded_text}"
+    );
+    assert_eq!(fixture.lsp.panel, None, "diagnostics remain opt-in");
 }
 
 /// A frame's glyphs, row by row.

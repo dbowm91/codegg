@@ -62,6 +62,9 @@ const MAX_EDITOR_PATH_DEPTH: usize = 64;
 /// keystroke; short enough that the file is never colourless for long.
 const SEMANTIC_REFRESH_QUIET_PERIOD: std::time::Duration = std::time::Duration::from_millis(600);
 
+/// Idle wait before asking for Insert-mode completion suggestions.
+const EDITOR_COMPLETION_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// Issue the pending syntax-highlight refresh if its quiet period has
 /// elapsed. Called from the render pump; a no-op unless an edit armed it.
 pub(crate) fn service_editor_semantic_refresh(app: &mut App, now: std::time::Instant) -> bool {
@@ -203,7 +206,7 @@ pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope
     if app.editor_state.is_open() {
         app.editor_state.detach();
     }
-    app.editor_state.generation = app.editor_state.generation.wrapping_add(1);
+    app.editor_state.bump_generation();
     let generation = app.editor_state.generation;
     let request_id = app.editor_state.request.begin();
     app.editor_state.operation = Some(EditorOperation::Open);
@@ -320,7 +323,7 @@ pub(crate) fn open_editor_via_command(app: &mut App, raw_path: &str) {
     if app.editor_state.is_open() {
         app.editor_state.detach();
     }
-    app.editor_state.generation = app.editor_state.generation.wrapping_add(1);
+    app.editor_state.bump_generation();
     let generation = app.editor_state.generation;
     let request_id = app.editor_state.request.begin();
     app.editor_state.operation = Some(EditorOperation::Open);
@@ -518,7 +521,7 @@ pub(crate) fn open_editor_template_in(
     if app.editor_state.is_open() {
         app.editor_state.detach();
     }
-    app.editor_state.generation = app.editor_state.generation.wrapping_add(1);
+    app.editor_state.bump_generation();
     let generation = app.editor_state.generation;
     let request_id = app.editor_state.request.begin();
     app.editor_state.operation = Some(EditorOperation::Open);
@@ -639,8 +642,117 @@ pub(crate) fn apply_editor_opened(
     // not attached yet would show the reader an empty buffer.
     super::file_tree::complete_editor_open_handoff(app, true);
     app.editor_state.clear_notice();
+    // The grammar/theme sets load off this thread; the first frames paint
+    // plain text if the load has not landed, which is the same degradation as
+    // a file with no bundled grammar. Kicking it here overlaps it with the
+    // diagnostics pull instead of stalling the first highlighted frame.
+    crate::editor_highlight::ensure_highlight_assets();
     refresh_editor_diagnostics(app);
+    app.editor_state.lsp.lsp_sync = app
+        .editor_state
+        .session
+        .as_ref()
+        .and_then(|session| session.controller().try_lsp_sync());
+    start_editor_lsp_sync_settlement(app, generation);
     request_editor_semantic_tokens(app);
+}
+
+/// Schedule at most one existing snapshot read to settle a Pending interactive
+/// open. This is called from the open-completion path, never from rendering.
+fn start_editor_lsp_sync_settlement(app: &mut App, generation: u64) {
+    if app.editor_state.generation != generation {
+        return;
+    }
+    let Some(session) = app.editor_state.session.as_ref() else {
+        return;
+    };
+    let controller = session.controller();
+    if controller.try_lsp_sync() != Some(codegg_protocol::core::DocumentLspSync::Pending) {
+        return;
+    }
+    let Some(attachment) = controller.try_attachment_info() else {
+        return;
+    };
+    if !app.editor_state.begin_lsp_sync_settlement(generation) {
+        return;
+    }
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    app.editor_state.lsp_sync_settlement_cancel = Some(cancel.clone());
+    let task_cancel = cancel.clone();
+    let document_id = attachment.document_id;
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_lsp_sync_settlement",
+        tab_id,
+        None,
+        None,
+        async move {
+            let sync = tokio::select! {
+                _ = task_cancel.cancelled() => return None,
+                result = controller.settle_lsp_sync() => result.ok().flatten(),
+            };
+            if task_cancel.is_cancelled() {
+                return None;
+            }
+            Some(TuiCommand::EditorLspSyncSettled {
+                generation,
+                document_id,
+                sync,
+            })
+        },
+    );
+    if task_id.is_none() {
+        if let Some(cancel) = app.editor_state.lsp_sync_settlement_cancel.take() {
+            cancel.cancel();
+        }
+    }
+}
+
+pub(crate) fn apply_editor_lsp_sync_settled(
+    app: &mut App,
+    generation: u64,
+    document_id: String,
+    sync: Option<codegg_protocol::core::DocumentLspSync>,
+) {
+    if app.editor_state.generation != generation
+        || app.editor_state.lsp_sync_settlement_generation != Some(generation)
+    {
+        return;
+    }
+    let current_document = app
+        .editor_state
+        .session
+        .as_ref()
+        .and_then(|session| session.attachment_info())
+        .map(|attachment| attachment.document_id);
+    if current_document.as_deref() == Some(document_id.as_str())
+        && app.editor_state.lsp.lsp_sync == Some(codegg_protocol::core::DocumentLspSync::Pending)
+    {
+        if let Some(sync) = sync {
+            app.editor_state.lsp.lsp_sync = Some(sync);
+            if sync == codegg_protocol::core::DocumentLspSync::Synced
+                && app.editor_state.lsp.diagnostics_status
+                    != crate::editor_lsp::DiagnosticsViewStatus::Ready
+            {
+                // The existing diagnostics stream may have answered NotReady
+                // before publication settled. Permit one replacement read;
+                // never poll or create a second stream.
+                app.editor_state.lsp_sync_settlement_diagnostics_retry = Some(generation);
+                if !app.editor_state.lsp.diagnostics_loading {
+                    app.editor_state.lsp_sync_settlement_diagnostics_retry = None;
+                    refresh_editor_diagnostics(app);
+                }
+            }
+        }
+    }
+    // Failure or a superseded controller read leaves the Pending witness
+    // untouched, but the one allowed attempt is complete.
+    app.editor_state.lsp_sync_settlement_cancel = None;
 }
 
 pub(crate) fn current_lsp_scope(app: &App) -> Option<EditorLspScope> {
@@ -1055,9 +1167,23 @@ pub(crate) fn apply_editor_diagnostics(
     {
         return;
     }
-    app.editor_state
+    let applied = app
+        .editor_state
         .lsp
         .apply_diagnostics(request_id, &scope, result, error);
+    if applied
+        && app.editor_state.lsp_sync_settlement_diagnostics_retry == Some(scope.generation)
+        && !app.editor_state.lsp.diagnostics_loading
+    {
+        if app.editor_state.lsp.diagnostics_status
+            == crate::editor_lsp::DiagnosticsViewStatus::Ready
+        {
+            app.editor_state.lsp_sync_settlement_diagnostics_retry = None;
+        } else {
+            app.editor_state.lsp_sync_settlement_diagnostics_retry = None;
+            refresh_editor_diagnostics(app);
+        }
+    }
 }
 
 /// The one argument an LSP read may carry.
@@ -1070,12 +1196,14 @@ pub(crate) fn apply_editor_diagnostics(
 /// editor should not spend a round trip discovering it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum EditorLspReadArgument {
-    /// No argument: every operation except the two that take one.
+    /// No argument: every operation except the ones that take one.
     None,
     /// The workspace-symbols query.
     Query(String),
     /// The proposed identifier, for a rename preview.
     NewName(String),
+    /// The bounded viewport window a semantic-token read asks for.
+    Range(codegg_protocol::lsp::LspSemanticTokenRangeDto),
 }
 
 fn start_editor_lsp_read(
@@ -1083,10 +1211,11 @@ fn start_editor_lsp_read(
     operation: LspReadOperation,
     argument: EditorLspReadArgument,
 ) {
-    let (query, new_name) = match argument {
-        EditorLspReadArgument::None => (None, None),
-        EditorLspReadArgument::Query(query) => (Some(query), None),
-        EditorLspReadArgument::NewName(name) => (None, Some(name)),
+    let (query, new_name, range) = match argument {
+        EditorLspReadArgument::None => (None, None, None),
+        EditorLspReadArgument::Query(query) => (Some(query), None, None),
+        EditorLspReadArgument::NewName(name) => (None, Some(name), None),
+        EditorLspReadArgument::Range(range) => (None, None, Some(range)),
     };
     let Some(scope) = current_lsp_scope(app) else {
         app.messages_state
@@ -1157,6 +1286,7 @@ fn start_editor_lsp_read(
         // target's extension, and reports an ambiguity instead of guessing.
         server_id: None,
         new_name,
+        range,
     };
     if let Err(error) = request.validate() {
         app.editor_state.lsp.read_loading = false;
@@ -1596,17 +1726,54 @@ pub(crate) fn request_editor_semantic_tokens(app: &mut App) {
     if current_lsp_scope(app).is_none() {
         return;
     }
-    start_editor_lsp_read(
-        app,
-        LspReadOperation::SemanticTokens,
-        EditorLspReadArgument::None,
-    );
+    let argument = match semantic_token_viewport_range(app) {
+        Some(range) => EditorLspReadArgument::Range(range),
+        None => EditorLspReadArgument::None,
+    };
+    start_editor_lsp_read(app, LspReadOperation::SemanticTokens, argument);
     // Clear the panel unconditionally, including on the two failure paths that
     // set it. Highlighting is ambient: a server that is not up yet should
     // leave the document unhighlighted, not throw a read-result box over the
     // file the user opened. `F8` is the retry, and the previous highlight is
     // still what is on screen until a validated response replaces it.
     app.editor_state.lsp.panel = None;
+}
+
+/// Lines one semantic-token read asks for, counted from the viewport top.
+///
+/// A bounded window rather than the file: it covers the screen and a
+/// screenful of scroll, so an ordinary 800-line file is no longer cut at the
+/// 1000-token cap before the viewport is reached, and a scroll cannot turn
+/// into a full-document read. The response still respects
+/// `MAX_LSP_SEMANTIC_TOKENS`.
+const SEMANTIC_TOKEN_VIEWPORT_LINES: u32 = 160;
+
+/// The bounded viewport window for the current editor attachment.
+///
+/// `None` when nothing is attached; the read then stays the legacy full read,
+/// which is the small-document path the plan keeps.
+fn semantic_token_viewport_range(
+    app: &App,
+) -> Option<codegg_protocol::lsp::LspSemanticTokenRangeDto> {
+    let session = app.editor_state.session.as_ref()?;
+    Some(semantic_token_range_for_viewport(
+        session.presentation().viewport_line,
+    ))
+}
+
+/// The bounded window one semantic-token read asks for, from a viewport top.
+///
+/// Pure so the bound is testable without an editor fixture: the end line is
+/// always `SEMANTIC_TOKEN_VIEWPORT_LINES` past the top, saturating rather than
+/// wrapping, and never `start == end` (which the DTO would refuse).
+fn semantic_token_range_for_viewport(
+    viewport_line: usize,
+) -> codegg_protocol::lsp::LspSemanticTokenRangeDto {
+    let start_line = u32::try_from(viewport_line).unwrap_or(u32::MAX - 1);
+    codegg_protocol::lsp::LspSemanticTokenRangeDto {
+        start_line,
+        end_line: start_line.saturating_add(SEMANTIC_TOKEN_VIEWPORT_LINES),
+    }
 }
 
 // ── Completion (M004) ────────────────────────────────────────────────────────
@@ -1666,6 +1833,34 @@ fn current_completion_scope(app: &App) -> Result<EditorCompletionScope, Completi
     })
 }
 
+fn current_local_editor_revision(app: &App) -> Option<codegg_document::DocumentRevision> {
+    app.editor_state
+        .session
+        .as_ref()
+        .and_then(|session| session.try_snapshot())
+        .map(|snapshot| snapshot.revision())
+}
+
+/// Service one due idle schedule through the existing completion entry point.
+pub(crate) fn service_editor_completion_debounce(app: &mut App, now: std::time::Instant) -> bool {
+    let Some(schedule) = app
+        .editor_state
+        .take_completion_debounce_due(std::time::Instant::now().max(now))
+    else {
+        return false;
+    };
+    if schedule.generation != app.editor_state.generation
+        || !is_editor_view_active(app)
+        || app.editor_state.mode() != EditorMode::Insert
+        || current_local_editor_revision(app) != Some(schedule.local_revision)
+        || current_completion_scope(app).is_err()
+    {
+        return false;
+    }
+    start_editor_completion(app);
+    true
+}
+
 /// Start one completion request on explicit user action.
 ///
 /// Opens the popup in its loading state and issues the M003 read through
@@ -1673,6 +1868,7 @@ fn current_completion_scope(app: &App) -> Result<EditorCompletionScope, Completi
 /// state guard drops the older answer on arrival. Nothing here polls,
 /// retries, or auto-accepts.
 pub(crate) fn start_editor_completion(app: &mut App) {
+    app.editor_state.cancel_completion_debounce();
     let scope = match current_completion_scope(app) {
         Ok(scope) => scope,
         Err(CompletionScopeError::LineTooLong) => {
@@ -2055,6 +2251,7 @@ fn leave_editor_view(app: &mut App) {
     // composer is the only destination here, and it types regardless of mode.
     app.ui_state.input_mode = crate::input::InputMode::Normal;
     app.editor_state.semantic_refresh_due_at = None;
+    app.editor_state.cancel_completion_debounce();
     // The route the pending prefix was armed for is no longer on screen. Left
     // armed, it would answer its second key against whatever buffer is open
     // when the route comes back.
@@ -2155,6 +2352,7 @@ where
     let request_id = app.editor_state.request.begin();
     let generation = app.editor_state.generation;
     app.editor_state.operation = Some(operation);
+    app.editor_state.cancel_completion_debounce();
     // Save, reload, resync, and close all move the text or the binding out
     // from under a popup: clear it at initiation, not at completion.
     app.editor_state.completion.clear();
@@ -3201,6 +3399,7 @@ pub(crate) fn leave_editor_select(app: &mut App) {
 /// out of insert mode; this one moves the *model*, and the two are the
 /// same step seen from the two sides.
 pub(crate) fn leave_insert_mode(state: &mut EditorState) {
+    state.cancel_completion_debounce();
     if let Some(session) = state.session.as_mut() {
         let presentation = session.presentation_mut();
         presentation.mode = EditorMode::Normal;
@@ -3245,9 +3444,46 @@ fn handle_file_tree_key(app: &mut App, key: KeyEvent) -> bool {
 /// [`dispatch_editor_key`] passes here, so a new early return cannot skip the
 /// capture.
 pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
+    let was_insert = app.editor_state.mode() == EditorMode::Insert;
+    let revision_before = was_insert
+        .then(|| current_local_editor_revision(app))
+        .flatten();
+    let viewport_before = current_viewport_line(app);
     let consumed = dispatch_editor_key(app, key);
+    // A scroll moves the viewport the semantic-token range covers, so it
+    // re-asks on the same quiet period an edit uses. Arming replaces the
+    // deadline, so a scroll burst is one request.
+    if viewport_before != current_viewport_line(app) {
+        app.editor_state
+            .arm_semantic_refresh(std::time::Instant::now() + SEMANTIC_REFRESH_QUIET_PERIOD);
+    }
+    if let (Some(before), Some(after)) = (revision_before, current_local_editor_revision(app)) {
+        if before != after {
+            // Every newer document edit supersedes the prior idle schedule. A
+            // cursor position outside the bounded completion walk is a refusal,
+            // not a schedule waiting to fail later.
+            app.editor_state.cancel_completion_debounce();
+            if app.editor_state.mode() == EditorMode::Insert
+                && is_editor_view_active(app)
+                && current_completion_scope(app).is_ok()
+            {
+                app.editor_state.arm_completion_debounce(
+                    after,
+                    std::time::Instant::now() + EDITOR_COMPLETION_DEBOUNCE,
+                );
+            }
+        }
+    }
     capture_recorded_key(app, key);
     consumed
+}
+
+/// The top line of the editor viewport, when a document is attached.
+fn current_viewport_line(app: &App) -> Option<usize> {
+    app.editor_state
+        .session
+        .as_ref()
+        .map(|session| session.presentation().viewport_line)
 }
 
 fn dispatch_editor_key(app: &mut App, key: KeyEvent) -> bool {
@@ -6982,6 +7218,26 @@ mod tests {
     use tokio::sync::Notify;
 
     #[test]
+    fn stale_lsp_sync_settlement_cannot_replace_the_current_pending_state() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.editor_state.generation = 9;
+        app.editor_state.lsp_sync_settlement_generation = Some(9);
+        app.editor_state.lsp.lsp_sync = Some(codegg_protocol::core::DocumentLspSync::Pending);
+
+        apply_editor_lsp_sync_settled(
+            &mut app,
+            8,
+            "old-document".into(),
+            Some(codegg_protocol::core::DocumentLspSync::Synced),
+        );
+
+        assert_eq!(
+            app.editor_state.lsp.lsp_sync,
+            Some(codegg_protocol::core::DocumentLspSync::Pending)
+        );
+    }
+
+    #[test]
     fn accepts_a_plain_workspace_relative_path() {
         assert_eq!(normalize_relative_path("src/lib.rs").unwrap(), "src/lib.rs");
         assert_eq!(
@@ -7115,6 +7371,8 @@ mod tests {
                 },
                 writer_lease: self.writer.then(|| "lease-1".to_string()),
                 lsp_degraded: false,
+
+                lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
             }
         }
     }
@@ -17054,5 +17312,27 @@ mod tests {
             before_repeat,
             "`.` wrote nothing: the refused gesture was not kept"
         );
+    }
+
+    /// M005: the semantic-token read asks for a bounded window from the
+    /// viewport top, not a full-file dump the token cap then cuts.
+    #[test]
+    fn a_semantic_token_request_covers_a_bounded_viewport_window() {
+        let range = semantic_token_range_for_viewport(120);
+        assert_eq!(range.start_line, 120);
+        assert_eq!(range.end_line, 120 + SEMANTIC_TOKEN_VIEWPORT_LINES);
+        assert!(
+            SEMANTIC_TOKEN_VIEWPORT_LINES <= 400,
+            "the window is a viewport bound, not a full-file read"
+        );
+
+        // Never an empty range, even at the very top.
+        let top = semantic_token_range_for_viewport(0);
+        assert_eq!(top.start_line, 0);
+        assert!(top.end_line > top.start_line);
+
+        // A viewport past u32 saturates instead of wrapping to start == end.
+        let saturated = semantic_token_range_for_viewport(usize::MAX);
+        assert!(saturated.end_line > saturated.start_line);
     }
 }

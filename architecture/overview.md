@@ -596,14 +596,16 @@ fifth reconciliations recorded. The full reconciliation is in
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 17 (+ root) | root `Cargo.toml` |
-| Integration test files | 298 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded. TUI families now live under `crates/codegg-tui/tests/` and are not in this root count |
+| Integration test files | 299 | `tests/*.rs` + `tests/*/*.inc` — the root integration test *modules*, with the `tests/common/` helper tree excluded. TUI families now live under `crates/codegg-tui/tests/` and are not in this root count |
 | Guard scripts (all) | 105 | `scripts/check_*` — every guard the repository ships |
 | CI guard scripts | 71 | `.github/workflows/ci.yml` — a strict subset of the above; quick runs guards CI does not |
 
 ### Count reconciliation — TUI dependency inversion (2026-11-21)
 
 Milestone 002 moved the TUI integration families out of the root `tests/` tree.
-*Integration test files* is **298**, the root-module measure
+*Integration test files* is **299** after the TUI editor IDE-presence line added
+`tests/core_daemon/document_open_deadline_m001.inc`; it was **298** before that
+member. This is the root-module measure
 `scripts/check_test_target_references.py` checks. The families were moved, not
 deleted: they live under `crates/codegg-tui/tests/` and `crates/codegg-cli/tests/`.
 Workspace member crates is **17** (+ root), from the root `Cargo.toml` members list.

@@ -52,8 +52,10 @@ const CHROME_ROWS: u16 = 1;
 ///
 /// - **busy** is self-evident — the reader can see the work happening;
 /// - the **modified** state is a status, not a safety signal;
+/// - the **server state** outranks the modified marker, so a warming editor
+///   cannot read as healthy by silence;
 /// - the **writability** marker and the **scope badge** say what an edit
-///   *here* will do, which is why they outrank the status word;
+///   *here* will do, which is why they outrank the server-state word;
 /// - the **disclosure** is what just happened;
 /// - a **caveat** ("line too long", "highlighting truncated") outranks even
 ///   that, because dropping it is not a smaller truth — it is a *misleading*
@@ -65,6 +67,7 @@ const CHROME_ROWS: u16 = 1;
 enum ClusterWeight {
     Busy,
     Modified,
+    Server,
     Writable,
     Scope,
     Disclosure,
@@ -158,6 +161,11 @@ pub struct EditorWidget<'a> {
     pub path: &'a str,
     /// Controller state label.
     pub status: &'a str,
+    /// Whether `status` is a safety caveat (`EditorStatus::is_caveat`).
+    ///
+    /// A caveat outranks the informational groups, so a conflict or a lost
+    /// document is never dropped in favour of the server-state word.
+    pub status_caveat: bool,
     /// Surfaced error banner, if any.
     pub notice: Option<&'a str>,
     /// Why the last find-char motion did not land, already rendered to text
@@ -642,10 +650,37 @@ impl EditorWidget<'_> {
             // The **modified** state, moved down from the title rather than
             // dropped: it is the only unsaved-changes signal the editor has.
             groups.push(ClusterGroup::one(
-                ClusterWeight::Modified,
+                if self.status_caveat {
+                    ClusterWeight::Caveat
+                } else {
+                    ClusterWeight::Modified
+                },
                 format!("{} ", self.status),
-                Style::default().fg(theme.muted),
+                Style::default().fg(if self.status_caveat {
+                    theme.warning
+                } else {
+                    theme.muted
+                }),
             ));
+            // Server readiness is a separate fact from the local document's
+            // modified state. It shares this row and its existing drop-order.
+            if let Some(word) = crate::editor_lsp::editor_server_status_word(
+                self.lsp.lsp_sync,
+                self.lsp.diagnostics_status,
+                self.lsp.scope.is_none(),
+            ) {
+                let style = match word {
+                    "lsp" => Style::default().fg(theme.success),
+                    "lsp degraded" => Style::default().fg(theme.warning),
+                    "lsp unavailable" => Style::default().fg(theme.error),
+                    _ => Style::default().fg(theme.muted),
+                };
+                groups.push(ClusterGroup::one(
+                    ClusterWeight::Server,
+                    format!("{word} "),
+                    style,
+                ));
+            }
             // Always show which root this document is confined to. The difference
             // is invisible in the path itself (`build.toml` reads the same at
             // either scope) but it decides who sees the edit, so it must not be
@@ -918,13 +953,24 @@ impl EditorWidget<'_> {
                 line_index + 1,
                 width = viewport.gutter as usize - 1
             );
-            let marker = self
+            let diagnostics_path_matches = self
                 .lsp
-                .diagnostics
-                .iter()
-                .filter(|diagnostic| diagnostic.range.start_line as usize == line_index)
-                .map(|diagnostic| diagnostic.severity)
-                .min();
+                .scope
+                .as_ref()
+                .is_none_or(|scope| scope.path == self.path);
+            let marker = if diagnostics_path_matches {
+                self.lsp
+                    .diagnostics
+                    .iter()
+                    .filter(|diagnostic| {
+                        diagnostic.range.path == self.path
+                            && diagnostic.range.start_line as usize == line_index
+                    })
+                    .map(|diagnostic| diagnostic.severity)
+                    .min()
+            } else {
+                None
+            };
             let marker = match marker {
                 Some(1) => "!",
                 Some(2) => "▲",
@@ -1698,7 +1744,8 @@ impl EditorWidget<'_> {
     ///    floor that keeps files coloured on a machine with no server.
     /// 2. **Search** — a `/` match, background only.
     /// 3. **Selection** — a held Helix selection, background and foreground.
-    /// 4. **Cursor** — the block in Normal, the bar in Insert.
+    /// 4. **Diagnostic** — a Ready range, severity foreground and underline.
+    /// 5. **Cursor** — the block in Normal, the bar in Insert.
     ///
     /// Every background layer pins the foreground to `theme.foreground` at
     /// the same time. A themed background with a syntax foreground chosen
@@ -1779,7 +1826,28 @@ impl EditorWidget<'_> {
             (0, line.len())
         };
         let visible_end = visible_end.max(visible_start).min(line.len());
+        let diagnostic_ranges = if self
+            .lsp
+            .scope
+            .as_ref()
+            .is_none_or(|scope| scope.path == self.path)
+        {
+            diagnostic_ranges_for_line(
+                self.path,
+                line_index,
+                &line,
+                line_len,
+                visible_start..visible_end,
+                &self.lsp.diagnostics,
+            )
+        } else {
+            Vec::new()
+        };
         let mut boundaries = vec![visible_start, visible_end];
+        for (range, _) in &diagnostic_ranges {
+            boundaries.push(range.start);
+            boundaries.push(range.end);
+        }
         // Foreground sources, in priority order: an LSP semantic token
         // first, the built-in scan second. `find` takes the first covering
         // range, so a server that knows the grammar overrides the scan
@@ -1995,6 +2063,27 @@ impl EditorWidget<'_> {
                 } else {
                     style
                 };
+                let diagnostic_severity = diagnostic_ranges
+                    .iter()
+                    .filter(|(diagnostic, _)| {
+                        diagnostic.start <= range.start && diagnostic.end >= range.end
+                    })
+                    .map(|(_, severity)| *severity)
+                    .min_by_key(|severity| diagnostic_severity_rank(*severity));
+                let style = if let Some(severity) = diagnostic_severity {
+                    let color = match severity {
+                        1 => self.theme.error,
+                        2 => self.theme.warning,
+                        _ => self.theme.muted,
+                    };
+                    style.patch(
+                        Style::default()
+                            .fg(color)
+                            .add_modifier(Modifier::UNDERLINED),
+                    )
+                } else {
+                    style
+                };
                 // Heads are painted last so nothing can bury them: a
                 // selection or a search hit that happened to cover a
                 // cursor's own cell must not make the position unreadable.
@@ -2205,6 +2294,80 @@ impl EditorWidget<'_> {
     }
 }
 
+/// The severity precedence used for overlapping inline diagnostics.
+fn diagnostic_severity_rank(severity: u32) -> u8 {
+    match severity {
+        1 => 0, // error
+        2 => 1, // warning
+        _ => 2, // informational and unknown severities
+    }
+}
+
+/// Project the diagnostics covering one visible line slice into byte ranges.
+///
+/// `line` is the bounded prefix the row already read, always from the logical
+/// line start. Columns beyond that prefix clip only when more source bytes
+/// exist; malformed UTF-16 positions and out-of-line positions are refused.
+/// This borrows no document state beyond the caller's existing row window.
+fn diagnostic_ranges_for_line(
+    path: &str,
+    line_index: usize,
+    line: &str,
+    full_line_len: usize,
+    visible: std::ops::Range<usize>,
+    diagnostics: &[codegg_protocol::lsp::LspDiagnosticDto],
+) -> Vec<(std::ops::Range<usize>, u32)> {
+    use crate::editor_lsp::utf16_column_to_byte;
+
+    if visible.start >= visible.end || visible.end > line.len() {
+        return Vec::new();
+    }
+    let read_units = line.chars().map(char::len_utf16).sum::<usize>();
+    let byte_at_column = |column: u32| {
+        let target = usize::try_from(column).ok()?;
+        utf16_column_to_byte(line, column)
+            .or_else(|| (line.len() < full_line_len && target > read_units).then_some(line.len()))
+    };
+    let mut ranges = Vec::new();
+    for diagnostic in diagnostics {
+        let range = &diagnostic.range;
+        let Ok(start_line) = usize::try_from(range.start_line) else {
+            continue;
+        };
+        let Ok(end_line) = usize::try_from(range.end_line) else {
+            continue;
+        };
+        if range.path != path
+            || start_line > end_line
+            || line_index < start_line
+            || line_index > end_line
+        {
+            continue;
+        }
+        let start = if line_index == start_line {
+            let Some(start) = byte_at_column(range.start_column) else {
+                continue;
+            };
+            start
+        } else {
+            0
+        };
+        let end = if line_index == end_line {
+            let Some(end) = byte_at_column(range.end_column) else {
+                continue;
+            };
+            end
+        } else {
+            line.len()
+        };
+        let clipped = start.max(visible.start)..end.min(visible.end);
+        if clipped.start < clipped.end {
+            ranges.push((clipped, diagnostic.severity));
+        }
+    }
+    ranges
+}
+
 fn severity_label(severity: u32) -> &'static str {
     match severity {
         1 => "error",
@@ -2388,6 +2551,7 @@ mod tests {
     struct Options<'a> {
         status: &'a str,
         notice: Option<&'a str>,
+        status_caveat: bool,
         find_note: &'a str,
         count_label: &'a str,
         mode: EditorMode,
@@ -2429,6 +2593,7 @@ mod tests {
         Options {
             status: "synced",
             notice: None,
+            status_caveat: false,
             find_note: "",
             count_label: "",
             mode: EditorMode::Normal,
@@ -2506,6 +2671,7 @@ mod tests {
                 EditorWidget {
                     path: "src/lib.rs",
                     status: options.status,
+                    status_caveat: options.status_caveat,
                     notice: options.notice,
                     find_note: options.find_note,
                     count_label: options.count_label,
@@ -2591,6 +2757,7 @@ mod tests {
                 EditorWidget {
                     path: "src/lib.rs",
                     status: options.status,
+                    status_caveat: options.status_caveat,
                     notice: options.notice,
                     find_note: options.find_note,
                     count_label: options.count_label,
@@ -3167,6 +3334,7 @@ mod tests {
             0,
             Options {
                 status: "disk conflict \u{2014} draft kept",
+                status_caveat: true,
                 ..defaults()
             },
         )
@@ -3184,6 +3352,7 @@ mod tests {
             0,
             Options {
                 status: "document gone \u{2014} draft kept",
+                status_caveat: true,
                 ..defaults()
             },
         )
@@ -3201,6 +3370,7 @@ mod tests {
             0,
             Options {
                 status: "disconnected \u{2014} draft kept",
+                status_caveat: true,
                 ..defaults()
             },
         )
@@ -3535,6 +3705,7 @@ mod tests {
                 EditorWidget {
                     path: "src/lib.rs",
                     status: options.status,
+                    status_caveat: options.status_caveat,
                     notice: options.notice,
                     find_note: options.find_note,
                     count_label: options.count_label,
@@ -3655,6 +3826,7 @@ mod tests {
         let options = Options {
             status: "synced",
             notice: None,
+            status_caveat: false,
             find_note: "",
             count_label: "",
             mode: EditorMode::Normal,
@@ -3684,6 +3856,7 @@ mod tests {
                 EditorWidget {
                     path: "src/lib.rs",
                     status: options.status,
+                    status_caveat: options.status_caveat,
                     notice: options.notice,
                     find_note: options.find_note,
                     count_label: options.count_label,
@@ -3965,6 +4138,7 @@ mod tests {
             path: "src/lib.rs",
             status: "synced",
             notice: None,
+            status_caveat: false,
             find_note: "",
             count_label: "",
             mode: EditorMode::Normal,
@@ -4102,6 +4276,7 @@ mod tests {
             path: "src/lib.rs",
             status: "synced",
             notice: None,
+            status_caveat: false,
             find_note: "",
             count_label: "",
             mode: EditorMode::Normal,
@@ -4128,9 +4303,135 @@ mod tests {
         widget.line_spans(0, viewport, Style::default(), &[], cursor_line)
     }
 
+    fn diagnostic(
+        path: &str,
+        start_line: u32,
+        start_column: u32,
+        end_line: u32,
+        end_column: u32,
+        severity: u32,
+    ) -> codegg_protocol::lsp::LspDiagnosticDto {
+        codegg_protocol::lsp::LspDiagnosticDto {
+            range: codegg_protocol::lsp::LspRangeDto {
+                path: path.to_string(),
+                workspace_relative_path: None,
+                start_line,
+                start_column,
+                end_line,
+                end_column,
+            },
+            severity,
+            tag: 0,
+            code: None,
+            message: "diagnostic".into(),
+            source: None,
+        }
+    }
+
     /// The text one row's spans draw, joined.
     fn joined(spans: &[Span<'static>]) -> String {
         spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    fn style_at_byte(spans: &[Span<'static>], byte: usize) -> Style {
+        let mut offset = 0usize;
+        for span in spans {
+            let end = offset.saturating_add(span.content.len());
+            if (offset..end).contains(&byte) {
+                return span.style;
+            }
+            offset = end;
+        }
+        Style::default()
+    }
+
+    #[test]
+    fn inline_diagnostics_use_error_precedence_and_theme_severity_colors() {
+        let theme = Theme::default();
+        let lsp = crate::editor_lsp::EditorLspState {
+            diagnostics: vec![
+                diagnostic("src/lib.rs", 0, 1, 0, 5, 2),
+                diagnostic("src/lib.rs", 0, 3, 0, 4, 1),
+            ],
+            diagnostics_status: crate::editor_lsp::DiagnosticsViewStatus::Ready,
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let spans = row_spans("abcdef", 0, 0, 0, 6, lsp);
+        let warning = style_at_byte(&spans, 2);
+        let error = style_at_byte(&spans, 3);
+        let plain = style_at_byte(&spans, 5);
+
+        assert!(warning.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(warning.fg, Some(theme.warning));
+        assert!(error.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(
+            error.fg,
+            Some(theme.error),
+            "error wins over overlapping warning"
+        );
+        assert!(!plain.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn inline_diagnostics_clip_to_visible_bytes_and_refuse_malformed_utf16() {
+        let clipped = diagnostic_ranges_for_line(
+            "src/lib.rs",
+            0,
+            "a😀bcd",
+            "a😀bcd".len(),
+            5..7,
+            &[diagnostic("src/lib.rs", 0, 1, 0, 6, 2)],
+        );
+        assert_eq!(clipped, vec![(5..7, 2)]);
+
+        // This row only read a bounded prefix. A range extending beyond it is
+        // clipped to the already-read bytes; it never asks for the line tail.
+        let partial = diagnostic_ranges_for_line(
+            "src/lib.rs",
+            0,
+            "a😀b",
+            "a😀bcdef".len(),
+            5..6,
+            &[diagnostic("src/lib.rs", 0, 1, 0, 100, 2)],
+        );
+        assert_eq!(partial, vec![(5..6, 2)]);
+
+        // UTF-16 column 2 lands between the surrogate units for 😀.
+        let malformed = diagnostic_ranges_for_line(
+            "src/lib.rs",
+            0,
+            "a😀b",
+            "a😀b".len(),
+            1..6,
+            &[diagnostic("src/lib.rs", 0, 2, 0, 3, 1)],
+        );
+        assert!(malformed.is_empty());
+
+        let wrong_path = diagnostic_ranges_for_line(
+            "src/lib.rs",
+            0,
+            "abcdef",
+            6,
+            0..6,
+            &[diagnostic("src/other.rs", 0, 0, 0, 6, 1)],
+        );
+        assert!(wrong_path.is_empty());
+    }
+
+    #[test]
+    fn an_over_budget_line_refuses_inline_diagnostic_spans() {
+        let text = "x".repeat(crate::editor::MAX_RENDER_LINE_BYTES + 1);
+        let lsp = crate::editor_lsp::EditorLspState {
+            diagnostics: vec![diagnostic("src/lib.rs", 0, 0, 0, 4, 1)],
+            diagnostics_status: crate::editor_lsp::DiagnosticsViewStatus::Ready,
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let spans = row_spans(&text, 0, 0, 0, 20, lsp);
+
+        assert!(joined(&spans).contains("too long"));
+        assert!(!spans
+            .iter()
+            .any(|span| span.style.add_modifier.contains(Modifier::UNDERLINED)));
     }
 
     /// A row of a line far longer than the window reads and walks only the
@@ -4247,6 +4548,7 @@ mod tests {
             path: "src/lib.rs",
             status: "synced",
             notice: None,
+            status_caveat: false,
             find_note: "",
             count_label: "",
             mode: EditorMode::Normal,

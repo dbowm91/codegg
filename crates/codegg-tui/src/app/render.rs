@@ -983,6 +983,7 @@ impl App {
             crate::components::editor::EditorWidget {
                 path: &path,
                 status: status.label(),
+                status_caveat: status.is_caveat(),
                 notice: notice.as_deref(),
                 find_note: &find_note,
                 count_label: &count_label,

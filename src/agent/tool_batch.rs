@@ -22,6 +22,75 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Classify one MCP `tools/call` response into a tool outcome.
+///
+/// The transport returning `Ok` only means the protocol reply arrived; the
+/// server's own `isError` says the *tool* failed. The text-only `call_tool`
+/// projection dropped that flag, so the batch recorded a failed call as a
+/// successful result and the model continued from a bare success.
+pub(super) fn mcp_tool_outcome(
+    server: &str,
+    tool: &str,
+    result: crate::mcp::McpToolCallResult,
+) -> ToolExecutionOutcome {
+    if result.is_error {
+        ToolExecutionOutcome {
+            status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
+            model_text: format!(
+                "Error: MCP tool '{tool}' on server '{server}' returned an error: {}",
+                result.text
+            ),
+        }
+    } else {
+        ToolExecutionOutcome::success(result.text)
+    }
+}
+
+/// Wait for each registered question's own answer.
+///
+/// One receiver per question, waited concurrently under the existing
+/// 300-second bound, so the wall clock stays bounded by the batch rather than
+/// by the number of questions. Cleanup is scoped to the owning session and the
+/// question's own id: the previous cleanup passed the *session id* to
+/// `unregister`, which removed nothing and left every question parked until the
+/// registry's opportunistic expiry.
+pub(super) async fn resolve_pending_question_answers(
+    session_id: &str,
+    pending: Vec<(String, String, tokio::sync::oneshot::Receiver<String>)>,
+) -> std::collections::HashMap<String, (crate::agent::progress_recovery::ToolExecutionStatus, String)>
+{
+    use crate::agent::progress_recovery::ToolExecutionStatus;
+    let waits = pending
+        .into_iter()
+        .map(|(question_id, tool_call_id, rx)| async move {
+            (
+                question_id,
+                tool_call_id,
+                tokio::time::timeout(Duration::from_secs(300), rx).await,
+            )
+        });
+    let mut resolved = std::collections::HashMap::new();
+    for (question_id, tool_call_id, answer) in futures_util::future::join_all(waits).await {
+        let outcome = match answer {
+            Ok(Ok(answers)) => (
+                ToolExecutionStatus::Success,
+                format_question_answers(&answers),
+            ),
+            Ok(Err(_)) => (
+                ToolExecutionStatus::Cancelled,
+                "[question cancelled by user]".to_string(),
+            ),
+            Err(_) => (
+                ToolExecutionStatus::Timeout,
+                "[question timed out waiting for user response]".to_string(),
+            ),
+        };
+        resolved.insert(tool_call_id, outcome);
+        QuestionRegistry::unregister_scoped(session_id, &question_id);
+    }
+    resolved
+}
+
 struct CheckpointContext {
     paths: Vec<String>,
     pre_states: std::collections::HashMap<String, crate::snapshot::checkpoint::FileState>,
@@ -777,11 +846,15 @@ impl AgentLoop {
                 );
                 crate::bus::global::GlobalEventBus::publish(AppEvent::QuestionPending {
                     session_id: self.session_id.clone(),
-                    question_id,
+                    question_id: question_id.clone(),
                     turn_id: None,
                     questions: questions_json,
                 });
-                self.question_rx = Some(rx);
+                // Retain the id with its own receiver. Dropping it into the
+                // single `question_rx` slot replaced any earlier question's
+                // receiver and made every pending result share one answer.
+                self.pending_questions
+                    .push((question_id, tc.id.to_string(), rx));
                 return ToolPermissionOutcome::QuestionTool;
             }
         }
@@ -1808,9 +1881,14 @@ impl AgentLoop {
                             }
                             match mcp_arc.try_read() {
                                 Ok(mcp) => {
+                                    // Keep the protocol-level flag: a
+                                    // `tools/call` that reports `isError` is
+                                    // an `Ok` transport response carrying a
+                                    // failed tool result, and the text-only
+                                    // `call_tool` projection dropped it.
                                     let call_result = tokio::time::timeout(
                                         mcp_timeout,
-                                        mcp.call_tool(server, tool, tc.arguments.clone()),
+                                        mcp.call_tool_structured(server, tool, tc.arguments.clone()),
                                     )
                                     .await;
                                     match call_result {
@@ -1818,7 +1896,7 @@ impl AgentLoop {
                                             return (
                                                 orig_idx,
                                                 tc.id.to_string(),
-                                                ToolExecutionOutcome::success(result),
+                                                mcp_tool_outcome(server, tool, result),
                                             );
                                         }
                                         Ok(Err(e)) => {
@@ -2767,68 +2845,53 @@ impl AgentLoop {
         drop(checkpoint_guard);
 
         if has_pending_question {
-            if let Some(rx) = self.question_rx.take() {
-                match tokio::time::timeout(Duration::from_secs(300), rx).await {
-                    Ok(Ok(answers)) => {
-                        let formatted = format_question_answers(&answers);
-                        tool_results = tool_results
-                            .into_iter()
-                            .map(|(idx, id, mut outcome)| {
-                                if outcome.model_text == "__QUESTION_PENDING__" {
-                                    outcome.model_text = formatted.clone();
-                                } else {
-                                    return (idx, id, outcome);
-                                }
-                                (idx, id, outcome)
-                            })
-                            .collect();
-                    }
-                    Ok(Err(_)) => {
-                        tool_results = tool_results
-                            .into_iter()
-                            .map(|(idx, id, mut outcome)| {
-                                if outcome.model_text == "__QUESTION_PENDING__" {
-                                    outcome.status = crate::agent::progress_recovery::ToolExecutionStatus::Cancelled;
-                                    outcome.model_text = "[question cancelled by user]".to_string();
-                                } else {
-                                    return (idx, id, outcome);
-                                }
-                                (idx, id, outcome)
-                            })
-                            .collect();
-                    }
-                    Err(_) => {
-                        tool_results = tool_results
-                            .into_iter()
-                            .map(|(idx, id, mut outcome)| {
-                                if outcome.model_text == "__QUESTION_PENDING__" {
-                                    outcome.status = crate::agent::progress_recovery::ToolExecutionStatus::Timeout;
-                                    outcome.model_text =
-                                        "[question timed out waiting for user response]".to_string();
-                                } else {
-                                    return (idx, id, outcome);
-                                }
-                                (idx, id, outcome)
-                            })
-                            .collect();
+            use crate::agent::progress_recovery::ToolExecutionStatus;
+            // Each registered question owns exactly one receiver. Waiting on
+            // them concurrently keeps the wall clock at the existing
+            // 300-second bound for the batch instead of the bound times the
+            // number of questions, and an early answer for one question is not
+            // discarded when a sibling never answers.
+            let pending = std::mem::take(&mut self.pending_questions);
+            let mut resolved = resolve_pending_question_answers(&self.session_id, pending).await;
+            if resolved.is_empty() {
+                if let Some(rx) = self.question_rx.take() {
+                    // Legacy single-channel path (exec mode's direct channel).
+                    // It owns no registered question, so nothing here is
+                    // unregistered.
+                    let answer = tokio::time::timeout(Duration::from_secs(300), rx).await;
+                    let outcome = match answer {
+                        Ok(Ok(answers)) => (
+                            ToolExecutionStatus::Success,
+                            format_question_answers(&answers),
+                        ),
+                        Ok(Err(_)) => (
+                            ToolExecutionStatus::Cancelled,
+                            "[question cancelled by user]".to_string(),
+                        ),
+                        Err(_) => (
+                            ToolExecutionStatus::Timeout,
+                            "[question timed out waiting for user response]".to_string(),
+                        ),
+                    };
+                    for (_, id, result) in &tool_results {
+                        if result.model_text == "__QUESTION_PENDING__" {
+                            resolved.insert(id.clone(), outcome.clone());
+                        }
                     }
                 }
-                QuestionRegistry::unregister(&self.session_id);
-            } else {
-                tool_results = tool_results
-                    .into_iter()
-                    .map(|(idx, id, mut outcome)| {
-                        if outcome.model_text == "__QUESTION_PENDING__" {
-                            outcome.status =
-                                crate::agent::progress_recovery::ToolExecutionStatus::ToolError;
-                            outcome.model_text =
-                                "[question not supported in exec mode]".to_string();
-                        } else {
-                            return (idx, id, outcome);
-                        }
-                        (idx, id, outcome)
-                    })
-                    .collect();
+            }
+            let has_resolution = !resolved.is_empty();
+            for (_, id, outcome) in tool_results.iter_mut() {
+                if outcome.model_text != "__QUESTION_PENDING__" {
+                    continue;
+                }
+                if let Some((status, text)) = resolved.remove(id) {
+                    outcome.status = status;
+                    outcome.model_text = text;
+                } else if !has_resolution {
+                    outcome.status = ToolExecutionStatus::ToolError;
+                    outcome.model_text = "[question not supported in exec mode]".to_string();
+                }
             }
         }
 
@@ -2899,6 +2962,16 @@ pub(crate) fn strip_projection_inline_footer(text: &str) -> String {
 }
 
 #[cfg(test)]
+mod completion_reliability_registry_lock {
+    /// The question registry is process-global, and two tests observe it:
+    /// the dry-run test compares its membership across a call, and the
+    /// per-question test registers and resolves entries. A length or subset
+    /// assertion is still racy while both run in parallel, so they share one
+    /// lock instead of a retry loop.
+    pub(super) static QUESTION_REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
+#[cfg(test)]
 mod invocation_tests {
     use super::{
         invocation_key_for, is_affirmatively_read_only_name, is_question_dry_run,
@@ -2918,9 +2991,13 @@ mod invocation_tests {
         assert_eq!(strip_projection_inline_footer("plain body"), "plain body");
     }
 
-    #[test]
-    fn question_dry_run_registers_nothing() {
+    #[tokio::test]
+    async fn question_dry_run_registers_nothing() {
         use crate::provider::ToolCall;
+        let _registry_guard =
+            super::completion_reliability_registry_lock::QUESTION_REGISTRY_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dry = ToolCall {
             id: "call-dry".to_string().into(),
             name: "question".to_string().into(),
@@ -2929,15 +3006,40 @@ mod invocation_tests {
                 "dry_run": true
             }),
         };
-        let before = crate::bus::QuestionRegistry::pending_question_ids().len();
         assert!(
             is_question_dry_run(&dry),
             "dry_run:true must take the echo path"
         );
-        // The predicate is pure: evaluating it must not touch the registry.
-        let after = crate::bus::QuestionRegistry::pending_question_ids().len();
-        assert_eq!(
-            before, after,
+        // The predicate is pure, and the entry point must not register. Query
+        // by this loop's own unique session instead of comparing global
+        // membership: the registry is process-global, so a sibling test's
+        // registration is not this test's evidence.
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let session_id = format!("question-dry-run-{}", uuid::Uuid::new_v4().simple());
+        let mut agent_loop = super::AgentLoop::new(
+            Vec::new(),
+            Box::new(crate::research::tests::StubProvider),
+            crate::permission::PermissionChecker::new(None, None),
+            crate::tool::ToolRegistry::default(),
+            crate::config::schema::Config::default(),
+            None,
+            None,
+            std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.path().to_path_buf(),
+            session_id.clone(),
+            None,
+            None,
+        );
+        let snapshot = agent_loop.capture_execution_snapshot();
+        let outcome = agent_loop
+            .check_tool_permission_with_snapshot(&dry, &snapshot)
+            .await;
+        assert!(
+            matches!(outcome, super::ToolPermissionOutcome::Allowed { .. }),
+            "a dry-run question is allowed without a dialog"
+        );
+        assert!(
+            crate::bus::QuestionRegistry::get_pending_for_session(&session_id).is_empty(),
             "dry-run detection must not register a pending question"
         );
         let live = ToolCall {
@@ -3587,5 +3689,126 @@ mod batch_admission_tests {
             job.contains("For subagent runs use task"),
             "job description must cross-link task, got: {job}"
         );
+    }
+}
+
+#[cfg(test)]
+mod completion_reliability_tests {
+    use crate::agent::progress_recovery::ToolExecutionStatus;
+    use crate::bus::QuestionRegistry;
+    use crate::mcp::McpToolCallResult;
+
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
+    }
+
+    #[test]
+    fn an_mcp_error_result_is_not_a_successful_tool_result() {
+        // The local fixture shape the MCP envelope test uses: a
+        // protocol-level failure that arrives as an Ok transport response
+        // carrying isError: true and the text "done".
+        let errored = super::mcp_tool_outcome(
+            "fixture",
+            "tool",
+            McpToolCallResult {
+                text: "done".to_string(),
+                is_error: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(errored.status, ToolExecutionStatus::ToolError);
+        assert!(errored.model_text.contains("done"));
+        assert!(
+            !errored.model_text.starts_with("done"),
+            "the server text must not read as a bare success: {}",
+            errored.model_text
+        );
+
+        let ok = super::mcp_tool_outcome(
+            "fixture",
+            "tool",
+            McpToolCallResult {
+                text: "done".to_string(),
+                is_error: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(ok.status, ToolExecutionStatus::Success);
+        assert_eq!(ok.model_text, "done");
+    }
+
+    #[tokio::test]
+    async fn each_question_keeps_its_own_answer_and_cleanup_is_scoped() {
+        let _registry_guard =
+            super::completion_reliability_registry_lock::QUESTION_REGISTRY_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = unique("question-session");
+        let other_session = unique("question-other-session");
+        let first = unique("q");
+        let second = unique("q");
+        let foreign = unique("q");
+
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+        let (foreign_tx, _foreign_rx) = tokio::sync::oneshot::channel();
+        QuestionRegistry::register_with_session(session.clone(), None, first.clone(), first_tx);
+        QuestionRegistry::register_with_session(session.clone(), None, second.clone(), second_tx);
+        QuestionRegistry::register_with_session(
+            other_session.clone(),
+            None,
+            foreign.clone(),
+            foreign_tx,
+        );
+
+        assert!(QuestionRegistry::answer_question_scoped(
+            &session,
+            &first,
+            "first answer".to_string()
+        ));
+        assert!(QuestionRegistry::answer_question_scoped(
+            &session,
+            &second,
+            "second answer".to_string()
+        ));
+
+        let resolved = super::resolve_pending_question_answers(
+            &session,
+            vec![
+                (first.clone(), "call-1".to_string(), first_rx),
+                (second.clone(), "call-2".to_string(), second_rx),
+            ],
+        )
+        .await;
+
+        let (first_status, first_text) =
+            resolved.get("call-1").expect("the first question resolved");
+        assert_eq!(*first_status, ToolExecutionStatus::Success);
+        assert!(first_text.contains("first answer"));
+        assert!(
+            !first_text.contains("second answer"),
+            "the first result must not receive the second answer: {first_text}"
+        );
+
+        let (second_status, second_text) = resolved
+            .get("call-2")
+            .expect("the second question resolved");
+        assert_eq!(*second_status, ToolExecutionStatus::Success);
+        assert!(second_text.contains("second answer"));
+        assert!(
+            !second_text.contains("first answer"),
+            "the second result must not receive the first answer: {second_text}"
+        );
+
+        // Cleanup is scoped by the question id. If it had passed the session
+        // id to unregister (the baseline defect), nothing would have been
+        // removed and both ids would still be registered here.
+        assert!(!QuestionRegistry::is_registered_scoped(&session, &first));
+        assert!(!QuestionRegistry::is_registered_scoped(&session, &second));
+        assert!(
+            QuestionRegistry::is_registered_scoped(&other_session, &foreign),
+            "cleanup must not remove another session's question"
+        );
+        QuestionRegistry::unregister_scoped(&other_session, &foreign);
     }
 }

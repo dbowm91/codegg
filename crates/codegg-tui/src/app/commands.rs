@@ -130,6 +130,13 @@ pub enum TuiCommand {
         result: Option<String>,
         state: codegg_client::DocumentState,
     },
+    /// Completion of the one-shot existing snapshot read that settles an
+    /// interactive open's `Pending` LSP witness. `None` preserves Pending.
+    EditorLspSyncSettled {
+        generation: u64,
+        document_id: String,
+        sync: Option<codegg_protocol::core::DocumentLspSync>,
+    },
     /// Completion of a guarded editor lifecycle operation (save,
     /// reload, resync, close). `operation` decides whether the
     /// frontend undo history survives: save preserves it, every

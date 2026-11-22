@@ -177,6 +177,9 @@ pub struct LspCapabilityDetails {
     pub signature_trigger_characters: Vec<String>,
     /// Semantic-token legend (token types + modifiers) when advertised.
     pub semantic_token_legend: Option<SemanticTokenLegendSnapshot>,
+    /// Whether the server advertises the semantic-token range option.
+    #[serde(default)]
+    pub supports_semantic_tokens_range: bool,
     /// Pass 7 — Position encoding the server advertised during
     /// `initialize`. `None` when the server omitted the
     /// `position_encoding` capability; the harness then
@@ -578,6 +581,18 @@ fn extract_details(caps: &ServerCapabilities) -> LspCapabilityDetails {
         .and_then(|opts| opts.trigger_characters.clone())
         .unwrap_or_default();
 
+    let supports_semantic_tokens_range =
+        caps.semantic_tokens_provider
+            .as_ref()
+            .is_some_and(|provider| match provider {
+                lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
+                    opts.range.unwrap_or(false)
+                }
+                lsp_types::SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(
+                    opts,
+                ) => opts.semantic_tokens_options.range.unwrap_or(false),
+            });
+
     let semantic_token_legend = caps.semantic_tokens_provider.as_ref().map(|p| {
         let legend = match p {
             lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
@@ -622,6 +637,7 @@ fn extract_details(caps: &ServerCapabilities) -> LspCapabilityDetails {
         completion_trigger_characters,
         signature_trigger_characters,
         semantic_token_legend,
+        supports_semantic_tokens_range,
         position_encoding,
     }
 }
@@ -899,6 +915,34 @@ mod tests {
         let legend = snap.details.semantic_token_legend.expect("legend present");
         assert!(legend.token_types.contains(&"function".to_string()));
         assert!(legend.token_modifiers.contains(&"declaration".to_string()));
+    }
+
+    #[test]
+    fn semantic_token_range_requires_advertisement() {
+        let mut caps = ServerCapabilities::default();
+        caps.semantic_tokens_provider = Some(
+            lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(
+                lsp_types::SemanticTokensOptions {
+                    legend: SemanticTokensLegend {
+                        token_types: vec![lsp_types::SemanticTokenType::FUNCTION],
+                        token_modifiers: Vec::new(),
+                    },
+                    range: Some(true),
+                    full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
+                    work_done_progress_options: Default::default(),
+                },
+            ),
+        );
+        let supported = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(supported.details.supports_semantic_tokens_range);
+
+        if let Some(lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) =
+            caps.semantic_tokens_provider.as_mut()
+        {
+            opts.range = Some(false);
+        }
+        let unsupported = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!unsupported.details.supports_semantic_tokens_range);
     }
 
     #[test]

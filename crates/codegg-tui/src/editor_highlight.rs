@@ -41,15 +41,90 @@ use std::ops::Range;
 
 use crate::render_cost;
 use codegg_document::DocumentSnapshot;
-use once_cell::sync::Lazy;
+use once_cell::sync::OnceCell;
 use ratatui::style::Color;
 use std::collections::hash_map::DefaultHasher;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
-static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
-static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
+/// The bundled grammar and theme sets, loaded once.
+///
+/// ADR-0034 Option B keeps syntect as the server-free highlight floor. The
+/// load itself is a few hundred milliseconds of deserialization, so it does
+/// not belong on the thread that paints the first frame: [`assets`] answers
+/// `None` until the background load lands, and a frame without it renders
+/// plain text plus the gutter — the same degradation as a file with no
+/// bundled grammar, never a stall.
+pub struct HighlightAssets {
+    syntax_set: SyntaxSet,
+    theme_set: ThemeSet,
+}
+
+static ASSETS: OnceCell<std::sync::Arc<HighlightAssets>> = OnceCell::new();
+static ASSETS_LOAD: std::sync::Once = std::sync::Once::new();
+
+/// The loaded sets, or `None` while the background load is still running.
+fn assets() -> Option<&'static std::sync::Arc<HighlightAssets>> {
+    // A test asserts on spans, so it loads on its own thread rather than
+    // racing the background loader the production path starts.
+    #[cfg(test)]
+    ensure_highlight_assets_blocking();
+    ASSETS.get()
+}
+
+/// Start the one background load of the default grammar and theme sets.
+///
+/// Called when an editor attaches, never from the draw path. Idempotent and
+/// non-blocking; a second call is a no-op. The load runs on its own OS thread
+/// because it must not depend on a Tokio runtime being current (the draw path
+/// has none of its own) and must not be turned into a blocking task on the
+/// loop that services input.
+pub fn ensure_highlight_assets() {
+    ASSETS_LOAD.call_once(|| {
+        std::thread::spawn(|| {
+            let loaded = HighlightAssets {
+                syntax_set: SyntaxSet::load_defaults_newlines(),
+                theme_set: ThemeSet::load_defaults(),
+            };
+            let _ = ASSETS.set(std::sync::Arc::new(loaded));
+        });
+    });
+}
+
+/// Block until the default sets are loaded, or `timeout` passes.
+///
+/// Test support only, and deliberately not a frame path: production never
+/// waits for the load, because a frame that waits is exactly the stall this
+/// module exists to avoid. An integration test cannot see the `cfg(test)`
+/// loader above (it links the library without that cfg), so it starts the
+/// background load and waits here.
+#[doc(hidden)]
+pub fn wait_for_highlight_assets(timeout: std::time::Duration) -> bool {
+    ensure_highlight_assets();
+    let deadline = std::time::Instant::now() + timeout;
+    while ASSETS.get().is_none() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    true
+}
+
+/// Wait for the one load.
+///
+/// Tests only: a test asserts against spans, and racing the background load
+/// would make every one of those assertions a coin flip. It delegates to
+/// [`wait_for_highlight_assets`] rather than loading a second copy, so there
+/// is exactly one place in this file that calls the loaders.
+#[cfg(test)]
+fn ensure_highlight_assets_blocking() {
+    assert!(
+        wait_for_highlight_assets(std::time::Duration::from_secs(30)),
+        "the bundled grammar sets load within the test budget"
+    );
+}
 
 /// Largest document, in lines, this scanner will colour from the top.
 ///
@@ -201,6 +276,11 @@ impl EditorHighlight {
     ///
     /// `snapshot` is borrowed for the call and dropped with it; nothing
     /// here retains document text.
+    ///
+    /// The first call starts the default-set load if nothing else has. It
+    /// does not wait for it: the load is a few hundred milliseconds of
+    /// deserialization, and a frame that blocked on it would be the stall
+    /// this module moved off the render thread.
     pub fn spans_for_line(
         &mut self,
         snapshot: &DocumentSnapshot,
@@ -208,6 +288,9 @@ impl EditorHighlight {
         code_theme: &str,
         line: usize,
     ) -> &[HighlightSpan] {
+        // Idempotent and non-blocking: the first frame may start the load it
+        // will benefit from two frames later.
+        ensure_highlight_assets();
         // Compare before allocating. `spans_for_line` runs once per visible
         // row per frame, so building the key first meant two `String`s per
         // row to re-derive an identity that had not changed.
@@ -329,7 +412,12 @@ impl EditorHighlight {
             self.cache.clear();
             return;
         };
-        let Some(theme) = THEME_SET.themes.get(code_theme) else {
+        let Some(assets) = assets() else {
+            self.state = None;
+            self.cache.clear();
+            return;
+        };
+        let Some(theme) = assets.theme_set.themes.get(code_theme) else {
             self.state = None;
             self.cache.clear();
             return;
@@ -355,7 +443,10 @@ impl EditorHighlight {
         let Ok(raw) = snapshot.read_bytes(range.start, range.end) else {
             return false;
         };
-        if state.highlight_line(&raw, &SYNTAX_SET).is_err() {
+        let Some(assets) = assets() else {
+            return false;
+        };
+        if state.highlight_line(&raw, &assets.syntax_set).is_err() {
             return false;
         }
         self.scanned_to = index + 1;
@@ -384,7 +475,12 @@ impl EditorHighlight {
             self.cache.clear();
             return;
         };
-        let Some(theme) = THEME_SET.themes.get(code_theme) else {
+        let Some(assets) = assets() else {
+            self.state = None;
+            self.cache.clear();
+            return;
+        };
+        let Some(theme) = assets.theme_set.themes.get(code_theme) else {
             self.state = None;
             self.cache.clear();
             return;
@@ -426,7 +522,10 @@ impl EditorHighlight {
         let Ok(raw) = snapshot.read_bytes(range.start, range.end) else {
             return false;
         };
-        let Ok(runs) = state.highlight_line(&raw, &SYNTAX_SET) else {
+        let Some(assets) = assets() else {
+            return false;
+        };
+        let Ok(runs) = state.highlight_line(&raw, &assets.syntax_set) else {
             return false;
         };
         let mut spans = Vec::with_capacity(runs.len());
@@ -502,9 +601,11 @@ fn syntax_for(path: &str) -> Option<&'static SyntaxReference> {
     // `find_syntax_by_extension` is the whole of the match: it is already
     // keyed by the suffix, and `find_syntax_by_token` expects a language id
     // (`rs`, `py`), which a path does not carry.
-    SYNTAX_SET
+    let assets = assets()?;
+    assets
+        .syntax_set
         .find_syntax_by_extension(extension)
-        .or_else(|| SYNTAX_SET.find_syntax_by_name(extension))
+        .or_else(|| assets.syntax_set.find_syntax_by_name(extension))
 }
 
 /// The comment tokens a buffer's grammar declares.
@@ -569,7 +670,11 @@ impl CommentTokens {
 /// the outcome is the same: the toggle refuses and names the extension.
 pub fn comment_tokens_for(path: &str) -> Option<CommentTokens> {
     let syntax = syntax_for(path)?;
-    let metadata = SYNTAX_SET.metadata().metadata_for_scope(&[syntax.scope]);
+    let assets = assets()?;
+    let metadata = assets
+        .syntax_set
+        .metadata()
+        .metadata_for_scope(&[syntax.scope]);
     let tokens = CommentTokens {
         line: metadata.line_comment().map(str::to_string),
         block: metadata
@@ -658,6 +763,46 @@ mod tests {
         highlight
             .spans_for_line(&snapshot, path, "base16-ocean.dark", line)
             .to_vec()
+    }
+
+    /// ADR-0034 Option B keeps syntect, but the default sets must not be
+    /// loaded by anything a frame calls: that is the whole point of moving
+    /// the load to `ensure_highlight_assets`.
+    #[test]
+    fn the_default_sets_are_loaded_only_by_the_loader() {
+        let source = include_str!("editor_highlight.rs");
+        // Split so this assertion's own text is not one of the matches it
+        // counts.
+        let calls = [
+            concat!("SyntaxSet::load_defaults", "_newlines()"),
+            concat!("ThemeSet::load_defaults", "()"),
+        ];
+        let mut loaders = Vec::new();
+        for call in calls {
+            // Exactly one loader per set, and it is not on the draw path.
+            assert_eq!(
+                source.matches(call).count(),
+                1,
+                "{call} must be reached from exactly the one loader"
+            );
+            for (index, _) in source.match_indices(call) {
+                let before = &source[..index];
+                let fn_at = before
+                    .rfind("fn ")
+                    .expect("the call sits inside a function");
+                let name: String = before[fn_at + 3..]
+                    .chars()
+                    .take_while(|character| character.is_alphanumeric() || *character == '_')
+                    .collect();
+                loaders.push(name);
+            }
+        }
+        for name in &loaders {
+            assert!(
+                name.starts_with("ensure_highlight_assets"),
+                "the default sets must only load in the loader, found in {name}"
+            );
+        }
     }
 
     #[test]

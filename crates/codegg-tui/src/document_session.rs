@@ -1474,6 +1474,8 @@ mod tests {
                 },
                 writer_lease: Some("lease".into()),
                 lsp_degraded: false,
+
+                lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
             },
         ]))));
         let session = TuiDocumentSession::new(client);

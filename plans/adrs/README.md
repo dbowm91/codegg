@@ -232,7 +232,22 @@ Check concurrent branch ADR identity allocation before integration.
 The project maintainer accepted
 `ADR-0064-root-compile-unit-ownership.md` on 2026-11-21. Acceptance authorizes
 milestones 001 and 002 at `plans/implementation/root-compile-boundary/`.
-ADR-0063 remains the embedding-host wire decision; the next free number is
-ADR-0065. Verify across active branches before allocating it. This decision
+ADR-0063 remains the embedding-host wire decision; the next free number was
+ADR-0065 when this note was written. This decision
 does not amend ADR-0016, ADR-0046, or ADR-0061, and it does not discharge the
 deferred binary-topology item in `plans/registry.md`.
+
+## ADR-0065 interactive document open (accepted 2026-11-22)
+
+`ADR-0065-interactive-document-open-does-not-await-language-server-publication.md`
+is **accepted** on this branch. Acceptance was recorded by starting M001 of the
+roadmap below (`plans/closure/tui-editor-ide-presence/001-status.md`), which
+implements the Decision (Option C) and no other option. It allocates ADR-0065, which the ADR-0064 note
+named as the next free number. This worktree's `plans/adrs/` maximum at
+allocation was ADR-0064. Other branches were not exhaustively searched; if one
+has already allocated ADR-0065, renumber this decision rather than merging two
+into one file. The next free number after this allocation is ADR-0066, subject
+to that cross-branch check. Acceptance is recorded by starting M001 of
+`plans/subsystems/tui-editor-ide-presence-roadmap.md`, which implements the
+Decision and no other option. This decision does not amend ADR-0011, ADR-0012,
+ADR-0021, ADR-0034, or ADR-0064.

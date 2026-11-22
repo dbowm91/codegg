@@ -955,6 +955,15 @@ async fn stream_once_inner(
                             .state
                             .run_output_tokens
                             .saturating_add(usage.output_tokens);
+                        // The hard token cap reads this counter. It used to be
+                        // initialised to zero and never assigned, so
+                        // `ExecutionLimits::max_tokens` could not fire. Mirror
+                        // the run accumulator the same usage report already
+                        // updates instead of adding a second usage parser.
+                        loop_.state.total_tokens = loop_
+                            .state
+                            .run_input_tokens
+                            .saturating_add(loop_.state.run_output_tokens);
                         if let Some(cached) = usage.cached_tokens {
                             loop_.state.run_cached_tokens = Some(
                                 loop_
@@ -1014,6 +1023,158 @@ mod tests {
     use futures_util::{stream, StreamExt};
     use std::str::FromStr;
     use std::time::Instant;
+
+    #[derive(Clone)]
+    struct RecordingProvider {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        tools_seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+        script: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::VecDeque<
+                    Vec<Result<crate::provider::ChatEvent, crate::provider::ProviderError>>,
+                >,
+            >,
+        >,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for RecordingProvider {
+        fn id(&self) -> &str {
+            "provider-turn-recording"
+        }
+
+        fn name(&self) -> &str {
+            "provider-turn-recording"
+        }
+
+        fn clone_box(&self) -> Box<dyn crate::provider::Provider> {
+            Box::new(self.clone())
+        }
+
+        async fn stream(
+            &self,
+            request: &crate::provider::ChatRequest,
+        ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.tools_seen
+                .lock()
+                .expect("tools_seen mutex")
+                .push(request.tools.is_some());
+            let events = self
+                .script
+                .lock()
+                .expect("script mutex")
+                .pop_front()
+                .unwrap_or_default();
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+
+        async fn models(
+            &self,
+        ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn recording_provider(
+        script: Vec<Vec<Result<crate::provider::ChatEvent, crate::provider::ProviderError>>>,
+    ) -> (
+        RecordingProvider,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+    ) {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tools_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = RecordingProvider {
+            calls: calls.clone(),
+            tools_seen: tools_seen.clone(),
+            script: std::sync::Arc::new(std::sync::Mutex::new(script.into())),
+        };
+        (provider, calls, tools_seen)
+    }
+
+    fn finish(input_tokens: usize, output_tokens: usize) -> crate::provider::ChatEvent {
+        crate::provider::ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: crate::provider::TokenUsage {
+                input_tokens,
+                output_tokens,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn loop_with_provider(
+        provider: Box<dyn crate::provider::Provider>,
+    ) -> (crate::agent::r#loop::AgentLoop, tempfile::TempDir) {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let session_id = format!("provider-turn-{}", uuid::Uuid::new_v4());
+        let agent_loop = crate::agent::r#loop::AgentLoop::new(
+            Vec::new(),
+            provider,
+            crate::permission::PermissionChecker::new(None, None),
+            crate::tool::ToolRegistry::default(),
+            crate::config::schema::Config::default(),
+            None,
+            None,
+            std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.path().to_path_buf(),
+            session_id,
+            None,
+            None,
+        );
+        (agent_loop, workspace)
+    }
+
+    fn token_request() -> crate::provider::ChatRequest {
+        crate::provider::ChatRequest {
+            messages: vec![Message::User {
+                content: vec![crate::provider::ContentPart::Text {
+                    text: "count usage".to_string().into(),
+                }],
+            }],
+            model: "test/model".to_string(),
+            tools: None,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_token_cap_reads_a_counter_that_moves() {
+        let (provider, calls, tools_seen) =
+            recording_provider(vec![vec![Ok(finish(120, 35))], vec![Ok(finish(12, 8))]]);
+        let (mut agent_loop, _workspace) = loop_with_provider(Box::new(provider));
+        agent_loop.state.total_tokens = 1_000_000;
+        assert_eq!(
+            agent_loop.check_limits().as_deref(),
+            Some("max tokens (1000000) reached")
+        );
+
+        agent_loop.state.total_tokens = 0;
+        let mut request = token_request();
+        ProviderTurnAdapter::receive_with_retry_context(&mut agent_loop, &mut request, None)
+            .await
+            .expect("first provider response is received");
+        let first_total = agent_loop.state.total_tokens;
+        assert!(first_total >= 120 + 35);
+
+        ProviderTurnAdapter::receive_with_retry_context(&mut agent_loop, &mut request, None)
+            .await
+            .expect("second provider response is received");
+        assert!(agent_loop.state.total_tokens > first_total);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            tools_seen.lock().expect("tools_seen mutex").as_slice(),
+            &[false, false]
+        );
+    }
 
     #[test]
     fn backoff_cap_grows_and_respects_hint_cap() {

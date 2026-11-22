@@ -1407,6 +1407,7 @@ fn read_request(fixture: &Fixture, server_id: Option<&str>) -> LspReadRequestDto
         query: None,
         server_id: server_id.map(str::to_string),
         new_name: None,
+        range: None,
     }
 }
 

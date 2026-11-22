@@ -22,6 +22,8 @@ const TOAST_RENDER_INTERVAL: Duration = Duration::from_millis(250);
 /// fine enough for the line above the input to disappear when the window
 /// lapses rather than a quarter-second later.
 const EXIT_ARM_RENDER_INTERVAL: Duration = Duration::from_millis(250);
+/// How often the event loop checks an armed editor completion idle deadline.
+const EDITOR_COMPLETION_DEBOUNCE_PUMP_INTERVAL: Duration = Duration::from_millis(50);
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
 /// Maximum queued daemon envelopes applied in a single loop iteration.
@@ -71,6 +73,10 @@ pub(crate) fn animation_interval(app: &app::App) -> Option<Duration> {
         } else {
             SPINNER_RENDER_INTERVAL
         })
+    } else if app.editor_state.completion_debounce_is_armed() {
+        // A short fixed pump interval keeps the 200 ms deadline reachable
+        // even when no key arrives and the rest of the frame is idle.
+        Some(EDITOR_COMPLETION_DEBOUNCE_PUMP_INTERVAL)
     } else if !app.messages_state.toasts.is_empty() {
         Some(TOAST_RENDER_INTERVAL)
     } else if crate::commands::interactive_terminal::terminal_pull_armed(app) {
@@ -479,6 +485,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), codegg::error::App
                 if app.check_turn_stall() {
                     needs_render = true;
                 }
+                if app.service_editor_completion_debounce(std::time::Instant::now()) {
+                    needs_render = true;
+                }
                 // Deferred syntax-highlight refresh after a local edit. The
                 // arming is consumed by the check, so this is a single
                 // `Instant` compare on every pump tick and does no work
@@ -621,5 +630,28 @@ mod render_delay_tests {
     #[test]
     fn no_previous_render_owes_nothing() {
         assert_eq!(render_delay_after(None, STREAM_RENDER_INTERVAL), None);
+    }
+
+    #[test]
+    fn completion_debounce_arms_the_idle_timed_loop() {
+        let mut app = app::App::new_for_testing("/tmp/tui-editor-debounce".to_string());
+        assert_eq!(animation_interval(&app), None, "the test frame starts idle");
+
+        app.editor_state.arm_completion_debounce(
+            codegg_document::DocumentRevision::default(),
+            Instant::now() + Duration::from_millis(200),
+        );
+        assert_eq!(
+            animation_interval(&app),
+            Some(EDITOR_COMPLETION_DEBOUNCE_PUMP_INTERVAL),
+            "the timed select arm must wake without another keypress"
+        );
+
+        app.editor_state.cancel_completion_debounce();
+        assert_eq!(
+            animation_interval(&app),
+            None,
+            "a cancelled timer costs nothing"
+        );
     }
 }

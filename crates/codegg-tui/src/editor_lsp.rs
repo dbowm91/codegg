@@ -4,6 +4,7 @@
 //! never owns or caches editor text; ranges are resolved against a scoped
 //! `DocumentSnapshot` borrow by the renderer.
 
+use codegg_protocol::core::DocumentLspSync;
 use codegg_protocol::lsp::{
     LspCodeActionDto, LspCodeActionUnavailable, LspDiagnosticDto, LspDiagnosticsResultDto,
     LspPreviewCandidateDto, LspReadPayloadDto, LspReadResultDto, LspSemanticTokenDto,
@@ -43,6 +44,34 @@ pub enum DiagnosticsViewStatus {
     Unavailable,
 }
 
+/// The one short server-state word for the editor's existing chrome row.
+///
+/// Readiness is the conjunction of a `Synced` publication witness and a
+/// `Ready` diagnostics pull; a missing legacy witness is deliberately not
+/// relabeled as warming. `not_configured` is the existing no-LSP-scope path.
+pub fn editor_server_status_word(
+    lsp_sync: Option<DocumentLspSync>,
+    diagnostics: DiagnosticsViewStatus,
+    not_configured: bool,
+) -> Option<&'static str> {
+    if not_configured {
+        return Some("no lsp");
+    }
+    match lsp_sync? {
+        DocumentLspSync::Legacy => None,
+        DocumentLspSync::Pending => Some("lsp…"),
+        DocumentLspSync::Degraded => Some("lsp degraded"),
+        DocumentLspSync::Unavailable => Some("lsp unavailable"),
+        DocumentLspSync::Synced => match diagnostics {
+            DiagnosticsViewStatus::Ready => Some("lsp"),
+            DiagnosticsViewStatus::Unavailable => Some("lsp unavailable"),
+            DiagnosticsViewStatus::Idle
+            | DiagnosticsViewStatus::Loading
+            | DiagnosticsViewStatus::NotReady => Some("lsp…"),
+        },
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorLspPanel {
     Diagnostics,
@@ -62,6 +91,8 @@ pub enum EditorDiagnosticStep {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EditorLspState {
     pub scope: Option<EditorLspScope>,
+    /// Publication state retained from the daemon's document snapshot read.
+    pub lsp_sync: Option<DocumentLspSync>,
     pub diagnostics: Vec<LspDiagnosticDto>,
     pub diagnostics_status: DiagnosticsViewStatus,
     pub diagnostics_stale: bool,
@@ -519,6 +550,101 @@ pub fn validate_semantic_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_server_state_word_requires_synced_ready_and_distinguishes_absence() {
+        assert_eq!(
+            editor_server_status_word(
+                Some(DocumentLspSync::Pending),
+                DiagnosticsViewStatus::Ready,
+                false,
+            ),
+            Some("lsp…")
+        );
+        assert_eq!(
+            editor_server_status_word(
+                Some(DocumentLspSync::Synced),
+                DiagnosticsViewStatus::Ready,
+                false,
+            ),
+            Some("lsp")
+        );
+        assert_eq!(
+            editor_server_status_word(
+                Some(DocumentLspSync::Synced),
+                DiagnosticsViewStatus::NotReady,
+                false,
+            ),
+            Some("lsp…")
+        );
+        assert_eq!(
+            editor_server_status_word(
+                Some(DocumentLspSync::Degraded),
+                DiagnosticsViewStatus::Ready,
+                false,
+            ),
+            Some("lsp degraded")
+        );
+        assert_eq!(
+            editor_server_status_word(
+                Some(DocumentLspSync::Unavailable),
+                DiagnosticsViewStatus::Ready,
+                false,
+            ),
+            Some("lsp unavailable")
+        );
+        let ready_empty: Vec<LspDiagnosticDto> = Vec::new();
+        assert!(ready_empty.is_empty());
+        assert_eq!(
+            editor_server_status_word(
+                Some(DocumentLspSync::Synced),
+                DiagnosticsViewStatus::Ready,
+                false,
+            ),
+            Some("lsp"),
+            "Ready is a pull outcome, even when its diagnostic set is empty"
+        );
+        assert_eq!(
+            editor_server_status_word(
+                Some(DocumentLspSync::Legacy),
+                DiagnosticsViewStatus::NotReady,
+                false,
+            ),
+            None,
+            "a missing legacy witness must not be labeled as warming"
+        );
+        assert_eq!(
+            editor_server_status_word(
+                Some(DocumentLspSync::Unavailable),
+                DiagnosticsViewStatus::Unavailable,
+                true,
+            ),
+            Some("no lsp")
+        );
+    }
+
+    #[test]
+    fn stale_generation_diagnostics_do_not_replace_pending_server_word() {
+        let old_scope = scope();
+        let mut current_scope = old_scope.clone();
+        current_scope.generation = current_scope.generation.wrapping_add(1);
+        let mut state = EditorLspState::default();
+        let old_request = state.begin_diagnostics(&old_scope).unwrap();
+        state.reset_for_scope(current_scope.clone());
+        state.lsp_sync = Some(DocumentLspSync::Pending);
+        let _current_request = state.begin_diagnostics(&current_scope).unwrap();
+
+        assert!(!state.apply_diagnostics(
+            old_request,
+            &old_scope,
+            Some(ready(&old_scope, 1)),
+            None,
+        ));
+        assert_eq!(
+            editor_server_status_word(state.lsp_sync, state.diagnostics_status, false,),
+            Some("lsp…")
+        );
+    }
 
     #[test]
     fn diagnostics_preserve_baseline_on_not_ready_and_failure() {

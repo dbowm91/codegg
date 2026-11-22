@@ -1374,6 +1374,52 @@ pub struct EventEnvelope<T> {
     pub payload: T,
 }
 
+/// The language-server publication state of a document snapshot.
+///
+/// ADR-0065: an interactive `DocumentOpen` returns after document
+/// authority, before language-server publication completes. `lsp_degraded`
+/// alone could not carry that distinction — `false` used to mean "the sync
+/// this response waited for succeeded", which every caller could misread as
+/// "the server has the file and is healthy".
+///
+/// `lsp_degraded` is derived from this state: it is true for
+/// [`DocumentLspSync::Degraded`] and [`DocumentLspSync::Unavailable`] only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentLspSync {
+    /// Legacy payload that omitted the field: the sender awaited the sync and
+    /// `lsp_degraded: false` meant that wait completed without error.
+    ///
+    /// New responses never serialize this. It exists so a missing field is
+    /// decoded as the old meaning instead of [`Self::Pending`].
+    #[default]
+    Legacy,
+    /// Publication has not completed. The snapshot is authoritative for the
+    /// document text; it does not claim the server has this revision.
+    Pending,
+    /// The revision in this payload reached a server.
+    Synced,
+    /// Publication failed. The server may hold older text.
+    Degraded,
+    /// No language server can serve this document: the service is not
+    /// configured, no server claims the language, or the document is
+    /// intentionally outside publication (a global-agent config).
+    Unavailable,
+}
+
+impl DocumentLspSync {
+    /// Whether this state is a language-server failure or absence, which is
+    /// what `lsp_degraded` reports.
+    pub fn is_degraded(self) -> bool {
+        matches!(self, Self::Degraded | Self::Unavailable)
+    }
+
+    /// Whether the revision in this payload provably reached a server.
+    pub fn is_synced(self) -> bool {
+        matches!(self, Self::Synced)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 // Snapshot variants carry bounded session/message payloads by design;
@@ -1415,7 +1461,14 @@ pub enum CoreResponse {
     DocumentSnapshot {
         snapshot: DocumentSnapshotDto,
         writer_lease: Option<String>,
+        /// `true` only for a language-server failure or absence
+        /// (`lsp_sync` is `Degraded` or `Unavailable`).
         lsp_degraded: bool,
+        /// ADR-0065: the language-server publication state. A new response
+        /// always serializes it; a payload that omits it decodes as
+        /// `DocumentLspSync::Legacy` (the sender awaited the sync).
+        #[serde(default)]
+        lsp_sync: DocumentLspSync,
     },
     DocumentWriterLease {
         document_id: String,
@@ -6438,5 +6491,156 @@ mod tests {
             reasoning.is_none(),
             "an omitted field must decode as inherit"
         );
+    }
+
+    // ADR-0065: `lsp_sync` is the witness for "the server has this
+    // revision", and a payload that omits it keeps the old meaning.
+
+    fn snapshot_dto() -> crate::document::DocumentSnapshotDto {
+        crate::document::DocumentSnapshotDto {
+            document_id: "doc-1".to_owned(),
+            project_id: "proj-1".to_owned(),
+            workspace_id: "ws-1".to_owned(),
+            relative_path: "src/main.rs".to_owned(),
+            revision: 7,
+            text: "fn main() {}\n".to_owned(),
+            dirty: false,
+            conflicted: false,
+            writer: false,
+            disk_base_digest: "digest".to_owned(),
+            scope: crate::document::DocumentScope::Workspace,
+        }
+    }
+
+    /// A `document_snapshot` payload as JSON, optionally *with* the new
+    /// field. `None` produces the pre-ADR-0065 shape.
+    fn snapshot_payload(lsp_sync: Option<DocumentLspSync>) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "type": "document_snapshot",
+            "snapshot": {
+                "document_id": "doc-1",
+                "project_id": "proj-1",
+                "workspace_id": "ws-1",
+                "relative_path": "src/main.rs",
+                "revision": 7,
+                "text": "fn main() {}\n",
+                "dirty": false,
+                "conflicted": false,
+                "writer": false,
+                "disk_base_digest": "digest"
+            },
+            "writer_lease": null,
+            "lsp_degraded": false
+        });
+        if let Some(state) = lsp_sync {
+            value["lsp_sync"] = serde_json::to_value(state).expect("state serializes");
+        }
+        value
+    }
+
+    fn decode_snapshot(value: serde_json::Value) -> (DocumentLspSync, bool) {
+        match serde_json::from_value::<CoreResponse>(value).expect("payload decodes") {
+            CoreResponse::DocumentSnapshot {
+                lsp_sync,
+                lsp_degraded,
+                ..
+            } => (lsp_sync, lsp_degraded),
+            other => panic!("expected a document snapshot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_payload_without_lsp_sync_decodes_as_the_legacy_awaited_meaning() {
+        let (state, degraded) = decode_snapshot(snapshot_payload(None));
+        assert_eq!(
+            state,
+            DocumentLspSync::Legacy,
+            "a missing field must not decode as Pending: the sender awaited \
+             its sync, and `lsp_degraded: false` meant that wait succeeded"
+        );
+        assert!(!degraded, "a legacy success payload is not degraded");
+        assert!(
+            !state.is_synced(),
+            "legacy says nothing about the current revision's publication"
+        );
+    }
+
+    #[test]
+    fn pending_is_not_synced_and_not_degraded() {
+        let (state, degraded) = decode_snapshot(snapshot_payload(Some(DocumentLspSync::Pending)));
+        assert_eq!(state, DocumentLspSync::Pending);
+        assert!(
+            !degraded,
+            "publication that has not finished is not a failure"
+        );
+        assert!(
+            !state.is_synced(),
+            "a pending publication must never read as synced"
+        );
+    }
+
+    #[test]
+    fn degraded_and_unavailable_are_the_only_degraded_states() {
+        for state in [
+            DocumentLspSync::Legacy,
+            DocumentLspSync::Pending,
+            DocumentLspSync::Synced,
+        ] {
+            assert!(!state.is_degraded(), "{state:?} must not report degraded");
+        }
+        for state in [DocumentLspSync::Degraded, DocumentLspSync::Unavailable] {
+            assert!(state.is_degraded(), "{state:?} must report degraded");
+        }
+        assert!(DocumentLspSync::Synced.is_synced());
+        assert!(!DocumentLspSync::Legacy.is_synced());
+    }
+
+    #[test]
+    fn a_new_snapshot_always_serializes_its_lsp_sync_state() {
+        let response = CoreResponse::DocumentSnapshot {
+            snapshot: snapshot_dto(),
+            writer_lease: None,
+            lsp_degraded: false,
+            lsp_sync: DocumentLspSync::Pending,
+        };
+        let value = serde_json::to_value(&response).expect("response serializes");
+        assert_eq!(
+            value.get("lsp_sync").and_then(serde_json::Value::as_str),
+            Some("pending"),
+            "a new daemon response must carry the field; omitting it would \
+             decode as the legacy awaited meaning"
+        );
+        let (state, degraded) = decode_snapshot(value);
+        assert_eq!(state, DocumentLspSync::Pending);
+        assert!(!degraded);
+    }
+
+    #[test]
+    fn the_awaited_document_responses_carry_no_lsp_sync_state() {
+        // ADR-0065 §7: change, save, and reload were not made asynchronous,
+        // so their `lsp_degraded` keeps its awaited meaning and the witness
+        // field must not appear on them.
+        for response in [
+            CoreResponse::DocumentChanged {
+                revision: 3,
+                lsp_degraded: false,
+            },
+            CoreResponse::DocumentSaved {
+                revision: 3,
+                disk_base_digest: "digest".to_owned(),
+                lsp_degraded: false,
+            },
+            CoreResponse::DocumentReloaded {
+                revision: 3,
+                lsp_degraded: false,
+            },
+        ] {
+            let value = serde_json::to_value(&response).expect("response serializes");
+            assert!(
+                value.get("lsp_sync").is_none(),
+                "{response:?} must not carry lsp_sync: it would claim a \
+                 publication deadline this response still awaits"
+            );
+        }
     }
 }

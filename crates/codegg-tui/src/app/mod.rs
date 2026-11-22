@@ -10733,6 +10733,12 @@ impl App {
         );
     }
 
+    /// Service one due Insert-mode completion request from the event-loop
+    /// timer pump. This is the same seam used by the runtime and trajectory tests.
+    pub fn service_editor_completion_debounce(&mut self, now: std::time::Instant) -> bool {
+        crate::commands::editor::service_editor_completion_debounce(self, now)
+    }
+
     /// M004: apply a finished completion read. Stale, superseded, and
     /// wrong-scope answers are dropped by the state guard; nothing is
     /// fabricated. Used by the runtime dispatch arm and by trajectory

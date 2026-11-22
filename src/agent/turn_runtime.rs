@@ -1250,7 +1250,10 @@ impl TurnRuntime for DefaultTurnRuntime {
                     // Usage rides along on the completion event: the TUI footer
                     // is the only consumer that crosses the process boundary.
                     let (stop_reason, input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
-                        crate::agent::turn_completion::turn_usage(&events);
+                        crate::agent::turn_completion::turn_usage(
+                            &events,
+                            agent_loop.turn_stop_reason().as_deref(),
+                        );
                     let provider_allowance_micros =
                         agent_loop.run_usage().provider_allowance_micros;
                     // The resolved context window travels with the usage.

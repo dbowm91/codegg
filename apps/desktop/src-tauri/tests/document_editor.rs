@@ -76,6 +76,7 @@ impl DocumentTransport for FakeTransport {
                 },
                 writer_lease: Some("lease-1".to_owned()),
                 lsp_degraded: false,
+                lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
             }),
             CoreRequest::DocumentChange { .. } => Ok(CoreResponse::DocumentChanged {
                 revision: 2,

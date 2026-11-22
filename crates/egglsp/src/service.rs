@@ -31,6 +31,32 @@ use super::supervisor::LspProcessExitEvent;
 
 type ClientMap = Arc<RwLock<HashMap<String, Arc<LspClient>>>>;
 
+/// Managed full-text `didChange` debounce used only after a committed local edit.
+pub const MANAGED_DID_CHANGE_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(100);
+const MANAGED_DID_CHANGE_RETRY_DELAY: Duration = Duration::from_millis(25);
+
+struct ManagedChangeTask {
+    generation: u64,
+    abort: tokio::task::AbortHandle,
+}
+
+fn managed_change_task_key(client_key: &str, uri: &Url) -> String {
+    format!("{client_key}\0{uri}")
+}
+
+async fn push_managed_change_with_single_retry<F, Fut>(mut push: F) -> Result<(), LspError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), LspError>>,
+{
+    let first = push().await;
+    if first.is_ok() {
+        return first;
+    }
+    tokio::time::sleep(MANAGED_DID_CHANGE_RETRY_DELAY).await;
+    push().await
+}
+
 /// Authoritative process runtime paired with the generation that
 /// installed it. The explicit `generation` field is the source of
 /// truth for runtime-map safety: insertion, lookup, and removal
@@ -946,6 +972,11 @@ pub struct LspService {
     /// via [`acquire_restart_ownership`]. Different keys
     /// restart independently — there is no global restart mutex.
     restart_tasks: RestartTaskMap,
+    /// Per-document pending local-edit pushes, keyed by LSP client and URI.
+    managed_change_tasks: Arc<Mutex<HashMap<String, ManagedChangeTask>>>,
+    managed_change_generation: AtomicU64,
+    /// Serializes managed push/close/save operations for one URI.
+    managed_document_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Monotonic counter that hands out unique restart owner
     /// ids (Pass 1 — Serialization). Owners use their id to
     /// verify they still own the entry at release time, so a
@@ -1077,6 +1108,9 @@ impl LspService {
             #[cfg(test)]
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
             restart_tasks: Arc::new(Mutex::new(HashMap::new())),
+            managed_change_tasks: Arc::new(Mutex::new(HashMap::new())),
+            managed_change_generation: AtomicU64::new(1),
+            managed_document_locks: Arc::new(Mutex::new(HashMap::new())),
             restart_owner_counter: AtomicU64::new(1),
         }
     }
@@ -1163,6 +1197,9 @@ impl LspService {
             #[cfg(test)]
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
             restart_tasks: Arc::new(Mutex::new(HashMap::new())),
+            managed_change_tasks: Arc::new(Mutex::new(HashMap::new())),
+            managed_change_generation: AtomicU64::new(1),
+            managed_document_locks: Arc::new(Mutex::new(HashMap::new())),
             restart_owner_counter: AtomicU64::new(1),
         })
     }
@@ -1257,6 +1294,9 @@ impl LspService {
             test_hooks: None,
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
             restart_tasks: Arc::new(Mutex::new(HashMap::new())),
+            managed_change_tasks: Arc::new(Mutex::new(HashMap::new())),
+            managed_change_generation: AtomicU64::new(1),
+            managed_document_locks: Arc::new(Mutex::new(HashMap::new())),
             restart_owner_counter: AtomicU64::new(1),
         })
     }
@@ -1295,6 +1335,9 @@ impl LspService {
             test_hooks: Some(test_hooks),
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
             restart_tasks: Arc::new(Mutex::new(HashMap::new())),
+            managed_change_tasks: Arc::new(Mutex::new(HashMap::new())),
+            managed_change_generation: AtomicU64::new(1),
+            managed_document_locks: Arc::new(Mutex::new(HashMap::new())),
             restart_owner_counter: AtomicU64::new(1),
         })
     }
@@ -1308,9 +1351,33 @@ impl LspService {
             .store(stuck, Ordering::SeqCst);
     }
 
+    /// Acquire the client that owns `file_path`, launching it if it is cold.
+    ///
+    /// The readiness policy is the server profile's, so a qualification or
+    /// restart caller observes the configured wait. Interactive document
+    /// opens use [`Self::get_or_create_client_with_readiness`] instead
+    /// (ADR-0065 §3).
     pub async fn get_or_create_client(
         &self,
         file_path: &Path,
+    ) -> Result<(String, PathBuf), LspError> {
+        self.get_or_create_client_with_readiness(file_path, None)
+            .await
+    }
+
+    /// [`Self::get_or_create_client`], optionally replacing the readiness
+    /// policy this attempt publishes with.
+    ///
+    /// The override is *narrowing only*: it can shorten a wait, never add
+    /// one the caller did not ask for. It applies to the single-flight
+    /// attempt, so a caller that joins an attempt started with the override
+    /// also skips the wait; a caller that must observe the profile policy
+    /// calls [`Self::wait_for_readiness`] after publication, which is the
+    /// post-publish gate restart already uses.
+    pub async fn get_or_create_client_with_readiness(
+        &self,
+        file_path: &Path,
+        readiness_override: Option<LspReadinessPolicy>,
     ) -> Result<(String, PathBuf), LspError> {
         // Phase 4: ensure the exit receiver is active before
         // creating any client. No-op if it was already started.
@@ -1459,6 +1526,7 @@ impl LspService {
                     self.document_registry.clone(),
                     self.runtime_map.clone(),
                     self.process_launcher.clone(),
+                    readiness_override.clone(),
                     #[cfg(test)]
                     test_init,
                     #[cfg(test)]
@@ -1606,6 +1674,27 @@ impl LspService {
         self.set_managed_document(file_path, text, true).await
     }
 
+    /// Synchronize canonical text for an *interactive* editor open.
+    ///
+    /// ADR-0065 §3: the publication that gates `didOpen` for an interactive
+    /// open must not wait on `WaitForDiagnosticsOrTimeout`, because the
+    /// diagnostic it would wait for is one this `didOpen` has not caused yet.
+    /// A cold client is published with `InitializedIsReady`; qualification
+    /// and restart keep the profile policy through
+    /// [`Self::set_managed_document`].
+    pub async fn set_managed_document_interactive(
+        &self,
+        file_path: &Path,
+        text: &str,
+        dirty: bool,
+    ) -> Result<(), LspError> {
+        let (key, _) = self
+            .get_or_create_client_with_readiness(file_path, Some(interactive_readiness_policy()))
+            .await?;
+        self.set_managed_document_for_key(&key, file_path, text, dirty)
+            .await
+    }
+
     /// Synchronize canonical text with its authoritative dirty state.
     pub async fn set_managed_document(
         &self,
@@ -1628,6 +1717,24 @@ impl LspService {
         text: &str,
         dirty: bool,
     ) -> Result<(), LspError> {
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+        self.cancel_pending_managed_change(key, &uri).await;
+        let sync_lock = self.managed_document_lock(key, &uri).await;
+        let _sync_guard = sync_lock.lock().await;
+        self.set_managed_document_for_key_locked(key, file_path, text, dirty, &uri)
+            .await
+    }
+
+    async fn set_managed_document_for_key_locked(
+        &self,
+        key: &str,
+        file_path: &Path,
+        text: &str,
+        dirty: bool,
+        uri: &Url,
+    ) -> Result<(), LspError> {
         let client = {
             let clients = self.clients.read().await;
             clients
@@ -1635,15 +1742,12 @@ impl LspService {
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
-        let uri = Url::from_file_path(file_path).map_err(|_| {
-            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
-        })?;
         let previous_version = client.opened_files.lock().await.get(uri.as_str()).cloned();
         let version = previous_version.unwrap_or(0) + 1;
         let language_id = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if previous_version.is_some() {
             self.document_registry
-                .change_managed(key, &uri, version, text.to_string(), dirty)
+                .change_managed(key, uri, version, text.to_string(), dirty)
                 .await;
         } else {
             self.document_registry
@@ -1662,14 +1766,120 @@ impl LspService {
             .await
             .insert(uri.to_string(), key.to_string());
         let result = if previous_version.is_some() {
-            client.update_file(&uri, text, version).await
+            client.update_file(uri, text, version).await
         } else {
-            client.open_file(&uri, text, version).await
+            client.open_file(uri, text, version).await
         };
         self.document_registry
-            .set_sync_stale(key, &uri, result.is_err())
+            .set_sync_stale(key, uri, result.is_err())
             .await;
         result?;
+        Ok(())
+    }
+
+    async fn managed_document_lock(&self, key: &str, uri: &Url) -> Arc<Mutex<()>> {
+        let lock_key = managed_change_task_key(key, uri);
+        let mut locks = self.managed_document_locks.lock().await;
+        locks
+            .entry(lock_key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn cancel_pending_managed_change(&self, key: &str, uri: &Url) {
+        if let Some(pending) = self
+            .managed_change_tasks
+            .lock()
+            .await
+            .remove(&managed_change_task_key(key, uri))
+        {
+            pending.abort.abort();
+        }
+    }
+
+    async fn cancel_all_pending_managed_changes(&self) {
+        let pending = {
+            let mut tasks = self.managed_change_tasks.lock().await;
+            std::mem::take(&mut *tasks)
+        };
+        for task in pending.into_values() {
+            task.abort.abort();
+        }
+    }
+
+    /// Debounce a committed local edit. An unopened document takes the
+    /// immediate didOpen path; a replaced/closed pending change drops its
+    /// completion callback. The callback receives the exact push result.
+    pub async fn schedule_managed_document_change<F>(
+        &self,
+        file_path: &Path,
+        text: String,
+        dirty: bool,
+        on_complete: F,
+    ) -> Result<(), LspError>
+    where
+        F: FnOnce(bool) + Send + 'static,
+    {
+        let (key, _) = self
+            .get_or_create_client_with_readiness(file_path, Some(interactive_readiness_policy()))
+            .await?;
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+        let is_open_or_opening = self.document_owners.read().await.contains_key(uri.as_str());
+        if !is_open_or_opening {
+            let result = self
+                .set_managed_document_for_key(&key, file_path, &text, dirty)
+                .await;
+            on_complete(result.is_ok());
+            return result;
+        }
+
+        let weak = self.self_ref.get().cloned().ok_or_else(|| {
+            LspError::NotInitialized("managed debounce service unavailable".into())
+        })?;
+        let task_key = managed_change_task_key(&key, &uri);
+        let path = file_path.to_path_buf();
+        let mut tasks = self.managed_change_tasks.lock().await;
+        let generation = self
+            .managed_change_generation
+            .fetch_add(1, Ordering::Relaxed);
+        let worker_key = task_key.clone();
+        let worker = tokio::spawn(async move {
+            tokio::time::sleep(MANAGED_DID_CHANGE_DEBOUNCE_INTERVAL).await;
+            let Some(service) = weak.upgrade() else {
+                return;
+            };
+            let sync_lock = service.managed_document_lock(&key, &uri).await;
+            let _sync_guard = sync_lock.lock().await;
+            let current = {
+                let mut tasks = service.managed_change_tasks.lock().await;
+                if tasks
+                    .get(&worker_key)
+                    .is_some_and(|task| task.generation == generation)
+                {
+                    tasks.remove(&worker_key);
+                    true
+                } else {
+                    false
+                }
+            };
+            if !current {
+                return;
+            }
+
+            let result = push_managed_change_with_single_retry(|| {
+                service.set_managed_document_for_key_locked(&key, &path, &text, dirty, &uri)
+            })
+            .await;
+            on_complete(result.is_ok());
+        });
+        let abort = worker.abort_handle();
+        let previous = tasks.insert(task_key, ManagedChangeTask { generation, abort });
+        drop(tasks);
+        if let Some(previous) = previous {
+            previous.abort.abort();
+        }
         Ok(())
     }
 
@@ -1755,6 +1965,9 @@ impl LspService {
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
+        self.cancel_pending_managed_change(&owner_key, &uri).await;
+        let sync_lock = self.managed_document_lock(&owner_key, &uri).await;
+        let _sync_guard = sync_lock.lock().await;
         let close_result = client.close_file(&uri).await;
         client.opened_files.lock().await.remove(&uri_str);
         self.document_owners.write().await.remove(&uri_str);
@@ -1794,6 +2007,9 @@ impl LspService {
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
+        self.cancel_pending_managed_change(&owner_key, &uri).await;
+        let sync_lock = self.managed_document_lock(&owner_key, &uri).await;
+        let _sync_guard = sync_lock.lock().await;
         client.save_file(&uri, text).await?;
 
         // Record save in the authoritative document registry.
@@ -1858,6 +2074,7 @@ impl LspService {
     /// does not claim absolute proof of termination after the
     /// runtime deadline.
     pub async fn shutdown_all(&self) {
+        self.cancel_all_pending_managed_changes().await;
         let deadline = Instant::now() + SHUTDOWN_GLOBAL_TIMEOUT;
         // Drive the inner state machine with an absolute deadline.
         // Each stage receives a remaining-time bound; finalization is
@@ -4405,6 +4622,7 @@ async fn run_init_task_wrapper(
     document_registry: Arc<OpenDocumentRegistry>,
     runtime_map: RuntimeMap,
     process_launcher: Arc<dyn LspProcessLauncher>,
+    readiness_override: Option<LspReadinessPolicy>,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
     #[cfg(test)] force_stuck: std::sync::Arc<AtomicBool>,
 ) {
@@ -4437,6 +4655,7 @@ async fn run_init_task_wrapper(
         document_registry,
         runtime_map,
         process_launcher,
+        readiness_override,
         #[cfg(test)]
         test_init_fn,
     );
@@ -4503,6 +4722,33 @@ async fn run_init_task_wrapper(
     let _ = completion_tx.send(exit);
 }
 
+/// The readiness policy an interactive document open publishes under.
+///
+/// ADR-0065 §3 fixes this to `InitializedIsReady`: the
+/// `WaitForDiagnosticsOrTimeout` profile policy would make the requested
+/// file's `didOpen` wait for a diagnostic that only that `didOpen` can
+/// cause. Qualification and restart never reach this function — they pass
+/// `None` to `get_or_create_client_with_readiness` and keep the profile
+/// constant.
+fn interactive_readiness_policy() -> LspReadinessPolicy {
+    LspReadinessPolicy::InitializedIsReady
+}
+
+/// Apply an interactive open's readiness override to this attempt's
+/// descriptor (ADR-0065 §3).
+///
+/// A free function so the narrowing rule is testable without a live server:
+/// `Some(policy)` replaces the profile policy for this attempt only, and
+/// `None` leaves the profile constant exactly as it was.
+fn apply_readiness_override(
+    descriptor: &mut LspClientDescriptor,
+    readiness_override: Option<LspReadinessPolicy>,
+) {
+    if let Some(override_policy) = readiness_override {
+        descriptor.readiness_policy = override_policy;
+    }
+}
+
 /// Runs the full LSP initialization in the body of the wrapper task.
 #[allow(clippy::too_many_arguments)]
 async fn run_initialization_attempt(
@@ -4522,6 +4768,7 @@ async fn run_initialization_attempt(
     _document_registry: Arc<OpenDocumentRegistry>,
     runtime_map: RuntimeMap,
     process_launcher: Arc<dyn LspProcessLauncher>,
+    readiness_override: Option<LspReadinessPolicy>,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
 ) {
     let init_opts: Option<serde_json::Value> = match &config {
@@ -4637,7 +4884,7 @@ async fn run_initialization_attempt(
             },
             _ => None,
         };
-        let descriptor = if let Some(user_cfg) = user_restart_config {
+        let mut descriptor = if let Some(user_cfg) = user_restart_config {
             // Resolve the base policy from the profile (or default
             // when no profile is registered) so the user override
             // can be validated against it.
@@ -4682,6 +4929,12 @@ async fn run_initialization_attempt(
                 Some(configuration.clone()),
             )
         };
+
+        // ADR-0065 §3: an interactive open supplies a non-waiting policy, so
+        // the requested file's `didOpen` is not sequenced behind a
+        // diagnostic this open has not caused. Qualification and restart
+        // pass `None` and keep the profile constant untouched.
+        apply_readiness_override(&mut descriptor, readiness_override);
 
         #[allow(unused_mut)]
         let mut client = tokio::select! {
@@ -8263,6 +8516,228 @@ mod tests {
         assert!(
             matches!(result, ReadinessResult::Degraded { ref reason, .. } if reason == "diagnostics wait timed out"),
             "expected Degraded with 'diagnostics wait timed out', got {result:?}"
+        );
+    }
+
+    /// ADR-0065 §3, as a property of the mechanism rather than of a live
+    /// server: the interactive policy replaces the profile wait, and the
+    /// awaited callers keep it untouched.
+    ///
+    /// This is the assertion the 30-second test would be: waiting for a real
+    /// rust-analyzer to time out proves the same thing more slowly and less
+    /// deterministically.
+    #[test]
+    fn an_interactive_open_narrows_the_readiness_policy_and_none_keeps_it() {
+        let mut descriptor = LspClientDescriptor::from_profile(
+            "root:rust-analyzer".to_owned(),
+            "rust-analyzer",
+            PathBuf::from("/tmp/m001-root"),
+            crate::launch::LspLaunchSpec::default_for_test(),
+            Some(PathBuf::from("/tmp/m001-root")),
+            None,
+            None,
+        );
+        let profile_policy = descriptor.readiness_policy.clone();
+        assert_eq!(
+            profile_policy,
+            LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+                timeout: Duration::from_secs(30)
+            },
+            "the rust-analyzer profile constant must be unchanged"
+        );
+
+        apply_readiness_override(&mut descriptor, None);
+        assert_eq!(
+            descriptor.readiness_policy, profile_policy,
+            "an awaited caller must keep the profile policy"
+        );
+
+        apply_readiness_override(&mut descriptor, Some(interactive_readiness_policy()));
+        assert_eq!(
+            descriptor.readiness_policy,
+            LspReadinessPolicy::InitializedIsReady,
+            "the interactive open must not wait on the diagnostics policy"
+        );
+        assert_ne!(
+            descriptor.readiness_policy, profile_policy,
+            "the override has to actually narrow the wait"
+        );
+    }
+
+    // M006: debounced managed didChange.
+
+    /// A service with one stub client published for a real rust-analyzer
+    /// root, and the file already open on that client.
+    ///
+    /// The TempDir is returned so the root outlives the test: the service
+    /// resolves it again when it builds the client key.
+    async fn debounce_fixture(
+        label: &str,
+    ) -> (Arc<LspService>, String, PathBuf, Url, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("create the rust-analyzer root");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize the root");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"m006-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write the root marker");
+        let file = root.join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").expect("seed the file");
+
+        let svc = LspService::new_arc(LspConfig::default());
+        let key = format!("{}:rust-analyzer", root.to_string_lossy());
+        let shutdown_count = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(
+            LspClient::test_stub(
+                "rust-analyzer",
+                &root,
+                shutdown_count,
+                LspClientOptions::default(),
+            )
+            .await
+            .expect("the stub client launches"),
+        );
+        let uri = Url::from_file_path(&file).expect("the file has a URL");
+        svc.clients.write().await.insert(key.clone(), client);
+        // Open through the service so the registry entry, the owner record and
+        // the client's opened-files version all agree before the burst starts.
+        svc.set_managed_document_for_key(&key, &file, "fn main() {}\n", false)
+            .await
+            .expect("the fixture document opens");
+        let _ = label;
+        (svc, key, file, uri, dir)
+    }
+
+    /// Three committed edits inside one interval coalesce to a single push,
+    /// and that push carries the latest text.
+    ///
+    /// A path that pushed per edit would report three completions here; a
+    /// path that pushed the first text would leave the registry holding it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_burst_of_committed_edits_pushes_the_latest_text_once() {
+        let (svc, key, file, uri, _root) = debounce_fixture("burst").await;
+        let pushes = Arc::new(AtomicUsize::new(0));
+        for text in [
+            "fn main() { let a = 1; }\n",
+            "fn main() { let a = 2; }\n",
+            "fn main() { let a = 3; }\n",
+        ] {
+            let counter = pushes.clone();
+            svc.schedule_managed_document_change(&file, text.to_owned(), true, move |_ok| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            })
+            .await
+            .expect("the change is scheduled");
+        }
+
+        tokio::time::sleep(MANAGED_DID_CHANGE_DEBOUNCE_INTERVAL + Duration::from_millis(150)).await;
+
+        assert_eq!(
+            pushes.load(Ordering::SeqCst),
+            1,
+            "a burst of edits inside one interval must produce exactly one push"
+        );
+        let registry = svc
+            .document_registry
+            .managed_snapshot(&key, &uri)
+            .await
+            .expect("the pushed document is recorded");
+        assert_eq!(
+            registry.text, "fn main() { let a = 3; }\n",
+            "the single push must carry the latest committed text"
+        );
+        assert!(registry.dirty, "the pushed dirty state is the document's");
+    }
+
+    /// A document the server has never opened takes the immediate path: its
+    /// completion callback has already run when the call returns, so didOpen
+    /// is never parked behind the debounce timer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unopened_document_is_pushed_immediately_and_not_put_on_the_timer() {
+        let (svc, _key, file, uri, _root) = debounce_fixture("immediate").await;
+        svc.document_owners.write().await.remove(uri.as_str());
+
+        let delivered = Arc::new(AtomicBool::new(false));
+        let flag = delivered.clone();
+        svc.schedule_managed_document_change(
+            &file,
+            "fn main() {}\n".to_owned(),
+            false,
+            move |_| {
+                flag.store(true, Ordering::SeqCst);
+            },
+        )
+        .await
+        .expect("the open is scheduled");
+
+        assert!(
+            delivered.load(Ordering::SeqCst),
+            "an unopened document must push immediately; a debounced \
+             didOpen would leave this false until the timer fired"
+        );
+    }
+
+    /// Closing a document cancels its pending push, and that push reports no
+    /// delivery: the witness must never advance for text that never left.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closing_a_document_cancels_its_pending_push() {
+        let (svc, _key, file, _uri, _root) = debounce_fixture("close").await;
+        let completions = Arc::new(AtomicUsize::new(0));
+        let counter = completions.clone();
+        svc.schedule_managed_document_change(
+            &file,
+            "fn main() { let a = 1; }\n".to_owned(),
+            true,
+            move |_ok| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .expect("the change is scheduled");
+        assert_eq!(
+            completions.load(Ordering::SeqCst),
+            0,
+            "a scheduled change must not push before the interval"
+        );
+
+        svc.close_file(&file).await.expect("close the document");
+        tokio::time::sleep(MANAGED_DID_CHANGE_DEBOUNCE_INTERVAL + Duration::from_millis(150)).await;
+
+        assert_eq!(
+            completions.load(Ordering::SeqCst),
+            0,
+            "a push cancelled by close must not report a delivery"
+        );
+    }
+
+    /// Save does not ride the debounce timer: it cancels a pending change and
+    /// returns with its own push already made, so a save can never be
+    /// satisfied by a delayed notification.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn save_cancels_the_pending_timer_and_does_not_ride_it() {
+        let (svc, _key, file, _uri, _root) = debounce_fixture("save").await;
+        let completions = Arc::new(AtomicUsize::new(0));
+        let counter = completions.clone();
+        svc.schedule_managed_document_change(
+            &file,
+            "fn main() { let a = 1; }\n".to_owned(),
+            true,
+            move |_ok| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .expect("the change is scheduled");
+
+        svc.save_file(&file, None)
+            .await
+            .expect("save reaches the server without waiting for the timer");
+        tokio::time::sleep(MANAGED_DID_CHANGE_DEBOUNCE_INTERVAL + Duration::from_millis(150)).await;
+
+        assert_eq!(
+            completions.load(Ordering::SeqCst),
+            0,
+            "save must not leave a debounced push to fire afterwards"
         );
     }
 }

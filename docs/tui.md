@@ -2006,10 +2006,18 @@ left; the status cluster is on its right. The cluster reads left to right:
 
 | Part | What it says |
 |---|---|
-| the persistent signals | whether the file has unsaved changes, which root the edit is confined to (`[project]` or `[global]`), whether the file is writable, and any caveat about the rendering itself |
+| the persistent signals | whether the file has unsaved changes, the language server's state, which root the edit is confined to (`[project]` or `[global]`), whether the file is writable, and any caveat about the rendering itself |
 | the transient disclosure | what your last keystroke did, the find that landed, the search that matched, where the undo cursor is standing |
 | the notice | an error, if one is being surfaced |
 | the pending count and the armed prefix | the gesture you are halfway through (`3`, then `g`) at the far right of the row |
+
+The server word is `lsp…` while publication or diagnostics are warming, `lsp`
+only after the document is `Synced` and diagnostics are `Ready` (including a
+ready empty list), `lsp degraded`, `lsp unavailable`, or `no lsp` when no LSP
+scope is configured. A legacy snapshot without a sync witness is not labeled
+warming. The existing diagnostics list remains opt-in with `F2`; opening or
+settling the server state never opens it. No editor-readable bounded progress
+read exists, so indexing/progress prose is skipped rather than inferred.
 
 The pending count is **not** a notice. A notice says what just happened; a count
 says what is about to, so it gets its own place on the row rather than the
@@ -2023,8 +2031,8 @@ glance.
 
 When the row is too narrow for all of it, something has to give, and what
 gives is decided by how much it would cost to lose. The busy marker goes
-first, then the unsaved-changes word, then the writability marker, then the
-scope badge, and only then the disclosure. A **caveat** ("line too long",
+first, then the unsaved-changes word, then the server-state word, then the
+writability marker, then the scope badge, and only then the disclosure. A **caveat** ("line too long",
 "highlighting truncated") outranks all of them, because dropping a caveat is
 not a smaller truth but a misleading one: a truncated line that reads as the
 whole line is worse than a missing footnote. A part that is still too wide on
@@ -2551,13 +2559,15 @@ starting.
 Very large files (more than 5000 lines) drop built-in highlighting rather than
 freeze a frame while re-scanning; the text still edits normally.
 
-The editor can show current-file diagnostics and request hover, definition,
-references, document symbols, and workspace symbols from the daemon-owned
-language server. Use F2 for diagnostics, F3
-for hover, F4 for definition, F5 for references, F6 for document symbols,
-and F7 to search workspace symbols for the word at the cursor. The result
-panel shows unavailable and not-ready states explicitly. A failed refresh
-keeps the previous complete diagnostics marked stale.
+The editor shows current-file diagnostics in the text as severity-colored
+underlines and keeps the gutter marker; the bounded F2 list remains available
+for messages and source ranges. Use F3 for hover, F4 for definition, F5 for
+references, F6 for document symbols, and F7 to search workspace symbols for
+the word at the cursor. Only a Ready diagnostics result replaces the complete
+set: an empty Ready result clears it, while NotReady or a failed refresh keeps
+the last complete underlines and gutter markers marked stale. Underlines are
+clipped to the already-read visible line slice; malformed UTF-16 positions
+and over-budget lines are refused without another text read or a second row.
 
 Navigation opens only locations carrying the daemon-validated
 workspace-relative target; other results remain display-only. The TUI does
@@ -2568,11 +2578,17 @@ updates.
 
 Press F8 (or type `:complete` in Normal mode) to ask the language server for
 completions at the cursor. In `INS`, `Ctrl+x` asks the same question and
-leaves you in `INS`. A popup
-lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
-Normal mode) move the selection, `Enter` applies the selected item, and
-`Esc` dismisses the popup without touching anything. Typing anything else
-dismisses the popup first and inserts normally.
+leaves you in `INS`; these three remain immediate triggers. After an Insert-mode
+edit changes the document, a completion request is scheduled after a 200 ms
+quiet interval, reset by each newer edit. Leaving Insert or the editor cancels
+the idle schedule. The idle path only requests suggestions: nothing is inserted
+on arrival. The existing explicit accept remains Normal-mode `Enter`, which
+re-checks the document revision before applying one edit.
+
+A popup lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k`
+in Normal mode) move the selection, `Enter` applies the selected item in
+Normal mode, and `Esc` dismisses the popup without touching anything. Typing
+anything else dismisses the popup first and inserts normally.
 
 In `INS` the popup never takes a key that means text. `Enter` inserts a
 newline, `↑`/`↓` move the cursor, and `Tab`/`Shift+Tab` move the candidate

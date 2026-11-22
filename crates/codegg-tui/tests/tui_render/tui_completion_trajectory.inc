@@ -101,6 +101,8 @@ impl DocumentTransport for ScriptedDocTransport {
                     snapshot: self.snapshot_dto(&state),
                     writer_lease: self.lease.clone(),
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 })
             }
             CoreRequest::DocumentChange { transaction, .. } => {
@@ -1190,6 +1192,252 @@ async fn f8_with_an_open_popup_supersedes_with_a_fresh_request() {
 }
 
 // ---------------------------------------------------------------------------
+// M004. Debounced Insert requests reuse the explicit completion path
+// ---------------------------------------------------------------------------
+
+fn service_due_completion(app: &mut App) -> bool {
+    let due_at = app
+        .editor_state
+        .completion_debounce
+        .expect("Insert edit armed one completion deadline")
+        .due_at;
+    app.service_editor_completion_debounce(due_at + std::time::Duration::from_millis(1))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insert_completion_debounce_coalesces_an_edit_burst_into_one_request() {
+    let Harness {
+        mut app,
+        fake,
+        mut rx,
+        controller,
+        ..
+    } = harness(
+        LIB_RS,
+        true,
+        vec![ready(vec![], false, false)],
+        20,
+        EditorMode::Insert,
+    )
+    .await;
+
+    app.on_key(plain('a'));
+    let first = app
+        .editor_state
+        .completion_debounce
+        .expect("first edit arms the idle request");
+    app.on_key(plain('b'));
+    let latest = app
+        .editor_state
+        .completion_debounce
+        .expect("newer edit replaces the deadline");
+    assert_ne!(first.local_revision, latest.local_revision);
+    assert!(latest.due_at >= first.due_at);
+    assert!(fake.seen().is_empty(), "typing alone sends no request");
+
+    assert!(service_due_completion(&mut app));
+    let command = recv_completion(&mut rx).await;
+    apply_finished(&mut app, &command);
+
+    assert_eq!(fake.seen().len(), 1, "the burst has one wire request");
+    assert_eq!(controller_text(&controller), "fn main() {\n    prinab\n}\n");
+    assert_eq!(
+        app.editor_state.completion.status,
+        CompletionViewStatus::Ready
+    );
+    assert!(!app.editor_state.completion_debounce_is_armed());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn leaving_insert_cancels_the_pending_completion_request() {
+    let Harness { mut app, fake, .. } = harness(LIB_RS, true, vec![], 20, EditorMode::Insert).await;
+
+    app.on_key(plain('a'));
+    assert!(app.editor_state.completion_debounce_is_armed());
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.editor_state.mode(), EditorMode::Normal);
+    assert!(!app.editor_state.completion_debounce_is_armed());
+    assert!(!app.service_editor_completion_debounce(
+        std::time::Instant::now() + std::time::Duration::from_secs(1)
+    ));
+    assert!(
+        fake.seen().is_empty(),
+        "leaving Insert sends no idle request"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn f8_supersedes_a_pending_insert_completion_deadline() {
+    let Harness {
+        mut app,
+        fake,
+        mut rx,
+        ..
+    } = harness(
+        LIB_RS,
+        true,
+        vec![ready(vec![], false, false)],
+        20,
+        EditorMode::Insert,
+    )
+    .await;
+
+    app.on_key(plain('a'));
+    assert!(app.editor_state.completion_debounce_is_armed());
+    app.on_key(key(KeyCode::F(8)));
+    assert!(!app.editor_state.completion_debounce_is_armed());
+    assert!(!app.service_editor_completion_debounce(
+        std::time::Instant::now() + std::time::Duration::from_secs(1)
+    ));
+    apply_finished(&mut app, &recv_completion(&mut rx).await);
+    assert_eq!(
+        fake.seen().len(),
+        1,
+        "F8 replaces, not duplicates, the idle request"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insert_ctrl_x_supersedes_the_timer_and_reuses_completion() {
+    let Harness {
+        mut app,
+        fake,
+        mut rx,
+        controller,
+        ..
+    } = harness(
+        LIB_RS,
+        true,
+        vec![ready(vec![], false, false)],
+        20,
+        EditorMode::Insert,
+    )
+    .await;
+
+    app.on_key(plain('a'));
+    let typed_text = controller_text(&controller);
+    app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    assert_eq!(app.editor_state.mode(), EditorMode::Insert);
+    assert_eq!(
+        controller_text(&controller),
+        typed_text,
+        "Ctrl-x is not document text"
+    );
+    assert!(!app.editor_state.completion_debounce_is_armed());
+    apply_finished(&mut app, &recv_completion(&mut rx).await);
+    assert_eq!(fake.seen().len(), 1, "Ctrl-x reaches the existing request");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_completion_arrival_opens_only_an_inert_suggestion() {
+    let candidates = vec![applicable("println!", (1, 4), (1, 8), "println!")];
+    let Harness {
+        mut app,
+        fake,
+        mut rx,
+        controller,
+        ..
+    } = harness(
+        LIB_RS,
+        true,
+        vec![ready(candidates, false, false)],
+        20,
+        EditorMode::Insert,
+    )
+    .await;
+
+    app.on_key(plain('a'));
+    let typed_text = controller_text(&controller);
+    assert!(service_due_completion(&mut app));
+    apply_finished(&mut app, &recv_completion(&mut rx).await);
+
+    assert_eq!(fake.seen().len(), 1);
+    assert_eq!(
+        app.editor_state.completion.status,
+        CompletionViewStatus::Ready
+    );
+    assert!(app.editor_state.completion.is_open());
+    assert_eq!(
+        controller_text(&controller),
+        typed_text,
+        "arrival does not insert"
+    );
+    assert_eq!(app.editor_state.mode(), EditorMode::Insert);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_completion_response_after_a_new_insert_edit_is_non_actionable() {
+    let candidates = vec![applicable("println!", (1, 4), (1, 8), "println!")];
+    let Harness {
+        mut app,
+        fake,
+        mut rx,
+        controller,
+        ..
+    } = harness(
+        LIB_RS,
+        true,
+        vec![ready(candidates, false, false)],
+        20,
+        EditorMode::Insert,
+    )
+    .await;
+
+    app.on_key(plain('a'));
+    assert!(service_due_completion(&mut app));
+    app.on_key(plain('b'));
+    let typed_text = controller_text(&controller);
+    let answer = recv_completion(&mut rx).await;
+    apply_finished(&mut app, &answer);
+
+    assert_eq!(fake.seen().len(), 1);
+    assert!(!app.editor_state.completion.is_open());
+    assert_eq!(
+        controller_text(&controller),
+        typed_text,
+        "stale arrival cannot edit"
+    );
+    assert!(!controller_text(&controller).contains("println!"));
+    app.editor_state.cancel_completion_debounce();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_over_budget_insert_line_does_not_arm_or_send_completion() {
+    let text = "x".repeat(32 * 1024 + 1);
+    let Harness { mut app, fake, .. } =
+        harness(&text, true, vec![], text.len(), EditorMode::Insert).await;
+
+    app.on_key(plain('a'));
+    assert!(!app.editor_state.completion_debounce_is_armed());
+    assert!(!app.service_editor_completion_debounce(
+        std::time::Instant::now() + std::time::Duration::from_secs(1)
+    ));
+    assert!(
+        fake.seen().is_empty(),
+        "the bounded position refusal sends nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completion_request_without_bound_scope_sends_nothing() {
+    let Harness { mut app, fake, .. } = harness(LIB_RS, true, vec![], 20, EditorMode::Insert).await;
+
+    app.on_key(plain('a'));
+    assert!(app.editor_state.completion_debounce_is_armed());
+    if let Some(tab) = app.project_tabs.active_mut() {
+        tab.project_id = None;
+        tab.workspace_id = None;
+        tab.session_id = None;
+    }
+    assert!(!service_due_completion(&mut app));
+    assert!(
+        fake.seen().is_empty(),
+        "a schedule without bound scope sends nothing"
+    );
+    assert!(!app.editor_state.completion.is_open());
+}
+
+// ---------------------------------------------------------------------------
 // C003. Trigger budget, typed wire statuses, and reconnect fencing
 // ---------------------------------------------------------------------------
 
@@ -1360,11 +1608,11 @@ async fn stale_wire_constructor_renders_stale_not_an_identity_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reconnect_epoch_fence_drops_a_queued_pre_reset_answer() {
-    // F8 issues request 1 under epoch E0. A reconnect clears completion
-    // (epoch E1) without touching generation or scope; F8 reuses id 1
-    // under E1. The queued E0 answer must drop even though scope and id
-    // coincide; the E1 answer renders. Both application orders hold.
+async fn reconnect_epoch_fence_drops_a_queued_pre_reset_idle_answer() {
+    // An Insert edit schedules request 1 under epoch E0. A reconnect clears
+    // completion (epoch E1) without touching generation or scope; a second
+    // Insert edit schedules id 1 under E1. The queued E0 answer must drop
+    // even though scope and id coincide; the E1 answer renders.
     let candidates_a = vec![applicable("a", (1, 4), (1, 8), "a")];
     let candidates_b = vec![applicable("b", (1, 4), (1, 8), "b")];
     let lease = Some("lease-1");

@@ -58,6 +58,9 @@ pub mod collaboration_m002_chat_policy;
 #[path = "collaboration_m003_chat_actions.inc"]
 pub mod collaboration_m003_chat_actions;
 
+#[path = "document_open_deadline_m001.inc"]
+pub mod document_open_deadline_m001;
+
 #[path = "directory_listing_c005.inc"]
 pub mod directory_listing_c005;
 

@@ -243,11 +243,29 @@ pub struct AgentLoop {
     pub(super) lifecycle: TurnLifecycle,
     pub(super) state: AgentLoopState,
     pub(super) limits: ExecutionLimits,
+    /// The reason this run stopped when that reason is not the provider's own
+    /// finish reason.
+    ///
+    /// `check_limits` used to log and drop its reason at the loop `break`, so
+    /// a spent turn budget was published as whatever the previous provider
+    /// response said — including `completed`. The publication owners
+    /// (`publish_agent_finished`, `turn_usage`) read this instead of inventing
+    /// a second stop vocabulary. `None` means the provider finish is still the
+    /// authority.
+    pub(super) retained_stop_reason: Option<String>,
     pub(super) steering: Arc<AtomicBool>,
     pub(super) follow_up_tx: mpsc::Sender<String>,
     pub(super) follow_up_rx: mpsc::Receiver<String>,
     pub(super) question_tx: Option<tokio::sync::oneshot::Sender<String>>,
     pub(super) question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+    /// One pending `question` tool call per entry: the registry question id,
+    /// the model's tool-call id, and the receiver that carries only that
+    /// question's answer.
+    ///
+    /// The single `question_rx` slot above cannot hold a batch: a second
+    /// question replaced the first receiver (dropping it) and the consume path
+    /// then copied one answer into every pending result.
+    pub(super) pending_questions: Vec<(String, String, tokio::sync::oneshot::Receiver<String>)>,
     pub(super) plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
     pub(super) session_id: String,
     pub(super) usage_session_id: String,
@@ -622,11 +640,13 @@ impl AgentLoop {
                 executed_tool_outcomes: ExecutedToolOutcomes::default(),
             },
             limits: ExecutionLimits::default(),
+            retained_stop_reason: None,
             steering: Arc::new(AtomicBool::new(false)),
             follow_up_tx,
             follow_up_rx,
             question_tx: None,
             question_rx: None,
+            pending_questions: Vec::new(),
             plugin_service: None,
             usage_session_id: session_id.clone(),
             session_id,
@@ -1298,6 +1318,11 @@ impl AgentLoop {
         self.state.run_provider_responses = 0;
         self.state.run_input_tokens = 0;
         self.state.run_output_tokens = 0;
+        // The hard token cap reads `total_tokens`, which mirrors the run
+        // accumulator. Reset it with the accumulator so a previous run's
+        // spend cannot stop the next one.
+        self.state.total_tokens = 0;
+        self.retained_stop_reason = None;
         self.state.run_cached_tokens = None;
         self.state.run_reasoning_tokens = None;
         self.state.run_provider_allowance_micros = None;
@@ -1507,6 +1532,25 @@ impl AgentLoop {
         loop {
             if let Some(reason) = self.check_limits() {
                 tracing::info!("Agent loop stopping: {}", reason);
+                // The reason used to be logged and dropped here, which let the
+                // previous provider finish (or the literal `completed`) speak
+                // for a turn that had actually run out of budget. Retain it so
+                // publication reports the stop that happened.
+                let interrupted = self.steering.load(Ordering::SeqCst)
+                    || self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow());
+                let summarize = !interrupted
+                    && crate::agent::turn_completion::limit_stop_allows_summary(&reason);
+                self.record_stop_reason(reason.clone());
+                if summarize {
+                    self.summarize_budget_stop(
+                        &mut request,
+                        &mut all_events,
+                        &mut processor,
+                        &model_profile,
+                        &reason,
+                    )
+                    .await?;
+                }
                 break;
             }
 
@@ -1974,16 +2018,25 @@ impl AgentLoop {
                     } else {
                         preview
                     };
+                    let message = format!(
+                        "Model returned stop_reason=tool_calls without parseable structured tool calls after retries. Raw text: {}",
+                        preview
+                    );
                     tracing::warn!(
                         "Model returned stop_reason=tool_calls without parseable structured tool calls after retries; raw_text={}",
                         preview
                     );
                     crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                        message: format!(
-                            "Model returned stop_reason=tool_calls without parseable structured tool calls after retries. Raw text: {}",
-                            preview
-                        ),
+                        message: message.clone(),
                     });
+                    // The model asked to call tools and the loop could honour
+                    // none of them: that is a failed turn, not a finished one.
+                    // Persist what the turn produced first, so the failure
+                    // path does not also discard the evidence the next user
+                    // message needs.
+                    self.persist_turn_transcript(&all_events).await;
+                    processor.reset();
+                    return Err(AppError::Agent(crate::error::AgentError::Invalid(message)));
                 }
                 // M003 WorkPlan completion arbiter: before accepting a terminal
                 // answer, check the active plan. Required actionable work
@@ -2505,6 +2558,11 @@ impl AgentLoop {
             }
         }
 
+        // Close live-turn intake before the final drain. A prompt accepted
+        // after that drain has no later drain in this run, so it would be
+        // accepted and then destroyed with the loop; unregistering first makes
+        // a late follow-up an explicit rejection instead of a silent drop.
+        self.close_follow_up_intake().await;
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
             .await?;
         // M003 ordinary turn-scoped WorkPlan close: only after the host
