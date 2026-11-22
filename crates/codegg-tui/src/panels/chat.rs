@@ -369,7 +369,11 @@ impl SidePanel for ChatPanel {
         // text entry belongs to the composer and reaches it either by
         // `PassThrough` or by arming it with a seed.
         let Some(view) = self.view(ctx) else {
-            return PanelKey::Consumed;
+            // A viewer with nothing to view must not claim the keyboard:
+            // consuming every key strands the one surface that can fix the
+            // state, because a focused panel owns the keys by contract. A
+            // viewless panel holds no draft, so passing through is legal.
+            return PanelKey::PassThrough;
         };
         // A bare `q` is the program's quit key and `Shift+Q` is the panel
         // exit. A focused panel owns the keyboard, so `q` here must neither

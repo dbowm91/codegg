@@ -4873,7 +4873,14 @@ impl CoreDaemon {
                 // pre-router paths above, which preserve their stack and
                 // cancellation semantics. Keep the historical
                 // unimplemented contract as defense in depth.
-                tracing::warn!("Unhandled CoreRequest variant");
+                // Name the variant and nothing else: the payload may carry
+                // paths or content, and this line exists to make an
+                // unreachable arm diagnosable rather than to summarize it.
+                let variant: String = format!("{payload:?}")
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                tracing::warn!(request = %variant, "Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {
                     code: "unimplemented".to_string(),
                     message: "This request type is not yet implemented".to_string(),
@@ -4985,6 +4992,21 @@ impl CoreDaemon {
                         });
                     }
                 };
+                // The interactive PTY is the operator's own shell (agent
+                // shells run through `bash`/`terminal` on
+                // `ManagedProcessService`). A platform without a constrained
+                // PTY owner cannot honour a constrained profile, and refusing
+                // there made the terminal unusable. Clamp to the operator's own
+                // authority there and say so; Linux keeps the stored profile.
+                let constrained = crate::interactive_process::constrained_pty_supported();
+                let requested = profile;
+                let profile = crate::interactive_process::human_pty_profile(requested, constrained);
+                if !constrained && requested != codegg_core::approval::SandboxProfile::FullHost {
+                    tracing::warn!(
+                        "the interactive terminal has no constrained PTY backend on this \
+                         platform; the operator shell runs with the operator's own authority"
+                    );
+                }
                 let ctx =
                     match Self::interactive_execution_context(&workspaces, &request.workspace_id)
                         .await

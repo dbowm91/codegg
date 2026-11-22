@@ -1289,6 +1289,13 @@ impl SidePanelHost {
     /// host could paint the wrong edge.
     pub fn with_placement(placement: PanelPlacement) -> Self {
         let mut host = Self::new();
+        // Point the frame and the gestures at the *same* edge. Repointing
+        // only `selected` left the shipped edge visible: the column on screen
+        // kept drawing Right while every selection occupied the collapsed
+        // configured edge, so the first panel a user opened appeared in a
+        // second column beside the session panel instead of replacing it.
+        host.set_visible_at(PanelPlacement::default(), false);
+        host.set_visible_at(placement, true);
         host.select_placement(placement);
         host
     }
@@ -1684,8 +1691,10 @@ impl SidePanelHost {
             // The terminal panel is always actionable: `i` takes the keyboard
             // of a terminal that exists, or starts a shell when there is
             // none, so refusing focus would only strand the keyboard on the
-            // one surface that can fix it.
-            SidePanelId::Terminal => self.terminal.is_empty(),
+            // one surface that can fix it. The rule matches that argument:
+            // an empty terminal is focusable, and the `i` it then receives is
+            // what fills it.
+            SidePanelId::Terminal => false,
             // Help always has rows, so it can always take focus.
             SidePanelId::Help => false,
             // The agents panel is never "empty": even with no agents loaded
@@ -2094,6 +2103,24 @@ mod tests {
     /// A persisted spelling is user data: it is written to disk and read back
     /// next run, so every placement needs a round trip. A variant that forgot
     /// one would silently reset to the default layout on the next launch.
+    /// A configured placement is the edge the frame shows.
+    ///
+    /// The host used to keep the shipped edge visible while pointing
+    /// `selected` at the configured one, so the column on screen and the
+    /// column every selection occupied were different edges. Opening a panel
+    /// then produced a second column rather than replacing the visible one.
+    #[test]
+    fn a_configured_placement_is_the_edge_the_frame_shows() {
+        let host = SidePanelHost::with_placement(PanelPlacement::Left);
+        assert_eq!(host.placement(), PanelPlacement::Left);
+        assert!(host.is_visible_at(PanelPlacement::Left));
+        assert!(
+            !host.is_visible_at(PanelPlacement::Right),
+            "the shipped edge must not stay visible beside the configured one"
+        );
+        assert!(host.any_visible());
+    }
+
     #[test]
     fn placements_round_trip_through_their_persisted_spelling() {
         for placement in PanelPlacement::ALL.iter().copied() {

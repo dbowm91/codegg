@@ -1023,3 +1023,86 @@ async fn the_session_panel_walk_skips_todo_rows_but_keeps_their_header() {
         "the walk ran past the last actionable row"
     );
 }
+
+/// Walking the panel list **loads** the panel it lands on.
+///
+/// The walk used to change only the slot, so stopping on a hosted panel showed
+/// "Nothing loaded. Open it from the panel manager" and sent the user on the
+/// trip the gesture exists to save. A step must materialize its panel exactly
+/// as a manager commit does.
+#[tokio::test(flavor = "current_thread")]
+async fn walking_the_panel_list_loads_the_panel_it_lands_on() {
+    let mut app = test_app();
+    app.ui_state.input_mode = InputMode::Normal;
+    // Session -> Chat -> Terminal -> Help -> Tree.
+    for _ in 0..4 {
+        app.on_key(key(KeyCode::Down, KeyModifiers::SHIFT));
+    }
+    assert_eq!(app.panel_host.active(), SidePanelId::Tree);
+    assert_eq!(
+        app.panel_host.hosted_panel_has_content(SidePanelId::Tree),
+        Some(true),
+        "the walked-to panel must be loaded, not left as a placeholder"
+    );
+}
+
+/// A session the daemon created already names its project, and that is what
+/// the Chat panel binds to.
+///
+/// The tab surface populates `project_id` only once it has been bound, so a
+/// fresh session — nothing sent yet — used to leave Chat permanently
+/// "unavailable". The panel has to work before a turn, so the session's own
+/// project is the fallback.
+#[tokio::test(flavor = "current_thread")]
+async fn the_chat_panel_binds_the_session_project_without_an_active_tab_project() {
+    let mut app = test_app();
+    if let Some(tab) = app.project_tabs.active_mut() {
+        tab.project_id = None;
+    }
+    app.session_state.session = Some(session_with_project("sess-fresh", "project-session"));
+    assert!(
+        app.active_project_id().is_none(),
+        "precondition: the tab must carry no project"
+    );
+    app.ui_state.input_mode = InputMode::Normal;
+    // Session -> Chat.
+    app.on_key(key(KeyCode::Down, KeyModifiers::SHIFT));
+    assert_eq!(app.panel_host.active(), SidePanelId::Chat);
+    assert!(
+        !app.panel_host.chat_panel_mut().is_unbound(),
+        "the chat panel must bind the session's project, not report unavailable"
+    );
+}
+
+/// The minimal session the chat fallback reads: an id and a project.
+fn session_with_project(id: &str, project: &str) -> codegg::session::Session {
+    codegg::session::Session {
+        id: id.to_string(),
+        project_id: project.to_string(),
+        workspace_id: Some("ws-session".to_string()),
+        parent_id: None,
+        slug: "fresh".to_string(),
+        directory: "/tmp/panel-test".to_string(),
+        title: "Fresh".to_string(),
+        version: "v1".to_string(),
+        share_url: None,
+        summary_additions: None,
+        summary_deletions: None,
+        summary_files: None,
+        summary_diffs: None,
+        revert: None,
+        permission: None,
+        tags: Vec::new(),
+        provider_connection_id: None,
+        provider_connection_revision: None,
+        model_catalog_revision: None,
+        selected_model_id: None,
+        agent: None,
+        model: None,
+        time_created: 0,
+        time_updated: 0,
+        time_compacting: None,
+        time_archived: None,
+        time_deleted: None,
+    }
+}

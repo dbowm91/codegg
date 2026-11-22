@@ -33,7 +33,21 @@ fn resolve_chat_project(app: &App) -> Option<String> {
     {
         return Some(selected);
     }
-    app.active_project_id().map(str::to_string)
+    if let Some(project) = app.active_project_id() {
+        return Some(project.to_string());
+    }
+    // The active tab carries the project only once the tab surface has been
+    // bound (a restore, a picker, or a session adoption). A session the daemon
+    // created already names its project — the binding row is written at
+    // creation — and that is the authority the panel shows. Without this
+    // fallback a fresh session, before anything is sent, left Chat permanently
+    // "unavailable", although the panel is supposed to work without a turn.
+    app.session_state
+        .session
+        .as_ref()
+        .map(|session| session.project_id.as_str())
+        .filter(|project| !project.is_empty())
+        .map(str::to_string)
 }
 
 /// Re-bind the chat panel to the project the panel should show, and keep
@@ -266,6 +280,31 @@ pub(crate) fn select_panel(app: &mut App, id: SidePanelId) -> SelectOutcome {
             ui_state.input_mode,
         );
         panel_host.select(id, &mut ctx);
+    }
+    if id == SidePanelId::Chat {
+        // Binding the project is not loading it: without its channel list the
+        // panel renders "Chat unavailable" beside a project it is in fact
+        // bound to. `/chat` starts this from its own command, and selecting the
+        // panel is the same act — so the panel works before any turn is sent,
+        // which is the rule for a side panel.
+        // Only when there is nothing to show: starting a history fetch over a
+        // loaded view resets it to Loading, and a loading view is not
+        // interactive, so re-selecting the panel would make a working chat
+        // briefly unusable.
+        // The Workspace view loads the selected project's history itself, and
+        // a request started while that view owns the route is Workspace-scoped
+        // — closing the view would cancel it. Leave the load to the owner.
+        let workspace_open = matches!(
+            app.ui_state.routes.current(),
+            crate::route::Route::Workspace
+        );
+        if !workspace_open {
+            if let Some(project) = app.chat_panel_project.clone() {
+                if app.chat.get(&project).is_none() {
+                    crate::commands::chat::start_chat_history(app, project);
+                }
+            }
+        }
     }
     if id == SidePanelId::Terminal && app.panel_host.is_visible_at(app.panel_host.placement()) {
         // Selecting the terminal is a load, and a loaded terminal is for
@@ -814,42 +853,24 @@ pub(crate) fn move_directionally(app: &mut App, dir: PanelDirection) {
 /// mid-scroll would send their next keystroke to a panel they only looked at.
 /// Focus follows only if it already had it.
 ///
-/// Walking deliberately does not materialize empty panels: cycling every entry
-/// would fire dozens of loads (several of them daemon round trips) for panels
-/// the user only glanced at. Committing from the manager (or a hotkey) is the
-/// gesture that loads.
+/// Walking **loads** the panel it lands on. The list is the same registry the
+/// manager shows, so a step and a manager commit must not disagree about what
+/// a panel means: stopping on Terminal starts the shell it exists for,
+/// selecting the file tree opens it, and Chat resolves its project. The walk
+/// used to change only the slot, which landed on "Nothing loaded. Open it from
+/// the panel manager" and told the user to make the trip the gesture was
+/// supposed to save.
 pub(crate) fn step_panel(app: &mut App, delta: i8) {
     if delta == 0 || SidePanelId::ALL.len() < 2 {
         return;
     }
-    // Chat must be bound before it can be selected, and only this layer can
-    // resolve a project — the host has no app access.
-    sync_chat_panel_project(app);
-    {
-        let App {
-            panel_host,
-            sidebar,
-            chat,
-            interactive_terminals,
-            chat_panel_project,
-            sidebar_area,
-            ui_state,
-            ..
-        } = app;
-        let focused = panel_host.is_focused();
-        let mut ctx = panel_ctx(
-            ui_state,
-            sidebar,
-            chat,
-            interactive_terminals,
-            chat_panel_project,
-            *sidebar_area,
-            focused,
-            ui_state.input_mode,
-        );
-        panel_host.step(delta, &mut ctx);
-    }
-    sync_workspace_focus(app);
+    // One loader for every route. `select_panel` binds Chat's project, fills a
+    // hosted panel from its own box and readies the terminal; going around it
+    // is what left the walked-to panel inert.
+    let len = SidePanelId::ALL.len();
+    let current = app.panel_host.active().index() as i64;
+    let next = (current + i64::from(delta)).rem_euclid(len as i64) as usize;
+    select_panel(app, SidePanelId::from_index(next));
 }
 
 /// Dock the open box into the panel.

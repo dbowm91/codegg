@@ -4013,7 +4013,18 @@ branch. `move_directionally` asks in order:
    is a different edge;
 3. the keyboard is in a panel and the direction is the one leading **away** from
    its edge → return to the main buffer;
-4. otherwise `cycle_step(dir)` → walk the loaded panel types.
+4. otherwise `cycle_step(dir)` → walk the panel types, **loading** each one it
+   lands on through `select_panel` — the same loader a manager commit, a saved
+   hotkey, a dock and the reveal use.
+
+Walking used to change only the slot, so it landed on a hosted panel that said
+"Nothing loaded. Open it from the panel manager" — the trip the gesture exists
+to save. Every stop now materializes: Terminal starts its shell, Chat binds its
+project and asks for the channel list, and the file tree and Files open their
+boxes. A panel therefore cannot be usable from one route and inert from
+another. The one cost is deliberate: an asynchronous panel (Research, Task
+View) opens its box when the walk reaches it, exactly as committing it from the
+manager does.
 
 **The main buffer is a stop, not a gap.** The second column is not "the other
 end of the line" from the first — the buffer sits *between* them. So step 3
