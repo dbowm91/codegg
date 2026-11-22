@@ -2962,16 +2962,6 @@ pub(crate) fn strip_projection_inline_footer(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod completion_reliability_registry_lock {
-    /// The question registry is process-global, and two tests observe it:
-    /// the dry-run test compares its membership across a call, and the
-    /// per-question test registers and resolves entries. A length or subset
-    /// assertion is still racy while both run in parallel, so they share one
-    /// lock instead of a retry loop.
-    pub(super) static QUESTION_REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-}
-
-#[cfg(test)]
 mod invocation_tests {
     use super::{
         invocation_key_for, is_affirmatively_read_only_name, is_question_dry_run,
@@ -2994,10 +2984,6 @@ mod invocation_tests {
     #[tokio::test]
     async fn question_dry_run_registers_nothing() {
         use crate::provider::ToolCall;
-        let _registry_guard =
-            super::completion_reliability_registry_lock::QUESTION_REGISTRY_TEST_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dry = ToolCall {
             id: "call-dry".to_string().into(),
             name: "question".to_string().into(),
@@ -3739,10 +3725,6 @@ mod completion_reliability_tests {
 
     #[tokio::test]
     async fn each_question_keeps_its_own_answer_and_cleanup_is_scoped() {
-        let _registry_guard =
-            super::completion_reliability_registry_lock::QUESTION_REGISTRY_TEST_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
         let session = unique("question-session");
         let other_session = unique("question-other-session");
         let first = unique("q");

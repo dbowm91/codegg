@@ -1024,17 +1024,14 @@ mod tests {
     use std::str::FromStr;
     use std::time::Instant;
 
+    /// One scripted provider response: the events a single `stream` call emits.
+    type ScriptedResponse = Vec<Result<crate::provider::ChatEvent, crate::provider::ProviderError>>;
+
     #[derive(Clone)]
     struct RecordingProvider {
         calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         tools_seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
-        script: std::sync::Arc<
-            std::sync::Mutex<
-                std::collections::VecDeque<
-                    Vec<Result<crate::provider::ChatEvent, crate::provider::ProviderError>>,
-                >,
-            >,
-        >,
+        script: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<ScriptedResponse>>>,
     }
 
     #[async_trait::async_trait]

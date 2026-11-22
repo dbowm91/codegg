@@ -700,8 +700,10 @@ mod tests {
 
     #[test]
     fn settlement_is_one_shot_and_generation_bump_cancels_it() {
-        let mut state = EditorState::default();
-        state.generation = 7;
+        let mut state = EditorState {
+            generation: 7,
+            ..Default::default()
+        };
         let cancel = tokio_util::sync::CancellationToken::new();
 
         assert!(state.begin_lsp_sync_settlement(7));

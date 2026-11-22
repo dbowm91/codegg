@@ -845,11 +845,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    /// One scripted provider response: the events a single `stream` call emits.
+    type ScriptedResponse = Vec<Result<ChatEvent, ProviderError>>;
+
     #[derive(Clone)]
     struct RecordingProvider {
         calls: Arc<AtomicUsize>,
         tools_seen: Arc<Mutex<Vec<bool>>>,
-        script: Arc<Mutex<std::collections::VecDeque<Vec<Result<ChatEvent, ProviderError>>>>>,
+        script: Arc<Mutex<std::collections::VecDeque<ScriptedResponse>>>,
     }
 
     #[async_trait::async_trait]

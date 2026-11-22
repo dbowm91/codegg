@@ -914,14 +914,16 @@ fn diagnostics_are_fenced_by_editor_generation_and_range_path() {
 /// opening the diagnostics panel.
 #[test]
 fn pending_and_degraded_server_state_render_without_opening_f2() {
-    let mut lsp = EditorLspState::default();
-    lsp.scope = Some(codegg_tui::editor_lsp::EditorLspScope {
-        generation: 1,
-        session_id: "session-1".into(),
-        project_id: "project-1".into(),
-        workspace_id: "workspace-1".into(),
-        path: "src/lib.rs".into(),
-    });
+    let mut lsp = EditorLspState {
+        scope: Some(codegg_tui::editor_lsp::EditorLspScope {
+            generation: 1,
+            session_id: "session-1".into(),
+            project_id: "project-1".into(),
+            workspace_id: "workspace-1".into(),
+            path: "src/lib.rs".into(),
+        }),
+        ..Default::default()
+    };
     lsp.lsp_sync = Some(codegg::protocol::core::DocumentLspSync::Pending);
     lsp.diagnostics_status = codegg_tui::editor_lsp::DiagnosticsViewStatus::NotReady;
     let snapshot = DocumentBuffer::new("fn main() {}\n").snapshot();

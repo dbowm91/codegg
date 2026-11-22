@@ -17321,10 +17321,12 @@ mod tests {
         let range = semantic_token_range_for_viewport(120);
         assert_eq!(range.start_line, 120);
         assert_eq!(range.end_line, 120 + SEMANTIC_TOKEN_VIEWPORT_LINES);
-        assert!(
-            SEMANTIC_TOKEN_VIEWPORT_LINES <= 400,
-            "the window is a viewport bound, not a full-file read"
-        );
+        const {
+            assert!(
+                SEMANTIC_TOKEN_VIEWPORT_LINES <= 400,
+                "the window is a viewport bound, not a full-file read"
+            )
+        };
 
         // Never an empty range, even at the very top.
         let top = semantic_token_range_for_viewport(0);
