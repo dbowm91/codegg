@@ -197,11 +197,16 @@ impl CoreDaemon {
     /// milestone; the call is shaped so one can be passed without changing
     /// the gate.
     ///
-    /// The policy is the kernel's fail-closed default
-    /// (`unsupported → Reject`, `unknown → Reject`, `mixed → WarnDrop`),
-    /// which is the disposition set ADR-0050 decided. A dimension nobody
-    /// has published a contract for is refused at admission rather than
-    /// forwarded optimistically.
+    /// The policy is `capability::local_admission_policy()`, not the
+    /// kernel's fail-closed default. The kernel default refuses an
+    /// `unknown` dimension, and four of the seven adapter families
+    /// publish no capability record at all — so on those families every
+    /// resolved selection, including a persisted `Off`, refused the turn
+    /// before any provider request and no model call could start. The
+    /// shipped policy forwards an unknown dimension (no contract is not
+    /// evidence of unsupported) and drops a declared-`unsupported` one
+    /// with a notice, so a preference never decides whether the call
+    /// happens. See `local_admission_policy` for the full rule.
     ///
     /// The check is **read-only**: it never mutates the adapter baseline,
     /// the configuration, or any in-flight turn state.
@@ -223,7 +228,7 @@ impl CoreDaemon {
             model,
             selection,
             &effective.effective,
-            &codegg_providers::capability::ReasoningCapabilityPolicy::default(),
+            &capability::local_admission_policy(),
             reasoning_target_surface(model),
         );
         match &decision {
@@ -3768,12 +3773,18 @@ mod tests {
         assert_eq!(capabilities.max_label_bytes, 64);
     }
 
-    /// Provider reasoning control M003: a selection the model does not
-    /// accept is refused **at admission**, with a typed refusal that names
-    /// the model and the dimension, and no provider request is dispatched.
+    /// Corrective: a label the model does not accept is **dropped**, not a
+    /// refusal.
+    ///
+    /// `minimax/minimax-m3` publishes a closed ladder (`low`, `medium`,
+    /// `high`, `xhigh`, `max`), so `turbo` is outside it. The shipped
+    /// policy drops the selection, records the drop, and dispatches the
+    /// turn: a preference about *how* to think must not decide whether a
+    /// model call can happen.
     #[tokio::test(flavor = "current_thread")]
-    async fn an_unsupported_reasoning_selection_is_refused_before_any_provider_request() {
+    async fn an_unaccepted_reasoning_label_is_dropped_and_the_turn_still_dispatches() {
         let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let mut events = daemon.event_log.subscribe();
         let response = daemon
             .handle_request(turn_request_with_reasoning(
                 &session_id,
@@ -3784,27 +3795,47 @@ mod tests {
             ))
             .await
             .expect("turn submit");
-        let (code, message) = error_of(&response);
-        assert_eq!(code, "reasoning_capability_unsupported");
         assert!(
-            message.contains("minimax/minimax-m3"),
-            "the refusal must name the model, got {message}"
+            !matches!(response, CoreResponse::Error { .. }),
+            "an unaccepted label must not refuse the turn, got {response:?}"
         );
         assert!(
-            message.contains("effort"),
-            "the refusal must name the dimension, got {message}"
+            runtime.called.load(Ordering::SeqCst),
+            "the turn must dispatch without the dropped selection"
         );
+        assert_eq!(
+            runtime.reasoning_override(),
+            None,
+            "the unaccepted label must not reach the request"
+        );
+        let mut notice = None;
+        while let Ok(envelope) = events.try_recv() {
+            if let crate::protocol::core::CoreEvent::Error { code, message } = &envelope.payload {
+                if code == "reasoning_capability_notice" {
+                    notice = Some(message.clone());
+                    break;
+                }
+            }
+        }
+        let notice = notice.expect("the dropped label must be recorded as a notice");
         assert!(
-            !runtime.called.load(Ordering::SeqCst),
-            "a refused turn must not dispatch a provider request"
+            notice.contains("effort"),
+            "the notice must name what was dropped, got {notice}"
         );
     }
 
-    /// Provider reasoning control M003: an always-reasons model refuses an
-    /// explicit disable at admission.
+    /// Corrective: an explicit disable on a model that always reasons is
+    /// **dropped**, not refused.
+    ///
+    /// The MiniMax baseline declares `disable_status = "unsupported"` and
+    /// `always_reasons = true`, so the disable cannot be expressed. The
+    /// turn runs on the model's own default and the drop is recorded. A
+    /// persisted `Off` is the most common selection there is, and it used
+    /// to refuse every MiniMax turn.
     #[tokio::test(flavor = "current_thread")]
-    async fn an_explicit_disable_is_refused_for_an_always_reasons_model() {
+    async fn an_explicit_disable_on_an_always_reasons_model_is_dropped_and_runs() {
         let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+        let mut events = daemon.event_log.subscribe();
         let response = daemon
             .handle_request(turn_request_with_reasoning(
                 &session_id,
@@ -3813,15 +3844,32 @@ mod tests {
             ))
             .await
             .expect("turn submit");
-        let (code, message) = error_of(&response);
-        assert_eq!(code, "reasoning_capability_unsupported");
         assert!(
-            message.contains("disable"),
-            "the refusal must name the dimension, got {message}"
+            !matches!(response, CoreResponse::Error { .. }),
+            "an inexpressible disable must not refuse the turn, got {response:?}"
         );
         assert!(
-            !runtime.called.load(Ordering::SeqCst),
-            "a refused turn must not dispatch a provider request"
+            runtime.called.load(Ordering::SeqCst),
+            "the turn must dispatch without the dropped disable"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            None,
+            "a dropped disable must not reach the request"
+        );
+        let mut notice = None;
+        while let Ok(envelope) = events.try_recv() {
+            if let crate::protocol::core::CoreEvent::Error { code, message } = &envelope.payload {
+                if code == "reasoning_capability_notice" {
+                    notice = Some(message.clone());
+                    break;
+                }
+            }
+        }
+        let notice = notice.expect("a dropped disable must be recorded as a notice");
+        assert!(
+            notice.contains("disable"),
+            "the notice must name what was dropped, got {notice}"
         );
     }
 
@@ -3853,37 +3901,53 @@ mod tests {
         );
     }
 
-    /// Provider reasoning control M003: ADR-0050's fail-closed-on-absence
-    /// rule. A family with no capability baseline declares no record, so
-    /// every dimension of it is `Unknown` — and a selection on an unknown
-    /// dimension is refused at admission rather than forwarded optimistically.
+    /// Corrective: a family with no capability baseline declares no
+    /// record, so every dimension is `Unknown` — and the selection is
+    /// forwarded **unchanged**.
     ///
     /// `opencode_go` ships no model adapter, so it resolves to the generic
-    /// adapter, which declares no reasoning capability record. The refusal
-    /// happens at admission, before provider resolution, so this model needs
-    /// no connection of its own.
+    /// adapter, which declares no reasoning capability record. No contract
+    /// is not evidence of unsupported: the provider is the authority, and
+    /// a local refusal here is a fact nobody published. Forwarding is what
+    /// keeps the call possible.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_selection_on_an_unknown_dimension_is_refused_at_admission() {
-        let (_env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
+    async fn a_selection_on_an_unknown_dimension_is_forwarded_unchanged() {
+        let (_env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
+        // The provider needs a live connection and a catalog entry, because
+        // this test's point is that admission lets the turn through to
+        // provider resolution — not that resolution is skipped.
+        let connection_id =
+            seed_connection(&pool, ProviderKind::Other("generalcompute".to_string())).await;
+        seed_catalog(
+            &pool,
+            &connection_id,
+            &["a-model-without-a-capability-baseline"],
+        )
+        .await;
         let response = daemon
             .handle_request(turn_request_with_reasoning(
                 &session_id,
-                "opencode_go/a-model-without-a-capability-baseline",
+                "generalcompute/a-model-without-a-capability-baseline",
                 Some(crate::protocol::core::ReasoningOverride::Effort {
                     level: "high".to_string(),
                 }),
             ))
             .await
             .expect("turn submit");
-        let (code, message) = error_of(&response);
-        assert_eq!(code, "reasoning_capability_unsupported");
         assert!(
-            message.contains("a-model-without-a-capability-baseline"),
-            "the refusal must name the model, got {message}"
+            !matches!(response, CoreResponse::Error { .. }),
+            "an unknown capability must not refuse the turn, got {response:?}"
         );
         assert!(
-            !runtime.called.load(Ordering::SeqCst),
-            "a refused turn must not dispatch a provider request"
+            runtime.called.load(Ordering::SeqCst),
+            "the turn must dispatch with the forwarded selection"
+        );
+        assert_eq!(
+            runtime.reasoning_override(),
+            Some(crate::protocol::core::ReasoningOverride::Effort {
+                level: "high".to_string()
+            }),
+            "an unknown dimension must forward the selection unchanged"
         );
     }
 
@@ -3918,8 +3982,8 @@ mod tests {
     async fn a_dropped_reasoning_dimension_is_recorded_as_a_notice() {
         let (mut env, daemon, runtime, _pool, session_id) = daemon_with_selected_model().await;
         // The operator's override narrows the shipped MiniMax baseline to
-        // a `mixed` effort dimension, which the fail-closed policy drops
-        // with a notice rather than refusing.
+        // a `mixed` effort dimension, which the shipped policy drops with
+        // a notice rather than refusing.
         env.install_config(
             r#"{"model_profile":{"minimax/minimax-m3":{"reasoning_capability":{"effort_status":"mixed"}}}}"#,
         );

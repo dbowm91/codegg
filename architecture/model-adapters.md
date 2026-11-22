@@ -219,16 +219,40 @@ and `ReasoningCapabilityPolicy`, producing exactly one of:
 
 | Outcome | Meaning |
 |---|---|
-| `Reject` | The selection is refused locally with a typed refusal naming the model and the dimension |
+| `Reject` | The selection is refused locally with a typed refusal naming the model and the dimension. **Nothing on the shipped path produces it**; it stays in the vocabulary for a caller holding facts that warrant it |
 | `WarnDrop` | The unsupported dimension is dropped and a notice records **what was dropped** |
 | `AllowWithWarning` | The selection proceeds with a recorded warning |
 | `Allow` | The selection proceeds unchanged |
 
-The kernel's default policy is **fail-closed**: `unsupported → Reject`,
-`unknown → Reject`, `mixed → WarnDrop`. This milestone relies on that
-default. Its consequence is deliberate: a selection on a dimension the
-effective capability does not declare is refused locally rather than
-forwarded optimistically.
+The policy the daemon ships is `capability::local_admission_policy()`,
+and it is **not** the kernel's fail-closed default:
+
+| Dimension | Kernel default | Shipped | Why |
+|---|---|---|---|
+| `unknown` | `Reject` | `Allow` | No contract is not evidence of unsupported. The selection is forwarded verbatim and the provider is the authority — the same meaning an absent record has everywhere else in this workspace |
+| `unsupported` | `Reject` | `WarnDrop` | A declared `Unsupported` dimension is a fact, so the preference is dropped with a notice and the turn still runs |
+| `mixed` | `WarnDrop` | `WarnDrop` | The kernel's own disposition, retained |
+
+The kernel default is correct only where capability facts exist. CodeGG
+publishes a baseline for three of the seven adapter families, and the
+discovery overlay has no live source, so `google`, `local`, `laguna`, and
+`generic` resolve to an all-`Unknown` record for every model. Under the
+fail-closed default a persisted `Off` — the most common selection there
+is — refused every turn on those four families before any provider request
+was dispatched, and MiniMax's own `disable unsupported` refused the turn
+too. A reasoning preference is a preference, not an admission condition:
+it may choose what is sent, never whether a model call happens.
+
+`Reject` stays in the vocabulary so a future caller with facts that
+warrant it can still refuse. Nothing on the daemon's shipped path
+produces it.
+
+A declared `Unsupported` dimension is applied **per dimension**, before
+the kernel call, because the kernel consults the model's overall status
+first: a partial record (effort `unsupported`, every other dimension
+`unknown`) would otherwise reach the `unknown` disposition and lose the
+one fact it declares. That is exactly the shape an operator override
+creates, so the override would be silently ineffective without it.
 
 The kernel's neutral capability type is **status-only** — it carries no
 accepted-label list and never validates a label — so CodeGG owns the
