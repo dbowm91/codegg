@@ -6,7 +6,7 @@ Class: **capability**
 Source implementation plan: plans/implementation/tui-live-surface-fill-corrective/001-terminal-input-ready-on-load.md
 Source subsystem roadmap: plans/subsystems/tui-live-surface-fill-corrective-addendum.md
 Repository baseline reviewed: d319afec15b8b8b33ced2c0af7a3ee50eb1a82c3
-Implementation: working tree on feat/auto-20261109-f8abad0d-artifact-safe (uncommitted at record time)
+Implementation commit: 4a5e4b670 on feat/auto-20261109-f8abad0d-artifact-safe
 
 ## 1. Executive finding
 
@@ -72,23 +72,24 @@ Commands were run from the worktree root with CARGO_BUILD_JOBS=2.
 | cargo test -p codegg-tui --lib -- commands::interactive_terminal::tests --test-threads=1 | pass, 41 |
 | cargo test -p codegg-tui --test tui_render -- terminal | pass, 26 |
 | cargo test -p codegg-tui --test tui_render | pass, 1239 |
-| scripts/verify.sh scoped | guards, fmt, and the scoped selection passed; the widened workspace nextest stopped on a pre-existing root-crate failure, 5,359 of 5,360 passing before fail-fast |
-| cargo nextest run --workspace --locked --profile ci --no-fail-fast | 17,622 of 17,623 passed (1 leaky, 11 skipped); all codegg-tui targets, including every test added here, passed |
+| scripts/verify.sh scoped | guards, fmt, and the scoped selection passed; the first widened pass stopped on the root-crate fixture failure recorded below, which this commit fixes |
+| cargo nextest run --workspace --locked --profile ci --no-fail-fast (after the fixture fix) | 17,623 of 17,623 passed (11 skipped); every codegg-tui target, including every test added here, passed |
+| CI verify (PR #231, commit 4a5e4b670) | pass, 20m41s — https://github.com/dbowm91/codegg/actions/runs/44979048913 |
 
 scripts/verify.sh scoped needed a two-line harness fix in this change: it piped
 the selection JSON into the formatter, which stops reading once it has parsed
 the selection, and pipefail turned the resulting SIGPIPE into exit 141 before
 the widened pass could start. The fix replaces both pipes with here-strings.
 
-The one failure is
-delegated_transcript::a_delegated_run_records_a_bounded_tool_result_with_truncation_marked
-in the root codegg package's agent_loop family. It fails deterministically
-(twice, in isolation) on this baseline, tests/agent_loop has no diff in this
-change, and the root package does not depend on codegg-tui. It is therefore a
-pre-existing, unrelated baseline failure, recorded here rather than fixed
-because it belongs to a different subsystem. The leaky test is
+The first sweep exposed one pre-existing failure in the root codegg package's
+agent_loop family:
+delegated_transcript::a_delegated_run_records_a_bounded_tool_result_with_truncation_marked.
+It fails deterministically because path redaction shrinks the capped tool
+result below the 8 KiB row bound, so the layered truncation markers never
+engage. The fixture now uses long lines that survive redaction, and the test
+passes. The leaky test is
 search_backend::bootstrap::bootstrap_report_summary_includes_coverage, also in
-the root package and untouched here.
+the root package and untouched by the TUI change.
 
 Baseline failure was measured, not asserted. The select-path readiness call was
 removed from select_panel for one run: selecting_the_terminal_panel_leaves_a_live_shell_ready_for_typing
