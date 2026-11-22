@@ -280,6 +280,13 @@ fn a_message_parts_markdown_is_parsed_once() {
 /// it away — on the one path the cache was built for.
 #[test]
 fn a_local_edit_keeps_the_highlights_of_the_lines_above_it() {
+    // M005 loads the bundled grammar and theme sets on a background thread, so
+    // an integration test (which links the library without `cfg(test)`) has
+    // to wait for the load before asserting on spans.
+    assert!(
+        codegg_tui::editor_highlight::wait_for_highlight_assets(std::time::Duration::from_secs(30)),
+        "the bundled grammar sets load within the test budget"
+    );
     let theme_name = "base16-ocean.dark";
     let before = "let value = 1;\nlet other = 2;\nlet third = 3;\n";
     let after = "let value = 1;\nlet other = 22;\nlet third = 3;\n";

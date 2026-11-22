@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 140812
-max_comment_words = 1256512
+max_comment_lines = 140815
+max_comment_words = 1256547
 max_ratio = 0.1356
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -457,7 +457,7 @@ max_ratio = 0.1356
 "crates/codegg-tui/tests/tui_render/tui_project_routing.inc" = { max_comment_lines = 60, max_ratio = 0.1233 }
 "crates/codegg-tui/tests/tui_render/tui_project_tabs.inc" = { max_comment_lines = 52, max_ratio = 0.1012 }
 "crates/codegg-tui/tests/tui_render/tui_render.inc" = { max_comment_lines = 240, max_ratio = 0.1112 }
-"crates/codegg-tui/tests/tui_render/tui_render_cost.inc" = { max_comment_lines = 80, max_ratio = 0.3253 }
+"crates/codegg-tui/tests/tui_render/tui_render_cost.inc" = { max_comment_lines = 83, max_ratio = 0.332 }
 "crates/codegg-tui/tests/tui_render/tui_sessions_pending_sections.inc" = { max_comment_lines = 77, max_ratio = 0.1791 }
 "crates/codegg-tui/tests/tui_render/tui_side_panels.inc" = { max_comment_lines = 136, max_ratio = 0.1692 }
 "crates/codegg-tui/tests/tui_render/tui_theme_source_of_truth.inc" = { max_comment_lines = 108, max_ratio = 0.3043 }
