@@ -1313,8 +1313,6 @@ pub enum CommandOutcomeStatusDto {
 
 /// The structured report of one command execution.
 ///
-/// It mirrors [`AssetRefreshReportDto`] so that `/reload` satisfies
-/// `plans/000-long-term-specification.md:379` unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandReportDto {
     #[serde(default)]

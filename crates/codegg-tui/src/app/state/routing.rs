@@ -1,4 +1,4 @@
-//! Multi-Project TUI event-routing identities and registry (Milestone 3).
+//! Project-tab event-routing identities and registry.
 //!
 //! [`RoutingRegistry`] is the central derived-state container that
 //! tracks:

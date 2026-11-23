@@ -1,4 +1,4 @@
-//! Project picker state for the Multi-Project TUI (milestone 2).
+//! State for the project picker.
 //!
 //! The picker is a bounded, modal dialog that lets the user search
 //! the daemon-backed project catalog, select a project, optionally

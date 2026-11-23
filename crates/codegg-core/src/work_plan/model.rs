@@ -1,18 +1,5 @@
-//! Durable WorkPlan foundation (long-horizon M002).
-//!
-//! `WorkPlan`/`WorkItem` is detailed work state, not execution authority.
-//! It records what remains, what blocks it, and what host-owned evidence
-//! could satisfy it. It never grants tool capability, never replays side
-//! effects, and never stores hidden model reasoning.
-//!
-//! Long-term references: `plans/000-long-term-specification.md`
-//! (`#4.2`, `#16`, `#24`, `#26`, `#29`) and ADR-0003
-//! (`plans/adrs/ADR-0003-long-horizon-work-state-and-context-epochs.md`).
-//!
-//! Ownership: `codegg-core::work_plan` owns these types and their
-//! validation. Storage lives in `super::store` against tables created by
-//! migration v59. Goal, TodoState, AgentTask/AgentRun, scheduler Job, and
-//! continuation checkpoints are consumed by reference only.
+//! WorkPlans record detailed work state, not authority: they grant no capability, replay no effect, or store hidden reasoning.
+//! `codegg-core::work_plan` owns validation; see `architecture/work_plan.md`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

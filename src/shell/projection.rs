@@ -1,14 +1,5 @@
-//! Shell command output projection model.
-//!
-//! The command-event substrate of the shell output projection pipeline; see
-//! `architecture/human_shell.md` for the pipeline's contract.
-//!
-//! This module is **additive** — it does not modify the existing
-//! human-shell runtime or its ephemeral transcript in
-//! [`crate::shell::store`]. The two systems run side by side: the legacy
-//! human-shell store keeps its bounded head/tail transcript for the TUI;
-//! the new command event store keeps the durable raw bytes used by
-//! projection, expansion, and future native projectors.
+//! Stores command output for bounded, model-facing projection and expansion.
+//! Human-shell transcript storage remains separate; see `architecture/human_shell.md`.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -191,12 +182,7 @@ impl RawStream {
     }
 }
 
-/// Placeholder for the projection state attached to a [`CommandRun`].
-///
-/// Phase 2 introduces the real [`crate::shell::projector::ProjectionResult`]
-/// descriptor; the per-run handle on `CommandRun` continues to be a small
-/// marker for backwards compatibility, while full per-projection metadata
-/// is returned by the projector trait in [`crate::shell::projector`].
+/// A [`CommandRun`] keeps this compatibility marker; detailed metadata comes from the projector.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectionHandle;
 
@@ -869,31 +855,14 @@ impl CommandOutputExpansion {
     }
 }
 
-/// Backwards-compatible projection entry point for [`CommandRun`].
-///
-/// Phase 1 introduced this as a single seam through which all
-/// model-visible command output flows. Phase 2 keeps the function
-/// signature stable but re-implements it on top of the projector trait
-/// in [`crate::shell::projector`]; every call now flows through the
-/// [`crate::shell::projector::ProjectionSelector`] and selects between
-/// [`crate::shell::projector::RawProjector`],
-/// [`crate::shell::projector::ErrorRetentionProjector`], and
-/// [`crate::shell::projector::TruncatedProjector`] based on run state
-/// and budget.
-///
-/// The returned string includes:
-/// - command ID, command string, cwd, exit label, duration
-/// - the projected stdout and stderr text (raw or truncated)
-/// - raw retention handles (`cmd://<id>/stdout`, `cmd://<id>/stderr`)
-///
-/// The function does NOT invoke RTK or external backends; that
-/// integration is added in later phases.
+/// Backwards-compatible model-facing projection entry point for [`CommandRun`].
+/// Uses the selector to produce bounded output; external backends are disabled by default.
 pub fn default_command_projection(run: &CommandRun, store: &CommandOutputStore) -> String {
     let budget = DEFAULT_PROJECTION_BUDGET_BYTES;
     default_command_projection_with_budget(run, store, budget)
 }
 
-/// Default projection budget for the Phase 1 placeholder.
+/// Default byte budget for model-facing command projection.
 pub const DEFAULT_PROJECTION_BUDGET_BYTES: usize = 8 * 1024;
 
 /// Like [`default_command_projection`] but with an explicit per-output budget.

@@ -29,10 +29,8 @@ use codegg::util::truncate::truncate_prefix;
 /// and it appeared twice, once per pane — was false in both panes the moment the
 /// box docked.
 ///
-/// The consequence worth stating plainly: `Esc` is the *only* way out of action
-/// mode, so a docked `/mcp` can enter that mode and cannot leave it from inside
-/// the column. That is the host-level exit gap milestone M002a recorded, not
-/// something this widget can fix by choosing different words.
+/// `Esc` is the only way out of action mode, so a docked `/mcp` cannot leave
+/// that mode from inside the column. The host owns this exit path.
 fn hint(action_mode: bool) -> HintLine {
     let mut hint = HintLine::new();
     hint.push("j/k", "move")

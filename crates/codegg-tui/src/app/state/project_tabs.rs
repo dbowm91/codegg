@@ -2,9 +2,8 @@
 //! per-tab project/workspace/session summaries, and bounded project
 //! catalog cache.
 //!
-//! This module is the **frontend-local** state seam required by the
-//! Multi-Project TUI roadmap (milestone 1). It does **not** introduce
-//! any new project discovery, catalog storage, or session authority.
+//! This module is the **frontend-local** tab-state seam. It does **not**
+//! introduce project discovery, catalog storage, or session authority.
 //! All durable project / workspace / session identity still comes from
 //! the daemon through `CoreClient`; the values cached here are
 //! summaries used for picker rendering and active-tab accessors.

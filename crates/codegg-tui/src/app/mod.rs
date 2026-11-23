@@ -624,10 +624,7 @@ pub struct App {
     pub remote_sequence: u64,
     /// Ordered collection of open project tabs and the active tab id.
     ///
-    /// Introduced by `Multi-Project TUI and Session Management
-    /// Roadmap` milestone 1 (`plans/implementation/tui-project-sessions/001-project-aware-state.md`)
-    /// and extended by the multi-project convergence work into the current
-    /// multi-tab collection. The active tab owns the focused project,
+    /// The active tab owns the focused project,
     /// session, workspace, model, and agent selection. The accessors
     /// `active_tab`, `active_project_id`, `active_session_id`,
     /// `active_workspace_id`, `active_model`, and `active_agent` read
@@ -637,20 +634,20 @@ pub struct App {
     /// state for the most recent list/get operation. See
     /// `tui::app::state::project_tabs::ProjectCatalogState`.
     pub project_catalog: crate::app::state::ProjectCatalogState,
-    /// Active-view switch coordinator (Milestone 2). Manages the
+    /// Active-view switch coordinator. Manages the
     /// controlled switch transaction when switching between project tabs.
     pub view_switch: crate::app::state::ViewSwitchCoordinator,
-    /// Routing registry (Milestone 3). Tracks the
+    /// Routing registry. Tracks the
     /// `session_id -> tab_id` index, per-tab bounded activity
     /// summaries, the reconnect epoch, and the last accepted event
     /// sequence. Pure classifier logic in
     /// `crate::app::state::routing` consumes this registry.
     pub routing_registry: crate::app::state::RoutingRegistry,
-    /// Manifest persistence service (Milestone 4). Owns atomic,
+    /// Manifest persistence service. Owns atomic,
     /// debounced local persistence of the TUI tab manifest. See
     /// `crate::app::state::persistence::ManifestPersistence`.
     pub manifest_persistence: crate::app::state::persistence::ManifestPersistence,
-    /// Last persisted daemon instance hint (Milestone 4). Used to
+    /// Last persisted daemon instance hint. Used to
     /// surface a non-blocking diagnostic when the loaded manifest
     /// was written by a different daemon instance. Diagnostic only;
     /// never authoritative.

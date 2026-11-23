@@ -8,7 +8,7 @@
 //! task. The registry counts waiters, not workers.
 //!
 //! This coordinator makes the stronger claim true: at most **one** blocking
-//! scan executes at a time (global single-flight, preferred per the plan),
+//! scan executes at a time (global single-flight),
 //! with at most one coalesced latest-only pending intent. The admission
 //! permit is held from the event-loop `try_admit` until the blocking work's
 //! completion arrives; aborting a waiter never frees capacity early. A

@@ -1,28 +1,5 @@
-//! Fixed-target Eggwork remote execution (M001).
-//!
-//! The [`EggworkExecutor`] runs explicitly targeted finite jobs
-//! ([`ExecutionTarget::EggworkNode`]) on one named Eggwork node. Routing is
-//! owned by [`executor_kind_for_job`](crate::scheduler::executor::executor_kind_for_job):
-//! remote-targeted jobs always land here, `Local` jobs never do, and remote
-//! failure never falls back to local execution.
-//!
-//! Scope (see `plans/implementation/eggwork-fixed-target-remote-execution/`):
-//!
-//! - eligible payloads: `Build`/`Lint`/`Format`/`ManagedProcess`/`Shell`
-//!   with canonical argv (`ManagedArgv`, or `Shell` with explicit argv);
-//! - `Test` remote execution is deferred (typed validation failure);
-//! - one CodeGG attempt maps to at most one accepted Eggwork execution;
-//! - the remote handle is persisted via `set_attempt_remote_handle` before
-//!   any upload/execute side effect so restart reconciles instead of
-//!   resubmitting;
-//! - workspace transfer is bounded and never writes remote results back
-//!   into the local workspace;
-//! - cancellation propagates to the exact remote handle; the scheduler
-//!   permit is held until remote terminal convergence.
-//!
-//! This module never spawns a local process: execution happens on the
-//! Eggwork node via `eggwork-client`. See `docs/execution-ownership.toml`
-//! (`src/scheduler/` is scheduler-owned definition).
+//! Executes fixed-target jobs on a named Eggwork node; remote failures never fall back locally.
+//! See `architecture/scheduler.md`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};

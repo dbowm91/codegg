@@ -1,9 +1,5 @@
 //! Byte-level pair scanning for the TUI editor's match mode and text objects.
 //!
-//! Owned by the M009 implementation plan
-//! (`plans/implementation/tui-editor-helix-parity/009-match-mode-and-text-objects.md`),
-//! work package W1.
-//!
 //! This module is intentionally **dependency-free**: it holds the pair table
 //! and the depth-counting scanner as pure functions over a string plus byte
 //! offsets, so it can be unit-tested in isolation from the editor's snapshot
@@ -39,15 +35,10 @@
 //! rather than guessing. This mirrors `MAX_SET_VERB_READ_BYTES` and
 //! `bounded_regex_window` in `crates/codegg-tui/src/editor.rs`.
 //!
-//! # Deviation from the plan (§6.3 / §6.5)
+//! # UTF-8 boundary stepping
 //!
-//! The plan names the crate helpers `leading_byte` / `next_char_boundary` as
-//! the byte-stepping primitives. Those operate on `DocumentSnapshot`, and
-//! using them here would make this module depend on the editor's document
-//! type — which this work package forbids. This module therefore does its own
-//! UTF-8 character-boundary stepping: forward with `str::chars()`, and
-//! backward with the UTF-8 continuation-byte rule (`0b10xxxxxx`). The two
-//! agree, so a call site may use either.
+//! Scans advance on character boundaries in both directions without depending
+//! on the editor's document types.
 
 use std::ops::Range;
 

@@ -1,16 +1,5 @@
-//! Daemon-owned workspace service bundles, leases, registry, and policy.
-//!
-//! Phase 3 of the single-daemon multi-project orchestration roadmap turns
-//! each workspace into a daemon-owned service domain. A [`WorkspaceServices`]
-//! bundle owns all the per-workspace resources that were previously
-//! constructed ad-hoc by individual tools, the TUI, or `CoreDaemon` itself:
-//! the `RunStore`, the `WorkspacePathPolicy`, the `WorkspaceLockTable`,
-//! and the resolved `WorkspaceConfigSnapshot`.
-//!
-//! The module is UI-, server-, and plugin-free: it only owns types
-//! the daemon can reason about in isolation. Higher-level services
-//! (LSP, Git mutation, search, plugins, providers) live in the root
-//! crate and are stitched in via the [`WorkspaceServicesFactory`] trait.
+//! Daemon-owned workspace bundles own run storage, path policy, locks, and config snapshots.
+//! The core module is UI/server/plugin-free; daemon adapters compose through `WorkspaceServicesFactory`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -68,18 +57,8 @@ impl Default for WorkspaceServicePolicy {
     }
 }
 
-/// Snapshot of a workspace's path policy as resolved at activation time.
-///
-/// Tools receive an `Arc<WorkspacePathPolicy>` from the workspace services
-/// lease. The policy is constructed from the workspace's canonical root
-/// plus any caller-supplied widened roots, and serves as the authoritative
-/// source of truth for what paths may be read or written.
-///
-/// Phase 3 deliberately keeps this minimal — it mirrors the fields
-/// exposed by [`crate::workspace::ExecutionContext`] so existing tools
-/// can adopt the workspace-bundle path policy without rewriting their
-/// path resolution code. Future phases can add symlink policy, sandbox
-/// mode, and platform capability fields.
+/// Authoritative path-policy snapshot supplied through a workspace service lease.
+/// Child-only scratch roots belong to the tool-level scratch scope, not this policy.
 #[derive(Debug, Clone)]
 pub struct WorkspacePathPolicy {
     /// Canonical workspace root.

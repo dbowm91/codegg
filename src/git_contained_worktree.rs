@@ -1,29 +1,5 @@
-//! Contained managed-worktree creation.
-//!
-//! ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`)
-//! grants exactly one operation shape: `git worktree add <path>
-//! <existing-branch>` inside an OS-contained child. This module is that
-//! operation.
-//!
-//! Three properties carry the whole contract:
-//!
-//! * **The branch is the daemon's.** The daemon creates it first, through the
-//!   existing typed, policy-allowed `git branch` path. The child attaches to a
-//!   branch that already exists, so it writes **no ref**.
-//! * **The grant is the administration root and nothing else.** The child may
-//!   write the new checkout, the daemon scratch, and the repository's Git
-//!   directory's **shared** `worktrees/` root — the parent of every linked
-//!   worktree's own administration directory. Every other path under that Git
-//!   directory — `refs`, `objects`, `index`, `config`, `hooks`, `packed-refs`
-//!   — is read-only to the child.
-//! * **Containment is asserted, not requested.** The launch's *obtained*
-//!   enforcement is read after the launch. A request is a hope; only the
-//!   obtained fact is evidence.
-//!
-//! The child is still **untrusted code**: the repository's own configuration
-//! may define filters, hooks, merge drivers, fsmonitor hooks and credential
-//! helpers, and the sandbox — not the absence of that configuration — is what
-//! keeps them from the host.
+//! Writes are limited to checkout, scratch, and shared `<common-gitdir>/worktrees/`.
+//! Hooks remain untrusted; OS containment enforces the grant. See `architecture/git.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -100,8 +76,8 @@ impl WorktreeLaunchTiers {
 /// The paths are resolved **before** the child runs, and they are the whole
 /// grant: the child may write the checkout, the scratch and the **shared**
 /// administration root, and nothing else. The shared root is the *parent* of
-/// every linked worktree's own administration directory — see ADR-0048's
-/// clause 3 and the amendment that records what that reach permits.
+/// every linked worktree's own administration directory. See
+/// `architecture/git.md` for the grant and its documented reach.
 #[derive(Clone, Debug)]
 pub struct WorktreeChildPaths {
     /// The daemon-pinned Git executable.
@@ -190,8 +166,8 @@ pub struct WorktreeChildLaunch {
 
 /// Compose the launch one step of the contained worktree child runs with.
 ///
-/// This is the **one authorized operation** ADR-0048 grants, in its two
-/// steps. The grant is identical for both: the child may write the checkout,
+/// This is the **one authorized operation** described in `architecture/git.md`.
+/// Both steps use the same grant: the child may write the checkout,
 /// the daemon scratch and the **shared** administration root, and nothing
 /// else.
 pub fn compose_worktree_child_launch(
@@ -456,9 +432,9 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
 /// Whether the launch's **obtained** enforcement names `required` as a
 /// writable root.
 ///
-/// ADR-0048 clause 4 is "containment is asserted, not requested": the launch's
-/// obtained scope, not the requested configuration, is the evidence. This is
-/// the writable-root half of that assertion.
+/// Containment is asserted, not requested: the launch's obtained scope,
+/// not the requested configuration, is the evidence. See `architecture/git.md`.
+/// This is the writable-root half of that assertion.
 ///
 /// The comparison is on **whole paths**, never on a substring of the joined
 /// report. A substring test accepts a root that merely shares a prefix with
@@ -595,7 +571,7 @@ fn verify_pointer(checkout: &Path, administration_dir: &Path) -> Result<(), Work
 /// What differs between hosts is whether the launch obtains the enforcement,
 /// and that is read from the launch's own result.
 ///
-/// The grant is exactly ADR-0048 clause 3: the child may write the new
+/// The grant is exactly the writable set in `architecture/git.md`: the child may write the new
 /// checkout, the daemon scratch, and the **shared** administration root —
 /// `<common-gitdir>/worktrees/`, the parent of every linked worktree's own
 /// administration directory. Every other path under the repository's Git
@@ -674,7 +650,7 @@ pub fn build_worktree_grant(
 ///
 /// `core.hooksPath` is the one repository configuration this pin removes: a
 /// `post-checkout` hook would otherwise run inside the containment, where the
-/// **shared** administration root is writable (ADR-0048's amendment).
+/// **shared** administration root is writable (`architecture/git.md`).
 ///
 /// The pin is on the argv, not in the environment: Git's command-scope
 /// variables (`GIT_CONFIG_COUNT` and friends) are hard-denied by the child's
@@ -712,7 +688,7 @@ fn worktree_child_args(paths: &WorktreeChildPaths, step: WorktreeChildStep) -> V
     args
 }
 
-/// The structural claim ADR-0048 clause 3 makes, asserted against the launch
+/// The grant documented in `architecture/git.md`, asserted against the launch
 /// description the child will actually run with.
 ///
 /// The child may write exactly three things: the new checkout, the daemon

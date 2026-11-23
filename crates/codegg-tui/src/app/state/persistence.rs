@@ -1,4 +1,4 @@
-//! Multi-Project TUI persistent restoration service (Milestone 004).
+//! Persistent project-tab manifest service.
 //!
 //! Owns atomic, debounced persistence of the TUI tab manifest. The
 //! service is intentionally simple: it loads on demand, validates
@@ -16,8 +16,6 @@
 //!   leases. Those are out of scope for the manifest (see
 //!   `manifest.rs`).
 //!
-//! See `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md`
-//! for the full specification.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -954,13 +954,8 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     );
     // `/` opens the command palette from Normal mode, and it **stays**.
     //
-    // The composer does not claim `/`, so this spelling has no conflict with
-    // the claim table: ADR-0042's conflict table names the *vim* map's `i` as
-    // the focus-prompt conflict, and the re-spelling exists because the
-    // composer claims that letter. `/` is not a claimed key, and the plan's
-    // invariant — "a letter the composer does not claim must resolve to the
-    // same app action it resolves to today" — requires it to keep resolving
-    // to `FocusPrompt`.
+    // The composer does not claim `/`, so it remains `FocusPrompt`; only a
+    // claimed key can conflict with the composer.
     //
     // It is also load-bearing beyond the action: `/` is the gesture that
     // enters command mode, and command mode is what makes the rest of a

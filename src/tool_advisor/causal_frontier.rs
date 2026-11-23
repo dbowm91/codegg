@@ -2794,18 +2794,8 @@ pub fn plan_effect_path(
     )
 }
 
-/// Registry backing effect-catalog bindings: the explicit historical
-/// FullHost registry plus the session-gated pilot tools (`goal_get`,
-/// `goal_update_progress`,
-/// `work_plan_get`, `work_plan_update_item`, `context_read`,
-/// `lsp_preview_apply`) constructed over lazy handles, mirroring the M001
-/// seam test. Construction performs no I/O: the pool is lazy, the
-/// artifact store is in-memory, and the LSP service is unconnected. FullHost
-/// pins the same model-visible LSP implementation/schema surface that the
-/// frozen M003 receipt used; constrained registries now replace LSP entries
-/// with hidden `DisabledTool` placeholders and must not redefine that
-/// historical baseline. Contract metadata is static (no session dependence),
-/// so bindings are deterministic for a fixed binary.
+/// Builds the deterministic effect-catalog registry without performing I/O.
+/// FullHost keeps the LSP surface; constrained registries use hidden `DisabledTool` placeholders.
 fn effect_binding_registry() -> crate::tool::ToolRegistry {
     // `SqlitePool::connect_lazy` requires a Tokio context even though it
     // performs no I/O. Async callers already provide one; sync callers

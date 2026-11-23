@@ -1,14 +1,5 @@
-//! Shell output redaction pipeline (Phase 8).
-//!
-//! Deterministic, regex-based secret filtering for command output projected
-//! to model context. The [`Redactor`] applies a fixed set of compiled
-//! [`RedactRule`] implementations in a defined order and produces a
-//! [`RedactedOutput`] containing the filtered text and metadata about what
-//! was replaced.
-//!
-//! Rules are **deterministic** — no ML, no heuristics. Original sensitive
-//! values are never logged or exposed. Replacement markers follow the
-//! pattern `[REDACTED:<rule-class>]`.
+//! Deterministic regex-based redaction for command output sent to model context.
+//! Original sensitive values are never logged or exposed.
 
 use std::sync::LazyLock;
 

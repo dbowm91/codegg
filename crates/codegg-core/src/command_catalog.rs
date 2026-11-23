@@ -64,8 +64,7 @@ pub enum CommandCategory {
 
 /// The capability a daemon-effect form requires.
 ///
-/// `command.execute` is the only capability any daemon-effect form may name
-/// in this milestone (`plans/000-long-term-specification.md:217`).
+/// Daemon-effect forms currently use only `command.execute`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandCapability {
@@ -175,8 +174,7 @@ pub struct CommandCatalog {
     pub commands: &'static [CommandDescriptor],
 }
 
-/// The catalog's bounds. An over-bound catalog is **refused**, never
-/// silently truncated (`plans/000-long-term-specification.md:538`).
+/// Over-bound catalogs are refused, never silently truncated.
 pub mod bounds {
     /// Maximum commands in one catalog response.
     pub const MAX_COMMANDS: usize = 256;

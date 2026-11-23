@@ -1,21 +1,5 @@
-//! Shell command output projectors.
-//!
-//! This module introduces the projection abstraction that converts raw
-//! command artifacts into explicit model-facing and TUI-facing views. The
-//! trait [`CommandOutputProjector`] is independent of any specific
-//! backend; the built-in projectors ([`RawProjector`],
-//! [`TruncatedProjector`], [`ErrorRetentionProjector`]) are conservative
-//! and do not invoke RTK or command-specific parsers. Later phases will
-//! insert native structured projectors and an RTK-backed projector into
-//! the same selection pipeline.
-//!
-//! All types in this module are additive — they do not modify
-//! [`crate::shell::projection::CommandRun`] or
-//! [`crate::shell::projection::CommandOutputStore`]. The placeholder
-//! [`crate::shell::projection::ProjectionHandle`] attached to each
-//! `CommandRun` continues to exist; richer per-run projection descriptors
-//! can be threaded through later phases without breaking the existing
-//! shape.
+//! Projects command output into bounded views for model context and the TUI.
+//! Explicit policy controls selection, lossiness, external backends, and redaction.
 
 use std::fmt::Write as _;
 
@@ -78,9 +62,7 @@ impl ProjectionTarget {
 
 /// Budget for a single projection.
 ///
-/// The budget is consulted by the selector and the projectors. Phase 2
-/// uses byte counts as the primary constraint; token counts are best
-/// effort and approximate. A future phase may wire a real estimator.
+/// Byte limits are primary; token limits use approximate byte conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProjectionBudget {
     /// Maximum bytes allowed in the projected text.
@@ -132,8 +114,7 @@ impl ProjectionBudget {
 /// Default byte budget for [`ProjectionBudget::default`] and
 /// [`crate::shell::projection::default_command_projection`].
 ///
-/// 8 KiB matches the Phase 1 placeholder so existing callers keep the
-/// same behaviour after the projector trait is introduced.
+/// Default byte budget for model-facing command projection.
 pub const DEFAULT_PROJECTION_BUDGET_BYTES: usize = 8 * 1024;
 
 /// Approximate bytes per token used by the rough token estimator.
@@ -159,9 +140,6 @@ pub struct ProjectionPolicy {
     pub allow_lossy: bool,
     /// Allow projectors to call external backends (RTK, external tools,
     /// model-generated summaries).
-    ///
-    /// Phase 2 has no projectors that honour this flag, but the field
-    /// is reserved so later phases do not need to extend the trait.
     pub allow_external_backend: bool,
     /// When true, the redaction hook is invoked for model-facing
     /// projections regardless of policy defaults.
@@ -169,9 +147,8 @@ pub struct ProjectionPolicy {
 }
 
 impl ProjectionPolicy {
-    /// Conservative default: redaction on, lossy allowed, no external
-    /// backends. This matches the plan's "first phase should be
-    /// reliable and conservative" guidance.
+    /// Conservative default: lossy output is allowed, external backends are disabled,
+    /// and model-visible output is redacted.
     pub fn conservative() -> Self {
         Self {
             allow_lossy: true,
@@ -236,10 +213,7 @@ impl ProjectionPolicy {
     }
 }
 
-/// What a single projection request asks for.
-///
-/// Phase 2 always treats `run` and `store` as borrowed; the request is
-/// cheap to construct and is not retained past the call.
+/// Borrowed inputs and options for one projection request.
 #[derive(Debug, Clone, Copy)]
 pub struct ProjectionRequest<'a> {
     /// The command run being projected.
@@ -284,10 +258,6 @@ impl<'a> ProjectionRequest<'a> {
 }
 
 /// How strongly a projector supports a given request.
-///
-/// Phase 2 only emits `Unsupported` and `Preferred` for the built-in
-/// projectors; later phases will use the full spectrum when command
-/// shape is inspected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionSupport {
     /// The projector cannot produce a useful result for this request.
@@ -309,11 +279,11 @@ pub enum ProjectionKind {
     Truncated,
     /// Lines matching error/failure patterns plus bounded context.
     ErrorRetention,
-    /// Native structured view (Phase 3+).
+    /// Native structured view.
     Structured,
-    /// Output produced by an external compressor (Phase 5+).
+    /// Output produced by an external compressor.
     ExternalCompressed,
-    /// Model-generated summary (future).
+    /// Model-generated summary.
     Summary,
 }
 
@@ -478,7 +448,7 @@ impl std::fmt::Display for ExpansionHandle {
     }
 }
 
-// ── Phase 09 — Unified projection contract types ──────────────────────
+// ── Unified projection contract types ─────────────────────────────────
 
 /// Unique identifier for a projection result.
 ///
@@ -666,7 +636,6 @@ pub struct ProjectionResult {
     pub warnings: Vec<String>,
     /// Describes which raw bytes the expansion handles refer to.
     pub raw_semantics: ProjectionRawSemantics,
-    // ── Phase 09 additions ────────────────────────────────────────────
     /// Source spans mapping projection claims back to raw artifacts.
     pub source_spans: Vec<ArtifactSpanRef>,
     /// Records of individual redaction operations applied.
@@ -794,7 +763,7 @@ impl ProjectionResult {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 10 — Context budget and compaction integration
+// Context budget and compaction integration
 // ---------------------------------------------------------------------------
 
 /// Critical facts extracted from command output for compaction
@@ -1456,9 +1425,8 @@ impl CommandOutputProjector for TruncatedProjector {
 /// Built-in projector that retains only lines matching common
 /// failure / error patterns plus bounded context around them.
 ///
-/// Conservative fallback when a command failed (non-zero exit, timeout,
-/// cancellation, spawn failure). Phase 3 will introduce language-specific
-/// structured projectors that supersede this fallback.
+/// Conservative fallback for failed commands; structured projectors provide
+/// more specific views when available.
 pub struct ErrorRetentionProjector;
 
 impl ErrorRetentionProjector {
@@ -1575,7 +1543,7 @@ impl CommandOutputProjector for ErrorRetentionProjector {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3 — Native Git & Cargo projectors
+// Native Git & Cargo projectors
 // ---------------------------------------------------------------------------
 
 fn base_command_name(run: &CommandRun) -> Option<String> {
@@ -2972,12 +2940,7 @@ struct TestFailure {
     output: String,
 }
 
-/// Centralised selector that picks the right projector for a request.
-///
-/// The selector is intentionally small in Phase 2 — it tries each
-/// projector in order and picks the first `Preferred` match, then the
-/// first `Fallback` match. Later phases will insert native structured
-/// projectors and RTK ahead of `TruncatedProjector`.
+/// Tries projectors in order, selecting the first preferred match or fallback.
 pub struct ProjectionSelector {
     projectors: Vec<Box<dyn CommandOutputProjector>>,
 }
@@ -3000,10 +2963,9 @@ impl Default for ProjectionSelector {
 }
 
 impl ProjectionSelector {
-    /// Selector with the Phase 2 + Phase 3 built-in projectors in
-    /// priority order:
-    /// [`RawProjector`] → native projectors (Preferred for matching
-    /// commands) → [`ErrorRetentionProjector`] → [`TruncatedProjector`].
+    /// Built-in projectors in priority order:
+    /// [`RawProjector`] → native projectors (preferred for matching commands)
+    /// → [`ErrorRetentionProjector`] → [`TruncatedProjector`].
     pub fn with_defaults() -> Self {
         Self {
             projectors: vec![
@@ -3208,15 +3170,15 @@ fn format_unprojectable(request: &ProjectionRequest<'_>) -> String {
     s
 }
 
-/// Apply the Phase 8 redaction pipeline to a model-facing projection.
+/// Apply redaction to a model-facing projection.
 ///
 /// The [`Redactor`] scans for secrets (API keys, passwords, tokens, PEM
 /// blocks, cloud credentials, etc.) and replaces them with stable markers.
 /// The result's [`RedactionState`] reflects what happened so the metadata
 /// banner can report it.
 ///
-/// The call site exists in the model-facing path so future redaction
-/// implementations cannot be bypassed by RTK or native projectors.
+/// The model-facing path applies this hook after projector selection, so
+/// native and external projectors cannot bypass redaction.
 pub fn apply_redaction_hook(result: &mut ProjectionResult, _target: ProjectionTarget) {
     if result.text.is_empty() {
         return;
@@ -3235,13 +3197,8 @@ pub fn apply_redaction_hook(result: &mut ProjectionResult, _target: ProjectionTa
     }
 }
 
-/// Model-visible projection entry point that delegates to the
-/// [`ProjectionSelector`].
-///
-/// This preserves the Phase 1 calling convention
-/// (`default_command_projection(run, store)`) while routing the
-/// request through the new trait machinery. The string returned is the
-/// rendered text of the resulting [`ProjectionResult`].
+/// Projects command output for model context using the default policy and budget.
+/// Returns the rendered text from the selected [`ProjectionResult`].
 pub fn default_command_projection(run: &CommandRun, store: &CommandOutputStore) -> String {
     let policy = ProjectionPolicy::conservative();
     let request = ProjectionRequest::for_target(run, ProjectionTarget::ModelContext, &policy);
@@ -3667,7 +3624,7 @@ fn matches_error_pattern(line: &str) -> bool {
     false
 }
 
-// ── Phase 09 — Typed projector registry ─────────────────────────────────
+// ── Typed projector registry ──────────────────────────────────────────
 
 use codegg_core::run_store::RunKind;
 
@@ -3698,7 +3655,7 @@ pub fn rtk_eligible_for_run_kind(kind: &RunKind) -> bool {
     )
 }
 
-// ── Phase 09 — Promotion policy ────────────────────────────────────────
+// ── Promotion policy ──────────────────────────────────────────────────
 
 /// Evaluate a promotion decision for a projection result.
 ///
@@ -4288,7 +4245,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 3 — Native Git & Rust projector tests
+    // Native Git & Rust projector tests
     // -----------------------------------------------------------------------
 
     // --- GitStatusProjector ------------------------------------------------
@@ -5128,7 +5085,7 @@ mod tests {
         ));
     }
 
-    // --- Phase 4 config conversion tests ---
+    // --- Config conversion tests ---
 
     #[test]
     fn policy_from_config_off_disables_lossy_and_redaction() {
@@ -5264,7 +5221,7 @@ mod tests {
         assert_eq!(format_bytes(1048576), "1.0 MiB");
     }
 
-    // ── Phase 09 tests ─────────────────────────────────────────────────
+    // ── Projection contract tests ────────────────────────────────────
 
     #[test]
     fn projection_id_is_unique() {

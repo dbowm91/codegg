@@ -1,28 +1,5 @@
-//! Durable project-level work-order domain (Project Work Orders M001).
-//!
-//! A `WorkOrder` is project intent: it records that some future work
-//! should happen in a project, under which release conditions, in which
-//! sequence lane, and with which requested model/policy snapshot. It is
-//! not scheduler execution authority (scheduler `Job`), not a durable
-//! rule that materializes jobs (scheduler `Schedule`), not delegated
-//! child intent (`AgentTask`), not within-session completion state
-//! (`WorkPlan`), and not a conversation (`Session`).
-//!
-//! Long-term references: `plans/000-long-term-specification.md`
-//! (`#4`, `#6`, `#13`, `#17`, `#22`, `#24`, `#26`, `#29`) and ADR-0005
-//! (`plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`).
-//!
-//! Ownership: `codegg-core::work_order` owns these types and their
-//! validation. Storage lives in `super::store` against tables created by
-//! migration v60. Sessions, jobs, schedules, worktrees, and provider
-//! selections are consumed by reference only; this module never creates
-//! a session row, submits a job, allocates a worktree, or invokes a
-//! model. Release evaluation and occurrence materialization arrive in
-//! M002; M001 persists, validates, and projects waiting work only.
-//!
-//! Occurrence indexing is explicit and 0-based: occurrence 0 is the
-//! first execution of a work order; a `repeat_count` of N means N total
-//! occurrences (indices `0..N`). There is no indefinite repetition.
+//! Project work orders capture deferred intent, not execution authority; see `architecture/work_orders.md`.
+//! This module owns validation; occurrence indices are 0-based and `repeat_count` is finite and total.
 
 use std::collections::BTreeMap;
 

@@ -1,33 +1,9 @@
-//! The `/queue` box: the session's waiting prompts, one per row, in the order
-//! the daemon ordered them.
+//! The `/queue` box shows waiting prompts in daemon order. It renders
+//! `SessionState::user_prompt_queue` without sorting or reordering; pending and
+//! delivering rows remain visible, including when deletion is refused.
 //!
-//! M004 makes this workstream's **first user-operable** milestone. What is on
-//! screen here is `SessionState::user_prompt_queue` verbatim — this widget
-//! never sorts, filters, or reorders. That is not a stylistic choice: the
-//! daemon owns the ordinal, and a locally re-sorted list would claim an order
-//! the queue does not have.
-//!
-//! The projection carries `pending` **and** `delivering` rows on purpose
-//! (ADR-0038). A `delivering` row is the one the user most needs to see — it is
-//! the prompt whose turn is running right now — so the status is rendered from
-//! the DTO rather than assumed, and the entry stays listed when a delete is
-//! refused for it.
-//!
-//! M005 adds authoring: `a` queues a new prompt, `e` corrects one in place, and
-//! `[`/`]` reorder. That makes this box both a navigator and a text field, which
-//! is the whole hazard of the milestone — see [`QueueDialog::is_text_step`].
-//!
-//! M006 adds send-now: `s` hands a queued prompt to the turn already running.
-//!
-//! M007 adds delayed delivery. `a` and `e` are now **two** steps — the text,
-//! then how long to wait — and every row carries a due marker so a scheduled
-//! entry is distinguishable from an immediate one without relying on colour.
-//! The box's module doc claimed there was no wakeup to ride; planning M007
-//! falsified that, and ADR-0039 is what replaced the claim.
-//!
-//! Still absent: adoption and transfer (ADR-0037's explicit audited
-//! operations). Naming them here would teach a key this widget does not
-//! implement, which is the specific dishonesty the milestone plan forbids.
+//! Text and scheduling steps own the keyboard so prompt input cannot trigger
+//! browsing actions. Adoption and transfer are not exposed by this widget.
 
 use std::sync::Arc;
 
@@ -314,30 +290,15 @@ impl QueueDialog {
         }
     }
 
-    // ── M005: the text step ──────────────────────────────────────────
-    //
-    // A box that navigates and accepts typed text swallows letters unless the
-    // two are separated. Typing `d` into a prompt must not delete a prompt.
-    //
-    // There is **no** shared `captures_text` predicate on `App` — the only
-    // precedent is `ConnectDialog::is_text_input_step`, one method on one
-    // dialog. This is that method again, and the plan's stop condition is
-    // explicit that opening a shared `App`-level predicate is out of scope.
-    //
-    // The guard is structural rather than per-letter: the whole match below
-    // branches on this predicate once, so a new action letter added to the
-    // browsing arm cannot accidentally be live in a text step. That is the
-    // failure the plan calls the single most likely defect, and the shape that
-    // makes it impossible is "text step first, as a separate match", not
-    // "remember the guard on every arm".
+    // Browsing and text entry use separate match branches: typing `d` into a
+    // prompt must not trigger the browsing action that deletes a prompt.
+    // Keep this predicate local to the dialog; scheduling shares text-step
+    // keyboard ownership.
 
-    /// Whether a text field currently owns the keyboard.
+    /// Whether a text field or scheduling step owns the keyboard.
     ///
-    /// M007 adds [`QueueStep::Scheduling`] to this set rather than giving it a
-    /// sibling predicate. The duration step has exactly the same relationship to
-    /// the browsing arms as the text step — it swallows letters — so treating it
-    /// as anything else is how `d` would end up deleting a prompt while someone
-    /// was typing `2d`.
+    /// Both steps consume browsing letters; without this guard, typing `2d`
+    /// could delete a prompt.
     pub fn is_text_step(&self) -> bool {
         matches!(
             self.step,

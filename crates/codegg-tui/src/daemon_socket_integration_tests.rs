@@ -2379,16 +2379,16 @@ async fn global_only_subscription_does_not_receive_session_events() {
         }
     }
 
-    // Now publish a global/sessionless event. The client should
-    // receive it.
+    // Now publish a sessionless event the raw filter allows. The
+    // global-only client should receive it.
     daemon
         .event_log
         .publish(
             None,
             None,
-            CoreEvent::Error {
-                code: "global_only".into(),
-                message: "m".into(),
+            CoreEvent::ProjectDeleted {
+                project_id: "p_global".into(),
+                deleted_session_count: 0,
             },
         )
         .await;
@@ -2411,6 +2411,32 @@ async fn global_only_subscription_does_not_receive_session_events() {
         got.is_some(),
         "expected a sessionless event for the global client"
     );
+
+    // A sessionless error is not on the raw allowlist, so the global
+    // client must not receive it either.
+    daemon
+        .event_log
+        .publish(
+            None,
+            None,
+            CoreEvent::Error {
+                code: "global_only".into(),
+                message: "m".into(),
+            },
+        )
+        .await;
+
+    let leaked = tokio::time::timeout(Duration::from_millis(200), async {
+        read_frame(&mut reader).await
+    })
+    .await;
+    if let Ok(Some(CoreFrame::Event(env))) = leaked {
+        assert!(
+            !matches!(env.payload, CoreEvent::Error { .. }),
+            "global-only client must not receive a sessionless error, got {:?}",
+            env
+        );
+    }
 
     abort_server(server_handle).await;
 }

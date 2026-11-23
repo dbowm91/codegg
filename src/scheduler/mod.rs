@@ -1,27 +1,5 @@
-//! Phase 5 of the single-daemon multi-project orchestration roadmap:
-//! the global admission control scheduler.
-//!
-//! Three boundaries are enforced here:
-//!
-//! 1. **Queue identity.** The in-memory queue is rebuilt from
-//!    `JobStore::list_jobs(Queued)` on every reconciliation pass. Job
-//!    IDs are deduplicated, so an attempt to enqueue the same job
-//!    twice (e.g. by a duplicate scheduler wake) does not produce a
-//!    duplicate queue entry.
-//! 2. **Fairness.** Selection is deterministic: priority class >
-//!    workspace lane > FIFO. Aging elevates a job's effective priority
-//!    without mutating the persisted original priority.
-//! 3. **Resource admission.** Every admission decision is atomic: all
-//!    requested dimensions and exclusivity keys are reserved together,
-//!    or none of them. A blocked job never holds a partial reservation
-//!    that could starve smaller eligible work.
-//!
-//! The scheduler runs in the root crate. It is intentionally
-//! UI-/server-/plugin-/auth-free and is wired through
-//! [`CoreRuntimeDeps`](crate::core::runtime_deps::CoreRuntimeDeps).
-//! Concrete dispatch to executors is performed by the
-//! [`JobScheduler`](super::scheduler::JobScheduler) main loop, never
-//! by the queue or admission controller in isolation.
+//! The daemon scheduler owns global job admission, fair queuing, and executor dispatch.
+//! It is UI/server/plugin/auth-free; see `architecture/scheduler.md`.
 
 pub mod admission;
 pub mod ci_watch;

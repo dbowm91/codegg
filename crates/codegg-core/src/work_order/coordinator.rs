@@ -1,17 +1,5 @@
-//! Release-gate evaluation and materialization policy for Project Work
-//! Orders M002.
-//!
-//! Pure, UI/server/plugin/auth-free policy: deterministic gate latches,
-//! finite-repeat bounds, sequence-hold rules, workspace-policy resolution,
-//! model/policy narrowing, and deterministic idempotency keys. Durable
-//! state transitions (CAS claim, latch persistence, linkage) live in
-//! [`super::store::WorkOrderService`]; daemon wiring lives in
-//! `src/core/work_order_coordinator.rs`. This module never creates a
-//! session row, submits a job, allocates a worktree, or invokes a model.
-//!
-//! Long-term references: ADR-0005
-//! (`plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`),
-//! `plans/subsystems/project-work-orders-task-view-roadmap.md` M002.
+//! Pure policy for work-order release gates and occurrence materialization; durable transitions live in `super::store`.
+//! This module does not execute jobs or invoke models; see `architecture/work_orders.md`.
 
 use std::collections::BTreeSet;
 

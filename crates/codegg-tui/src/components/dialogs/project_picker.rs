@@ -1,4 +1,4 @@
-//! Project picker dialog rendering helpers (Multi-Project TUI milestone 2).
+//! Project picker dialog rendering helpers.
 //!
 //! The picker state (`ProjectPickerState`) lives on
 //! `App::dialog_state.project_picker`. This module provides:

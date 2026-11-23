@@ -1,8 +1,5 @@
 //! One producer of dialog chrome: the outer edge, its title and its hint.
-//!
-//! `plans/implementation/tui-modularity-and-render-invariants/003-one-dialog-frame.md`
-//! §6 asks for a `Section` a dialog hands its outer frame to, so the border,
-//! the title and the focus treatment are decided once instead of once per dialog.
+//! See `architecture/tui.md` for the shared dialog-frame contract.
 //!
 //! ## The style policy is not restated here
 //!

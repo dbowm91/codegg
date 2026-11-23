@@ -1,30 +1,5 @@
-//! The generated configuration catalog.
-//!
-//! The catalog's key list comes from the schema's own type: [`sentinel_config`]
-//! is a `Config` **struct literal** that names every field. Adding a field to
-//! `Config` and not to the literal is a compile error, and that is the whole
-//! mechanism — a comment that says "keep these in sync" is not. The literal
-//! deliberately has no `..Default::default()`: a rest pattern would name no
-//! fields and the property would be gone.
-//!
-//! The renderer then walks the *serialized* sentinel, so the catalog speaks the
-//! spelling a configuration file uses (`$schema`, not `schema`), and joins each
-//! key to its declared strategy in [`crate::provenance::STRATEGY_TABLE`].
-//!
-//! [`catalog_matches_the_committed_file`] is the freshness gate. Regenerate
-//! with:
-//!
-//! ```text
-//! CODEGG_UPDATE_CONFIG_CATALOG=1 cargo test -p codegg-config config_catalog
-//! ```
-//!
-//! This module is test-only on purpose: the generator's input is a Rust type,
-//! so the comparison *is* the generator's `--check` mode. The repository's
-//! script generators (`scripts/generate_builtin_agents.py`) own a source file
-//! and offer `--check`; here the same two properties — one owner, a check mode
-//! — are carried by this module and its test. See
-//! `plans/implementation/harness-practice-adoption/005-config-catalog-and-provenance.md`
-//! §3 ("this milestone's input is a Rust type, so the comparison is a test").
+//! Test-only catalog from an exhaustive `Config` literal; `..Default::default()` would hide new fields.
+//! Its serialized sentinel drives the freshness test; see `architecture/config-catalog.md`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;

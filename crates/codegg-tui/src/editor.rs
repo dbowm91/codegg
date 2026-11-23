@@ -680,8 +680,7 @@ pub const GOTO_LEAVES: &[PrefixLeaf] = &[
         glyph: 'k',
         action: PrefixAction::Motion(EditorCommand::MoveUp),
     },
-    // `gd`/`gi`/`gr` — LSP definition/implementation/references. M013 owns
-    // these; they were previously a silent `Swallowed` no-op.
+    // `gd`/`gi`/`gr` — LSP definition, implementation, and references.
     PrefixLeaf {
         glyph: 'd',
         action: PrefixAction::Effect(EditorPendingEffect::Read(LspReadOperation::Definition)),
@@ -851,11 +850,8 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
             "buffer list: one document is attached at a time, so there is no list to choose from",
         )),
     },
-    // `space j` — the jumplist picker. The entries are the positions the
-    // editor's named jumps started from; Helix's `Ctrl-i`/`Ctrl-o` stepping
-    // pair is **not** bindable here (`Ctrl-i` arrives as `Tab`, which toggles
-    // the composer, and `Ctrl-o` is the workspace dashboard), so the picker is
-    // the whole delivered gesture. See `docs/tui.md` and the M006 plan's D1.
+    // `space j` opens the jumplist picker; its cursor highlights a history
+    // entry rather than stepping through the list.
     PrefixLeaf {
         glyph: 'j',
         action: PrefixAction::Effect(EditorPendingEffect::OpenJumplist),
@@ -982,9 +978,8 @@ pub const CLOSE_BRACKET_LEAVES: &[PrefixLeaf] = &[
 /// second level rides in [`EditorPrefix::MatchArg`]'s payload rather than in a
 /// second field on the presentation. See the `EditorPrefix` docs.
 ///
-/// The object kinds Helix marks `TS` — `f`, `t`, `a`, `c`, `T`, `x` — are
-/// **not** here. They need a syntax tree, which is milestone M014's slice and
-/// is gated on ADR-0034; a variant nothing constructs is a claim, not a hook.
+/// Syntax-tree objects (`f`, `t`, `a`, `c`, `T`, `x`) are not available
+/// because this editor has no syntax tree.
 pub const MATCH_LEAVES: &[PrefixLeaf] = &[
     // `m m` — jump to the mate of the pair under the cursor.
     PrefixLeaf {
@@ -3006,11 +3001,7 @@ pub enum HelixVerb {
     /// they exist to express — that `d` stops at the delete and `c` hands the
     /// keyboard over.
     ///
-    /// **It does not touch the clipboard, and that is the decision M002
-    /// recorded** (`plans/implementation/tui-editor-helix-capability-parity/002-change-verbs-and-no-yank-deletion.md`).
-    /// M007 discharges D1: `c` now yanks into the **unnamed register**, `Alt-c`
-    /// writes nothing, and neither reaches the system clipboard — so a change
-    /// never clobbers what the reader copied for the edit. The destination
+    /// This operation never writes to the system clipboard.
     /// rides on the chord's `YankTarget`, not on this variant, because the
     /// same delete feeds both spellings. Do not route it to the clipboard:
     /// that was the user-hostile half D1 existed to prevent.

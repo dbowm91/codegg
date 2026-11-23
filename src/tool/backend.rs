@@ -467,17 +467,8 @@ impl StructuredToolResult {
     }
 }
 
-/// Resolved backend configuration per tool domain.
-///
-/// This is the runtime/registry view of which backend a given tool
-/// domain should use. It's constructed by the application from
-/// `crate::config::schema::ToolBackendConfig` (added in Phase 3 of
-/// the native tool crates plan) or by `with_defaults()` from
-/// sensible fallbacks.
-///
-/// The struct is intentionally simple: one entry per domain that has
-/// a non-trivial backend choice. Tools that are always native (e.g.
-/// `read`, `grep`, `bash`) are not represented here.
+/// Runtime view of per-domain backend choices, built from config or sensible defaults.
+/// Only domains with non-trivial backend choices are represented.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolBackendConfig {
     /// Backend for the LSP domain (currently always native).

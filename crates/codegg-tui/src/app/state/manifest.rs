@@ -1,4 +1,4 @@
-//! Multi-Project TUI persistent restoration manifest (Milestone 004).
+//! Persistent project-tab restoration manifest.
 //!
 //! This module defines the on-disk manifest that the TUI persists
 //! between sessions to remember which project tabs the user intended
@@ -27,8 +27,6 @@
 //! - File writes are atomic, permission-safe, size-bounded, and do
 //!   not follow untrusted symlinks.
 //!
-//! See `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md`
-//! for the full specification.
 
 use std::path::{Path, PathBuf};
 

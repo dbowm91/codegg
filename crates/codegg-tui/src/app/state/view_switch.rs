@@ -1,4 +1,4 @@
-//! Active-view switch coordinator for the Multi-Project TUI (milestone 2).
+//! Active-view switch coordinator for project tabs.
 //!
 //! When switching between project tabs, the heavy session/render state
 //! must be replaced only after an identity-matched async load succeeds.

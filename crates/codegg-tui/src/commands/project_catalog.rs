@@ -1,4 +1,4 @@
-//! Async project-catalog commands (Multi-Project TUI milestone 1).
+//! Async project-catalog commands.
 //!
 //! These commands drive the bounded `ProjectCatalogState` cache. The
 //! state is **frontend-local**; nothing here mutates daemon storage.

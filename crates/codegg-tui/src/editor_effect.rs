@@ -1,10 +1,8 @@
 //! The TUI editor's pending-effect mechanism.
+//! See `architecture/tui.md` for its authority and consumption contract.
 //!
-//! Owned by the M010 implementation plan
-//! (`plans/implementation/tui-editor-helix-parity/010-space-mode-pickers-and-clipboard-family.md`),
-//! work package W1: this module generalises the M013 LSP-typed pending effect
-//! into an editor-level one, so a file picker and a clipboard verb are first
-//! class pending effects rather than LSP facts.
+//! Prefix resolution determines the requested effect; the App layer runs it
+//! using the core client, task registry, and UI feedback.
 //!
 //! ## The mechanism, unchanged
 //!
@@ -15,10 +13,8 @@
 //! [`EditorState::pending_effect`] and `handle_editor_key` drains it on the
 //! very next statement.
 //!
-//! One hop, not a queued channel: a leaf can never leave a request armed, and
-//! a document change discards it. That contract is M013's and is preserved
-//! exactly. What changed is the *type* of the thing being parked: it was an
-//! LSP fact, and it is now an editor fact.
+//! Effects are consumed immediately after resolution; a document change
+//! discards a pending effect.
 
 use codegg_protocol::lsp::LspReadOperation;
 

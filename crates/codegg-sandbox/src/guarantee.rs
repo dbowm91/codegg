@@ -1,31 +1,6 @@
-//! Typed requested-versus-obtained guarantee contract (C042).
-//!
-//! Internal negotiation only: no public profile, config, or wire schema
-//! changes. A future Windows backend must satisfy *every* requested
-//! dimension before an untrusted target starts; a missing mechanism
-//! refuses with a typed reason rather than degrading to `FullHost` or
-//! broadening a child beyond its parent ceiling.
-//!
-//! ADR-0029 authority is bounded test-only preparation. Proposed ADR-0030
-//! (broad-read compatibility profile) is NOT authorization: this module
-//! never invents a broad-read public profile and never reinterprets
-//! strict `ReadOnly`/`WorkspaceWrite` as broad-read.
-//!
-//! ## Disposition: a specification, not a launch gate
-//!
-//! Nothing here gates a launch. [`negotiate()`] has no production caller, and
-//! neither does [`verify_helper_backend()`]: its first parameter is a
-//! [`SatisfiedContract`], and only [`negotiate()`] produces one. Wiring either
-//! would change refusal semantics — a request could be refused for a guarantee
-//! the mechanism never claimed — which needs its own ADR. What the launch path
-//! does verify is the reported backend, in `linux_launch::observe_legacy_outcome`.
-//! This module is deliberately **not deleted**: a recorded closure delivered
-//! it (`plans/closure/windows-native-sandbox/042-status.md`) and a Windows
-//! dossier depends on its types.
-//!
-//! Read it as requirements a future backend must meet. What a launch is
-//! actually held to is the status decoder and the platform backends in the
-//! parent module; never read this module as an enforcement claim.
+//! Internal guarantee negotiation is not a launch gate or authorization source.
+//! Future backends must prove requested dimensions or refuse, never downgrade profiles or exceed parent ceilings.
+//! See `architecture/security.md`.
 
 use codegg_core::approval::{child_sandbox_allowed, SandboxProfile};
 

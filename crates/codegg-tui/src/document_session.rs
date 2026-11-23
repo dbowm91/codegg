@@ -781,10 +781,7 @@ pub enum JumplistPush {
 
 /// A bounded, chronological history of visited positions.
 ///
-/// [`cursor`](Self::cursor) is the **picker's** highlight, not a stepping
-/// cursor. D1 of the M006 plan resolved to the picker as the whole delivered
-/// gesture, so there is no `Ctrl-i`/`Ctrl-o` pair to step with — see
-/// `plans/implementation/tui-editor-helix-capability-parity/006-jumplist.md`.
+/// The cursor highlights a row in the picker; it does not step through history.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Jumplist {
     /// Oldest first: a history, not a set.

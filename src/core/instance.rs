@@ -1,21 +1,5 @@
-//! Single-daemon instance lifecycle and user-scoped path resolution.
-//!
-//! Phase 1 of the single-daemon roadmap establishes the production invariant
-//! that exactly one user-scoped Codegg daemon owns execution at a time.
-//!
-//! This module owns:
-//!
-//! - [`DaemonPaths`] — centralized resolution of the per-user lock, metadata,
-//!   socket, and log paths. Production daemons share one user-scoped lock;
-//!   tests can override the lock root to use a temporary directory.
-//! - [`DaemonInstanceMetadata`] — atomic, informational snapshot of the
-//!   running daemon written once the socket is bound. Diagnostic aid only.
-//! - [`DaemonInstanceGuard`] — RAII guard that holds the advisory exclusive
-//!   lock for the daemon's lifetime and removes the metadata file on drop.
-//! - [`CoreRuntimeMode`] — explicit classification of how a process is wired
-//!   to the core (daemon-client vs standalone in-process vs stdio).
-//! - [`connect_or_start_daemon`] — connect-or-start helper used by frontends
-//!   that default to daemon-client mode.
+//! Owns the user-scoped daemon lock, metadata, runtime mode, and connect-or-start lifecycle.
+//! Ordinary startup uses the singleton daemon; standalone modes require explicit opt-in.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

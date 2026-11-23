@@ -1,4 +1,4 @@
-//! Multi-Project TUI restore coordinator (Milestone 004).
+//! Project-tab restore coordinator.
 //!
 //! Implements the restore pipeline that converts a validated
 //! manifest into live frontend state. The pipeline is explicit,
@@ -36,7 +36,7 @@
 //! - Frontend-local tab IDs are regenerated; the plan uses
 //!   `ProjectTabId::new()` for each entry.
 //! - The plan carries at most one `pending_heavy_load` entry.
-//! - M004: the persisted `selected_model_id` is a display-only hint.
+//! - The persisted `selected_model_id` is a display-only hint.
 //!   The daemon-owned durable selection is authoritative: once a
 //!   `SnapshotSession`/selection snapshot arrives,
 //!   [`reconcile_tab_model_with_daemon`] overwrites the hint and the

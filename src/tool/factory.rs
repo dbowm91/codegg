@@ -237,10 +237,7 @@ pub fn build_session_tool_registry(
         ))
     });
 
-    // Build the run store rooted at `<workspace_root>/.codegg/runs`.
-    // Phase 2: this is propagated from the execution context, never from
-    // process-global cwd. Tools that need `.codegg/runs` reads/writes
-    // should expect this layout.
+    // Bind run-store access to the execution workspace, never process-global cwd.
     let run_store: Option<Arc<dyn codegg_core::run_store::RunStore>> = {
         let root = execution.workspace_root.join(".codegg").join("runs");
         let store = codegg_core::run_store::FsRunStore::new(root);

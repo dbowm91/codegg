@@ -1971,12 +1971,9 @@ mod tests {
 
     #[test]
     fn checkpoint_has_evidence_backed_removal_disposition() {
-        // `/checkpoint` was registered since 9bf9293b without any execution
-        // branch. No session-checkpoint operation with the promised
-        // "Create a checkpoint of current session" semantics exists today:
-        // goal checkpoints are goal-scoped (`/goal checkpoint`) and edit
-        // checkpoints are listed via `/edit-checkpoints`. Per the plan the
-        // name is removed rather than silently redirected.
+        // No session-checkpoint operation has these semantics. Keep goal
+        // checkpoints under `/goal checkpoint` and edit checkpoints under
+        // `/edit-checkpoints` rather than redirecting `/checkpoint`.
         let registry = CommandRegistry::new();
         assert!(registry.find_by_name_or_alias("/checkpoint").is_none());
         assert!(registry.find_by_name_or_alias("/checkpoints").is_some());

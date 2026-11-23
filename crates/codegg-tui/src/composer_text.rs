@@ -19,11 +19,8 @@
 //!
 //! ## What is deliberately not here
 //!
-//! No key handling and no rendering. The verbs that will use this model —
-//! `w`, `b`, `e`, `v`, `x`, `d`, `p`, `u`, `U` — are later milestones, and
-//! until they land the model is exercised only by its own tests and by the
-//! widget's existing behaviour. A model that grew a key handler would be
-//! two owners for one key.
+//! Key handling and rendering remain in their respective input and widget
+//! layers, so this model does not become a second owner for a key.
 
 use std::cmp::Ordering;
 

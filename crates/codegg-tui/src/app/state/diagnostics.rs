@@ -77,7 +77,7 @@ pub struct TuiDiagnostics {
     pub component_render_panic_count: u64,
     /// Ring buffer of recent component render panic records.
     pub recent_component_render_panics: VecDeque<ComponentRenderPanicRecord>,
-    /// Ring buffer of recent restore diagnostics (Milestone 4).
+    /// Ring buffer of recent restore diagnostics.
     /// Bounded so a long-running restore cannot allocate
     /// unbounded text in the diagnostics surface.
     pub recent_restore_diagnostics: VecDeque<String>,
@@ -137,7 +137,7 @@ impl TuiDiagnostics {
             });
     }
 
-    /// Record a bounded restore diagnostic (Milestone 4). Each
+    /// Record a bounded restore diagnostic. Each
     /// message is truncated to 200 chars so a corrupt manifest
     /// cannot inject unbounded text into the diagnostics surface.
     pub fn record_restore_diagnostic(&mut self, message: &str) {

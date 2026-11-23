@@ -362,8 +362,8 @@ pub const DEFAULT_CONTAINED_WORKTREE_TIMEOUT: std::time::Duration =
 
 /// What one contained worktree creation is asked to produce.
 ///
-/// ADR-0048 (`plans/adrs/ADR-0048-contained-git-execution-for-managed-worktree-creation.md`)
-/// grants exactly one operation shape: `git worktree add <path>
+/// The contained creation contract is described in `architecture/session_launch.md`;
+/// it grants exactly one operation shape: `git worktree add <path>
 /// <existing-branch>` inside an OS-contained child. The **branch belongs to
 /// the daemon** — the creator must create it before the child runs, so the
 /// child attaches to a branch that already exists and writes no ref. The

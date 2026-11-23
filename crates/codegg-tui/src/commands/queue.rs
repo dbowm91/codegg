@@ -1,4 +1,4 @@
-//! M004: the `/queue` box's three operations — open, refresh, and delete.
+//! The `/queue` box's three operations: open, refresh, and delete.
 //!
 //! Two properties are load-bearing and both are about not lying to the user:
 //!

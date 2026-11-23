@@ -450,11 +450,8 @@ pub struct ToolRegistryOptions {
     /// Explicit Windows shell selection for raw shell commands. `None`
     /// selects the platform default; structured argv bypasses shell parsing.
     pub windows_shell: Option<crate::config::schema::WindowsShellKind>,
-    /// Phase 2: canonical workspace root for filesystem tools. When
-    /// `Some`, tools that previously inferred their `allowed_root` from
-    /// `std::env::current_dir()` should prefer this value. New code
-    /// should always set this; older call sites that omit it are
-    /// tracked by the `check_daemon_cwd_usage` static guard.
+    /// Canonical workspace root for filesystem tools; path authority must not derive
+    /// from process-global cwd. A missing root is represented explicitly and refused.
     pub workspace_root: Option<std::path::PathBuf>,
     /// Canonical per-turn session default directory. This is a default only;
     /// `workspace_root` remains the path authorization and sandbox ceiling.
