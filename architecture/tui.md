@@ -4242,6 +4242,16 @@ Insert `j`/`k` are filter text, so a panel hardcoded to Insert does not
 indistinguishable from a dead pane. The panel owns no copy of this logic: it
 hosts the dialog and hands it a mode.
 
+**Stepping onto Chat or Terminal takes the keyboard.** They are the two panels
+with an input surface, so `step_panel` focuses the host for them and for nothing
+else: a chat panel that says "press i to write" must receive that key (without
+focus it fell through to the app's insert verb and armed the *agent* composer,
+badge `[build][LLM]`), and a terminal opens ready for its first command.
+`apply_terminal_attach_finished` then focuses the PTY, so the shell lands INS
+rather than demanding `i`; `Esc` leaves INS for NOR and `i` returns. Every other
+panel keeps the walk's no-seize rule, and a *programmatic* selection — the
+Workspace view showing chat, say — is not a step and never seizes the composer.
+
 **The Terminal panel always has a way in.** `i` routes through
 `type_intent()`: with a handle it emits `TerminalPanelFocus`, and the command
 layer decides what that means. A live process that merely lost its attachment

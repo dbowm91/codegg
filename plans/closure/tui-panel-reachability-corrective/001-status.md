@@ -27,6 +27,10 @@ command effects bypassed the pre-routers, so `terminal_attach` was
 | The configured placement is the visible edge | `a_configured_placement_is_the_edge_the_frame_shows`; tui-test renders the column on the left | pass |
 | The human PTY follows the platform backend | `the_human_pty_profile_follows_the_platform_backend` | pass |
 | Terminal attaches and runs a command | tui-test: `bash-3.2$` prompt, `echo $((40+2))` → `42` | pass |
+| Stepping onto Chat arms the chat composer | `selecting_the_chat_panel_arms_the_chat_composer`; tui-test badge `[CHAT]` | pass |
+| The `/files` box closes on opening a document | `opening_a_document_puts_the_files_box_away` (handoff test); tui-test: box gone, editor visible | pass |
+| The terminal opens INS, unfiltered | tui-test: prompt without `i`, `echo $((40+2))` → `42`, `echo $((8*8))` → `64`, Esc → NOR, `i` → INS | pass |
+| The human PTY carries no sandbox/profile | source: the create arm fixes `FullHost` + `LegacyUnrestricted`; `write_input` is size-bounded only | pass |
 | Pre-routed command effects are served | `terminal_attach` family assertion in `daemon_commands` tests | pass |
 
 ## 3. Verification executed

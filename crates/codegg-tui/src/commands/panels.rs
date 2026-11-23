@@ -870,7 +870,18 @@ pub(crate) fn step_panel(app: &mut App, delta: i8) {
     let len = SidePanelId::ALL.len();
     let current = app.panel_host.active().index() as i64;
     let next = (current + i64::from(delta)).rem_euclid(len as i64) as usize;
-    select_panel(app, SidePanelId::from_index(next));
+    let id = SidePanelId::from_index(next);
+    select_panel(app, id);
+    // Chat and Terminal are the two panels with an input surface, so a step
+    // onto either takes the keyboard: a chat panel that says "press i to write"
+    // must receive the key, and a terminal opens ready for its first command
+    // (`apply_terminal_attach_finished` then focuses the PTY, so it lands INS).
+    // Every other panel keeps the walk's no-seize rule — and a *programmatic*
+    // selection, such as the Workspace view showing chat, is not a step and
+    // must not seize the composer.
+    if matches!(id, SidePanelId::Chat | SidePanelId::Terminal) {
+        focus_panel(app);
+    }
 }
 
 /// Dock the open box into the panel.

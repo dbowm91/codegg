@@ -1103,35 +1103,6 @@ fn validate_env_overrides(overrides: &[(OsString, OsString)]) -> Result<(), Inte
     Ok(())
 }
 
-/// Whether this build has a constrained PTY owner.
-///
-/// The M004 launch path is Linux-only (Bubblewrap namespaces plus the sandbox
-/// helper). On every other platform a constrained PTY cannot be launched at
-/// all, so no caller may promise one.
-pub const fn constrained_pty_supported() -> bool {
-    cfg!(target_os = "linux")
-}
-
-/// The profile a **human** interactive PTY actually runs under.
-///
-/// The interactive PTY is the operator's own shell: agent surfaces reach
-/// shells through `bash`/`terminal` on `ManagedProcessService`, never through
-/// this route. A platform with no constrained PTY owner cannot honour a
-/// constrained profile, and refusing there made the terminal unavailable —
-/// the panel offered "press i for a shell" and every spawn failed. The
-/// operator's shell therefore runs with the operator's own authority on such
-/// a platform; the stored preference still bounds turns and tools.
-pub fn human_pty_profile(
-    stored: codegg_core::approval::SandboxProfile,
-    constrained_supported: bool,
-) -> codegg_core::approval::SandboxProfile {
-    if constrained_supported {
-        stored
-    } else {
-        codegg_core::approval::SandboxProfile::FullHost
-    }
-}
-
 fn build_m004_pty_spec(
     spawn: &SpawnSpec,
     ctx: &ExecutionContext,
@@ -1680,34 +1651,6 @@ fn signal_process_group(child_pid: Option<u32>, signal: libc::c_int) {
 
 #[cfg(test)]
 mod tests {
-    use super::human_pty_profile;
-    use codegg_core::approval::SandboxProfile;
-
-    /// A platform with no constrained PTY owner runs the operator's shell with
-    /// the operator's own authority, and Linux keeps the stored profile.
-    ///
-    /// Refusing instead made every terminal spawn fail on macOS while the
-    /// panel still offered "press i for a shell".
-    #[test]
-    fn the_human_pty_profile_follows_the_platform_backend() {
-        for stored in [
-            SandboxProfile::ReadOnly,
-            SandboxProfile::WorkspaceWrite,
-            SandboxProfile::FullHost,
-        ] {
-            assert_eq!(
-                human_pty_profile(stored, true),
-                stored,
-                "a platform with a constrained PTY owner must honour the stored profile"
-            );
-            assert_eq!(
-                human_pty_profile(stored, false),
-                SandboxProfile::FullHost,
-                "a platform without one must not promise containment it cannot obtain"
-            );
-        }
-    }
-
     use super::*;
     use std::ffi::OsString;
 

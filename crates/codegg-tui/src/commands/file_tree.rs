@@ -792,6 +792,11 @@ pub fn complete_editor_open_handoff(app: &mut App, succeeded: bool) {
 pub fn hand_off_to_editor(app: &mut App) {
     set_focus(app, false);
     super::panels::blur_panel(app);
+    // A `/files` **box** is a modal: opening a document from it must put the
+    // box away or it stays mounted on top of the editor it just opened, which
+    // is exactly what a user sees as "the file didn't open". A docked Files
+    // *panel* is not a dialog, so this is inert there.
+    close_files_box(app);
     super::editor::enter_editor_normal(app);
 }
 
@@ -2330,7 +2335,15 @@ mod tests {
             .expect("the open installed a session");
         session.presentation_mut().mode = EditorMode::Insert;
 
+        // The open came from the `/files` box, which must not survive the
+        // handoff: a modal left mounted covers the editor it opened.
+        app.open_dialog(crate::app::Dialog::Files);
         complete_editor_open_handoff(&mut app, true);
+        assert!(
+            app.focus_manager.active_dialog_type()
+                != crate::components::component::DialogType::Files,
+            "opening a document must put the /files box away"
+        );
         assert!(
             !app.ui_state.tree_focused,
             "the keyboard belongs to the editor now"

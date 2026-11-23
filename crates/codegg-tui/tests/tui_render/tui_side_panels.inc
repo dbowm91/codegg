@@ -1024,6 +1024,45 @@ async fn the_session_panel_walk_skips_todo_rows_but_keeps_their_header() {
     );
 }
 
+/// Selecting the Chat panel takes the keyboard, so its own verbs reach it.
+///
+/// The panel says "press i to write"; without host focus that key fell through
+/// to the app's insert verb and armed the agent composer instead.
+#[tokio::test(flavor = "current_thread")]
+async fn selecting_the_chat_panel_arms_the_chat_composer() {
+    let mut app = test_app();
+    seed_chat(&mut app);
+    app.ui_state.input_mode = InputMode::Normal;
+    // Session -> Chat.
+    app.on_key(key(KeyCode::Down, KeyModifiers::SHIFT));
+    assert_eq!(app.panel_host.active(), SidePanelId::Chat);
+    assert_eq!(
+        app.input_target(),
+        codegg_tui::panels::InputTarget::Chat,
+        "the composer must deliver to chat, not to the agent"
+    );
+}
+
+/// Selecting the Terminal panel takes the keyboard.
+///
+/// It is the one panel that does: its purpose is typing, so a shell the user
+/// just opened must be awaiting input rather than requiring `i` first. The
+/// PTY focus follows once the attachment exists.
+#[tokio::test(flavor = "current_thread")]
+async fn selecting_the_terminal_panel_takes_the_keyboard() {
+    let mut app = test_app();
+    app.ui_state.input_mode = InputMode::Normal;
+    // Session -> Chat -> Terminal.
+    for _ in 0..2 {
+        app.on_key(key(KeyCode::Down, KeyModifiers::SHIFT));
+    }
+    assert_eq!(app.panel_host.active(), SidePanelId::Terminal);
+    assert!(
+        app.panel_host.is_focused(),
+        "the terminal panel must own the keyboard so typing reaches the shell"
+    );
+}
+
 /// Walking the panel list **loads** the panel it lands on.
 ///
 /// The walk used to change only the slot, so stopping on a hosted panel showed

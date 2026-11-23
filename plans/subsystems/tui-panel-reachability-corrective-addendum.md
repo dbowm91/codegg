@@ -59,6 +59,22 @@ PTY profile from the stored sandbox preference (`workspace_write`), and the
 constrained PTY owner is Linux-only, so every spawn was refused. The panel still
 offered "press i for a shell".
 
+**F8 — Chat advertised a verb it could not receive.** The panel renders
+"press i to write", but the walk left the host unfocused, so `i` fell through to
+the app's insert verb and armed the *agent* composer; the badge read
+`[build][LLM]` while the panel asked for a message.
+
+**F9 — the `/files` box survived opening a document.** The tree's editor
+handoff blurred the panel and put the editor in Normal, but never closed the
+modal it was opened from, so the box stayed mounted on top of the file it had
+just opened.
+
+**F10 — the human shell is the operator's own terminal.** It must open as an
+interactive shell awaiting input (INS, not "press i"), its keystrokes must reach
+the PTY unfiltered, and it must not be held to the turn's sandbox profile: the
+interactive PTY is an IDE terminal, not an agent effect. Agent shells stay on
+`bash`/`terminal` over `ManagedProcessService` with their resolved profile.
+
 **F7 — command effects skipped the pre-routers.** `dispatch_command_effect`
 dispatched an inner request by family, which bypasses the Chat/Team/Interactive/
 HumanShell/WorkOrders pre-routers. `terminal_attach` therefore returned

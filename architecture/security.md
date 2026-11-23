@@ -316,17 +316,16 @@ broader host-policy qualification remains a rollout concern. This does not
 change C010's no-admission decision for the general M003 protected-mount
 backend.
 
-The interactive PTY is the **operator's own shell**. Agent surfaces run shells
-through `bash`/`terminal` on `ManagedProcessService`; no agent tool reaches the
-interactive route. The M004 constrained owner below is Linux-only, so on a
-platform without it a constrained profile cannot be launched at all — and
-refusing there made the terminal panel unusable while it still offered "press i
-for a shell". The daemon therefore resolves the human PTY's profile through
-`interactive_process::human_pty_profile`: Linux honours the stored preference;
-elsewhere the operator's shell runs with the operator's own authority, and the
-daemon logs that the platform has no constrained PTY backend. The stored
-sandbox preference continues to bound turns and tools, which is where agent
-effects live.
+The interactive PTY is the **operator's own shell**: an IDE terminal, not an
+agent effect. Agent surfaces run shells through `bash`/`terminal` on
+`ManagedProcessService` with their resolved profile, and no agent tool reaches
+the interactive route. The daemon therefore never constrains the human PTY and
+never filters its input: keystrokes reach the PTY byte for byte, with the size
+bound of the transport as the only limit, and the stored sandbox preference
+governs turns and tools only. Applying the turn profile here was what made every
+terminal spawn fail on macOS, and a sandbox would have been the only way left to
+refuse the operator's own commands. The M004 constrained owner below remains the
+Linux-only *program* path and is unchanged.
 
 The interactive PTY owner now has an internal long-lived M004 launch path:
 `ManagedProcessService` retains the helper setup receipt/ack protocol while
