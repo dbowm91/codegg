@@ -3752,12 +3752,18 @@ stack left the docked panel showing a frozen copy of the tree.
 | `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
 | `Enter` | **the same motion as `l`**: a directory is entered, a file is opened in the editor |
 | `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a **file** it opens the file — the key is never dead |
-| `h` / `←` | **up one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
+| `h` / `←` | **close** the open directory the cursor is on, wherever it is; otherwise **up one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level |
 | `i` | type a **filter** into the pane — the rows narrow as you type |
 | `r` | **refresh**: re-walk the current root |
 | `Esc` | leave insert mode, **keeping the filter**; in Normal mode it does nothing |
 | `q` | close the **box** — in the side panel it does **nothing** |
 | `Shift+Q` | close the box; **leave** the side panel |
+
+`h` closes the **open** directory the cursor is on, at every depth and in every
+scope, and that check comes first. A scoped pane's top-level row used to slide
+the scope away instead, so a folder opened there had no gesture left to close
+it, and a nested folder closed its parent rather than itself. A row that is not
+an open directory keeps the older meaning: up one level.
 
 `Enter` and `l` are **one** verb. `Enter` used to reveal a directory's contents
 in place and leave the cursor alone, which at the listing window's edge

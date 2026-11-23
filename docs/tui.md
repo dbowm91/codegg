@@ -171,14 +171,14 @@ Use `/files` or `Ctrl+T` to browse the active workspace; the keys are in [Browsi
 | `Ctrl+d` / `Ctrl+u` | page down / page up (two thirds of the pane) |
 | `Enter` | **the same as `l`**: a directory is entered, a file is opened in the editor |
 | `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a file it opens the file |
-| `h` / `←` | go up one level (at the workspace root: collapse in place, otherwise jump to the parent) |
+| `h` / `←` | **close** the open directory the cursor is on; otherwise go up one level |
 | `i` | type a filter into the pane, the rows narrow as you type |
 | `r` | **refresh**: re-list the current directory |
 | `Esc` | leave the filter mode, keeping the filter |
 | `q` | close the **box**, in the docked panel it does **nothing** |
 | `Shift+Q` | close the box / **leave** the pane |
 
-`l` **peeks** rather than re-rooting. The directory opens in place and the cursor moves into it, so the parent and its siblings stay on screen. `Enter` is the same motion. Only when the listing has run out of room does the scope slide, and it slides to the directory's **grandparent**, the shallowest scope in which the directory's children fit back inside the listing. The workspace root never changes: the scope is a view of the workspace, not a working directory. `h` is the mirror, so the pair reads as a horizontal motion: `l` goes right (deeper), `h` goes left (shallower).
+`l` **peeks** rather than re-rooting. The directory opens in place and the cursor moves into it, so the parent and its siblings stay on screen. `Enter` is the same motion. Only when the listing has run out of room does the scope slide, and it slides to the directory's **grandparent**, the shallowest scope in which the directory's children fit back inside the listing. The workspace root never changes: the scope is a view of the workspace, not a working directory. `h` is the mirror, so the pair reads as a horizontal motion: `l` goes right (deeper), `h` goes left (shallower). `h` closes the open directory the cursor is on, wherever it is; a row that is not an open directory goes up one level instead, and a top-level row of a scoped listing slides the scope back up.
 
 The filter is **panel-local**: `i` opens it, the rows narrow as you type, and `Esc` leaves the filter mode while **keeping** the filter.
 

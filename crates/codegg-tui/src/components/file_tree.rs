@@ -104,12 +104,18 @@ impl<'a> FileTreeView<'a> {
     /// measurement next to the layout that produced it.
     pub fn render(self, frame: &mut Frame, area: Rect) -> PaneLayout {
         let theme = Arc::clone(&self.theme);
-        let title = format!(
-            " {} · {}{} ",
-            self.root_label(),
-            self.status_label(),
-            if self.focused { " [tree]" } else { "" },
-        );
+        // One separator, and only where there is something to separate: an
+        // empty status used to leave a double space.
+        let mut title = format!(" {} ·", self.root_label());
+        let status = self.status_label();
+        if !status.is_empty() {
+            title.push(' ');
+            title.push_str(&status);
+        }
+        if self.focused {
+            title.push_str(" [tree]");
+        }
+        title.push(' ');
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
@@ -147,7 +153,9 @@ impl<'a> FileTreeView<'a> {
             .saturating_sub(field_rows) as usize;
 
         let total = rows.len();
-        let scroll = self.state.scroll.min(total.saturating_sub(1));
+        // Clamped against the **viewport**, not the row count: an offset
+        // left over from a longer listing leaves the pane half blank.
+        let scroll = self.state.scroll.min(total.saturating_sub(visible_height));
         let end = (scroll + visible_height).min(total);
 
         let mut lines: Vec<Line> = Vec::with_capacity(visible_height + 1);
@@ -266,11 +274,11 @@ impl<'a> FileTreeView<'a> {
     fn status_label(&self) -> String {
         match &self.state.status {
             FileTreeStatus::Idle => String::new(),
-            FileTreeStatus::Loading => "· loading…".to_string(),
+            FileTreeStatus::Loading => "loading…".to_string(),
             // C004: explicit busy state while a prior blocking scan drains.
-            FileTreeStatus::Waiting => "· waiting for prior scan…".to_string(),
+            FileTreeStatus::Waiting => "waiting for prior scan…".to_string(),
             FileTreeStatus::Ready => String::new(),
-            FileTreeStatus::Error(message) => format!("· {message}"),
+            FileTreeStatus::Error(message) => message.clone(),
         }
     }
 

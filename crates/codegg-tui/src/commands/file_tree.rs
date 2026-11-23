@@ -25,7 +25,7 @@
 //! ## Peek, not re-root
 //!
 //! `l` expands the selected directory *in place* and moves the cursor into
-//! it; `h` moves the cursor back out to the parent row and collapses it. The
+//! it; `h` closes the open folder the cursor is on, else goes up a level. The
 //! daemon's listing window is three levels deep, so a directory at the
 //! window's edge cannot show its children — the **scope** slides instead,
 //! and a scope slide is a daemon round-trip. Everything else is local
@@ -526,14 +526,14 @@ pub fn select_path(app: &mut App, path: &str) {
     app.file_tree_state.select(path);
 }
 
-/// Go up one level: the `h`/left-arrow verb.
+/// The `h`/left-arrow verb.
 ///
 /// The mirror of [`descend_to`], and deliberately **not** its inverse: `l`
-/// enters a directory, `h` leaves the one the cursor is in. The cursor
-/// inside a directory moves to its parent row and that directory collapses;
-/// the cursor on a top-level row slides the scope up. At the workspace root
-/// there is no scope to slide to, so the selected directory collapses in
-/// place — the key is never dead.
+/// enters a directory, `h` closes the one the cursor is on. An open
+/// directory closes where the cursor stands, at any depth and in any scope.
+/// A row that is not an open directory goes up one level: the cursor inside
+/// a directory moves to its parent row and that directory collapses, and a
+/// top-level row of a scoped listing slides the scope up.
 ///
 /// `path` is the row the surface is on; the relation is resolved against the
 /// **unfiltered** row set.
@@ -614,7 +614,7 @@ pub fn set_focus(app: &mut App, focused: bool) {
 /// | `j` / `Down` | one row down |
 /// | `k` / `Up` | one row up |
 /// | `l` / `Right` | peek down: expand the directory and enter it, or slide the scope |
-/// | `h` / `Left` / `Backspace` | peek up: leave the directory, or slide the scope up |
+/// | `h` / `Left` / `Backspace` | close the open folder the cursor is on, or go up one level |
 /// | `Enter` | the same as `l` on a directory, open the file on a file |
 /// | `r` | re-list the scope |
 /// | `Ctrl+d` / `Ctrl+u` | page down / up |

@@ -163,28 +163,30 @@ pub enum PeekStep {
 /// What the `h`/left motion decided to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeekUp {
-    /// The cursor was inside a directory: move it to the parent row and
-    /// collapse that directory.
+    /// The cursor was inside a directory that is not open: move it to the
+    /// parent row and collapse that directory.
     Leave {
         /// The parent row's path.
         parent: String,
     },
-    /// The cursor was on a top-level row and the scope can go up: slide the
-    /// scope to `scope` (the current scope's parent) with the old scope root
-    /// expanded there.
+    /// The cursor was on a top-level row that is not an open directory and
+    /// the scope can go up: slide the scope to `scope` (the current scope's
+    /// parent) with the old scope root expanded there.
     Slide {
         /// The new scope.
         scope: String,
         /// The old scope root, expanded in the new scope.
         root: String,
     },
-    /// The workspace root: the scope cannot go higher, so the selected
-    /// directory collapses in place. Never a dead key.
+    /// The cursor was on an **open** directory: close it where it stands.
+    /// Checked first, so an open folder closes at every depth and in every
+    /// scope.
     Collapse {
         /// The directory to collapse.
         directory: String,
     },
-    /// Nothing to leave: no selection, or a file at the workspace root.
+    /// Nothing to leave: no selection, or a row at the workspace root with
+    /// no open directory on it.
     None,
 }
 
@@ -607,11 +609,14 @@ impl FileTreeState {
 
     /// Decide what `h`/left/Backspace does with `path`.
     ///
-    /// The cursor inside a directory moves to its parent row and that
-    /// directory collapses. The cursor on a top-level row slides the scope
-    /// up, with the old scope root expanded in the new scope. At the
-    /// workspace root there is no scope to slide to, so the selected
-    /// directory collapses in place — never a dead key.
+    /// **An open directory closes where it stands**, at every depth and in
+    /// every scope: the row the cursor is on is the thing the verb acts on.
+    ///
+    /// A row that is not an open directory goes up one level: the cursor
+    /// inside a directory moves to its parent row and that directory
+    /// collapses; a top-level row of a scoped listing slides the scope up.
+    /// At the workspace root there is neither a scope nor a parent to go
+    /// to, so the verb has nothing left to do.
     ///
     /// The named path is resolved against the **unfiltered** row set, the way
     /// [`Self::peek_into`] already does: "the parent of this row" is a
@@ -624,6 +629,14 @@ impl FileTreeState {
         let Some(row) = rows.get(index) else {
             return PeekUp::None;
         };
+        // Checked before the scope slide and the parent jump: an open
+        // directory is closed by the row the cursor stands on. A scoped
+        // pane's top-level row used to slide the scope away instead.
+        if row.kind == TreeNodeKind::Directory && row.expanded {
+            return PeekUp::Collapse {
+                directory: row.path.clone(),
+            };
+        }
         if self.relative_depth(row) > 0 {
             let Some(parent) = rows[..index].iter().rev().find(|c| c.depth < row.depth) else {
                 return PeekUp::None;
@@ -637,11 +650,6 @@ impl FileTreeState {
             return PeekUp::Slide {
                 scope: parent_path(&scope_root),
                 root: scope_root,
-            };
-        }
-        if row.kind == TreeNodeKind::Directory && row.expanded {
-            return PeekUp::Collapse {
-                directory: row.path.clone(),
             };
         }
         PeekUp::None
@@ -690,13 +698,32 @@ impl FileTreeState {
     pub fn leave_into(&mut self, parent: &str) {
         self.expanded.remove(parent);
         self.selected = Some(parent.to_string());
+        // The rows are rebuilt before the scroll is re-revealed: the row
+        // count the scroll is measured against just changed.
         self.bump();
+        self.reveal_selection();
     }
 
     /// Collapse `directory` in place, leaving the cursor where it is.
+    ///
+    /// The cursor is on the directory this names, and the directory is still
+    /// a row once it is closed, so the cursor does not move.
     pub fn collapse(&mut self, directory: &str) {
         self.expanded.remove(directory);
         self.bump();
+        self.reveal_selection();
+    }
+
+    /// Re-reveal the selected row after the row count changed under it.
+    ///
+    /// The index and the total are read through one borrow that ends before
+    /// the scroll is written.
+    fn reveal_selection(&mut self) {
+        let (index, total) = {
+            let rows = self.rows();
+            (self.selected_index_in(rows).unwrap_or(0), rows.len())
+        };
+        self.reveal_selected(index, total);
     }
 
     /// Expand `root` in the current scope and put the cursor on it.
@@ -922,14 +949,13 @@ impl FileTreeState {
 
     /// Go up one level *within* the current scope.
     ///
-    /// The in-scope half of the `h` motion ([`Self::peek_up`]): the cursor
-    /// inside a directory moves to its parent row and that directory
-    /// collapses; at the workspace root there is no scope to slide to, so
-    /// the selected directory collapses in place.
+    /// The in-scope half of the `h` motion ([`Self::peek_up`]): an open
+    /// directory closes where it stands, and a row that is not an open
+    /// directory moves to its parent row and collapses it.
     ///
-    /// A top-level row in a scope that *can* slide is not handled here —
-    /// that is the scope slide, which the command layer owns because it
-    /// has to issue the daemon request.
+    /// A top-level row in a scope that *can* slide is not handled here: that
+    /// is the scope slide, which the command layer owns because it has to
+    /// issue the daemon request.
     pub fn leave_selected(&mut self, path: &str) -> Option<String> {
         match self.peek_up(path) {
             PeekUp::Leave { parent } => {
@@ -2820,5 +2846,95 @@ mod tests {
         assert_eq!(structure.selected.as_deref(), Some("src/tui"));
         assert_eq!(structure.scope, state.root_prefix());
         assert!(structure.rows.iter().any(|row| row.path == "src/tui"));
+    }
+
+    /// An open directory closes where the cursor stands, at every depth and
+    /// in every scope.
+    ///
+    /// The scoped case is the one that was broken: a scoped pane's top-level
+    /// row slid the scope away instead of closing the folder.
+    #[test]
+    fn an_open_directory_closes_where_the_cursor_stands() {
+        let root = temp();
+
+        // A nested open directory closes itself, not its parent.
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        expand(&mut state, "src");
+        expand(&mut state, "src/tui");
+        assert_eq!(
+            state.peek_up("src/tui"),
+            PeekUp::Collapse {
+                directory: "src/tui".to_string()
+            },
+            "the open folder the cursor is on is the thing the verb closes"
+        );
+
+        // A scoped pane's open top-level row closes too.
+        let mut state = scoped_state(root.path(), "src", scoped_tui_listing());
+        expand(&mut state, "src/tui");
+        assert_eq!(
+            state.peek_up("src/tui"),
+            PeekUp::Collapse {
+                directory: "src/tui".to_string()
+            },
+            "a scoped pane's open folder closes rather than sliding the scope"
+        );
+    }
+
+    /// A scoped top-level row that is **not** an open directory still slides
+    /// the scope up: there is nothing to close, and backing out is the verb.
+    #[test]
+    fn a_scoped_row_that_is_not_open_still_slides_the_scope_up() {
+        let root = temp();
+        let mut state = scoped_state(root.path(), "src", scoped_tui_listing());
+
+        assert_eq!(
+            state.peek_up("src/tui"),
+            PeekUp::Slide {
+                scope: String::new(),
+                root: "src".to_string(),
+            },
+            "a folder that is not open cannot be closed, so the scope moves"
+        );
+    }
+
+    /// Closing a folder leaves the cursor on the folder it closed: the
+    /// folder is still a row, so the cursor names something the pane shows.
+    #[test]
+    fn closing_a_folder_leaves_the_cursor_on_the_folder_it_closed() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        expand(&mut state, "src");
+        expand(&mut state, "src/tui");
+        state.select("src/tui");
+
+        state.collapse("src/tui");
+
+        assert_eq!(
+            state.selected.as_deref(),
+            Some("src/tui"),
+            "the cursor stays on the folder that was closed"
+        );
+        assert!(
+            state.rows().iter().any(|row| row.path == "src/tui"),
+            "the closed folder is still a row"
+        );
+        assert!(
+            !state
+                .rows()
+                .iter()
+                .any(|row| row.path == "src/tui/editor.rs"),
+            "the closed folder's children are gone"
+        );
+    }
+
+    /// The listing a scoped pane shows: one directory with one child.
+    fn scoped_tui_listing() -> Vec<crate::file_tree::TreeNode> {
+        vec![node(
+            "src/tui",
+            1,
+            TreeNodeKind::Directory,
+            Some(vec![node("src/tui/editor.rs", 2, TreeNodeKind::File, None)]),
+        )]
     }
 }

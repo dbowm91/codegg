@@ -487,20 +487,19 @@ impl Component for FilesDialog {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
-        // The panel's own insert mode owns the keyboard while it is active:
-        // printable keys edit the filter and `Esc` leaves insert mode.
-        if self.panel_mode == TreePanelMode::Insert {
-            return self.handle_insert_key(key);
-        }
-        // Checked before the character arms: `Ctrl+d`/`Ctrl+u` carry
-        // `Char('d')`/`Char('u')` codes, so a listing taller than the box
-        // needs a verb that moves more than one row.
+        // Checked before the insert mode and the character arms: the filter
+        // must not swallow a chord the hint advertises.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('d') => return self.page(1),
                 KeyCode::Char('u') => return self.page(-1),
                 _ => {}
             }
+        }
+        // The panel's own insert mode owns the keyboard while it is active:
+        // printable keys edit the filter and `Esc` leaves insert mode.
+        if self.panel_mode == TreePanelMode::Insert {
+            return self.handle_insert_key(key);
         }
         match key.code {
             // `Esc` is the **mode** switch, not the exit. In Normal mode
@@ -846,6 +845,30 @@ mod tests {
             }),
             "the command layer resolves the row into an open"
         );
+    }
+
+    /// The paging verbs stay live while the filter is being typed: the
+    /// filter's insert mode used to swallow a chord the hint advertises.
+    #[test]
+    fn paging_stays_live_while_the_filter_is_typed() {
+        let root = temp();
+        for index in 0..12 {
+            write(root.path(), &format!("f{index:02}.txt"));
+        }
+        let mut fixture = Fixture::new(root.path());
+        fixture.dialog.panel_mode = TreePanelMode::Insert;
+
+        let current = fixture.dialog.selected_row().map(|row| row.path);
+        match fixture.dialog.handle_key(ctrl('d')) {
+            Some(TuiMsg::FilesSelect { path }) => assert_ne!(
+                Some(path),
+                current,
+                "paging names a row the cursor was not already on"
+            ),
+            other => {
+                panic!("the paging chord must stay live while the filter is typed, got {other:?}")
+            }
+        }
     }
 
     #[test]
