@@ -316,8 +316,8 @@ fn the_modal_boxs_h_collapses_an_entered_directory() {
     press(&mut app, plain('l'));
     assert_eq!(
         app.file_tree_state.selected.as_deref(),
-        Some("dir/child.txt"),
-        "`l` enters the directory"
+        Some("dir"),
+        "`l` opens the directory and leaves the cursor on it"
     );
     let entered = frame_text(&mut app);
     assert!(
@@ -334,7 +334,7 @@ fn the_modal_boxs_h_collapses_an_entered_directory() {
     assert_eq!(
         app.file_tree_state.selected.as_deref(),
         Some("dir"),
-        "the cursor is back on the directory"
+        "the cursor is still on the directory it closed"
     );
 }
 

@@ -24,12 +24,11 @@
 //!
 //! ## Peek, not re-root
 //!
-//! `l` expands the selected directory *in place* and moves the cursor into
-//! it; `h` closes the open folder the cursor is on, else goes up a level. The
-//! daemon's listing window is three levels deep, so a directory at the
-//! window's edge cannot show its children — the **scope** slides instead,
-//! and a scope slide is a daemon round-trip. Everything else is local
-//! navigation over the listing the daemon already answered.
+//! `l` opens the selected directory *in place* and leaves the cursor on it,
+//! or steps into it when it is already open; `h` closes the open folder the
+//! cursor is on, else goes up a level. The daemon's listing window is three
+//! levels deep, so a directory at the window's edge cannot show its children:
+//! the **scope** slides instead, and that slide is a daemon round-trip.
 
 use std::path::PathBuf;
 
@@ -410,17 +409,12 @@ pub fn apply_listing(
     app.file_tree_state
         .apply_listing(generation, request_id, root, listing);
     // Release the permit even for a stale completion: the active round-trip
-    // has ended (its `RunningGuard` already decremented `running`), and the
-    // pending latest intent — if any — is now eligible to issue. A late
+    // has ended, and the pending latest intent is now eligible to issue. A late
     // completion after shutdown force-clear mismatches and yields `None`.
-    // Single call: `finish_active` clears the active request and takes the
-    // pending in one lock hold; `launch_taken_pending` revalidates it.
     release_after_completion(app, generation, request_id);
-    // The listing needs no mirror: the authority bumped its revision, and the
-    // frame pass pushes the structure into every mounted `/files` surface
-    // before it is drawn. A mirror here would be a second, dead way to
-    // adopt a listing — and the one that was there only reached the modal
-    // box, which is why a docked panel kept showing a frozen copy.
+    // The listing needs no mirror: the frame pass pushes the structure into
+    // every mounted `/files` surface before it is drawn, and a mirror here
+    // would be a second, dead way to adopt a listing.
 }
 
 /// Apply a failed daemon listing: record the explicit error, then release
@@ -453,38 +447,44 @@ pub fn page_selection(app: &mut App, direction: isize) {
     app.file_tree_state.page_selection(direction);
 }
 
-/// Make `path` the pane's root and list it: the `l`/right-arrow verb.
+/// Peek at `path`: the `l`/right-arrow verb.
 ///
-/// A daemon round-trip, not a local filter. A path that is not a directory in
-/// the current listing, or is already the root, does nothing at all rather
-/// than issuing a request the daemon would answer with nothing.
+/// A path that is not a directory in the listing does nothing rather than
+/// issuing a request the daemon would answer with nothing.
 ///
-/// Under the peek motion this no longer re-roots the pane: a directory
-/// whose children are still inside the listing window is expanded *in
-/// place* and the cursor moves into it, and only a directory at the
-/// window's edge slides the scope.
+/// The peek motion does not re-root the pane: a directory whose children are
+/// inside the listing window is opened *in place* and the cursor stays on
+/// it; only a directory at the window's edge slides the scope.
 ///
 /// A **file** has nothing to peek into, so the motion opens it: `l` on a
-/// file is the same path `Enter` takes, and the key is never dead.
+/// file is the path `Enter` takes, and the key is never dead.
 pub fn descend_to(app: &mut App, path: &str) {
     match app.file_tree_state.peek_into(path) {
-        PeekStep::Enter { directory } => {
-            app.file_tree_state.expand_and_enter(&directory);
+        PeekStep::Expand { directory } => {
+            // The directory opens where it stands and the cursor stays on
+            // it: opening a folder is not a move.
+            app.file_tree_state.expand_in_place(&directory);
+            // The motion acts on the row it names, so the cursor names it too.
+            app.file_tree_state.select(&directory);
             // The listing is re-requested for the scope the pane is showing,
             // so what the pane draws is the daemon's current answer rather
             // than a listing that may predate the last edit.
             rebuild(app);
+        }
+        PeekStep::Enter { directory } => {
+            // The directory is already open, so the motion goes into it;
+            // the listing does not change, so no re-walk is asked for.
+            app.file_tree_state.enter_directory(&directory);
         }
         PeekStep::Slide { scope, directory } => {
             if !app.file_tree_state.set_root_prefix(&scope) {
                 return;
             }
             // The scope moved, so the directory is a row of the *new* scope,
-            // but not a top-level one: the scope is its grandparent, so the
-            // chain between them is collapsed and the directory would not be
-            // on screen at all. That chain is expanded here, the directory
-            // itself is expanded with it, and the cursor enters it once the
-            // relist lands.
+            // but not a top-level one: the chain between them is collapsed and
+            // the directory would not be on screen at all. That chain is opened
+            // here, the directory with it, and the cursor lands on it after the
+            // relist comes back.
             app.file_tree_state.expand_ancestors_of(&scope, &directory);
             app.file_tree_state.expand_and_select(&directory);
             app.file_tree_state.set_pending_cursor(&directory);
@@ -529,11 +529,11 @@ pub fn select_path(app: &mut App, path: &str) {
 /// The `h`/left-arrow verb.
 ///
 /// The mirror of [`descend_to`], and deliberately **not** its inverse: `l`
-/// enters a directory, `h` closes the one the cursor is on. An open
+/// opens a directory, `h` closes the one the cursor is on. An open
 /// directory closes where the cursor stands, at any depth and in any scope.
-/// A row that is not an open directory goes up one level: the cursor inside
-/// a directory moves to its parent row and that directory collapses, and a
-/// top-level row of a scoped listing slides the scope up.
+/// A row that is not an open directory goes up one level: the cursor moves
+/// to its parent row and that directory collapses, and a top-level row of a
+/// scoped listing slides the scope up.
 ///
 /// `path` is the row the surface is on; the relation is resolved against the
 /// **unfiltered** row set.
@@ -558,13 +558,13 @@ pub fn ascend_one_level(app: &mut App, path: &str) {
     }
 }
 
-/// Open the selected file, or enter the selected directory.
+/// Open the selected file, or open the selected directory.
 ///
 /// The open path is `open_editor` verbatim, so the tree inherits its lexical
 /// validation, its already-open short-circuit, its daemon-authorized
 /// attachment, and its request/generation discipline.
 ///
-/// A **directory** is entered, not toggled: `Enter` is the same motion as
+/// A **directory** is opened, not toggled: `Enter` is the same motion as
 /// `l` (see [`descend_to`]).
 pub fn activate_selected(app: &mut App) {
     let Some(row) = app.file_tree_state.selected_row() else {
@@ -613,7 +613,7 @@ pub fn set_focus(app: &mut App, focused: bool) {
 /// |---|---|
 /// | `j` / `Down` | one row down |
 /// | `k` / `Up` | one row up |
-/// | `l` / `Right` | peek down: expand the directory and enter it, or slide the scope |
+/// | `l` / `Right` | peek down: open the directory in place, step into it when it is already open, or slide the scope |
 /// | `h` / `Left` / `Backspace` | close the open folder the cursor is on, or go up one level |
 /// | `Enter` | the same as `l` on a directory, open the file on a file |
 /// | `r` | re-list the scope |
@@ -674,8 +674,8 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             move_selection(app, -1);
             true
         }
-        // `l` peeks down: the directory is expanded and the cursor moves
-        // into it, or the scope slides when the listing window runs out.
+        // `l` peeks down: the directory opens in place and the cursor
+        // stays on it, or the scope slides when the listing window runs out.
         KeyCode::Char('l') | KeyCode::Right => {
             peek_into_selected(app);
             true
@@ -817,6 +817,15 @@ mod tests {
             return;
         };
         ascend_one_level(app, &path);
+    }
+
+    /// The `l` verb from the authority's own selection: what the tree pane
+    /// does, which is to name the row the cursor is on.
+    fn descend_selected(app: &mut App) {
+        let Some(path) = app.file_tree_state.selected.clone() else {
+            return;
+        };
+        descend_to(app, &path);
     }
     use crate::app::state::project_tabs::{ProjectTabId, ProjectTabState};
     use crate::file_tree::TreeNodeKind;
@@ -1183,8 +1192,8 @@ mod tests {
         );
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
-            Some("src/lib.rs"),
-            "the cursor moves into the directory"
+            Some("src"),
+            "opening a folder leaves the cursor where it was"
         );
     }
 
@@ -1294,11 +1303,10 @@ mod tests {
 
     /// The worked example from the peek design, end to end.
     ///
-    /// `l` expands and enters; at the window's edge the scope slides to the
-    /// target's **grandparent**, so the target's children fit back inside the
-    /// window; `h` leaves and collapses; on a top-level row the scope slides
-    /// back up. The scope is the only thing that moves, and it only ever
-    /// moves when the listing window runs out.
+    /// `l` opens a folder in place and leaves the cursor on it, then steps
+    /// into it on the next press; at the window's edge the scope slides to
+    /// the target's **grandparent**; `h` closes the folder the cursor is on
+    /// and then leaves; on a top-level row the scope slides up.
     #[tokio::test]
     async fn the_peek_motion_walks_the_worked_example() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1316,8 +1324,8 @@ mod tests {
         );
         assert_eq!(app.file_tree_state.selected.as_deref(), Some("src"));
 
-        // `l` on `src`: expanded in place, the cursor moves into it.
-        descend_to(&mut app, "src");
+        // `l` on `src`: opened in place, and the cursor stays on it.
+        descend_selected(&mut app);
         drain_completion(&mut app, &mut rx).await;
         assert_eq!(app.file_tree_state.root_prefix(), "");
         assert_eq!(
@@ -1328,10 +1336,31 @@ mod tests {
                 "Cargo.toml".to_string()
             ]
         );
-        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui"));
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src"),
+            "opening a folder is not a move: the cursor stays on the folder"
+        );
+
+        // `l` again: the folder is open now, so the motion steps into it.
+        descend_selected(&mut app);
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src/tui"),
+            "an open folder is entered, and the cursor goes with it"
+        );
+        assert_eq!(
+            shown(&app),
+            vec![
+                "src".to_string(),
+                "src/tui".to_string(),
+                "Cargo.toml".to_string()
+            ],
+            "stepping into an open folder changes no row"
+        );
 
         // `l` on `src/tui`: still inside the window, so still in place.
-        descend_to(&mut app, "src/tui");
+        descend_selected(&mut app);
         drain_completion(&mut app, &mut rx).await;
         assert_eq!(app.file_tree_state.root_prefix(), "");
         assert_eq!(
@@ -1346,14 +1375,17 @@ mod tests {
         );
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
-            Some("src/tui/editor.rs")
+            Some("src/tui"),
+            "the cursor stays on the folder it opened"
         );
 
         // `l` on `src/tui/app`: its children are outside the window, so the
         // scope slides to its **grandparent** — the shallowest scope in which
         // those children fit back inside — and the chain down to the
         // directory is expanded, so the directory is on screen at all.
-        descend_to(&mut app, "src/tui/app");
+        move_selection(&mut app, 2);
+        assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui/app"));
+        descend_selected(&mut app);
         assert_eq!(
             app.file_tree_state.root_prefix(),
             "src",
@@ -1372,11 +1404,11 @@ mod tests {
         );
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
-            Some("src/tui/app/mod.rs"),
-            "the cursor moves into the directory"
+            Some("src/tui/app"),
+            "the cursor stays on the directory the scope slid to"
         );
 
-        // `h` from inside `app`: up to its parent row, and it collapses.
+        // `h` on the open `app`: it closes where the cursor stands.
         ascend(&mut app);
         assert_eq!(app.file_tree_state.root_prefix(), "src");
         assert_eq!(
@@ -1390,7 +1422,7 @@ mod tests {
         assert_eq!(app.file_tree_state.selected.as_deref(), Some("src/tui/app"));
         assert!(
             !app.file_tree_state.expanded.contains("src/tui/app"),
-            "the directory being left is collapsed"
+            "the directory under the cursor is collapsed"
         );
 
         // `h` again: out of `tui` as well, still inside the `src` scope.
@@ -2261,7 +2293,7 @@ mod tests {
     }
 
     /// `Enter` on a directory is the peek motion, not a bare toggle: the
-    /// directory is expanded *and* the cursor moves into it.
+    /// directory is opened and the cursor **stays on the folder**.
     #[tokio::test]
     async fn enter_on_a_directory_peeks_instead_of_toggling() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2275,18 +2307,26 @@ mod tests {
         activate_selected(&mut app);
         assert!(
             app.file_tree_state.expanded.contains("src"),
-            "the directory is expanded"
+            "the directory is opened"
         );
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
-            Some("src/lib.rs"),
-            "and the cursor moves into it, which a bare toggle never did"
+            Some("src"),
+            "the cursor stays on the folder, which a bare toggle never did"
         );
         drain_completion(&mut app, &mut rx).await;
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
+            Some("src"),
+            "the relist keeps the cursor on the folder"
+        );
+
+        // The second press steps into the folder that is now open.
+        activate_selected(&mut app);
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
             Some("src/lib.rs"),
-            "the relist keeps the cursor inside the directory"
+            "an open folder is entered"
         );
     }
 

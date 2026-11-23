@@ -13,11 +13,10 @@
 //!
 //! [`FileTreeState::root_prefix`] is the directory whose children the pane
 //! lists; `""` is the workspace root. Navigation is a **peek** motion, not a
-//! re-root: `l` expands the selected directory *in place* and moves the
-//! cursor into it, and `h` moves the cursor back out to the parent row and
-//! collapses it. The daemon's listing window is three levels deep, so a
-//! directory at the window's edge cannot show its children — the scope
-//! **slides** instead.
+//! re-root: `l` opens the selected directory *in place* and leaves the cursor
+//! on it, and `h` closes the open folder the cursor is on. The daemon's
+//! listing window is three levels deep, so a directory at the window's edge
+//! cannot show its children — the scope **slides** instead.
 //!
 //! [`FileTreeState::root_history`] is the chain of scopes the pane has moved
 //! through, so a scope slide can be walked back out one level at a time.
@@ -131,23 +130,25 @@ pub enum TreePanelMode {
 /// is applied by the command layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeekStep {
-    /// Expand `directory` in place and move the cursor into it. Its children
-    /// are already inside the listing window.
+    /// Open `directory` in place: the cursor **stays on it**, because
+    /// opening a folder is not a move.
+    Expand {
+        /// The directory to open.
+        directory: String,
+    },
+    /// The directory is already open: step into it.
     Enter {
-        /// The directory to expand and enter.
+        /// The open directory to step into.
         directory: String,
     },
     /// The directory's children are outside the listing window: slide the
-    /// scope to `scope` (the directory's **grandparent**), expand the
-    /// directory there, and move the cursor into it.
-    ///
-    /// The grandparent is the *shallowest* scope in which the directory's
-    /// children fit back inside the window, so the slide keeps as much
-    /// context as it can.
+    /// scope to `scope` (the directory's **grandparent**) and open the
+    /// directory there. The grandparent is the *shallowest* scope in which
+    /// the children fit back inside the window.
     Slide {
         /// The new scope: the directory's grandparent.
         scope: String,
-        /// The directory to expand in the new scope.
+        /// The directory to open in the new scope.
         directory: String,
     },
     /// The selection is a file: there is nothing to peek into, so the motion
@@ -567,11 +568,9 @@ impl FileTreeState {
 
     /// Decide what `l`/right/Enter does with the current selection.
     ///
-    /// A directory whose children are still inside the listing window is
-    /// expanded in place and the cursor moves into it. A directory at the
-    /// window's edge cannot show its children, so the scope slides.
-    ///
-    /// A file has nothing to peek into, so the motion opens it instead.
+    /// A directory at the window's edge slides the scope; a **closed** one
+    /// opens in place and keeps the cursor; an **open** one is stepped into.
+    /// A file has nothing to peek into, so the motion opens it.
     pub fn peek_into_selected(&self) -> PeekStep {
         let Some(row) = self.selected_row() else {
             return PeekStep::None;
@@ -602,7 +601,13 @@ impl FileTreeState {
                 directory: row.path.clone(),
             };
         }
-        PeekStep::Enter {
+        // An open directory is stepped into, and the cursor follows it.
+        if row.expanded {
+            return PeekStep::Enter {
+                directory: row.path.clone(),
+            };
+        }
+        PeekStep::Expand {
             directory: row.path.clone(),
         }
     }
@@ -615,8 +620,7 @@ impl FileTreeState {
     /// A row that is not an open directory goes up one level: the cursor
     /// inside a directory moves to its parent row and that directory
     /// collapses; a top-level row of a scoped listing slides the scope up.
-    /// At the workspace root there is neither a scope nor a parent to go
-    /// to, so the verb has nothing left to do.
+    /// At the workspace root there is no scope and no parent to go to.
     ///
     /// The named path is resolved against the **unfiltered** row set, the way
     /// [`Self::peek_into`] already does: "the parent of this row" is a
@@ -655,19 +659,13 @@ impl FileTreeState {
         PeekUp::None
     }
 
-    /// Expand `directory` and move the cursor into it.
+    /// Open `directory` in place, leaving the cursor on it.
     ///
-    /// The cursor lands on the directory's first child, which is only known
-    /// once the directory is expanded and the rows are re-read.
-    pub fn expand_and_enter(&mut self, directory: &str) {
+    /// The rows the opening adds sit **below** the directory's own row, so the
+    /// cursor is on the same row before and after.
+    pub fn expand_in_place(&mut self, directory: &str) {
         self.expanded.insert(directory.to_string());
-        // Rebuild **before** `enter_directory` reads the rows: the expansion
-        // is what makes the directory's first child a row, and a read served
-        // from the pre-expansion cache would put the cursor on the directory
-        // itself. An expansion that also moves the cursor therefore builds
-        // twice, which is the honest cost of the one coarse key.
         self.bump();
-        self.enter_directory(directory);
     }
 
     /// Move the cursor into `directory`: onto its first child when one is
@@ -692,6 +690,9 @@ impl FileTreeState {
         };
         self.selected = Some(next);
         self.bump();
+        // The child can be one row below the last visible one, so the
+        // scroll follows the cursor.
+        self.reveal_selection();
     }
 
     /// Move the cursor to the parent row and collapse that directory.
@@ -1029,10 +1030,12 @@ impl FileTreeState {
             self.selected = selection;
         }
         // A scope slide knows where the cursor goes only once the relist
-        // lands: the directory the user entered is a row of the *new*
-        // scope, and its first child is what the cursor belongs on.
+        // lands: the directory the user opened is a row of the *new* scope,
+        // and the cursor belongs **on** it.
         if let Some(target) = self.take_pending_cursor() {
-            self.enter_directory(&target);
+            if self.rows().iter().any(|row| row.path == target) {
+                self.selected = Some(target);
+            }
         }
         let index = self.selected_index().unwrap_or(0);
         let total = self.rows().len();
@@ -2118,12 +2121,41 @@ mod tests {
         assert_eq!(state.scroll, before_scroll, "the viewport must not move");
     }
 
-    /// `l` on a directory whose children are still inside the listing
-    /// window: expand it in place and move the cursor into it.
+    /// `l` on a **closed** directory whose children are inside the listing
+    /// window: it opens in place and the cursor stays on it.
     #[test]
-    fn peeking_into_a_directory_expands_it_in_place_and_enters_it() {
+    fn peeking_into_a_closed_directory_opens_it_in_place_and_keeps_the_cursor() {
         let root = temp();
         let mut state = state_with_listing(root.path(), worked_example_listing());
+        state.selected = Some("src".to_string());
+
+        assert_eq!(
+            state.peek_into_selected(),
+            PeekStep::Expand {
+                directory: "src".to_string()
+            }
+        );
+
+        state.expand_in_place("src");
+        assert!(state.expanded.contains("src"));
+        assert_eq!(
+            state.selected.as_deref(),
+            Some("src"),
+            "opening a folder leaves the cursor where it was"
+        );
+        assert_eq!(
+            state.root_prefix(),
+            "",
+            "the scope does not move when the children are inside the window"
+        );
+    }
+
+    /// `l` on an **open** directory: the motion steps into it.
+    #[test]
+    fn peeking_into_an_open_directory_steps_into_it() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        expand(&mut state, "src");
         state.selected = Some("src".to_string());
 
         assert_eq!(
@@ -2133,17 +2165,38 @@ mod tests {
             }
         );
 
-        state.expand_and_enter("src");
-        assert!(state.expanded.contains("src"));
+        state.enter_directory("src");
         assert_eq!(
             state.selected.as_deref(),
             Some("src/tui"),
-            "the cursor moves into the directory, onto its first child"
+            "the cursor moves into the open directory"
+        );
+    }
+
+    /// Opening a folder does not move the cursor: the rows it adds sit below
+    /// the folder's own row.
+    #[test]
+    fn opening_a_folder_leaves_the_cursor_on_the_folder() {
+        let root = temp();
+        let mut state = state_with_listing(root.path(), worked_example_listing());
+        state.selected = Some("src".to_string());
+        let before = state.selected_index();
+
+        state.expand_in_place("src");
+
+        assert_eq!(
+            state.selected.as_deref(),
+            Some("src"),
+            "the selection names the folder it was on"
         );
         assert_eq!(
-            state.root_prefix(),
-            "",
-            "the scope does not move when the children are inside the window"
+            state.selected_index(),
+            before,
+            "the cursor is on the same row it was on"
+        );
+        assert!(
+            state.rows().iter().any(|row| row.path == "src/tui"),
+            "the folder's children are on screen"
         );
     }
 
@@ -2295,30 +2348,32 @@ mod tests {
         let mut state = state_with(root.path());
         let base = state.revision;
 
-        state.expand_and_enter("src");
+        state.expand_in_place("src");
         assert!(
             state.revision > base,
             "an expansion changes what a surface renders"
         );
         let after_expansion = state.revision;
 
-        state.collapse("src");
+        // The cursor stayed on the folder it opened, so moving it means
+        // naming a different row.
+        assert!(state.select("src/tui"));
         assert!(
             state.revision > after_expansion,
+            "the selection is rendered, so moving it moves the revision"
+        );
+        let after_selection = state.revision;
+
+        state.collapse("src");
+        assert!(
+            state.revision > after_selection,
             "a collapse changes it too"
         );
 
         let after_collapse = state.revision;
-        assert!(state.select("src/tui/editor.rs") || state.select("src"));
-        assert!(
-            state.revision > after_collapse,
-            "the selection is rendered, so moving it moves the revision"
-        );
-
-        let after_selection = state.revision;
         state.set_pending_cursor("src");
         assert_eq!(
-            state.revision, after_selection,
+            state.revision, after_collapse,
             "the pending cursor is not rendered: it is applied when the listing lands"
         );
     }
@@ -2886,7 +2941,7 @@ mod tests {
     #[test]
     fn a_scoped_row_that_is_not_open_still_slides_the_scope_up() {
         let root = temp();
-        let mut state = scoped_state(root.path(), "src", scoped_tui_listing());
+        let state = scoped_state(root.path(), "src", scoped_tui_listing());
 
         assert_eq!(
             state.peek_up("src/tui"),

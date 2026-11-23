@@ -169,8 +169,8 @@ Use `/files` or `Ctrl+T` to browse the active workspace; the keys are in [Browsi
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up (two thirds of the pane) |
-| `Enter` | **the same as `l`**: a directory is entered, a file is opened in the editor |
-| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a file it opens the file |
+| `Enter` | **the same as `l`**: a directory opens in place, or is entered when it is already open; a file is opened in the editor |
+| `l` / `→` | **peek into** that directory: a closed folder opens in place and the **cursor stays on the folder**; an open one is entered. On a file it opens the file |
 | `h` / `←` | **close** the open directory the cursor is on; otherwise go up one level |
 | `i` | type a filter into the pane, the rows narrow as you type |
 | `r` | **refresh**: re-list the current directory |
@@ -178,7 +178,7 @@ Use `/files` or `Ctrl+T` to browse the active workspace; the keys are in [Browsi
 | `q` | close the **box**, in the docked panel it does **nothing** |
 | `Shift+Q` | close the box / **leave** the pane |
 
-`l` **peeks** rather than re-rooting. The directory opens in place and the cursor moves into it, so the parent and its siblings stay on screen. `Enter` is the same motion. Only when the listing has run out of room does the scope slide, and it slides to the directory's **grandparent**, the shallowest scope in which the directory's children fit back inside the listing. The workspace root never changes: the scope is a view of the workspace, not a working directory. `h` is the mirror, so the pair reads as a horizontal motion: `l` goes right (deeper), `h` goes left (shallower). `h` closes the open directory the cursor is on, wherever it is; a row that is not an open directory goes up one level instead, and a top-level row of a scoped listing slides the scope back up.
+`l` **peeks** rather than re-rooting. A closed folder opens in place and the **cursor stays on the folder**, so the parent and its siblings stay on screen and the selection does not drift down a row. Press `l` again on a folder that is already open and the cursor steps into it, onto its first child. `Enter` is the same motion. Only when the listing has run out of room does the scope slide, and it slides to the directory's **grandparent**, the shallowest scope in which the directory's children fit back inside the listing; the cursor stays on the folder there too. The workspace root never changes: the scope is a view of the workspace, not a working directory. `h` is the mirror, so the pair reads as a horizontal motion: `l` goes right (deeper), `h` goes left (shallower). `h` closes the open directory the cursor is on, wherever it is, and the cursor stays on it; a row that is not an open directory goes up one level instead, and a top-level row of a scoped listing slides the scope back up.
 
 The filter is **panel-local**: `i` opens it, the rows narrow as you type, and `Esc` leaves the filter mode while **keeping** the filter.
 

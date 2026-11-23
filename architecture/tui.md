@@ -3750,8 +3750,8 @@ stack left the docked panel showing a frozen copy of the tree.
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
-| `Enter` | **the same motion as `l`**: a directory is entered, a file is opened in the editor |
-| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a **file** it opens the file — the key is never dead |
+| `Enter` | **the same motion as `l`**: a directory opens in place, or is entered when it is already open; a file is opened in the editor |
+| `l` / `→` | **peek into** that directory: a closed folder opens in place and the **cursor stays on the folder**; an open one is entered. On a **file** it opens the file — the key is never dead |
 | `h` / `←` | **close** the open directory the cursor is on, wherever it is; otherwise **up one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level |
 | `i` | type a **filter** into the pane — the rows narrow as you type |
 | `r` | **refresh**: re-walk the current root |
@@ -3768,9 +3768,21 @@ an open directory keeps the older meaning: up one level.
 `Enter` and `l` are **one** verb. `Enter` used to reveal a directory's contents
 in place and leave the cursor alone, which at the listing window's edge
 expanded a directory that has no children in the listing — an "empty
-directory" rather than a move. Both now enter the directory, and both slide the
+directory" rather than a move. Both now open the directory in place and keep
+the cursor on it, both step into it when it is already open, and both slide the
 scope when the directory's children fall outside the daemon's three-level
 listing window.
+
+**Opening a folder is not a move.** The rows an opening adds sit *below* the
+folder's own row, so the row the cursor is on is the same row before and after.
+The cursor used to step into the first child, which dropped the selection a
+row every time a folder opened and made the folder the user was aiming at
+impossible to come back to. `FileTreeState::expand_in_place` therefore opens
+the directory and leaves the selection alone; `FileTreeState::enter_directory`
+is the *other* verb, the one that steps in, and `l` reaches it only when the
+directory is already open. The scope slide is the same story: the relist lands
+with the directory open in the new scope, and the pending cursor names the
+**directory** rather than its first child.
 
 The slide lands on the directory's **grandparent**, not its parent: the
 grandparent is the *shallowest* scope in which the directory's children fit
@@ -3797,18 +3809,19 @@ reported.
 The box's own hotkey row is gone. The row above the composer carries the
 panel's keymap, and a second copy at the bottom of the panel was noise.
 
-**`l` peeks; it does not re-root.** A directory whose children are still
-inside the listing window is expanded **in place** and the cursor moves into
-it, so the parent and the siblings stay on screen and the reader can see where
-they are. Only a directory at the window's edge — the daemon's listing
-reaches three levels — slides the scope to the directory's **parent**: the
-directory stays selected and expanded in place, and everything above the
-parent is dropped. `h` is the mirror: from inside a directory it moves the
-cursor to the parent row and collapses that directory; from a top-level row it
-slides the scope up one level, with the old scope root expanded in the new
-scope; at the workspace root it collapses the selected directory in place, so
-the key is never dead. The pair reads as a horizontal Helix motion — `l` goes
-right (deeper), `h` goes left (shallower).
+**`l` peeks; it does not re-root.** A closed directory whose children are still
+inside the listing window opens **in place** and the cursor **stays on the
+directory**, so the parent and the siblings stay on screen and the reader can
+see where they are. An open one is stepped into instead, the cursor landing on
+its first child. Only a directory at the window's edge — the daemon's listing
+reaches three levels — slides the scope to the directory's **grandparent**,
+where the children fit back inside the window; the directory opens there and
+the cursor stays on it. `h` is the mirror: it closes the open directory the
+cursor is on, wherever it is, and the cursor stays on it; from a row that is
+not an open directory it moves the cursor to the parent row and collapses that
+directory; from a top-level row it slides the scope up one level, with the old
+scope root expanded in the new scope. The pair reads as a horizontal Helix
+motion — `l` goes right (deeper), `h` goes left (shallower).
 
 The **scope** therefore carries the absolute depth while the **indent** stays
 relative to it (`FileTreeState::display_depth`), so a deep scope does not
