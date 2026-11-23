@@ -335,7 +335,7 @@ and never persisted.
 
 | Field | Required | Rules |
 |---|---|---|
-| `id` | yes | `[a-z0-9._-]`, 1–64 characters. Registers as a provider id for this session only. |
+| `id` | yes | `[a-z0-9._-]`, 1 to 64 characters. Registers as a provider id for this session only. |
 | `displayName` | no | ≤ 64 characters, diagnostics only. |
 | `baseUrl` | yes | Absolute `http`/`https` URL. |
 | `protocol` | yes | v1 allows `chat_completions` only. |

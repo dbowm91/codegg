@@ -561,7 +561,7 @@ CodeGG publishes prebuilt binaries for:
 Alternatives for other hosts (deliberate choice, never automatic):
   git clone https://github.com/dbowm91/codegg.git
   cd codegg
-  cargo install --locked --path .
+  cargo install --locked --path crates/codegg-cli
 ALTERNATIVES
     exit 1
 }

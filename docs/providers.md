@@ -258,41 +258,6 @@ codegg -m anthropic/<model-id>
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
+Checked 2026-11-23 against `crates/codegg-providers/src/provider_core.rs`, `crates/codegg-providers/src/auth_types.rs`, `crates/codegg-providers/src/setup_catalog.rs`, `crates/codegg-providers/src/discovery.rs`, `crates/codegg-config/src/encryption.rs`, `crates/codegg-cli/src/main.rs`, and `crates/codegg-tui/src/command.rs`.
 
-Rechecked 2026-11-15 against `crates/codegg-providers/src/provider_core.rs`,
-`crates/codegg-providers/src/auth_types.rs`,
-`crates/codegg-providers/src/setup_catalog.rs`,
-`crates/codegg-providers/src/discovery.rs`,
-`crates/codegg-providers/src/openai_compatible.rs`,
-`crates/codegg-config/src/encryption.rs`, `src/main.rs`, and
-`src/tui/components/dialogs/connect.rs`. Confirmed provider listing, supported
-authentication paths, model discovery behavior, and the distinction between
-catalog status and credential verification.
-
-- Provider ids and environment-variable names:
-  `crates/codegg-providers/src/provider_core.rs` (`builtin_registration_order`).
-- The `TOGETHERAI_API_KEY` env var for `together`:
-  `crates/codegg-providers/src/provider_core.rs`.
-- The API-key-only providers (Anthropic, OpenAI, Google, OpenRouter,
-  OpenCode Zen, MiniMax): `crates/codegg-providers/src/setup_catalog.rs`
-  (`CredentialCapability::ApiKeyOnly`).
-- Master key resolution order (`CODEGG_MASTER_KEY`,
-  `CODEGG_ENCRYPTION_KEY`, `OPENCODE_ENCRYPTION_KEY`, then the managed file)
-  and the `<config dir>/codegg/master.key` path:
-  `crates/codegg-config/src/encryption.rs`.
-- The credential store path `<config dir>/codegg/credentials.json`:
-  `crates/codegg-providers/src/provider_core.rs`.
-- The auth variants `api_key`, `stored`, `external_command`, `oauth_device`,
-  `none`: `crates/codegg-providers/src/auth_types.rs` (`AuthConfig`).
-- `/connect` and `/connections` slash commands: `src/tui/command.rs`.
-
-- Corrected: only Anthropic, OpenAI, Google, and OpenRouter honor a custom
-  `auth.env`; other built-ins use their conventional variable. Verified in
-  `crates/codegg-providers/src/provider_core.rs` and
-  `crates/codegg-providers/src/auth_types.rs`.
-- Clarified: reviewed wire mappings are required for profile-adapted providers;
-  generic OpenAI-compatible providers use their configured route. Verified in
-  `crates/codegg-providers/src/provider_profile.rs`,
-  `crates/codegg-providers/src/setup_catalog.rs`, and
-  `crates/codegg-providers/src/openai_compatible.rs`.
+Corrected: only Anthropic, OpenAI, Google, and OpenRouter honor a custom `auth.env`; other built-in providers use their conventional variable. Reviewed-profile models need a reviewed model mapping, while generic OpenAI-compatible providers use their configured route.

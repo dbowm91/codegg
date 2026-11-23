@@ -225,48 +225,6 @@ network policy, and resource limits, see `architecture/jobs.md` and
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
+Checked 2026-11-23 against `crates/codegg-config/src/paths.rs`, `crates/codegg-config/src/schema.rs`, `src/agent/semantic_router.rs`, and `src/scheduler/config.rs`. Confirmed config precedence, the documented key shapes, model-router behavior, skill paths, and scheduler quota settings.
 
-Rechecked 2026-11-15 against `crates/codegg-config/src/paths.rs`,
-`crates/codegg-config/src/schema.rs`, `src/agent/semantic_router.rs`, and
-`src/scheduler/config.rs`. Confirmed config precedence, accepted config shapes,
-model-router provider behavior, skill path semantics, and scheduler quota names.
-
-- Config layers and their order: `crates/codegg-config/src/paths.rs`
-  (`CODEGG_TUI_CONFIG`, `system_config_path`, `global_config_path`,
-  `find_project_config`).
-- System paths: macOS `/Library/Application Support/codegg/codegg.json`, other
-  Unix `/etc/codegg/codegg.json`, Windows `%ProgramData%\codegg\codegg.json`
-  (`crates/codegg-config/src/paths.rs`).
-- Global file candidates `codegg.jsonc`, `codegg.json`, `config.json`:
-  `crates/codegg-config/src/paths.rs`.
-- Project discovery (walk upward; `.codegg/codegg.jsonc`,
-  `.codegg/codegg.json`, `codegg/codegg.jsonc`, `codegg/codegg.json`):
-  `crates/codegg-config/src/paths.rs`.
-- Untagged config types: `AutoupdateConfig`, `ProviderTimeout`,
-  `PermissionRule`, `FormatterConfig`, `LspConfig`, `LspRule`, and `PluginSpec`
-  in `crates/codegg-config/src/schema.rs`.
-- The schema does not use `deny_unknown_fields`: no occurrence in
-  `crates/codegg-config/src/schema.rs`.
-- `shell.windows_shell` accepts `powershell`, `cmd`, `git-bash`, `wsl` and
-  rejects `bash`: `crates/codegg-config/src/schema.rs` (`WindowsShellKind`).
-- `model_routers` fields (`selector_model`, `default_model`, `routes`,
-  `sticky`, `affinity_ttl_s`, `selector_timeout_s`, `max_input_bytes`,
-  `repair_attempts`): `crates/codegg-config/src/schema.rs`.
-- `skills.paths` / `skills.enabled`: `crates/codegg-config/src/schema.rs`
-  (`SkillsConfig`).
-- `eggwork` node fields (`node_id`, `endpoint`, `ca_cert_path`,
-  `client_cert_path`, `client_key_path`, `required_capabilities`,
-  `isolation_policy`, `network_policy`, `resource_limits`,
-  `max_concurrent_executions`) and the daemon-level
-  `allowed_target_nodes` / `required_isolation_policy` /
-  `required_network_policy`: `crates/codegg-config/src/schema.rs`.
-- Remote resource limit dimensions and the `required` / `best_effort`
-  distinction: `crates/codegg-config/src/schema.rs`.
-- `${VAR}` interpolation and the JSON/JSONC/TOML/YAML frontmatter handling:
-  `crates/codegg-config/src/`.
-
-- Corrected 2026-10-27: the top-level `Config` carries only
-  `#[serde(default)]` (`crates/codegg-config/src/schema.rs:404-406`); the
-  schema's single `deny_unknown_fields` is on the nested
-  `ReasoningCapabilityRecord` (`:152`).
+Corrected: `deny_unknown_fields` applies to the nested `ReasoningCapabilityRecord`, not to the top-level config.

@@ -51,7 +51,7 @@ codegg -m anthropic/claude-sonnet-4-20250514 --run "Explain this project"   # on
 | `-f`, `--format <text\|json>` | One-shot output format. Default: `text`. `--output-format` is an alias. |
 | `-q`, `--quiet` | Hide status messages in non-interactive mode. |
 | `--cwd <DIRECTORY>` | Set the initial working directory. It must already exist. |
-| `-v` | Increase verbosity: `-v` info, `-vv` debug, `-vvv` or more trace. |
+| `-v`, `--verbose` | Increase verbosity: `-v` info, `-vv` debug, `-vvv` or more trace. |
 | `--approval-mode <MODE>` | `interactive`, `automatic`, or `yolo`. |
 | `--sandbox <PROFILE>` | `read-only`, `workspace-write`, or `full-host`. |
 | `--yolo` | Alias for `--approval-mode yolo`. |
@@ -384,49 +384,6 @@ equivalent is `codegg daemon attach`, which is always available.
 
 ## Source verification
 
-Checked 2026-10-23 against the clap definitions in `src/main.rs` and the MCP
-subcommand enum in `src/mcp/cli.rs`.
+Checked 2026-11-23 against `crates/codegg-cli/src/main.rs`, `src/mcp/cli.rs`, `src/acp.rs`, and `crates/codegg-core/src/storage/mod.rs`. Confirmed the CLI flags and commands shown here and the project-local legacy store used by CLI session commands.
 
-Rechecked 2026-11-15 against `src/main.rs` (`Cli`, `Commands`,
-`AuthSubcommand`, `DoctorSubsystem`, `DaemonCommand`) and `src/mcp/cli.rs`.
-The edits remove developer-only and hidden-compatibility detail, clarify
-`exec`'s default policy, and correct the completions shell list.
-
-- Top-level flags: `src/main.rs` `Cli` and `ExecutionPolicyArgs`
-  (`-c/--continue-session`, `-s/--session`, `--fork`, `--no-session`,
-  `-m/--model`, `-a/--agent`, `-p/--run`, `-f/--format` with the
-  `--output-format` alias, `-q/--quiet`, `--cwd`, `-v`, `--approval-mode`,
-  `--sandbox`, `--yolo`, `--standalone`).
-- Subcommands: `src/main.rs` `Commands` lists `sessions`, `session`, `launch`,
-  `export`, `import`, `providers`, `models`, `config`, `upgrade`, `tool-advisor`,
-  `doctor`, `auth`, `validate`, `edit`, `exec`, `acp`, `completions`, `mcp`,
-  `research`, `daemon`, plus the `server`/`attach` pair behind the `server`
-  Cargo feature.
-- `daemon start` foreground behaviour and the "already running" exit:
-  `src/main.rs` `run_daemon`.
-- `daemon stop` is Unix-only; `codegg server` refuses to start without
-  `--standalone-core` (exit code 2): `src/main.rs` `cmd_server`.
-- `daemon scratch-usage` / `scratch-reclaim` flags (`--refresh`, `--json`,
-  `--tree`, `--apply`, `--endpoint`): `src/main.rs` `DaemonCommand`.
-- `tool-advisor` subcommands and the `decision-runtime-sdm` refusal for
-  `inspect`: `src/main.rs` `cmd_tool_advisor`.
-- `doctor` subsystem list and the "exits 0 even when it reports problems"
-  behaviour: `src/main.rs` `cmd_doctor`.
-- `edit` target-path precedence, the `hx`/`vim`/`vi`/`nano` fallback order,
-  and "re-reads the file, does not change the exit status":
-  `src/main.rs` `edit_target_path` and `cmd_edit`.
-- `completions` supported shells (`bash`, `elvish`, `fish`, `powershell`,
-  `zsh`) and the per-shell output file names: `src/main.rs` `cmd_completions`.
-- `upgrade` behaviour (a managed-install transaction, not `install.sh`):
-  `src/upgrade/mod.rs`.
-- Session store path `<project>/.codegg/sessions.db`:
-  `crates/codegg-core/src/storage/mod.rs`.
-- `mcp` CLI verbs (`list`, `add`, `remove`, `enable`, `debug`) and the
-  `--server-type`, `-c`, `-a`, `-u` flags: `src/mcp/cli.rs`.
-- `research` flags and their defaults: `src/main.rs` `Commands::Research`.
-- There is no `codegg plugins` subcommand and no `codegg mcp servers`
-  spelling: `src/main.rs` `Commands`.
-- ACP policy overrides persist in the principal preference record in the data
-  catalog; `CODEGG_DATA_HOME` selects that catalog root:
-  `src/acp.rs` (`RuntimePolicySet`), `src/core/daemon_ops.rs`, and
-  `crates/codegg-core/src/storage/paths.rs`.
+Corrected: the verbose flag is spelled `-v` or `--verbose`. The daemon-backed TUI uses its project catalog rather than this legacy CLI store.
