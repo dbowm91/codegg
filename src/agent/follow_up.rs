@@ -617,6 +617,7 @@ impl AgentLoop {
                             preview
                         );
                         crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                            session_id: Some(self.session_id.clone()),
                             message: message.clone(),
                         });
                         // Same terminal as the main loop's arm: the model

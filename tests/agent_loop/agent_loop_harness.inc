@@ -6587,7 +6587,7 @@ async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
     let mut saw_diagnostic = false;
     loop {
         match rx.try_recv() {
-            Ok(AppEvent::Error { message }) => {
+            Ok(AppEvent::Error { message, .. }) => {
                 if message
                     .contains("stop_reason=tool_calls without parseable structured tool calls")
                 {

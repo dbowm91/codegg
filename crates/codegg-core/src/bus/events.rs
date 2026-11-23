@@ -213,7 +213,11 @@ pub enum AppEvent {
         tokens_after: usize,
     },
     /// An error occurred.
-    Error { message: String },
+    Error {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        message: String,
+    },
     /// An informational message.
     Info { message: String },
     /// A question is pending user response.

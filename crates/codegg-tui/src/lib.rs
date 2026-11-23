@@ -2873,6 +2873,29 @@ mod async_cmd_tests {
     }
 
     #[test]
+    fn app_error_from_another_session_does_not_change_the_active_view() {
+        let mut app = make_test_app();
+        app.session_state.session = Some(test_session());
+        app.session_state.session_status = SessionStatus::Working;
+
+        let handled = crate::runtime::app_events::handle_app_event_batch(
+            &mut app,
+            vec![codegg::bus::events::AppEvent::Error {
+                session_id: Some("previous-session".into()),
+                message: "stale turn error".into(),
+            }],
+        );
+
+        assert!(!handled);
+        assert_eq!(app.session_state.session_status, SessionStatus::Working);
+        assert!(app
+            .messages_state
+            .toasts
+            .iter()
+            .all(|toast| !toast.message.contains("stale turn error")));
+    }
+
+    #[test]
     fn text_delta_is_appended_to_the_visible_transcript() {
         let mut app = make_test_app();
 

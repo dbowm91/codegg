@@ -87,21 +87,26 @@ mod tests {
     async fn event_log_is_bounded_and_retains_newest_events() {
         let bus = PluginEventBus::new(2);
         bus.publish(AppEvent::Error {
+            session_id: None,
             message: "first".into(),
         })
         .await;
         bus.publish(AppEvent::Error {
+            session_id: None,
             message: "second".into(),
         })
         .await;
         bus.publish(AppEvent::Error {
+            session_id: None,
             message: "third".into(),
         })
         .await;
 
         let log = bus.event_log.read().await;
         assert_eq!(log.len(), 2);
-        assert!(matches!(log.front(), Some(AppEvent::Error { message }) if message == "second"));
-        assert!(matches!(log.back(), Some(AppEvent::Error { message }) if message == "third"));
+        assert!(
+            matches!(log.front(), Some(AppEvent::Error { message, .. }) if message == "second")
+        );
+        assert!(matches!(log.back(), Some(AppEvent::Error { message, .. }) if message == "third"));
     }
 }

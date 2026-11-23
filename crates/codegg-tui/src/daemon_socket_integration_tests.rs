@@ -2415,12 +2415,9 @@ async fn global_only_subscription_does_not_receive_session_events() {
     abort_server(server_handle).await;
 }
 
-/// Test for Pass 4: replay on Subscribe uses the same filter as live
-/// forwarding. Two session events and one global event are published
-/// before any client connects; the client subscribes to session s1
-/// from_event_seq=0 and must see the s1 event and the global event
-/// (because include_global is true on a session filter), but not the
-/// s2 event.
+/// Replay on Subscribe uses the shared raw filter for session and global events.
+/// A session subscriber sees its own event and allowlisted global snapshots, but
+/// not a sessionless error or another session's event.
 #[tokio::test]
 async fn resume_replay_uses_same_filter_as_live_forwarding() {
     let daemon = Arc::new(CoreDaemon::new(None, None, None));
@@ -2458,7 +2455,18 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
             None,
             CoreEvent::Error {
                 code: "global_pre".into(),
-                message: "m".into(),
+                message: "stale global error".into(),
+            },
+        )
+        .await;
+    daemon
+        .event_log
+        .publish(
+            None,
+            None,
+            CoreEvent::SnapshotModels {
+                current_model: None,
+                models: Vec::new(),
             },
         )
         .await;
@@ -2536,11 +2544,11 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
     // Collect every event frame for a short window. The replay
     // delivers them as a burst; live events would be very rare
     // here because we are not publishing during this window.
-    let mut received_sids: Vec<Option<String>> = Vec::new();
+    let mut received_events: Vec<(Option<String>, CoreEvent)> = Vec::new();
     let collect = tokio::time::timeout(Duration::from_millis(300), async {
         while let Some(frame) = read_frame(&mut reader2).await {
             if let CoreFrame::Event(env) = frame {
-                received_sids.push(env.session_id.clone());
+                received_events.push((env.session_id.clone(), env.payload));
             } else {
                 // Stop on a non-Event frame (e.g. Response, Pong).
                 break;
@@ -2550,22 +2558,33 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
     .await;
     let _ = collect;
 
-    // We expect exactly the s1 event and the global event from the
-    // pre-publish burst, in seq order. The s2 event must NOT appear.
     assert!(
-        received_sids.iter().any(|s| s.as_deref() == Some("s1")),
+        received_events
+            .iter()
+            .any(|(sid, _)| sid.as_deref() == Some("s1")),
         "expected s1 event in replay, got {:?}",
-        received_sids
+        received_events
     );
     assert!(
-        received_sids.iter().any(|s| s.is_none()),
-        "expected global event in replay (session filter has include_global=true), got {:?}",
-        received_sids
+        received_events.iter().any(|(sid, payload)| {
+            sid.is_none() && matches!(payload, CoreEvent::SnapshotModels { .. })
+        }),
+        "expected an allowlisted global snapshot in replay, got {:?}",
+        received_events
     );
     assert!(
-        !received_sids.iter().any(|s| s.as_deref() == Some("s2")),
+        !received_events
+            .iter()
+            .any(|(sid, payload)| { sid.is_none() && matches!(payload, CoreEvent::Error { .. }) }),
+        "must not replay a sessionless error into s1, got {:?}",
+        received_events
+    );
+    assert!(
+        !received_events
+            .iter()
+            .any(|(sid, _)| sid.as_deref() == Some("s2")),
         "must not see s2 event in s1 replay, got {:?}",
-        received_sids
+        received_events
     );
 
     abort_server(server_handle2).await;

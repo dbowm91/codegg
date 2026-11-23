@@ -394,6 +394,7 @@ impl CoreDaemon {
                 if current_agent_idx >= agents.len() {
                     crate::bus::global::GlobalEventBus::publish(
                         crate::bus::events::AppEvent::Error {
+                            session_id: Some(session_id.clone()),
                             message: format!(
                                 "Invalid agent index {} for {} agents",
                                 current_agent_idx,
@@ -623,6 +624,7 @@ impl CoreDaemon {
                     if registry.get(&provider_name).is_none() {
                         crate::bus::global::GlobalEventBus::publish(
                             crate::bus::events::AppEvent::Error {
+                                session_id: Some(session_id.clone()),
                                 message: format!(
                                     "Provider '{}' not found. Please check your configuration.",
                                     provider_name

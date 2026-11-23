@@ -1242,6 +1242,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                         .await;
                     crate::bus::global::GlobalEventBus::publish(
                         crate::bus::events::AppEvent::Error {
+                            session_id: Some(session_id_for_spawn.clone()),
                             message: format!("Agent error: {}", e),
                         },
                     );

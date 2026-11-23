@@ -190,8 +190,10 @@ impl CoreDaemon {
         Option<String>,
         crate::protocol::core::CoreEvent,
     )> {
+        let app_event_session_id = super::app_event_session_scope(&app_event);
         let mut core_event = super::map_app_event_to_core_event(app_event)?;
         let (session_id, mut turn_id) = super::core_event_metadata(&core_event);
+        let session_id = session_id.or(app_event_session_id);
         // A session update publishes the session's own summary, so a
         // reader is not left with a stub that erases what it holds.
         if let crate::protocol::core::CoreEvent::SessionUpdated {
@@ -699,11 +701,14 @@ impl CoreDaemon {
                                         .await;
                                 }
                             }
-                            crate::bus::events::AppEvent::Error { message } => {
+                            crate::bus::events::AppEvent::Error {
+                                message,
+                                session_id,
+                            } => {
                                 use super::notification::*;
                                 let event = NotificationEvent {
                                     id: format!("notif-{}", uuid::Uuid::new_v4()),
-                                    session_id: None,
+                                    session_id: session_id.clone(),
                                     turn_id: None,
                                     kind: NotificationKind::Error,
                                     priority: NotificationPriority::High,

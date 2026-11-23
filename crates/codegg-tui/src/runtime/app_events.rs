@@ -507,7 +507,21 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
 
             true
         }
-        AppEvent::Error { message } => {
+        AppEvent::Error {
+            message,
+            session_id,
+        } => {
+            let active_session_id = app
+                .session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str());
+            if session_id
+                .as_deref()
+                .is_some_and(|event_session_id| Some(event_session_id) != active_session_id)
+            {
+                return false;
+            }
             tracing::debug!(
                 target: "codegg::tui::events",
                 message = %message,

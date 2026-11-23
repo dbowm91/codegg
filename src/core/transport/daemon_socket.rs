@@ -11,7 +11,9 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::daemon::CoreDaemon;
-use crate::core::event_log::{event_matches_filter, EventFilter};
+#[cfg(test)]
+use crate::core::event_log::event_matches_filter;
+use crate::core::event_log::{event_matches_raw_filter, EventFilter};
 use crate::error::AppError;
 use crate::protocol::core::{CoreEvent, CoreResponse, EventEnvelope, RequestEnvelope};
 use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
@@ -748,8 +750,8 @@ async fn handle_client(
                             // Build the new filter from this Subscribe frame.
                             //
                             // A session_id produces a session-scoped filter
-                            // (events for that session, plus sessionless
-                            // events when `include_global: true`). The absence
+                            // (events for that session, plus allowlisted
+                            // sessionless events when `include_global: true`). The absence
                             // of session_id yields a global-only filter
                             // (`include_global: false`); it does NOT match
                             // every session. An all-sessions subscription
@@ -783,7 +785,10 @@ async fn handle_client(
                             let from = from_event_seq.unwrap_or(0);
                             let events = daemon.event_log.replay_from(from, &new_filter).await;
                             let mut w = writer.lock().await;
-                            for event in events {
+                            for event in events
+                                .into_iter()
+                                .filter(|event| event_matches_raw_filter(&new_filter, event))
+                            {
                                 let frame = CoreFrame::Event(event);
                                 if let Ok(json) = serde_json::to_string(&frame) {
                                     if let Err(error) = w.write_all(json.as_bytes()).await {
@@ -1295,7 +1300,7 @@ async fn forward_events_with_observer(
                         // ClientHello/ServerHello handshake to opt in.
                         false
                     } else {
-                        guard.iter().any(|f| event_matches_filter(f, &event))
+                        guard.iter().any(|f| event_matches_raw_filter(f, &event))
                     }
                 };
                 if !matches {
@@ -1774,9 +1779,9 @@ mod tests {
         let (_, writer_half) = tokio::io::split(Box::new(writer_stream) as BoxCoreSocketIo);
         let writer = Arc::new(Mutex::new(writer_half));
         let filters = Arc::new(RwLock::new(vec![EventFilter {
-            session_id: None,
+            session_id: Some("session".into()),
             client_id: None,
-            include_global: true,
+            include_global: false,
         }]));
         let cancellation = CancellationToken::new();
 
@@ -1788,7 +1793,7 @@ mod tests {
         ));
         drop(peer_stream);
         event_tx
-            .send(envelope(1, None))
+            .send(envelope(1, Some("session")))
             .expect("forwarder should still own the receiver");
 
         tokio::time::timeout(Duration::from_millis(100), handle)

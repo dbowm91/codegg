@@ -2027,6 +2027,7 @@ impl AgentLoop {
                         preview
                     );
                     crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                        session_id: Some(self.session_id.clone()),
                         message: message.clone(),
                     });
                     // The model asked to call tools and the loop could honour
@@ -2130,6 +2131,7 @@ impl AgentLoop {
                                     "work plan arbiter inconclusive; not marking complete"
                                 );
                                 crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                                    session_id: Some(self.session_id.clone()),
                                     message: format!("WorkPlan arbiter inconclusive: {reason}"),
                                 });
                             }
