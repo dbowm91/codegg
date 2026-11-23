@@ -245,6 +245,16 @@ impl PanelManagerDialog {
             ));
         }
         spans.push(Span::styled("· p", Style::default().fg(theme.muted)));
+        let shown = self.list.shown().len();
+        let total = SidePanelId::ALL.len();
+        spans.push(Span::styled(
+            if self.list.shows_all() {
+                format!(" · A full ({total})")
+            } else {
+                format!(" · A all ({shown}/{total})")
+            },
+            Style::default().fg(theme.muted),
+        ));
         spans
     }
 }
@@ -294,6 +304,14 @@ impl Component for PanelManagerDialog {
             {
                 return Some(TuiMsg::CyclePanelPlacement);
             }
+            KeyCode::Char('A')
+                if self.list.mode() == InputMode::Normal
+                    && (key.modifiers.contains(KeyModifiers::SHIFT)
+                        || key.modifiers.is_empty()) =>
+            {
+                self.list.toggle_show_all();
+                return None;
+            }
             // A digit binds the *highlighted* panel. Guarded on no modifier
             // so a Ctrl+digit (which recalls a saved panel) is not swallowed
             // here and recorded as a fresh binding by accident.
@@ -318,11 +336,21 @@ impl Component for PanelManagerDialog {
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let buf = frame.buffer_mut();
+        let height = area.height;
+        // The footer outranks the filter block: below 13 rows the filter
+        // moves into the title strip.
+        let (filter_rows, footer_rows) = if height >= 13 {
+            (3, 3)
+        } else if height >= 9 {
+            (0, 3)
+        } else {
+            (0, 0)
+        };
         let chunks = Layout::vertical([
-            Constraint::Length(3), // title (+ the layout strip, on its inner row)
-            Constraint::Length(3), // filter
-            Constraint::Min(1),    // list
-            Constraint::Length(3), // footer
+            Constraint::Length(3),           // title (+ the strip on its inner row)
+            Constraint::Length(filter_rows), // filter
+            Constraint::Min(1),              // list
+            Constraint::Length(footer_rows), // footer
         ])
         .split(area);
 
@@ -340,34 +368,44 @@ impl Component for PanelManagerDialog {
             height: 1,
             ..title_inner
         };
-        Widget::render(
-            Paragraph::new(Line::from(self.layout_spans(theme))),
-            strip,
-            buf,
-        );
-
         let filtering = self.list.filtering();
-        // The filter row's edge is primary exactly while it holds the filter,
-        // which is what `focused` already means — no second colour literal.
-        let filter_inner = Section::plain(theme)
-            .focused(filtering)
-            .draw(chunks[1], buf);
-        Widget::render(
-            Paragraph::new(Line::from(self.list.filter_row(theme, "panels"))),
-            filter_inner,
-            buf,
-        );
+        // With no filter block the strip carries the query instead.
+        let strip_spans = if filter_rows == 0 && filtering {
+            self.list.filter_row(theme, "panels")
+        } else {
+            self.layout_spans(theme)
+        };
+        Widget::render(Paragraph::new(Line::from(strip_spans)), strip, buf);
+
+        if filter_rows > 0 {
+            // The edge is primary exactly while it holds the filter.
+            let filter_inner = Section::plain(theme)
+                .focused(filtering)
+                .draw(chunks[1], buf);
+            Widget::render(
+                Paragraph::new(Line::from(self.list.filter_row(theme, "panels"))),
+                filter_inner,
+                buf,
+            );
+        }
 
         // The list. A filtered-out row stays visible but dimmed rather than
         // disappearing: the user needs to see *why* the entry they expected
         // is not there.
         let mut lines: Vec<Line<'static>> = Vec::new();
-        for (index, panel) in SidePanelId::ALL.iter().copied().enumerate() {
-            let selected = index == self.list.cursor();
+        for index in self.list.shown() {
+            let Some(panel) = SidePanelId::ALL.get(index).copied() else {
+                continue;
+            };
+            let selected = index == self.list.effective_cursor();
             let visible = self.list.matches(panel);
             let saved = self.hotkeys.digit_for(panel);
             let badge = match saved {
                 Some(digit) => format!("  ^-{digit}"),
+                None => String::new(),
+            };
+            let parent = match panel.parent() {
+                Some(parent) => format!("  → {}", parent.label()),
                 None => String::new(),
             };
             let marker = if selected { "▸" } else { " " };
@@ -379,6 +417,7 @@ impl Component for PanelManagerDialog {
                     format!("{}  ", panel.hint()),
                     Style::default().fg(theme.muted),
                 ),
+                Span::styled(parent, Style::default().fg(theme.muted)),
                 Span::styled(badge, Style::default().fg(theme.warning)),
             ]));
         }
@@ -390,24 +429,22 @@ impl Component for PanelManagerDialog {
             buf,
         );
 
-        // Mode-specific, because the keys that differ are exactly the ones a user
-        // reaches for and then finds do nothing. In Normal the directional is
-        // the point of the box, so it is named first.
-        //
-        // Budgeted to the box's inner width (~41 columns at the test backend):
-        // this is a `Length(3)` chunk, so anything past that is silently cut
-        // and the row just ends mid-key. `p` and `0`-`9` are not repeated here
-        // because the strip and the list rows already say where they live.
-        let footer = footer_line(self.list.mode(), filtering);
-        let footer_inner = Section::plain(theme).draw(chunks[3], buf);
-        Widget::render(
-            Paragraph::new(Line::from(Span::styled(
-                footer,
-                Style::default().fg(theme.secondary),
-            ))),
-            footer_inner,
-            buf,
-        );
+        // Mode-specific: the keys that differ are the ones a user reaches for.
+        // Budgeted to the box's inner width (~41 columns): this is
+        // a `Length(3)` chunk, so anything past that is cut mid-key.
+        // `p` and the digits are not repeated — the strip and rows name them.
+        if footer_rows > 0 {
+            let footer = footer_line(self.list.mode(), filtering);
+            let footer_inner = Section::plain(theme).draw(chunks[3], buf);
+            Widget::render(
+                Paragraph::new(Line::from(Span::styled(
+                    footer,
+                    Style::default().fg(theme.secondary),
+                ))),
+                footer_inner,
+                buf,
+            );
+        }
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -418,6 +455,7 @@ impl Component for PanelManagerDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panels::PanelClass;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -437,6 +475,68 @@ mod tests {
             PanelPlacement::Right,
             true,
         )
+    }
+
+    #[test]
+    fn the_list_shows_the_full_panels_and_folds_the_detail_views() {
+        let d = dialog();
+        let shown: Vec<SidePanelId> = d
+            .list
+            .shown()
+            .into_iter()
+            .filter_map(|index| SidePanelId::ALL.get(index).copied())
+            .collect();
+        assert!(shown.contains(&SidePanelId::Chat));
+        assert!(shown.contains(&SidePanelId::Files));
+        assert!(
+            !shown.contains(&SidePanelId::Diff),
+            "a diff view belongs to Review and is not a top-level panel"
+        );
+        assert!(
+            shown.len() < SidePanelId::ALL.len(),
+            "the list has to be shorter than the registry or nothing was folded"
+        );
+        assert!(
+            shown.iter().all(|panel| panel.class() == PanelClass::Full),
+            "only full panels are listed by default"
+        );
+    }
+
+    #[test]
+    fn shift_a_shows_and_hides_the_folded_views() {
+        let mut d = dialog();
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            None
+        );
+        assert!(d.list.shows_all());
+        assert_eq!(d.list.shown().len(), SidePanelId::ALL.len());
+        d.handle_key(key(KeyCode::Char('A'), KeyModifiers::SHIFT));
+        assert!(!d.list.shows_all());
+        assert!(d.list.shown().len() < SidePanelId::ALL.len());
+    }
+
+    #[test]
+    fn a_filter_reveals_a_folded_panel_by_name() {
+        let mut d = dialog();
+        d.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
+        for ch in "diff".chars() {
+            d.handle_key(key(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert!(
+            d.list.appears(SidePanelId::Diff.index()),
+            "a user who types `diff` means the diff view"
+        );
+    }
+
+    #[test]
+    fn stepping_the_list_skips_folded_rows() {
+        let mut d = dialog();
+        // Session → Chat → Terminal → Help → Sessions; `Tree` is folded.
+        for _ in 0..4 {
+            d.handle_key(key(KeyCode::Down, KeyModifiers::NONE));
+        }
+        assert_eq!(d.selected(), Some(SidePanelId::Sessions));
     }
 
     #[test]
@@ -482,6 +582,42 @@ mod tests {
             !text.contains("⇧H/J/K/L"),
             "the footer names an edge that does not exist: {text}"
         );
+    }
+    #[test]
+    fn a_short_box_still_renders_the_panel_list() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let theme = Arc::new(Theme::default());
+        for (width, height) in [(48u16, 16u16), (48, 12), (48, 8)] {
+            let mut d = dialog();
+            let mut terminal =
+                Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+            terminal
+                .draw(|frame| d.render(frame, frame.area(), &theme))
+                .expect("draw the panel manager");
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                text.contains("Session"),
+                "the {width}x{height} box clipped its list: {text}"
+            );
+            if height >= 9 {
+                assert!(
+                    text.contains("Enter load"),
+                    "the {width}x{height} box lost its keys: {text}"
+                );
+            }
+            assert!(
+                text.starts_with('┌'),
+                "the {width}x{height} box painted outside its area"
+            );
+        }
     }
 
     #[test]

@@ -473,6 +473,7 @@ pub struct Config {
     /// so a config that predates this key, or a hand-edited typo, still
     /// starts with a panel the user recognises rather than with none.
     pub panel_placement: Option<String>,
+    pub panel_layout: Option<HashMap<String, String>>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,
@@ -3334,12 +3335,10 @@ impl Config {
 
     /// Write to the **global** (per-user) config, never the project config.
     ///
-    /// A user preference — theme choice, last model — belongs to the account,
-    /// not to whichever repository happened to be open. `save()` prefers
-    /// `find_project_config()`, so mirroring a preference through it dropped
-    /// the choice into the first `.codegg/codegg.json(c)` above the cwd: the
-    /// setting then applied to that one checkout, and vanished everywhere
-    /// else. It also risked writing user state into a tracked repository file.
+    /// A preference belongs to the account, not to whichever repository is
+    /// open. `save()` prefers `find_project_config()`, so it confined a
+    /// preference to one checkout and risked writing user state into a
+    /// tracked file.
     pub fn save_global(&self) -> Result<(), crate::error::ConfigError> {
         let path = crate::paths::global_config_path().ok_or_else(|| {
             crate::error::ConfigError::Invalid(
@@ -3357,22 +3356,18 @@ impl Config {
             })?;
         }
 
-        // Provider credentials are persisted via the user credential store or
-        // the typed `provider.<id>.auth.encrypted_value` field (handled by
-        // the providers crate). The legacy `api_key` / `encrypted_api_key`
-        // fields on `ProviderConfig` are surfaced as-is; the config crate
-        // intentionally does not own the encryption pipeline.
+        // Credentials live in the credential store or the typed
+        // `provider.<id>.auth.encrypted_value` field; this crate does not own
+        // the encryption pipeline.
         let to_save = self.clone();
 
         let content = serde_json::to_string_pretty(&to_save).map_err(|e| {
             crate::error::ConfigError::Parse(format!("Failed to serialize config: {}", e))
         })?;
 
-        std::fs::write(path, content).map_err(|e| {
+        write_atomic(path, &content).map_err(|e| {
             crate::error::ConfigError::Invalid(format!("Failed to write config file: {}", e))
-        })?;
-
-        Ok(())
+        })
     }
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -5845,4 +5840,83 @@ mod tests {
         assert_eq!(config.orphan_grace_hours, None);
         assert_eq!(config.enabled, None);
     }
+
+    #[test]
+    fn a_save_replaces_the_file_and_leaves_no_staging_sibling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codegg.jsonc");
+        std::fs::write(&path, "{\"version\":\"old\"}").expect("seed");
+
+        Config::default().save_to(&path).expect("save");
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            text.trim_start().starts_with('{') && text.trim_end().ends_with('}'),
+            "the file is one complete document: {text:?}"
+        );
+        let staging: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(staging.is_empty(), "a staging file survived: {staging:?}");
+    }
+
+    /// Concurrent saves leave one parseable document — the defect the
+    /// staging rename exists for.
+    #[test]
+    fn concurrent_saves_never_leave_a_half_written_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = std::sync::Arc::new(dir.path().join("codegg.jsonc"));
+        let config = Config::default();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = std::sync::Arc::clone(&path);
+                let config = config.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        config.save_to(path.as_path()).expect("save");
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("writer thread");
+        }
+
+        let text = std::fs::read_to_string(path.as_path()).expect("read");
+        serde_json::from_str::<Config>(&text).expect("one parseable document");
+    }
+}
+
+static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Replace `path` with `content` in one step: a plain write truncates first,
+/// so two writers leave a document that parses as neither.
+fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let directory = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config".to_string());
+    let sequence = STAGING_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = directory.join(format!(".{name}.tmp-{}-{sequence}", std::process::id()));
+
+    let written = std::fs::File::create(&staging).and_then(|mut file| {
+        file.write_all(content.as_bytes())?;
+        file.sync_all()
+    });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+
+    if let Err(error) = std::fs::rename(&staging, path) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+    Ok(())
 }

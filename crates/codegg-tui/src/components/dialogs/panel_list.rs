@@ -13,20 +13,15 @@
 //!
 //! ## Why the cursor is not a filtered index
 //!
-//! The cursor is an index into [`SidePanelId::ALL`], never into the filtered
-//! view. Typing narrows what is *visible* without renumbering what `Enter`
-//! acts on: a user who filtered to `chat` and pressed `Enter` wants chat, not
-//! "the third of whatever matched".
-//!
-//! Filtered-out rows stay visible but dimmed rather than disappearing, so the
-//! user can see *why* an entry they expected is not highlighted.
+//! The cursor indexes [`SidePanelId::ALL`]; a filter hides rows without
+//! renumbering it, and the highlight follows the nearest match.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use std::sync::Arc;
 
 use crate::input::InputMode;
-use crate::panels::SidePanelId;
+use crate::panels::{PanelClass, SidePanelId};
 use crate::theme::Theme;
 
 /// Upper bound on the filter text, so a held key cannot grow it without limit.
@@ -39,6 +34,7 @@ pub(crate) struct PanelListState {
     /// Index into [`SidePanelId::ALL`], not into the filtered view.
     cursor: usize,
     mode: InputMode,
+    show_all: bool,
 }
 
 impl PanelListState {
@@ -49,6 +45,7 @@ impl PanelListState {
             query: String::new(),
             cursor: active.index(),
             mode: InputMode::Normal,
+            show_all: false,
         }
     }
 
@@ -84,7 +81,7 @@ impl PanelListState {
 
     /// The highlighted panel, if the registry is non-empty.
     pub(crate) fn selected(&self) -> Option<SidePanelId> {
-        SidePanelId::ALL.get(self.cursor).copied()
+        SidePanelId::ALL.get(self.effective_cursor()).copied()
     }
 
     /// True when `panel` passes the current filter.
@@ -104,14 +101,64 @@ impl PanelListState {
         })
     }
 
-    /// Move the highlight by `delta`, clamped to the registry.
+    pub(crate) fn appears(&self, index: usize) -> bool {
+        let Some(panel) = SidePanelId::ALL.get(index).copied() else {
+            return false;
+        };
+        if self.filtering() {
+            return self.matches(panel);
+        }
+        self.show_all || panel.class() == PanelClass::Full
+    }
+
+    /// The row the highlight and `Enter` point at: the nearest listed one.
+    pub(crate) fn effective_cursor(&self) -> usize {
+        if self.appears(self.cursor) {
+            return self.cursor;
+        }
+        let len = SidePanelId::ALL.len();
+        (self.cursor..len)
+            .chain(0..self.cursor)
+            .find(|index| self.appears(*index))
+            .unwrap_or(self.cursor)
+    }
+
+    pub(crate) fn shows_all(&self) -> bool {
+        self.show_all
+    }
+
+    pub(crate) fn toggle_show_all(&mut self) {
+        self.show_all = !self.show_all;
+    }
+
+    pub(crate) fn shown(&self) -> Vec<usize> {
+        (0..SidePanelId::ALL.len())
+            .filter(|index| self.appears(*index))
+            .collect()
+    }
+
+    /// Move by `delta`, skipping rows that are not listed.
     pub(crate) fn move_cursor(&mut self, delta: isize) {
         let len = SidePanelId::ALL.len() as isize;
-        if len == 0 {
+        if len == 0 || delta == 0 {
             return;
         }
-        let next = (self.cursor as isize + delta).clamp(0, len - 1);
-        self.cursor = next as usize;
+        let step = delta.signum();
+        for _ in 0..delta.unsigned_abs() {
+            let mut next = self.cursor as isize + step;
+            let mut moved = false;
+            while next >= 0 && next < len {
+                if self.appears(next as usize) {
+                    self.cursor = next as usize;
+                    moved = true;
+                    break;
+                }
+                next += step;
+            }
+            if !moved {
+                break;
+            }
+        }
     }
 
     /// Scroll offset that keeps the highlighted row on screen.
@@ -127,11 +174,18 @@ impl PanelListState {
         if page == 0 {
             return 0;
         }
-        let total = SidePanelId::ALL.len() as u16;
+        let shown = self.shown();
+        let Some(position) = shown
+            .iter()
+            .position(|index| *index == self.effective_cursor())
+        else {
+            return 0;
+        };
+        let total = shown.len() as u16;
         // Never past the end: with fewer rows than panels, sitting at the
         // bottom is what puts the *last* entries on screen.
         let max_offset = total.saturating_sub(page);
-        let cursor = self.cursor as u16;
+        let cursor = position as u16;
         if cursor < page {
             return 0;
         }
@@ -267,18 +321,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_cursor_stays_on_a_real_panel_while_filtering() {
+    fn filtering_points_the_highlight_at_the_panel_the_user_typed() {
         let mut state = PanelListState::new(SidePanelId::Agents);
-        let agents = state.selected().expect("registry is non-empty");
-        assert_eq!(agents, SidePanelId::Agents);
-
-        // Filtering must not renumber what Enter acts on.
-        state.push_query('c');
-        state.push_query('h');
-        state.push_query('a');
-        state.push_query('t');
-        assert!(state.filtering());
         assert_eq!(state.selected(), Some(SidePanelId::Agents));
+        for ch in "chat".chars() {
+            state.push_query(ch);
+        }
+        assert!(state.filtering());
+        // The raw cursor is a registry index and never renumbers.
+        assert_eq!(state.cursor(), SidePanelId::Agents.index());
+        // The row Enter acts on follows the filter, so typing a name and
+        // pressing Enter loads *that* panel.
+        assert_eq!(state.selected(), Some(SidePanelId::Chat));
     }
 
     #[test]
@@ -296,12 +350,15 @@ mod tests {
         state.move_cursor(10_000);
         let last = SidePanelId::ALL.len() - 1;
         assert_eq!(state.cursor(), last);
+        let shown = state.shown();
+        let last_position = shown.len() - 1;
+        assert_eq!(shown.last().copied(), Some(last));
         assert_eq!(
             state.scroll(3) as usize,
-            last,
+            last_position,
             "a three-row box shows one content row after its border, and this \
              helper subtracts those two rows itself — so the offset must be the \
-             last row rather than zero"
+             last listed row rather than zero"
         );
     }
 

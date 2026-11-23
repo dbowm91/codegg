@@ -93,8 +93,8 @@ fn choose_by_label(app: &mut App, id: SidePanelId) {
     let from = app.panel_host.active().index();
     let to = id.index();
     open_manager(app);
-    // The list wraps, so this is a forward distance rather than a
-    // subtraction that could go negative.
+    // Show the folded views so the walk is registry order; the list wraps.
+    app.on_key(key(KeyCode::Char('A'), KeyModifiers::SHIFT));
     manager_down(
         app,
         (to + SidePanelId::ALL.len() - from) % SidePanelId::ALL.len(),

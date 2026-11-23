@@ -21,8 +21,6 @@
 //! without losing its cursor, filter or scroll offset — and why a panel is
 //! never loaded on two edges at once.
 //!
-//! ## Authority
-//!
 //! ## Key ownership
 //!
 //! A focused panel owns *navigation*: arrows, `j`/`k`, paging, channel
@@ -94,13 +92,8 @@ pub fn render_hosted(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    // A scratch terminal, rebuilt each frame. The column is small and the
-    // alternative — caching one per panel — would let ratatui's buffer
-    // diffing retain cells a shrunken widget no longer paints, which is the
-    // one failure mode worse than the allocation.
-    // `TestBackend`'s error type is `Infallible`, so this never fails; `.ok()`
-    // rather than `expect` keeps the render path panic-free without tripping
-    // the irrefutable-let-pattern lint that a direct `let Ok(..) else` hits.
+    // Rebuilt each frame: a cached terminal would let ratatui's diffing keep
+    // cells a shrunken widget no longer paints. `TestBackend` cannot fail.
     let Some(mut terminal) = Terminal::new(TestBackend::new(area.width, area.height)).ok() else {
         return;
     };
@@ -119,10 +112,8 @@ pub fn render_hosted(
         widget.render_in_panel(frame, frame.area(), theme);
     });
 
-    // Copy the origin-based scratch into `buf` at `area`'s screen position.
-    // The scratch has no idea where the column lives: intersecting it with
-    // `buf.area` instead painted the panel over the top-left corner, clipping
-    // across the main view.
+    // Copy the origin-based scratch into `buf` at `area`: intersecting with
+    // `buf.area` painted the panel over the top-left corner.
     let scratch = terminal.backend().buffer();
     for y in 0..area.height {
         for x in 0..area.width {
@@ -203,6 +194,15 @@ impl PanelDirection {
             Self::Down => "below",
         }
     }
+}
+
+/// Registry tier of a panel. See [`SidePanelId::class`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelClass {
+    /// A surface the user lives in. Listed by the manager by default.
+    Full,
+    /// A view of a [`PanelClass::Full`] panel. Listed on request.
+    Detail,
 }
 
 /// Which edge of the frame the panel host is painted into.
@@ -694,6 +694,62 @@ impl SidePanelId {
         }
     }
 
+    /// Inverse of [`Self::config_key`]; an unknown name resolves to `None`.
+    pub fn from_config_key(key: &str) -> Option<Self> {
+        let needle = key.trim().to_ascii_lowercase();
+        // `sessions` has always meant the session projection and still does;
+        // the `/sessions` box panel takes `session_switcher` instead. The
+        // singular is accepted here because a hand-edited config reaches for
+        // it, and it names the same surface.
+        if needle == "session" || needle == "sessions" {
+            return Some(Self::Session);
+        }
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|panel| panel.config_key() == needle)
+    }
+
+    /// A surface the user lives in, or a view of one. Presentation only.
+    pub fn class(self) -> PanelClass {
+        match self {
+            Self::Session
+            | Self::Chat
+            | Self::Terminal
+            | Self::Files
+            | Self::Sessions
+            | Self::Help
+            | Self::Agents
+            | Self::Tasks
+            | Self::Logs
+            | Self::Context
+            | Self::Review
+            | Self::Models
+            | Self::Mcp
+            | Self::Plugins
+            | Self::Keybinds
+            | Self::Themes
+            | Self::Team
+            | Self::Control => PanelClass::Full,
+            _ => PanelClass::Detail,
+        }
+    }
+
+    /// The full panel a folded view belongs to, rendered beside its row.
+    pub fn parent(self) -> Option<Self> {
+        match self {
+            Self::Goal | Self::Plan | Self::Memory => Some(Self::Session),
+            Self::Tree => Some(Self::Files),
+            Self::Cost | Self::Usage | Self::Stats => Some(Self::Context),
+            Self::Doctor => Some(Self::Logs),
+            Self::ShellShow => Some(Self::Terminal),
+            Self::Diff | Self::Security => Some(Self::Review),
+            Self::TaskView | Self::Research => Some(Self::Tasks),
+            Self::Collaborators => Some(Self::Team),
+            _ => None,
+        }
+    }
+
     /// Whether this panel owns a live projection or a controller and so has
     /// its own `SidePanel` implementation, rather than being a box adopted at
     /// runtime.
@@ -1169,6 +1225,13 @@ impl PanelSlot {
         self.visible = true;
     }
 
+    /// Put `panel` here without revealing it. `occupy` cannot restore: it
+    /// reveals and records the default as history, which a swap would revive.
+    pub fn restore(&mut self, panel: SidePanelId) {
+        self.panel = panel;
+        self.history.clear();
+    }
+
     /// Move whatever is here to `target`, leaving this edge restored.
     ///
     /// Returns the panel that left, so the caller can hand it to the other
@@ -1251,19 +1314,15 @@ impl Default for SidePanelHost {
 impl SidePanelHost {
     pub fn new() -> Self {
         Self {
-            // Every edge starts on Session and expanded, but only the
-            // selected one is *shown*: the other two are staging for a swap,
-            // and a fresh frame must still be the single right-hand column
-            // that shipped.
+            // Every edge starts on Session; only the selected one is shown,
+            // so a fresh frame is still the single right-hand column.
             slots: std::array::from_fn(|index| {
                 PanelSlot::new(
                     SidePanelId::Session,
                     PanelPlacement::from_index(index) == Some(PanelPlacement::default()),
                 )
             }),
-            // Right is the shipped layout, so a user with no stored
-            // preference gets exactly the frame they had before placements
-            // existed.
+            // Right is the shipped layout.
             selected: PanelPlacement::default(),
             focused: false,
             resizing: false,
@@ -1279,6 +1338,38 @@ impl SidePanelHost {
                 .map(hosted::HostPanel::placeholder)
                 .collect(),
         }
+    }
+
+    pub fn with_layout(
+        placement: PanelPlacement,
+        layout: &std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        let mut host = Self::new();
+        for edge in PanelPlacement::ALL {
+            let Some(panel) = layout
+                .get(edge.as_str())
+                .and_then(|key| SidePanelId::from_config_key(key))
+            else {
+                continue;
+            };
+            host.slot_mut(*edge).restore(panel);
+        }
+        host.set_visible_at(PanelPlacement::default(), false);
+        host.set_visible_at(placement, true);
+        host.select_placement(placement);
+        host
+    }
+
+    pub fn layout_map(&self) -> std::collections::BTreeMap<String, String> {
+        PanelPlacement::ALL
+            .iter()
+            .map(|edge| {
+                (
+                    edge.as_str().to_string(),
+                    self.panel_at(*edge).config_key().to_string(),
+                )
+            })
+            .collect()
     }
 
     /// A host whose selected edge is `placement`.
@@ -2399,6 +2490,82 @@ mod tests {
                 "duplicate persisted panel spelling: {}",
                 panel.config_key()
             );
+        }
+    }
+
+    #[test]
+    fn every_config_key_resolves_back_to_its_panel() {
+        for panel in SidePanelId::ALL.iter().copied() {
+            assert_eq!(
+                SidePanelId::from_config_key(panel.config_key()),
+                Some(panel),
+                "{} does not round-trip",
+                panel.config_key()
+            );
+        }
+    }
+
+    /// A panel cannot be folded into a parent it cannot name.
+    #[test]
+    fn every_detail_panel_names_a_full_parent() {
+        for panel in SidePanelId::ALL.iter().copied() {
+            match panel.class() {
+                PanelClass::Full => assert!(
+                    panel.parent().is_none(),
+                    "{} is full and names a parent",
+                    panel.label()
+                ),
+                PanelClass::Detail => {
+                    let parent = panel.parent().unwrap_or_else(|| {
+                        panic!("{} is detail and names no parent", panel.label())
+                    });
+                    assert_eq!(
+                        parent.class(),
+                        PanelClass::Full,
+                        "{} names a detail panel as its parent",
+                        panel.label()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_saved_layout_restores_each_edge_and_reveals_the_selected_one() {
+        let layout = std::collections::BTreeMap::from([
+            ("right".to_string(), "chat".to_string()),
+            ("left".to_string(), "files".to_string()),
+            ("bottom".to_string(), "terminal".to_string()),
+        ]);
+        let host = SidePanelHost::with_layout(PanelPlacement::Left, &layout);
+        assert_eq!(host.panel_at(PanelPlacement::Right), SidePanelId::Chat);
+        assert_eq!(host.panel_at(PanelPlacement::Left), SidePanelId::Files);
+        assert_eq!(host.panel_at(PanelPlacement::Bottom), SidePanelId::Terminal);
+        assert!(host.is_visible_at(PanelPlacement::Left));
+        assert!(
+            !host.is_visible_at(PanelPlacement::Right),
+            "a restored layout opens one column, not three"
+        );
+        assert!(!host.is_visible_at(PanelPlacement::Bottom));
+        assert_eq!(host.placement(), PanelPlacement::Left);
+    }
+
+    #[test]
+    fn an_unknown_panel_name_leaves_that_edge_on_its_default() {
+        let layout =
+            std::collections::BTreeMap::from([("right".to_string(), "nonsense".to_string())]);
+        let host = SidePanelHost::with_layout(PanelPlacement::Right, &layout);
+        assert_eq!(host.panel_at(PanelPlacement::Right), SidePanelId::Session);
+    }
+
+    #[test]
+    fn the_layout_round_trips_through_its_persisted_spelling() {
+        let mut host = SidePanelHost::new();
+        host.dock(SidePanelId::Files, PanelPlacement::Left);
+        let map = host.layout_map();
+        let restored = SidePanelHost::with_layout(PanelPlacement::Left, &map);
+        for edge in PanelPlacement::ALL.iter().copied() {
+            assert_eq!(restored.panel_at(edge), host.panel_at(edge));
         }
     }
 

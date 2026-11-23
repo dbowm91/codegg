@@ -897,6 +897,14 @@ impl App {
             .and_then(|c| c.panel_placement.as_deref())
             .and_then(crate::panels::PanelPlacement::parse)
             .unwrap_or_default();
+        let saved_panel_layout = cfg
+            .and_then(|c| c.panel_layout.as_ref())
+            .map(|raw| {
+                raw.iter()
+                    .map(|(edge, panel)| (edge.clone(), panel.clone()))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
         debug_log!(
             "loaded {} keybindings, custom config: {}",
             bindings.len(),
@@ -1191,7 +1199,10 @@ impl App {
             },
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
-            panel_host: crate::panels::SidePanelHost::with_placement(saved_panel_placement),
+            panel_host: crate::panels::SidePanelHost::with_layout(
+                saved_panel_placement,
+                &saved_panel_layout,
+            ),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             policy_ui: crate::commands::policy::PolicyUiState::default(),
             session_store: None,

@@ -339,7 +339,7 @@ fn panel_and_row_hints() -> Vec<(&'static str, String, bool)> {
 /// "a verb disappeared", and a surface that stops advertising is a failure.
 const RECORDED: &[(&str, &str)] = &[
     ("Tree", "j/k move · e expand · f fork · enter select"),
-    ("Files", "j/k move · ^d/^u page · l/→ peek · h/← up · enter open · i filter · r refresh · q/⇧Q close"),
+    ("Files", "j/k move · ^d/^u page · l/→ peek · h/← up · enter toggle · i filter · r refresh · q/⇧Q close"),
     ("Theme", "j/k navigate · enter apply"),
     ("Mcp", "j/k move · enter actions"),
     ("Diff", "j/k scroll · PgUp/PgDn page · s side-by-side · Home/End jump"),

@@ -82,6 +82,7 @@ fn the_panel_manager_still_loads_and_focuses_the_agents_panel() {
         DialogType::PanelManager,
         "/panels is where panel placement is answered"
     );
+    app.on_key(key(KeyCode::Char('A'), KeyModifiers::SHIFT));
     let steps = SidePanelId::Agents
         .index()
         .saturating_sub(app.panel_host.active().index());

@@ -188,6 +188,7 @@ pub const STRATEGY_TABLE: &[StrategyEntry] = &[
     scalar("vim_mode"),
     scalar("panel_hotkeys"),
     scalar("panel_placement"),
+    scalar("panel_layout"),
     scalar("hooks"),
     scalar("notifications"),
     scalar("catalog"),

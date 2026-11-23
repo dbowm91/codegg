@@ -49,7 +49,7 @@ use crate::file_tree::{TreeFilterField, TreeNodeKind, TreeRow};
 /// [`Component::keymap_hint`] hands the builder's rendering to the panel host.
 /// The panel chrome owns the word **back**, so `h` is **up** one level here.
 pub const HINT: &str =
-    "j/k move · ^d/^u page · l/→ peek · h/← up · enter open · i filter · r refresh · q/⇧Q close";
+    "j/k move · ^d/^u page · l/→ peek · h/← up · enter toggle · i filter · r refresh · q/⇧Q close";
 
 fn hint() -> HintLine {
     let mut hint = HintLine::new();
@@ -57,7 +57,7 @@ fn hint() -> HintLine {
         .push("^d/^u", "page")
         .push("l/→", "peek")
         .push("h/←", "up")
-        .push("enter", "open")
+        .push("enter", "toggle")
         .push("i", "filter")
         .push("r", "refresh")
         .push("q/⇧Q", "close");
@@ -263,12 +263,17 @@ impl FilesDialog {
         self.scroll.clamp(index, total, self.visible_height);
     }
 
-    /// Activate the selected row. A directory is **peeked into** — the same
-    /// motion `l` makes; a file asks the command layer to open it.
+    #[cfg(test)]
+    pub(crate) fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    /// Toggle a directory in place; batch a file open. Deliberately not `l`,
+    /// which steps into an open directory.
     fn activate(&self) -> Option<TuiMsg> {
         let row = self.selected_row()?;
         match row.kind {
-            TreeNodeKind::Directory => Some(TuiMsg::FilesDescend { path: row.path }),
+            TreeNodeKind::Directory => Some(TuiMsg::FilesToggle { path: row.path }),
             TreeNodeKind::File => Some(TuiMsg::FilesOpenSelected { path: row.path }),
         }
     }
@@ -505,7 +510,15 @@ impl Component for FilesDialog {
             // `Esc` is the **mode** switch, not the exit. In Normal mode
             // there is no mode to leave, so the key does nothing: the panel
             // keeps the keyboard and the selection.
-            KeyCode::Esc => None,
+            KeyCode::Esc => {
+                if self.filter.is_empty() {
+                    None
+                } else {
+                    self.filter.clear();
+                    self.refresh_rows();
+                    self.reanchor()
+                }
+            }
             // `Shift+Q` closes the box, the same gesture that exits a
             // docked panel.
             KeyCode::Char('Q') if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -665,19 +678,16 @@ mod tests {
     }
 
     #[test]
-    fn enter_asks_the_command_layer_to_enter_the_directory() {
+    fn enter_asks_the_command_layer_to_toggle_the_directory() {
         let root = temp();
         write(root.path(), "dir/a.txt");
 
         let mut fixture = Fixture::new(root.path());
         assert_eq!(fixture.dialog.selected_path().as_deref(), Some("dir"));
 
-        // `Enter` is the same motion as `l`: it enters the directory. It used
-        // to expand it in place, which at the listing window's edge expanded a
-        // directory with no children — an "empty directory", not a move.
         assert_eq!(
             fixture.dialog.handle_key(key(KeyCode::Enter)),
-            Some(TuiMsg::FilesDescend {
+            Some(TuiMsg::FilesToggle {
                 path: "dir".to_string()
             })
         );
@@ -814,7 +824,7 @@ mod tests {
     /// `Enter` on a directory is the same motion as `l`: it enters the
     /// directory, and it never opens a document for it.
     #[test]
-    fn enter_on_a_directory_enters_it_and_never_emits_an_open_intent() {
+    fn enter_on_a_directory_toggles_it_and_never_emits_an_open_intent() {
         let root = temp();
         write(root.path(), "dir/a.txt");
 
@@ -822,10 +832,10 @@ mod tests {
         fixture.select("dir");
         assert_eq!(
             fixture.dialog.handle_key(key(KeyCode::Enter)),
-            Some(TuiMsg::FilesDescend {
+            Some(TuiMsg::FilesToggle {
                 path: "dir".to_string()
             }),
-            "a directory has no document to open; it is entered"
+            "a directory has no document to open; it is folded in place"
         );
     }
 
@@ -885,8 +895,8 @@ mod tests {
     }
 
     /// `Esc` is the **mode** switch, not the exit: it leaves insert mode and
-    /// keeps the filter, and in Normal mode it does nothing at all. The box is
-    /// left with `Shift+Q`.
+    /// keeps the filter, and in Normal it clears one. The box is left with
+    /// `Shift+Q`.
     #[test]
     fn esc_is_the_mode_switch_and_shift_q_closes() {
         let root = temp();
@@ -898,6 +908,17 @@ mod tests {
             None,
             "Esc must not close the box or hand the keyboard back"
         );
+
+        // A filter that matches nothing must have a way back: Normal-mode Esc
+        // clears it instead of being inert.
+        fixture.dialog.handle_key(key(KeyCode::Char('i')));
+        for ch in "zzzz".chars() {
+            fixture.dialog.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(fixture.dialog.filter(), "zzzz");
+        assert_eq!(fixture.dialog.handle_key(key(KeyCode::Esc)), None);
+        fixture.dialog.handle_key(key(KeyCode::Esc));
+        assert_eq!(fixture.dialog.filter(), "", "the filter is cleared");
         assert_eq!(
             fixture
                 .dialog
@@ -1242,7 +1263,7 @@ mod tests {
         write(root.path(), "a.txt");
         let fixture = Fixture::new(root.path());
         assert_eq!(fixture.dialog.keymap_hint().as_deref(), Some(HINT));
-        assert!(HINT.contains("enter open"), "got {HINT:?}");
+        assert!(HINT.contains("enter toggle"), "got {HINT:?}");
         assert!(
             !HINT.contains("i act"),
             "the generic host line taught a verb this box does not have"
@@ -1258,7 +1279,7 @@ mod tests {
         let mut fixture = Fixture::new(root.path());
         let text = render_text(&mut fixture.dialog, 100, 12);
         assert!(
-            !text.contains("enter open"),
+            !text.contains("enter toggle"),
             "the box must not repeat the keymap the composer row already carries: {text:?}"
         );
     }
@@ -1303,7 +1324,7 @@ mod tests {
             "the host title is how a focused panel is told from an unfocused one, got {text:?}"
         );
         assert!(
-            !text.contains("enter open"),
+            !text.contains("enter toggle"),
             "the keymap belongs to the composer row, not a column this narrow, got {text:?}"
         );
         assert!(

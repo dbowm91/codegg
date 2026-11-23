@@ -3750,12 +3750,12 @@ stack left the docked panel showing a frozen copy of the tree.
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
-| `Enter` | **the same motion as `l`**: a directory opens in place, or is entered when it is already open; a file is opened in the editor |
+| `Enter` | **toggle**: a directory opens when closed and closes when open, and the **cursor never moves**; a file is opened in the editor. Stepping in and out are `l` and `h` |
 | `l` / `→` | **peek into** that directory: a closed folder opens in place and the **cursor stays on the folder**; an open one is entered. On a **file** it opens the file — the key is never dead |
 | `h` / `←` | **close** the open directory the cursor is on, wherever it is; otherwise **up one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level |
 | `i` | type a **filter** into the pane — the rows narrow as you type |
 | `r` | **refresh**: re-walk the current root |
-| `Esc` | leave insert mode, **keeping the filter**; in Normal mode it does nothing |
+| `Esc` | leave insert mode, **keeping the filter**; in Normal mode, clear it |
 | `q` | close the **box** — in the side panel it does **nothing** |
 | `Shift+Q` | close the box; **leave** the side panel |
 
@@ -4005,7 +4005,18 @@ edge is dragged: the ratio is integer-divided against the frame height, so a
 one-point change is 0 rows on a short frame and 2 on a tall one — a key that
 appears dead for no stated reason. `TuiLayout::observe_frame` records the last
 rendered height purely so that conversion has a denominator. Sizes are
-runtime-only for this pass; only `ui.panel_placement` is persisted.
+runtime-only for this pass.
+
+**The docked layout — placement and the panel on each edge — is persisted.**
+`panel_placement` names the edge the keyboard drives; `panel_layout` maps
+`right`/`left`/`bottom` to the panel's `config_key`. `SidePanelHost::with_layout`
+restores both at startup. Saving happens on the acts that **arrange** the frame
+— a dock, a swap or a cycle — not on every selection: a config read and write
+per `Enter` in the manager is a filesystem round trip behind a keypress, and
+in-session the slot already keeps whatever was loaded into it. Only the selected edge is revealed: restoring *which* panel an edge
+holds is a preference, while starting with no column at all reads as a broken
+frame. An unknown panel name drops that one edge to its default, the same
+tolerance `panel_hotkeys` applies to a typo.
 
 `select(id)` goes through `slot.occupy`, so displacing a panel by selecting
 another one is remembered exactly as docking is. A user who walks to Chat in
@@ -4122,8 +4133,28 @@ inside the column. It replaces the old two-column grid selector, which could
 not be filtered and showed unlabelled buttons in 30 columns. It renders
 [`SidePanelId::ALL`] directly, so the list it shows *is* the registry.
 
+#### Two tiers, one registry
+
+`SidePanelId::class()` splits the registry into `Full` and `Detail`.
+`Full` is the set of surfaces a user lives in — each fills the column with
+something to drive — and `Detail` is a view *of* one of them: a cost breakdown
+belongs to the usage panel, a diff belongs to review. `parent()` names the full
+panel a detail panel belongs to, and the fold map is total in both directions
+(a detail panel always names a full parent; a full panel names none), which a
+test enforces.
+
+The tier is **presentation, not capability**. `PanelListState` lists the full
+panels by default, reveals a detail panel when the filter names it, and lists
+everything behind `A`; the manager renders a folded row as `→ Parent` rather
+than dropping it. A detail panel still docks, still takes focus, and still
+answers its `/` command and its saved hotkey. Hiding a panel from the default
+list is never the way a feature quietly disappears — that is why the fold map
+is a match with a total test rather than a hand-filtered list at the render
+site.
+
 Adding a **hosted** panel is an enum variant, an entry in `SidePanelId::ALL`,
-and `label`/`title`/`hint`/`load_command`/`config_key` arms, **plus an arm in
+a `class`/`parent` arm when it is a view of another panel, and
+`label`/`title`/`hint`/`load_command`/`config_key` arms, **plus an arm in
 `commands::panels::open_panel_box`** — that match has no catch-all, so it is
 the one site outside this file that fails to compile if missed — and a
 `dock_target` arm in `App` so `L` knows where the box goes. `title` must be

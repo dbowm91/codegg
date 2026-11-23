@@ -459,7 +459,33 @@ pub fn page_selection(app: &mut App, direction: isize) {
 /// A **file** has nothing to peek into, so the motion opens it: `l` on a
 /// file is the path `Enter` takes, and the key is never dead.
 pub fn descend_to(app: &mut App, path: &str) {
+    apply_peek_step(app, app.file_tree_state.peek_into(path));
+}
+
+/// The `Enter` verb: open a closed directory, close an open one, never move
+/// the cursor. `l` and `h` are the motions that step in and out.
+pub fn toggle_selected(app: &mut App) {
+    let Some(path) = app.file_tree_state.selected_row().map(|row| row.path) else {
+        return;
+    };
+    toggle_path(app, &path);
+}
+
+/// The toggle verb for a named path, the form the box can carry as an intent.
+pub fn toggle_path(app: &mut App, path: &str) {
     match app.file_tree_state.peek_into(path) {
+        // Already open: close it where it stands. The cursor is on the
+        // directory and the directory is still a row, so it does not move.
+        PeekStep::Enter { directory } => app.file_tree_state.collapse(&directory),
+        // A closed directory, a directory at the window's edge and a file all
+        // take the `l` path: open in place, slide the scope, or open the
+        // document.
+        other => apply_peek_step(app, other),
+    }
+}
+
+fn apply_peek_step(app: &mut App, step: PeekStep) {
+    match step {
         PeekStep::Expand { directory } => {
             // The directory opens where it stands and the cursor stays on
             // it: opening a folder is not a move.
@@ -558,21 +584,6 @@ pub fn ascend_one_level(app: &mut App, path: &str) {
     }
 }
 
-/// Open the selected file, or open the selected directory.
-///
-/// The open path is `open_editor` verbatim, so the tree inherits its lexical
-/// validation, its already-open short-circuit, its daemon-authorized
-/// attachment, and its request/generation discipline.
-///
-/// A **directory** is opened, not toggled: `Enter` is the same motion as
-/// `l` (see [`descend_to`]).
-pub fn activate_selected(app: &mut App) {
-    let Some(row) = app.file_tree_state.selected_row() else {
-        return;
-    };
-    descend_to(app, &row.path);
-}
-
 /// Move focus into or out of the tree.
 ///
 /// Focus leaves the tree on `Esc`, which keeps the non-modal contract: the
@@ -613,9 +624,9 @@ pub fn set_focus(app: &mut App, focused: bool) {
 /// |---|---|
 /// | `j` / `Down` | one row down |
 /// | `k` / `Up` | one row up |
-/// | `l` / `Right` | peek down: open the directory in place, step into it when it is already open, or slide the scope |
+/// | `l` / `Right` | peek down: open the directory in place, step **into** it when it is already open, or slide the scope |
 /// | `h` / `Left` / `Backspace` | close the open folder the cursor is on, or go up one level |
-/// | `Enter` | the same as `l` on a directory, open the file on a file |
+/// | `Enter` | toggle the directory the cursor is on — open it when closed, close it when open — and never move the cursor; on a file, open it |
 /// | `r` | re-list the scope |
 /// | `Ctrl+d` / `Ctrl+u` | page down / up |
 /// | `i` | the panel's filter (insert mode) |
@@ -655,11 +666,15 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
         return handle_panel_insert_key(app, key);
     }
     match key.code {
-        // `Esc` is a **mode** step, never an exit: in insert mode it leaves
-        // insert mode and keeps the filter, and in Normal mode it does
-        // nothing at all. The tree keeps the keyboard and the selection; the
-        // way out is `Shift+Q`, the same gesture that leaves a side panel.
-        KeyCode::Esc => true,
+        // `Esc` is a **mode** step, never an exit: it leaves insert mode and
+        // keeps the filter, and in Normal it clears one so a query with no
+        // matches has a way back. The way out is still `Shift+Q`.
+        KeyCode::Esc => {
+            if app.file_tree_state.filter_clear() {
+                app.file_tree_state.reanchor_selection();
+            }
+            true
+        }
         // `Shift+Q` leaves the tree and returns focus to the editor buffer
         // without changing the route, so the composer stays reachable.
         KeyCode::Char('Q') if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -690,10 +705,8 @@ pub fn handle_panel_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             ascend_one_level(app, &path);
             true
         }
-        // Enter opens a file, or enters a directory, through the existing
-        // controller-backed open path.
         KeyCode::Enter => {
-            activate_selected(app);
+            toggle_selected(app);
             true
         }
         // `r` re-walks the workspace.
@@ -2292,10 +2305,9 @@ mod tests {
         );
     }
 
-    /// `Enter` on a directory is the peek motion, not a bare toggle: the
-    /// directory is opened and the cursor **stays on the folder**.
+    /// `Enter` twice is a round trip: open, then close, cursor unmoved.
     #[tokio::test]
-    async fn enter_on_a_directory_peeks_instead_of_toggling() {
+    async fn enter_on_a_directory_toggles_in_place() {
         let root = tempfile::tempdir().expect("tempdir");
         let (mut app, _client) =
             app_with_listing_client(root.path(), root_listing_with_a_directory());
@@ -2304,7 +2316,7 @@ mod tests {
         rebuild_once(&mut app, &mut rx).await;
         app.file_tree_state.selected = Some("src".to_string());
 
-        activate_selected(&mut app);
+        toggle_selected(&mut app);
         assert!(
             app.file_tree_state.expanded.contains("src"),
             "the directory is opened"
@@ -2321,12 +2333,24 @@ mod tests {
             "the relist keeps the cursor on the folder"
         );
 
-        // The second press steps into the folder that is now open.
-        activate_selected(&mut app);
+        toggle_selected(&mut app);
+        assert!(
+            !app.file_tree_state.expanded.contains("src"),
+            "the second press closes the folder"
+        );
+        assert_eq!(
+            app.file_tree_state.selected.as_deref(),
+            Some("src"),
+            "and the cursor is still on the folder, one row down from where it started"
+        );
+
+        descend_to(&mut app, "src");
+        app.file_tree_state.expand_in_place("src");
+        descend_to(&mut app, "src");
         assert_eq!(
             app.file_tree_state.selected.as_deref(),
             Some("src/lib.rs"),
-            "an open folder is entered"
+            "an open folder is entered by `l`, not by `Enter`"
         );
     }
 
@@ -2355,7 +2379,7 @@ mod tests {
         set_focus(&mut app, true);
         app.file_tree_state.selected = Some("lib.rs".to_string());
 
-        activate_selected(&mut app);
+        toggle_selected(&mut app);
         assert!(
             app.ui_state.tree_focused,
             "the keyboard waits for the document to arrive"
@@ -2422,7 +2446,7 @@ mod tests {
         set_focus(&mut app, true);
         app.file_tree_state.selected = Some("lib.rs".to_string());
 
-        activate_selected(&mut app);
+        toggle_selected(&mut app);
         complete_editor_open_handoff(&mut app, false);
 
         assert!(
@@ -2463,7 +2487,7 @@ mod tests {
         );
         assert!(app.panel_host.is_focused(), "the panel holds it");
 
-        activate_selected(&mut app);
+        toggle_selected(&mut app);
         assert_eq!(
             app.editor_state
                 .session

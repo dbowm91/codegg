@@ -641,12 +641,13 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) -> PanelFill {
             crate::commands::work_orders::open_task_view(app, "task");
             PanelFill::StillLoading
         }
-        // M007-I (work package A): the daemon owns the diff read, so the
-        // panel starts an async read and its box arrives from the reply —
-        // the same shape `P::Team` and `P::Control` use.
+        // A diff is a view of one file: an empty-path read only produced
+        // "the diff returned an unexpected response". Say what it needs.
         P::Diff => {
-            crate::commands::diff::start_diff(app, String::new());
-            PanelFill::Loading
+            app.messages_state
+                .toasts
+                .info("Diff needs a file — open one from /review, or run /diff <path>");
+            PanelFill::Cannot("no file selected — /diff <path>")
         }
         P::Review => {
             app.open_dialog(Dialog::Review);
@@ -1108,6 +1109,7 @@ fn persist_panel_placement(app: &mut App, placement: PanelPlacement) {
         }
     };
     config.panel_placement = Some(placement.as_str().to_string());
+    config.panel_layout = Some(app.panel_host.layout_map().into_iter().collect());
     if let Err(error) = config.save_global() {
         app.messages_state
             .toasts

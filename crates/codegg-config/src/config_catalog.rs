@@ -71,6 +71,7 @@ pub(crate) fn sentinel_config() -> Config {
         vim_mode: Some(true),
         panel_hotkeys: Some(HashMap::new()),
         panel_placement: Some(SENTINEL.to_string()),
+        panel_layout: Some(HashMap::new()),
         hooks: Some(Vec::new()),
         notifications: Some(NotificationConfig::default()),
         daemon: Some(DaemonConfig::default()),

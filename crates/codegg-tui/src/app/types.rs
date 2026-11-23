@@ -778,6 +778,9 @@ pub enum TuiMsg {
     FilesDescend {
         path: String,
     },
+    FilesToggle {
+        path: String,
+    },
     /// `/files`: go up one level (`h`).
     ///
     /// Carries the path of the row the cursor is on: the **authority**

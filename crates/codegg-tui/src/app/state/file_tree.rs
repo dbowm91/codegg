@@ -948,6 +948,16 @@ impl FileTreeState {
         self.bump();
     }
 
+    /// Drop the whole filter. Returns whether there was one.
+    pub fn filter_clear(&mut self) -> bool {
+        if self.filter.is_empty() {
+            return false;
+        }
+        self.filter.clear();
+        self.bump();
+        true
+    }
+
     /// Go up one level *within* the current scope.
     ///
     /// The in-scope half of the `h` motion ([`Self::peek_up`]): an open

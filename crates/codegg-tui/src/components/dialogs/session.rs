@@ -12,7 +12,7 @@ use ratatui::Frame;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
-use super::super::section::Section;
+use super::super::section::{Section, SectionFrame};
 use crate::app::state::tasks::TaskGroup;
 use crate::app::TuiMsg;
 use crate::components::hint_line::HintLine;
@@ -239,6 +239,7 @@ pub struct SessionDialog {
     checkouts: HashMap<String, CheckoutInfo>,
     visible_height: usize,
     sorted_cache: RefCell<SortedCache>,
+    chrome: bool,
 }
 
 impl Clone for SessionDialog {
@@ -266,6 +267,7 @@ impl Clone for SessionDialog {
             checkouts: self.checkouts.clone(),
             visible_height: self.visible_height,
             sorted_cache: RefCell::new(self.sorted_cache.borrow().clone()),
+            chrome: self.chrome,
         }
     }
 }
@@ -295,6 +297,7 @@ impl SessionDialog {
             checkouts: HashMap::new(),
             visible_height: 10,
             sorted_cache: RefCell::new(None),
+            chrome: true,
         }
     }
 
@@ -1401,12 +1404,24 @@ impl Component for SessionDialog {
             }
         }
 
-        let inner = Section::new("Sessions", theme)
-            .focused(true)
-            .draw(area, frame.buffer_mut());
+        let inner = if self.chrome {
+            Section::new("Sessions", theme)
+                .focused(true)
+                .draw(area, frame.buffer_mut())
+        } else {
+            Section::plain(theme)
+                .frame(SectionFrame::Hosted)
+                .draw(area, frame.buffer_mut())
+        };
         Paragraph::new(lines)
             .wrap(Wrap { trim: true })
             .render(inner, frame.buffer_mut());
+    }
+
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.chrome = false;
+        self.render(frame, area, theme);
+        self.chrome = true;
     }
 
     fn dialog_type(&self) -> DialogType {
@@ -1421,6 +1436,34 @@ mod vim_key_tests {
 
     fn dialog() -> SessionDialog {
         SessionDialog::new(Arc::new(Theme::default()))
+    }
+
+    #[test]
+    fn a_docked_render_keeps_the_hosts_chrome() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let theme = Arc::new(Theme::default());
+        let mut d = dialog();
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                if let Some(corner) = frame.buffer_mut().cell_mut((0, 0)) {
+                    corner.set_symbol("H");
+                }
+                d.render_in_panel(frame, frame.area(), &theme);
+            })
+            .expect("draw the docked dialog");
+        let symbol = terminal
+            .backend()
+            .buffer()
+            .cell((0, 0))
+            .map(|cell| cell.symbol().to_string());
+        assert_eq!(
+            symbol.as_deref(),
+            Some("H"),
+            "the dialog repainted the host's corner"
+        );
     }
 
     #[test]

@@ -990,6 +990,9 @@ impl App {
             TuiMsg::FilesRefresh => {
                 crate::commands::file_tree::rebuild(self);
             }
+            TuiMsg::FilesToggle { path } => {
+                crate::commands::file_tree::toggle_path(self, &path);
+            }
             TuiMsg::FilesDescend { path } => {
                 // The pane's root moves and the walk follows: a scope change
                 // without a listing would leave the box showing the directory

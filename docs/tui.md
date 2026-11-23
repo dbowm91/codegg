@@ -118,7 +118,9 @@ Text entered while a turn is running is retained for a later turn. Use `/queue` 
 
 ## Panels
 
-Use `Shift+Arrow` or `Shift+H/J/K/L` in Normal mode to move between the composer and docked panels. The direction depends on panel placement. `Shift+Q` leaves a focused panel and returns to the composer. `Ctrl+B` toggles the sidebar. Use `Shift+S` to choose which panel is shown.
+Use `Shift+Arrow` or `Shift+H/J/K/L` in Normal mode to move between the composer and docked panels. The direction depends on panel placement. `Shift+Q` leaves a focused panel and returns to the composer. `Ctrl+B` closes the panel the keyboard is in, and the same key re-opens it with **the panel that was there** — the edge keeps its occupant. The edge keeps its panel across close and reopen. Placement and the arranged layout are saved when you dock, move or cycle a panel, so the next start lands where you left off; the default is the right column.
+
+Use `Shift+S` (or `/panels`) to choose which panel is shown. The list holds the **full-interface panels** — Session, Chat, Terminal, Files, Sessions, Help, Agents, Tasks, Logs, Context, Review, Models, MCP, Plugins, Keys, Themes, Team and Control. Views of those are folded under them instead of taking their own rows: Goal, Plan and Memory belong to Session; Tree to Files; Cost, Usage and Stats to Context; Doctor to Logs; Shells to Terminal; Diff and Security to Review; Task View and Research to Tasks; Present to Team. Press `A` in the manager to list the folded views too (each row names its parent), or type a name into the filter — `diff`, `memory` — to reach one directly. Folding is a listing decision only: every folded panel still docks, still takes focus, and still opens from its `/` command and saved hotkey.
 
 The project picker and panel manager have their own key hints. Press `?` or `Space` to see the current bindings.
 
@@ -169,12 +171,12 @@ Use `/files` or `Ctrl+T` to browse the active workspace; the keys are in [Browsi
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up (two thirds of the pane) |
-| `Enter` | **the same as `l`**: a directory opens in place, or is entered when it is already open; a file is opened in the editor |
+| `Enter` | **toggle**: a directory opens when closed and closes when open, and the **cursor never moves**; a file is opened in the editor. Stepping in and out are `l` and `h` |
 | `l` / `→` | **peek into** that directory: a closed folder opens in place and the **cursor stays on the folder**; an open one is entered. On a file it opens the file |
 | `h` / `←` | **close** the open directory the cursor is on; otherwise go up one level |
 | `i` | type a filter into the pane, the rows narrow as you type |
 | `r` | **refresh**: re-list the current directory |
-| `Esc` | leave the filter mode, keeping the filter |
+| `Esc` | leave the filter mode, keeping the filter; in Normal mode, clear it |
 | `q` | close the **box**, in the docked panel it does **nothing** |
 | `Shift+Q` | close the box / **leave** the pane |
 
