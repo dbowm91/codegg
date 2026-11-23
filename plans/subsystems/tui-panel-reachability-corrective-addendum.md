@@ -94,6 +94,34 @@ HumanShell/WorkOrders pre-routers. `terminal_attach` therefore returned
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — clean.
 - `scripts/verify.sh quick` — passed.
 
+## 3a. Open findings for the next corrective
+
+These were found while exercising the surfaces with `tui-test` and are **not**
+fixed by this milestone. They are recorded so the next pass starts from
+evidence rather than from a fresh survey.
+
+**F11 — a fresh session shows error boxes from an earlier one.** Every launch
+paints the transcript area with `ERROR` boxes carrying old daemon text (a
+research-report validation failure and a `wire_encode` failure from October)
+while the buffer says "No messages yet". The text matches historical daemon log
+entries and no such request is issued at launch, so these are replayed or
+retained `CoreEvent::Error` entries that a new session does not clear.
+`new_session` clears `messages_state.messages`; whatever holds these boxes is a
+different container or a restored view, and finding it is the next step.
+
+**F12 — walking past Terminal spawns a shell.** Stepping *through* Terminal (on
+the way to Help or Tree) starts a PTY because a step is a selection and a
+selection loads. Acceptable while the terminal is the only panel whose load is a
+process, but a walk that lands on three panels should not leave a shell running
+for each visit. A "load on settle" rule would need a bounded dwell, which is
+worse than the current honesty; leaving it, and recording the cost, is the
+decision for now.
+
+**F13 — `/editor` with no recent file only explains itself.** The palette entry
+opens "No recently edited files"; the natural next step (open the file manager)
+is not offered. A hint, not a defect, but it is the first thing a new user hits
+when they reach for the editor.
+
 ## 4. Non-goals
 
 No new panel kind, no second loader, no containment change on Linux, no change
