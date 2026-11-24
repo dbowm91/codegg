@@ -18,6 +18,7 @@ use super::{
     parse_json_field, MESSAGE_QUERY, PART_QUERY, SESSION_COLUMNS, SESSION_COLUMNS_QUALIFIED,
 };
 use crate::error::StorageError;
+use crate::storage::immediate::begin_immediate;
 use codegg_config::schema::SessionTemplate;
 
 /// Row type returned by usage queries (id, session_id, provider, model,
@@ -2266,11 +2267,11 @@ impl MessageStore {
             return Ok(None);
         }
 
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let mut tx = begin_immediate(&self.pool).await.map_err(db_error)?;
 
         let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM session WHERE id = ?")
             .bind(session_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await
             .map_err(db_error)?;
         if exists.is_none() {
@@ -2280,7 +2281,7 @@ impl MessageStore {
         let last: Option<i64> =
             sqlx::query_scalar("SELECT MAX(time_created) FROM message WHERE session_id = ?")
                 .bind(session_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await
                 .map_err(db_error)?;
 
@@ -2303,7 +2304,7 @@ impl MessageStore {
             .bind(time_created)
             .bind(time_created)
             .bind(&data_str)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(db_error)?;
             written += result.rows_affected() as usize;

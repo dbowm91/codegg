@@ -892,7 +892,7 @@ transcript; the two identities are kept in separate fields.
 the *orchestrator* — the model — as a durable notice injected at the next turn
 boundary, and the agent can read the child's recorded result with
 `task action=get`. The strip, the sidebar panel, the `Ctrl+T` overlay, the
-`/sessions` dialog, and the subagent tab are unchanged: the notice is a
+`/sessions` dialog, and the center tab are unchanged: the notice is a
 channel to the model, not a new row for the user. See `architecture/agent.md`
 "The delegated run's durable terminal notice".
 
@@ -1031,13 +1031,13 @@ bound is a contract, and the display bound is what keeps one row from filling
 the viewport.
 
 **One row, five surfaces, and a deliberate trade.** The strip, the sidebar panel,
-the `Ctrl+T` overlay, the `/sessions` dialog, and the subagent tab all render the
+the `Ctrl+T` overlay, the `/sessions` dialog, and the center tab all render the
 same derived vector. The **sidebar row is a scan surface**: it shows name, agent
 type, and status, and no prose. The other three one-line surfaces show
 `SubagentRow::topic()` — the descriptor when the projection carried one, the task
 description otherwise — because a single terminal line cannot legibly carry two
 pieces of prose and whichever is ellipsized second reads as noise. The
-**subagent tab is the full-fidelity surface**: it renders `Task` and `Agent` side
+**center tab is the full-fidelity surface**: it renders `Task` and `Agent` side
 by side, wrapped and untruncated, which is what makes the one-line trade
 lossless. A node recorded before descriptors existed has neither field, so every
 surface falls back and the tab omits the `Agent` heading rather than leaving one
@@ -1052,7 +1052,7 @@ on prose pushes the three facts a reader scans for to the left, and the persona
 now has a home that can afford it.
 
 **The strip's row is one width budget.** `plan_strip`
-(`crates/codegg-tui/src/app/state/subagent_tabs.rs`) computes it once, so what is drawn is
+(`crates/codegg-tui/src/app/state/center_tabs.rs`) computes it once, so what is drawn is
 exactly what was measured. The precedence is fixed: the **key hints**
 (`⇧P/⇧N switch · ⇧X close`) are reserved first and in full, because they are
 the discoverability fix; the **labels** come next and keep their text —
@@ -1073,7 +1073,7 @@ does not yank the buffer out from under the reader.
 
 **The viewport rect has exactly one owner.** `render()` decides between three
 candidates and renders exactly one of them into the rect: the route's own view
-(the transcript), the change review, or the open subagent tab. The change
+(the transcript), the change review, or the open center tab. The change
 review outranks the tab — it is a modal decision surface the user has to
 answer, so a tab must not cover it — and the tab outranks the transcript,
 because the tab *is* the buffer the user asked to read. The previous shape
@@ -1167,8 +1167,8 @@ layout reserved is the height it paints and a long path cannot reflow the
 transcript below it. When the row bound hides files the header says so — the
 total is the truth, not the number of rows that fit.
 
-**Subagent tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
-`state/subagent_tabs.rs`). Three properties are load-bearing and each closes a
+**Center tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
+`state/center_tabs.rs`). Three properties are load-bearing and each closes a
 hole the obvious implementation leaves:
 
 - **Identity is the projection's `task_id`**, not a fresh UUID. A subagent
@@ -1194,6 +1194,41 @@ the open, and the caller then has a defined outcome to report — `App::
 open_subagent_tab` toasts only when a row exists *and* the set is at capacity.
 Note that `open_task` requires the row to still exist: a panel row alone cannot
 open a tab, because a tab with nothing to render is not a tab.
+
+**Open documents are center tabs too.** The set is one sequence, not two:
+the main conversation, then the delegated runs, then the open documents, and
+`Shift+N` / `Shift+P` / `Shift+X` walk all of it. A document tab is
+keyed by its path **and its scope**, because the same relative path under two
+authority roots is two documents and one tab cannot hold both.
+
+The main entry wears a glyph of its own (`▣`) rather than one of the liveness
+glyphs (`●` live, `○` finished, `✕` detached): those three encode **a run's
+state**, and the main conversation is not a run, so a square from another shape
+family reads as "a tab" without being mistaken for one more piece of liveness.
+It is used nowhere else in the TUI, so it cannot collide with an unrelated
+meaning, and it costs exactly one column — asserted, because a two-column
+marker would silently break the row's width budget.
+
+`MAX_OPEN_FILE_TABS` (16) refuses a new document tab rather than evicting one,
+for the same reason the delegated tabs do: closing a tab the user is reading
+is a worse failure than declining the open, and the refusal has a defined
+outcome to report — a toast naming the chord that frees a slot.
+
+**A document keeps its state while it is off screen.** The editor owns one
+attachment at a time, so the document on screen holds its EditorState in the
+app's editor slot and every other open document holds its own in its tab.
+Switching tabs is therefore a **move**, never a copy: a parked document keeps
+its text, its cursor and its diagnostics, and comes back as it was left. An
+open that completes after the user has moved on is applied to the tab that
+started it, matched by generation, so the reader never sees a half-open
+document.
+
+**The tab chords are app-level, and they outrank the editor's own verbs.**
+The editor's Normal mode claims `P` for paste-after, and the editor branch runs
+before the global binding map, so without a dedicated claim the key that says
+`previous tab` would paste into the document instead of leaving it. The claim
+sits in the editor route, before the editor sees the key, so it holds exactly
+where the reader needs it and nowhere else.
 
 ### Addressing a reply to a running subagent
 
@@ -3632,7 +3667,7 @@ core, and `interactive_terminals` owns the live PTY surfaces.
 | `session_work.rs` | Session work-surface state |
 | `snapshot.rs` | Remote snapshot building |
 | `subagent_addressee.rs` | C007: who the composer is addressed to |
-| `subagent_tabs.rs` | Subagent tab set over the main buffer (Shift+N/P/X) |
+| `center_tabs.rs` | Center tab set over the main buffer (Shift+N/P/X) |
 | `subagents.rs` | SubagentRow projection rows and strip/buffer view state |
 | `tasks.rs` | Ctrl+T tasks overlay rows (todos, subagents, jobs) |
 | `ui.rs` | Theme, layout, routes, dialog, input mode, keybindings, TTS, diagnostics |
@@ -7357,7 +7392,7 @@ root routing.
 The four `Direction*` variants are the resolved direction of a chord whose
 final key decides the axis, so the handler that consumes them never has to
 re-derive the axis from the key that was pressed. The three `*SubagentTab`
-variants drive the subagent tab set over the main buffer (Shift+N/P/X);
+variants drive the center tab set over the main buffer (Shift+N/P/X);
 `CloseProjectTab` is the workspace-project equivalent and is a different
 verb.
 
@@ -7488,7 +7523,7 @@ tui/
 │       ├── session_work.rs  # Session work-surface state
 │       ├── snapshot.rs     # Remote snapshot building
 │       ├── subagent_addressee.rs # C007: who the composer is addressed to
-│       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
+│       ├── center_tabs.rs # Center tab set over the main buffer (Shift+N/P/X)
 │       ├── subagents.rs    # SubagentRow projection rows + strip/buffer view state
 │       ├── tasks.rs        # Ctrl+T tasks overlay rows (todos, subagents, jobs)
 │       ├── ui.rs           # UiState (theme, layout, routes, keybindings)

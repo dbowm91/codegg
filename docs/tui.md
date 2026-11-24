@@ -134,7 +134,7 @@ Open `/queue` to manage prompts submitted while a turn is running. Use `j` and `
 
 ## Tasks and subagents
 
-Press `Ctrl+T` to see todos, active subagents, and live jobs. Subagent tabs use `Shift+N` and `Shift+P` to move between tabs and `Shift+X` to close the active tab. Use the tab or task view to inspect work without treating its display name as a durable identifier.
+Press `Ctrl+T` to see todos, active subagents, and live jobs. Center tabs use `Shift+N` and `Shift+P` to move between them and `Shift+X` to close the active one. The strip above the transcript carries the main conversation, every open subagent run and every open file, so a reader can move between a run and the file it is changing without leaving the center. Use the tab or task view to inspect work without treating its display name as a durable identifier.
 
 Use `/subagent-send` to address a running subagent through the current turn. The message is sent to the agent running that turn, which decides whether to relay it; it is not delivered directly to the child.
 

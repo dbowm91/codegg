@@ -1,12 +1,13 @@
-//! The subagent tab set over the main LLM buffer.
+//! The center tab set over the main LLM buffer.
 //!
-//! Opening a delegated run used to be a single-slot affair: one `Option` held
-//! the open view, so there was no way to keep two subagents side by side and
-//! no way to say which one of several was on screen. This module makes that a
-//! real tab set, deliberately mirroring [`crate::app::state::project_tabs::ProjectTabs`]
-//! rather than inventing a second convention. It is a **sibling** of project
-//! tabs, not a replacement: project tabs live in the header, subagent tabs live
-//! in the main buffer, and the two axes never consult each other.
+//! The center shows one surface at a time: the main conversation, a delegated
+//! run, or an open document. This module owns that sequence - the delegated
+//! runs and the open documents alike - so the strip, the cycle and the close
+//! key all speak about the same set. It deliberately mirrors
+//! [`crate::app::state::project_tabs::ProjectTabs`] rather than inventing a
+//! second convention. It is a **sibling** of project tabs, not a replacement:
+//! project tabs live in the header, center tabs live in the main buffer, and
+//! the two axes never consult each other.
 //!
 //! # Identity is the projection's, and it is not durable
 //!
@@ -46,13 +47,10 @@ use crate::app::state::transcript_cache::TranscriptCache;
 
 /// Ceiling on simultaneously open subagent tabs.
 ///
-/// The per-turn agent tree caps at 16 nodes, but tabs outlive their subject by
-/// design — a detached tab is a first-class state, not something evicted — so
-/// the tab count is not bounded by anything the projection enforces. Without a
-/// cap, a long session that fans out repeatedly would grow this map without
-/// limit. At capacity the set **refuses** a new tab rather than evicting one:
-/// silently closing a tab the user is reading is a worse failure than declining
-/// the open, and the caller has a defined outcome to report.
+/// Tabs outlive their subject by design, so the tab count is not bounded by
+/// anything the projection enforces. At capacity the set **refuses** a new tab
+/// rather than evicting one: closing a tab the user is reading is a worse
+/// failure than declining the open.
 pub const MAX_OPEN_SUBAGENT_TABS: usize = 16;
 
 /// Label for the always-present main-conversation entry in the tab bar.
@@ -64,15 +62,9 @@ pub const MAIN_TAB_LABEL: &str = "Main";
 
 /// Glyph on the always-present main-conversation entry.
 ///
-/// The three liveness glyphs — `●` live, `○` finished, `✕` detached — all
-/// encode **a run's state**, and the main conversation is not a run: it has
-/// no state to encode. The marker therefore comes from a different shape
-/// family (a square rather than a circle or a cross) so it cannot be misread
-/// as one more piece of liveness, and it is used nowhere else in the TUI, so
-/// it cannot collide with an unrelated meaning.
-///
-/// One column wide, and asserted to be so: a marker that costs two columns
-/// would silently break the row's width budget.
+/// The liveness glyphs — `●` live, `○` finished, `✕` detached — all encode
+/// **a run's state**, and the main conversation is not a run, so the marker
+/// comes from another shape family (a square). One column wide, and asserted.
 pub const MAIN_TAB_GLYPH: &str = "▣";
 
 /// Columns between two entries in the tab bar.
@@ -442,6 +434,15 @@ impl SubagentTabs {
         }
     }
 
+    /// Stop selecting a tab without removing it.
+    ///
+    /// The center shows one surface at a time, so leaving a delegated run
+    /// for an open document clears the selection here rather than dropping
+    /// the tab: the run is still there to come back to.
+    pub fn clear_active(&mut self) {
+        self.active_tab_id = None;
+    }
+
     /// Remove a tab by id.
     ///
     /// When the removed tab was active the selection falls back to the
@@ -573,8 +574,8 @@ impl SubagentTabs {
     }
 
     /// The tab bar's entries in display order, main conversation first.
-    pub fn bar_tabs(&self) -> Vec<SubagentBarTab> {
-        let mut out = vec![SubagentBarTab {
+    pub fn bar_tabs(&self) -> Vec<CenterBarTab> {
+        let mut out = vec![CenterBarTab {
             label: MAIN_TAB_LABEL.to_string(),
             main: true,
             active: self.active_tab_id.is_none(),
@@ -584,17 +585,15 @@ impl SubagentTabs {
         }];
         for tab in self.ordered() {
             let active = self.active_tab_id.as_ref() == Some(&tab.tab_id);
-            out.push(SubagentBarTab {
+            out.push(CenterBarTab {
                 label: tab.label().to_string(),
                 main: false,
                 active,
                 glyph: tab.glyph(),
                 ellipsis: false,
                 // The persona is the projection's own value, carried on the row
-                // this tab already holds — never a lookup against a pool the
-                // TUI does not have. Only the **active** tab's persona is
-                // carried: one row cannot carry one persona per tab, and the
-                // strip's job is to describe the run on screen.
+                // this tab already holds. Only the **active** tab's persona is
+                // carried: the strip's job is to describe what is on screen.
                 persona: if active {
                     tab.row.descriptor().map(str::to_string)
                 } else {
@@ -608,7 +607,7 @@ impl SubagentTabs {
 
 /// One entry in the one-row buffer tab bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubagentBarTab {
+pub struct CenterBarTab {
     /// Text to draw for this entry.
     pub label: String,
     /// The always-leftmost main-conversation entry.
@@ -626,7 +625,7 @@ pub struct SubagentBarTab {
     pub persona: Option<String>,
 }
 
-impl SubagentBarTab {
+impl CenterBarTab {
     /// Columns this entry's own text occupies, excluding separators.
     ///
     /// **Display** width, not `chars().count()`. The pool is curated today, but
@@ -662,11 +661,11 @@ impl SubagentBarTab {
 }
 
 /// Columns the bar occupies if these entries were drawn in order.
-pub fn bar_width(entries: &[SubagentBarTab]) -> usize {
+pub fn bar_width(entries: &[CenterBarTab]) -> usize {
     if entries.is_empty() {
         return 0;
     }
-    let labels: usize = entries.iter().map(SubagentBarTab::entry_width).sum();
+    let labels: usize = entries.iter().map(CenterBarTab::entry_width).sum();
     labels + unicode_width::UnicodeWidthStr::width(BAR_SEPARATOR) * (entries.len() - 1)
 }
 
@@ -694,13 +693,13 @@ fn truncate_to_width(text: &str, width: usize) -> String {
 /// Assemble the surviving entries, inserting a placeholder wherever subagent
 /// tabs were dropped. Without it a trimmed bar would silently read as "these
 /// are all your subagents" rather than "these are the ones that fitted".
-fn assemble(tabs: &[SubagentBarTab], chosen: &[usize]) -> Vec<SubagentBarTab> {
-    let mut out: Vec<SubagentBarTab> = Vec::with_capacity(chosen.len() + 1);
+fn assemble(tabs: &[CenterBarTab], chosen: &[usize]) -> Vec<CenterBarTab> {
+    let mut out: Vec<CenterBarTab> = Vec::with_capacity(chosen.len() + 1);
     for (position, &index) in chosen.iter().enumerate() {
         if position > 0 {
             let dropped = (chosen[position - 1] + 1)..index;
             if dropped.clone().any(|skip| !tabs[skip].main) {
-                out.push(SubagentBarTab {
+                out.push(CenterBarTab {
                     label: BAR_ELLIPSIS.to_string(),
                     main: false,
                     active: false,
@@ -729,7 +728,7 @@ fn assemble(tabs: &[SubagentBarTab], chosen: &[usize]) -> Vec<SubagentBarTab> {
 /// fit, so the kept set is always `main` plus a *contiguous* run of tabs and the
 /// ellipsis is never misleading about what it stands for. If the active tab
 /// falls outside that run it gets the whole budget instead.
-pub fn fit_bar_tabs(tabs: Vec<SubagentBarTab>, width: usize) -> Vec<SubagentBarTab> {
+pub fn fit_bar_tabs(tabs: Vec<CenterBarTab>, width: usize) -> Vec<CenterBarTab> {
     if width == 0 || tabs.is_empty() {
         return Vec::new();
     }
@@ -812,7 +811,7 @@ pub fn fit_bar_tabs(tabs: Vec<SubagentBarTab>, width: usize) -> Vec<SubagentBarT
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StripPlan {
     /// The entries that survive, already fitted to [`StripPlan::entries_width`].
-    pub entries: Vec<SubagentBarTab>,
+    pub entries: Vec<CenterBarTab>,
     /// The persona to show, already truncated; `None` when it does not fit.
     pub persona: Option<String>,
     /// Width the tab entries and the persona share.
@@ -834,7 +833,7 @@ pub struct StripPlan {
 /// first and in full, so the label fitting works on the width the tabs
 /// actually have; the persona then takes what the labels left behind, and is
 /// dropped when that remainder is below [`MIN_STRIP_PERSONA_COLS`].
-pub fn plan_strip(entries: Vec<SubagentBarTab>, total_width: usize) -> StripPlan {
+pub fn plan_strip(entries: Vec<CenterBarTab>, total_width: usize) -> StripPlan {
     let hints = unicode_width::UnicodeWidthStr::width(BAR_HINTS);
     // The gap only exists when there is room for it: a row that cannot hold
     // the hints *and* a gap must not spend its last column on whitespace.
@@ -898,6 +897,188 @@ fn fit_persona(text: &str, width: usize) -> String {
     out
 }
 
+pub const MAX_OPEN_FILE_TABS: usize = 16;
+
+pub const FILE_TAB_GLYPH: &str = "◆";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FileTabId(String);
+
+impl FileTabId {
+    pub fn new(path: &str, scope: codegg_protocol::document::DocumentScope) -> Self {
+        Self(format!("{scope:?}|{path}"))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+pub struct FileTab {
+    pub id: FileTabId,
+    pub path: String,
+    pub scope: codegg_protocol::document::DocumentScope,
+    pub parked: Option<crate::app::state::editor::EditorState>,
+}
+
+#[derive(Default)]
+pub struct FileTabs {
+    tabs: HashMap<FileTabId, FileTab>,
+    order: Vec<FileTabId>,
+    active: Option<FileTabId>,
+}
+
+impl FileTabs {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.tabs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
+    pub fn is_at_capacity(&self) -> bool {
+        self.tabs.len() >= MAX_OPEN_FILE_TABS
+    }
+
+    pub fn active(&self) -> Option<&FileTab> {
+        let id = self.active.as_ref()?;
+        self.tabs.get(id)
+    }
+
+    pub fn active_mut(&mut self) -> Option<&mut FileTab> {
+        let id = self.active.clone()?;
+        self.tabs.get_mut(&id)
+    }
+
+    pub fn active_id(&self) -> Option<&FileTabId> {
+        self.active.as_ref()
+    }
+
+    pub fn get(&self, id: &FileTabId) -> Option<&FileTab> {
+        self.tabs.get(id)
+    }
+
+    pub fn get_mut(&mut self, id: &FileTabId) -> Option<&mut FileTab> {
+        self.tabs.get_mut(id)
+    }
+
+    pub fn ordered(&self) -> Vec<&FileTab> {
+        self.order
+            .iter()
+            .filter_map(|id| self.tabs.get(id))
+            .collect()
+    }
+
+    pub fn contains(&self, path: &str, scope: codegg_protocol::document::DocumentScope) -> bool {
+        self.tabs.contains_key(&FileTabId::new(path, scope))
+    }
+
+    pub fn set_active(&mut self, id: &FileTabId) -> bool {
+        if self.tabs.contains_key(id) {
+            self.active = Some(id.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear_active(&mut self) {
+        self.active = None;
+    }
+
+    pub fn remove_tab(&mut self, id: &FileTabId) -> Option<FileTab> {
+        let removed = self.tabs.remove(id);
+        if removed.is_some() {
+            self.order.retain(|candidate| candidate != id);
+            if self.active.as_ref() == Some(id) {
+                self.active = self.order.first().cloned();
+            }
+        }
+        removed
+    }
+
+    pub fn close_active(&mut self) -> Option<FileTab> {
+        let id = self.active.clone()?;
+        self.remove_tab(&id)
+    }
+
+    pub fn open_or_focus(
+        &mut self,
+        path: &str,
+        scope: codegg_protocol::document::DocumentScope,
+    ) -> Option<FileTabId> {
+        let id = FileTabId::new(path, scope);
+        if self.tabs.contains_key(&id) {
+            self.active = Some(id.clone());
+            return Some(id);
+        }
+        if self.is_at_capacity() {
+            return None;
+        }
+        let tab = FileTab {
+            id: id.clone(),
+            path: path.to_string(),
+            scope,
+            parked: None,
+        };
+        self.tabs.insert(id.clone(), tab);
+        self.order.push(id.clone());
+        self.active = Some(id.clone());
+        Some(id)
+    }
+
+    pub fn parked_with_generation(
+        &mut self,
+        generation: u64,
+    ) -> Option<&mut crate::app::state::editor::EditorState> {
+        self.tabs.values_mut().find_map(|tab| {
+            tab.parked
+                .as_mut()
+                .filter(|state| state.generation == generation)
+        })
+    }
+
+    pub fn bar_tabs(&self) -> Vec<CenterBarTab> {
+        self.ordered()
+            .into_iter()
+            .map(|tab| {
+                let active = self.active.as_ref() == Some(&tab.id);
+                CenterBarTab {
+                    label: file_name_of(&tab.path).to_string(),
+                    main: false,
+                    active,
+                    glyph: FILE_TAB_GLYPH,
+                    ellipsis: false,
+                    persona: if active {
+                        directory_of(&tab.path).map(str::to_string)
+                    } else {
+                        None
+                    },
+                }
+            })
+            .collect()
+    }
+}
+
+fn file_name_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn directory_of(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(directory, _)| directory)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CenterTabRef {
+    Main,
+    Subagent(SubagentTabId),
+    File(FileTabId),
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -917,8 +1098,8 @@ mod tests {
         }
     }
 
-    fn bar(label: &str, main: bool, active: bool) -> SubagentBarTab {
-        SubagentBarTab {
+    fn bar(label: &str, main: bool, active: bool) -> CenterBarTab {
+        CenterBarTab {
             label: label.into(),
             main,
             active,
@@ -928,9 +1109,106 @@ mod tests {
         }
     }
 
+    fn files() -> FileTabs {
+        FileTabs::new()
+    }
+
+    #[test]
+    fn a_document_opens_as_a_tab_and_is_focused() {
+        let mut tabs = files();
+        let id = tabs
+            .open_or_focus(
+                "src/lib.rs",
+                codegg_protocol::document::DocumentScope::Workspace,
+            )
+            .expect("the tab opens");
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs.active_id(), Some(&id));
+    }
+
+    #[test]
+    fn opening_the_same_document_again_focuses_the_one_tab() {
+        let mut tabs = files();
+        let first = tabs
+            .open_or_focus(
+                "src/lib.rs",
+                codegg_protocol::document::DocumentScope::Workspace,
+            )
+            .expect("the tab opens");
+        tabs.open_or_focus(
+            "src/main.rs",
+            codegg_protocol::document::DocumentScope::Workspace,
+        );
+        let again = tabs
+            .open_or_focus(
+                "src/lib.rs",
+                codegg_protocol::document::DocumentScope::Workspace,
+            )
+            .expect("the tab opens");
+        assert_eq!(tabs.len(), 2, "the document is not opened twice");
+        assert_eq!(again, first, "the same document is the same tab");
+        assert_eq!(tabs.active_id(), Some(&first));
+    }
+
+    #[test]
+    fn the_same_path_in_two_scopes_is_two_documents() {
+        let mut tabs = files();
+        tabs.open_or_focus(
+            "build.toml",
+            codegg_protocol::document::DocumentScope::Workspace,
+        );
+        tabs.open_or_focus(
+            "build.toml",
+            codegg_protocol::document::DocumentScope::GlobalAgent,
+        );
+        assert_eq!(
+            tabs.len(),
+            2,
+            "the scope is part of the document's identity"
+        );
+    }
+
+    #[test]
+    fn the_file_tab_limit_refuses_a_new_tab_rather_than_closing_one() {
+        let mut tabs = files();
+        for index in 0..MAX_OPEN_FILE_TABS {
+            assert!(tabs
+                .open_or_focus(
+                    &format!("src/file-{index}.rs"),
+                    codegg_protocol::document::DocumentScope::Workspace
+                )
+                .is_some());
+        }
+        assert!(tabs.is_at_capacity());
+        assert!(tabs
+            .open_or_focus(
+                "src/overflow.rs",
+                codegg_protocol::document::DocumentScope::Workspace
+            )
+            .is_none());
+        assert_eq!(tabs.len(), MAX_OPEN_FILE_TABS, "no tab was closed");
+    }
+
+    #[test]
+    fn the_strip_names_the_document_and_says_where_it_lives() {
+        let mut tabs = files();
+        tabs.open_or_focus(
+            "crates/codegg-tui/src/app/mod.rs",
+            codegg_protocol::document::DocumentScope::Workspace,
+        );
+        let entries = tabs.bar_tabs();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "mod.rs");
+        assert_eq!(
+            entries[0].persona.as_deref(),
+            Some("crates/codegg-tui/src/app"),
+            "the directory says which file this is"
+        );
+    }
+
     /// A bar entry that carries a persona, as the active tab's does.
-    fn bar_with_persona(label: &str, active: bool, persona: Option<&str>) -> SubagentBarTab {
-        SubagentBarTab {
+    fn bar_with_persona(label: &str, active: bool, persona: Option<&str>) -> CenterBarTab {
+        CenterBarTab {
             persona: persona.map(str::to_string),
             ..bar(label, false, active)
         }

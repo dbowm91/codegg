@@ -243,6 +243,53 @@ All compaction must maintain:
 5. **Multi-tool preservation**: Assistant messages with multiple tool
    calls preserve all IDs and order
 
+## The reduction meets the budget (`reduce_to_budget`)
+
+The retention rules above are **count-based**: the compatibility reducer keeps
+a fixed number of message groups *plus every system message*, and the
+programmatic reducer keeps a fixed number of recent messages plus every
+system message. Neither has a token target. That is a defect, not a
+simplification, and the production run proved it.
+
+**What went wrong.** A long agent run on `opencode_go/deepseek-v4.1-flash`
+compacted 200 times in one turn. Every pass logged `Context remains above
+effective capacity after compaction`, and the history grew monotonically:
+`9740 -> 12096 -> 62464 -> 140053 -> 227823 -> 343798 -> 473125 -> 548789`
+tokens, against an available budget of 8592. The turn could not make progress
+and burned its whole budget without producing its report.
+
+**Why the history grew.** The host pushes *control instructions* into the
+conversation - the continuation frame, the todo reminder - and each one is a
+**snapshot of current state whose text changes** as the work proceeds (the
+frame carries the touched files, the commands run and the artifact handles;
+the reminder carries the todo list). `push_control_instruction` deduplicates
+only on an exact text match, so a changed instruction is added rather than
+replaced. Every system message survives the reduction, so each compaction
+added one more copy and the history grew by roughly one control instruction
+per pass - about 2700 tokens per pass in that run.
+
+**The fix.** `reduce_to_budget` (`src/context/compaction.rs`) runs after
+the policy reducer and gives the reduction the token target the policy never
+had. It keeps, in preference order: the first system message (the host
+prompt), the newest CodeGG continuation frame (the session state), the newest
+remaining system messages, the oldest non-system group (the request that
+started the work) and the newest non-system groups - each while it fits.
+Groups are dropped whole, so an assistant tool call and its results always
+travel together and the pairing invariants above hold.
+
+**What it does not do.** It never drops a system message below the host
+prompt, and it does not invent a budget: when the prompt and the frame alone
+exceed the available capacity, no reduction of the conversation can make the
+request fit, and the status stays `CompactionRequired` for the caller to
+act on. The tool definitions are outside this budget by construction - they
+are charged against the context window before the history is measured - so a
+large tool palette shrinks the room the conversation has rather than the
+room the reduction has.
+
+The regression test is `a_control_instruction_that_changes_every_pass_stays_within_the_budget`;
+without the reduction it fails with a monotonically growing history, which is
+the production symptom reproduced.
+
 ## Fallback Behavior
 
 1. **Agent mode failure** → Falls back to programmatic mode

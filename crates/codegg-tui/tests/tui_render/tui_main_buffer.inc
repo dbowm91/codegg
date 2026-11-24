@@ -1708,7 +1708,7 @@ fn the_tab_bar_keeps_its_content_on_its_own_row() {
 #[test]
 fn no_tabs_means_no_strip_row_and_no_hints() {
     let app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
-    assert_eq!(app.subagent_tab_strip_height(), 0);
+    assert_eq!(app.center_tab_strip_height(), 0);
 
     let mut app = app;
     let buffer = render_to_buffer(&mut app, 100, 30);
@@ -1721,7 +1721,7 @@ fn no_tabs_means_no_strip_row_and_no_hints() {
 #[test]
 fn no_tab_bar_reserves_no_rows() {
     let app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
-    assert_eq!(app.subagent_tab_strip_height(), 0);
+    assert_eq!(app.center_tab_strip_height(), 0);
 }
 
 /// `(baseline viewport rows, viewport rows with tabs open)`.

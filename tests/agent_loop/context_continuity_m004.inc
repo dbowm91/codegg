@@ -1049,7 +1049,7 @@ async fn m004_restart_matrix() {
         rollover::validate_installed_for_restart(&installed, session),
         rollover::RestartValidation::Usable
     );
-    let projection = rollover::render_installed_projection(&installed, None);
+    let projection = rollover::render_installed_projection(&installed, None, false);
     assert!(projection.contains("restart objective"));
     assert!(projection.contains("restart task"));
 
@@ -1097,7 +1097,7 @@ async fn m004_restart_matrix() {
     ));
 
     // Missing optional evidence: projection still renders (summary usable).
-    let missing_projection = rollover::render_installed_projection(&installed, None);
+    let missing_projection = rollover::render_installed_projection(&installed, None, false);
     assert!(!missing_projection.is_empty());
 
     // Newer goal revision than checkpoint merges with M002 precedence.
@@ -1107,6 +1107,7 @@ async fn m004_restart_matrix() {
             "newer goal objective".to_string(),
             Some("newer task".to_string()),
         )),
+        false,
     );
     assert!(merged.contains("newer goal objective"));
     assert!(merged.contains("newer task"));

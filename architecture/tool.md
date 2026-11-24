@@ -700,6 +700,14 @@ validation alone is not OS containment. Guard:
 `scripts/check_sandbox_policy_wiring.py`; integration:
 `tests/security_permission/sandbox_policy_wiring.inc`.
 
+Contained managed children prepend a per-run `bin` containing only links to
+available system file utilities, leaving unrelated inherited PATH tools
+untouched. This keeps `rm` from resolving to a desktop-installed Trash shim:
+CoreServices Trash moves may be denied outside the granted roots, and the shim
+may not fall back to system `rm`. Deletion uses system `rm` inside the
+existing writable workspace/scratch roots instead; no Trash, home, or system
+write grant is added. Non-contained children retain their original PATH.
+
 **Workspace root vs. child worktree ceiling:** `BashTool` keeps two
 independent roots. `workspace_root` is the ordinary session workspace —
 the default `workdir` when the model omits one, the command-intent

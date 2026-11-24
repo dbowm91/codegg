@@ -4033,9 +4033,9 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         }
     }
 
-    let resolved_profile =
-        codegg::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
-    let adapter = codegg::model_profile::resolve_adapter(None, &model_name);
+    let resolved_profile = codegg::model_profile::ModelProfileResolver::new(&config)
+        .resolve_for_provider(Some(&provider_id), &model_name);
+    let adapter = codegg::model_profile::resolve_adapter(Some(&provider_id), &model_name);
     let ctx = codegg::agent::asset_context::AssetContextBuilder::new()
         .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
         .with_workspace_root(std::path::Path::new(&project_dir))

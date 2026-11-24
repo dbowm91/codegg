@@ -14,13 +14,21 @@ impl<'a> ModelProfileResolver<'a> {
     }
 
     pub fn resolve(&self, model: &str) -> ResolvedModelProfile {
-        let base = if let Some(cfg) = self.find_config_override(model) {
-            let built_in = super::adapter::resolve_adapter(None, model).profile;
-            apply_config_override(built_in, cfg)
-        } else {
-            super::adapter::resolve_adapter(None, model).profile
-        };
-        base
+        self.resolve_for_provider(None, model)
+    }
+
+    /// Resolve the profile of a model a known provider serves: the wire model
+    /// id cannot say which gateway serves it, so the provider decides.
+    pub fn resolve_for_provider(
+        &self,
+        provider: Option<&str>,
+        model: &str,
+    ) -> ResolvedModelProfile {
+        let adapter = super::adapter::resolve_adapter(provider, model);
+        match self.find_config_override(model) {
+            Some(cfg) => apply_config_override(adapter.profile, cfg),
+            None => adapter.profile,
+        }
     }
 
     /// Resolve the declarative adapter and apply the legacy bounded profile override.
@@ -239,6 +247,35 @@ mod tests {
                 .orchestration_tier,
             OrchestrationTier::ConvergenceCapable
         );
+    }
+
+    #[test]
+    fn a_provider_scoped_resolution_beats_the_model_name_guess() {
+        let config = Config::default();
+        let guessed = ModelProfileResolver::new(&config).resolve("deepseek-v4.1-flash");
+        assert_eq!(guessed.prompt_profile, PromptProfileKind::LocalStrict);
+        assert_eq!(guessed.context_window, Some(32_000));
+
+        let scoped = ModelProfileResolver::new(&config)
+            .resolve_for_provider(Some("opencode_go"), "deepseek-v4.1-flash");
+        assert_eq!(scoped.prompt_profile, PromptProfileKind::Default);
+        assert_eq!(scoped.context_window, Some(128_000));
+    }
+
+    #[test]
+    fn a_local_runtime_keeps_the_local_strict_profile() {
+        let scoped = ModelProfileResolver::new(&Config::default())
+            .resolve_for_provider(Some("ollama"), "qwen2.5-coder:32b");
+        assert_eq!(scoped.prompt_profile, PromptProfileKind::LocalStrict);
+        assert_eq!(scoped.context_window, Some(32_000));
+    }
+
+    #[test]
+    fn a_provider_scoped_adapter_carries_its_text_tool_repair() {
+        let adapter = ModelProfileResolver::new(&Config::default())
+            .resolve_adapter(Some("opencode_go"), "deepseek-v4.1-flash");
+        assert_eq!(adapter.adapter_id, "opencode-go-deepseek");
+        assert_eq!(adapter.text_tool_repair.as_deref(), Some("fenced_code"));
     }
 
     #[test]

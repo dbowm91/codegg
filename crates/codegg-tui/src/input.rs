@@ -18,8 +18,8 @@
 //! | n | NewSession (Normal only) |
 //! | Ctrl+N | Toggle panel resize mode |
 //! | Ctrl+T | ToggleTasksList (todos + subagents + jobs) |
-//! | Shift+N / Shift+P | Next / previous subagent tab (main buffer) |
-//! | Shift+X | Close subagent tab (main buffer) |
+//! | Shift+N / Shift+P | Next / previous center tab (main buffer) |
+//! | Shift+X | Close center tab (main buffer) |
 //! | Ctrl+Alt+R | Retry the delegated transcript read |
 //! | Ctrl+B | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
@@ -227,19 +227,19 @@ pub enum InputAction {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
-    /// Move to the next subagent tab in the main buffer (`Shift+N`).
+    /// Move to the next center tab in the main buffer (`Shift+N`).
     ///
-    /// Cycle order runs `Main` → subagent tabs in the order they were opened,
-    /// and wraps. A no-op with no subagent tabs open: the main conversation
-    /// stays selected rather than the key becoming visibly dead.
-    NextSubagentTab,
-    /// Move to the previous subagent tab (`Shift+P`). Mirrors
-    /// [`InputAction::NextSubagentTab`] in both directions and wrapping.
-    PreviousSubagentTab,
-    /// Close the active subagent tab (`Shift+X`), returning to the main
+    /// Cycle order runs `Main` → the delegated runs in the order they were
+    /// opened, then the open documents, and wraps. A no-op with no center
+    /// tabs open: the main conversation stays selected.
+    NextCenterTab,
+    /// Move to the previous center tab (`Shift+P`). Mirrors
+    /// [`InputAction::NextCenterTab`] in both directions and wrapping.
+    PreviousCenterTab,
+    /// Close the active center tab (`Shift+X`), returning to the main
     /// conversation. Never closes the main buffer itself, and cancels
     /// nothing — the run keeps going whether or not its tab is open.
-    CloseSubagentTab,
+    CloseCenterTab,
     /// Retry the delegated run's live transcript read (`Ctrl+Alt+R`).
     ///
     /// The explicit retry for a follow that broke: a read the daemon
@@ -339,9 +339,9 @@ pub enum ActionKey {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
-    NextSubagentTab,
-    PreviousSubagentTab,
-    CloseSubagentTab,
+    NextCenterTab,
+    PreviousCenterTab,
+    CloseCenterTab,
     /// Retry the delegated run's live transcript read.
     RetryTranscriptFollow,
     ToggleComposerMode,
@@ -412,9 +412,9 @@ impl ActionKey {
             Self::NextProjectTab,
             Self::PreviousProjectTab,
             Self::CloseProjectTab,
-            Self::NextSubagentTab,
-            Self::PreviousSubagentTab,
-            Self::CloseSubagentTab,
+            Self::NextCenterTab,
+            Self::PreviousCenterTab,
+            Self::CloseCenterTab,
             Self::RetryTranscriptFollow,
             Self::ToggleComposerMode,
             Self::OpenWorkspaceDashboard,
@@ -479,9 +479,9 @@ impl ActionKey {
             Self::NextProjectTab => InputAction::NextProjectTab,
             Self::PreviousProjectTab => InputAction::PreviousProjectTab,
             Self::CloseProjectTab => InputAction::CloseProjectTab,
-            Self::NextSubagentTab => InputAction::NextSubagentTab,
-            Self::PreviousSubagentTab => InputAction::PreviousSubagentTab,
-            Self::CloseSubagentTab => InputAction::CloseSubagentTab,
+            Self::NextCenterTab => InputAction::NextCenterTab,
+            Self::PreviousCenterTab => InputAction::PreviousCenterTab,
+            Self::CloseCenterTab => InputAction::CloseCenterTab,
             Self::RetryTranscriptFollow => InputAction::RetryTranscriptFollow,
             Self::ToggleComposerMode => InputAction::ToggleComposerMode,
             Self::OpenWorkspaceDashboard => InputAction::OpenWorkspaceDashboard,
@@ -559,9 +559,9 @@ impl ActionKey {
             InputAction::NextProjectTab => Self::NextProjectTab,
             InputAction::PreviousProjectTab => Self::PreviousProjectTab,
             InputAction::CloseProjectTab => Self::CloseProjectTab,
-            InputAction::NextSubagentTab => Self::NextSubagentTab,
-            InputAction::PreviousSubagentTab => Self::PreviousSubagentTab,
-            InputAction::CloseSubagentTab => Self::CloseSubagentTab,
+            InputAction::NextCenterTab => Self::NextCenterTab,
+            InputAction::PreviousCenterTab => Self::PreviousCenterTab,
+            InputAction::CloseCenterTab => Self::CloseCenterTab,
             InputAction::RetryTranscriptFollow => Self::RetryTranscriptFollow,
             InputAction::ToggleComposerMode => Self::ToggleComposerMode,
             InputAction::OpenWorkspaceDashboard => Self::OpenWorkspaceDashboard,
@@ -626,9 +626,9 @@ impl ActionKey {
             Self::NextProjectTab => "Next project tab",
             Self::PreviousProjectTab => "Previous project tab",
             Self::CloseProjectTab => "Close project tab",
-            Self::NextSubagentTab => "Next subagent tab (Shift+N)",
-            Self::PreviousSubagentTab => "Previous subagent tab (Shift+P)",
-            Self::CloseSubagentTab => "Close subagent tab (Shift+X)",
+            Self::NextCenterTab => "Next center tab (Shift+N)",
+            Self::PreviousCenterTab => "Previous center tab (Shift+P)",
+            Self::CloseCenterTab => "Close center tab (Shift+X)",
             Self::RetryTranscriptFollow => "Retry the delegated transcript read (Ctrl+Alt+R)",
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
             Self::OpenWorkspaceDashboard => "Open Workspace view (selected-project chat)",
@@ -703,9 +703,9 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // capital `N` mid-word as "next subagent tab" instead of composing
             // it — the same class of bug the `Shift+S` and `Shift+T` entries
             // above prevent.
-            | InputAction::NextSubagentTab
-            | InputAction::PreviousSubagentTab
-            | InputAction::CloseSubagentTab
+            | InputAction::NextCenterTab
+            | InputAction::PreviousCenterTab
+            | InputAction::CloseCenterTab
     )
 }
 
@@ -759,9 +759,9 @@ fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), In
     // Subagent tabs use distinct uppercase keys from project navigation; they
     // control different levels of navigation within the session.
     for (letter, action) in [
-        ('N', InputAction::NextSubagentTab),
-        ('P', InputAction::PreviousSubagentTab),
-        ('X', InputAction::CloseSubagentTab),
+        ('N', InputAction::NextCenterTab),
+        ('P', InputAction::PreviousCenterTab),
+        ('X', InputAction::CloseCenterTab),
     ] {
         map.insert((KeyModifiers::SHIFT, KeyCode::Char(letter)), action.clone());
         map.insert((KeyModifiers::NONE, KeyCode::Char(letter)), action);
@@ -1983,19 +1983,19 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+N",
-            action: "Next subagent tab in the main buffer (cycles through the conversation)",
+            action: "Next center tab in the main buffer (cycles through the conversation)",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+P",
-            action: "Previous subagent tab in the main buffer",
+            action: "Previous center tab in the main buffer",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+X",
-            action: "Close subagent tab — the run keeps going either way",
+            action: "Close center tab — a run keeps going, a document closes",
             condition: None,
         },
         HelpEntry {
@@ -3138,7 +3138,7 @@ mod tests {
                     // set of letters (ADR-0042), and the app map is consulted
                     // only for letters the composer does *not* claim. The app
                     // map may still bind one of those letters — the vim map's
-                    // `p` is PreviousSubagentTab — but that binding is
+                    // `p` is PreviousCenterTab — but that binding is
                     // unreachable while the composer holds the keyboard, so
                     // comparing the composer's help row against it would
                     // report a contradiction that does not exist.

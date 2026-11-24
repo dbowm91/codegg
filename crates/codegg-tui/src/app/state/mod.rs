@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod async_request;
+pub mod center_tabs;
 pub mod change_review;
 pub mod chat;
 pub mod diagnostics;
@@ -24,7 +25,6 @@ pub mod session;
 pub mod session_work;
 pub mod snapshot;
 pub mod subagent_addressee;
-pub mod subagent_tabs;
 pub mod subagents;
 pub mod tasks;
 pub mod transcript_cache;
@@ -35,6 +35,12 @@ pub mod workspace_dashboard;
 
 pub use agent::AgentState;
 pub use async_request::AsyncUiRequestState;
+pub use center_tabs::{
+    bar_width, fit_bar_tabs, plan_strip, CenterBarTab, CenterTabRef, FileTab, FileTabId, FileTabs,
+    StripPlan, SubagentTabId, SubagentTabLiveness, SubagentTabState, SubagentTabs, BAR_ELLIPSIS,
+    BAR_GAP, BAR_HINTS, BAR_SEPARATOR, FILE_TAB_GLYPH, MAIN_TAB_GLYPH, MAIN_TAB_LABEL,
+    MAX_OPEN_FILE_TABS, MAX_OPEN_SUBAGENT_TABS, MIN_STRIP_PERSONA_COLS,
+};
 pub use chat::{
     extract_mentions, message_line, ChatState, ChatStatus, ProjectChat, MAX_CHAT_DISPLAY_MESSAGES,
     MAX_CHAT_DRAFT_LEN, MAX_CHAT_MESSAGES_PER_CHANNEL, MAX_CHAT_PROJECTS,
@@ -76,11 +82,6 @@ pub use routing::{
 pub use session::{RunningTool, SessionState};
 pub use subagent_addressee::{
     reconcile_addressee, SubagentAddressee, MAX_ADDRESSED_DESCRIPTION_CHARS,
-};
-pub use subagent_tabs::{
-    bar_width, fit_bar_tabs, plan_strip, StripPlan, SubagentBarTab, SubagentTabId,
-    SubagentTabLiveness, SubagentTabState, SubagentTabs, BAR_ELLIPSIS, BAR_GAP, BAR_HINTS,
-    BAR_SEPARATOR, MAIN_TAB_GLYPH, MAIN_TAB_LABEL, MAX_OPEN_SUBAGENT_TABS, MIN_STRIP_PERSONA_COLS,
 };
 pub use subagents::{SubagentRow, SubagentState};
 pub use transcript_cache::{

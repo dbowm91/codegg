@@ -447,7 +447,7 @@ impl AgentLoop {
         processor: &mut EventProcessor,
     ) -> Result<(), crate::error::AppError> {
         let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
-            .resolve(&request.model);
+            .resolve_for_provider(Some(self.services.provider.id()), &request.model);
         loop {
             // Check if a follow-up is already queued without blocking
             let prompt = match self.follow_up_rx.try_recv() {
@@ -547,7 +547,7 @@ impl AgentLoop {
                     }
                     let adapter =
                         crate::model_profile::ModelProfileResolver::new(&self.services.config)
-                            .resolve_adapter(None, &request.model);
+                            .resolve_adapter(Some(self.services.provider.id()), &request.model);
                     if let Some(profile) = adapter.text_tool_repair.as_deref() {
                         if !autonomy.adapter_repair_allowed() {
                             // Repair budget exhausted: M002 permits at most one

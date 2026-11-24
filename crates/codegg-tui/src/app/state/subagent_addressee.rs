@@ -15,7 +15,7 @@
 //! addressee must not silently retarget to a re-opened tab showing a different
 //! run.
 
-use super::subagent_tabs::SubagentTabState;
+use super::center_tabs::SubagentTabState;
 use super::subagents::SubagentRow;
 
 /// Longest delegated-task description carried into the addressee.
@@ -212,17 +212,17 @@ mod tests {
             "precondition: the row itself still says running"
         );
         let mut detached = SubagentTabState::attached(
-            super::super::subagent_tabs::SubagentTabId::new(row.task_id.clone()),
+            super::super::center_tabs::SubagentTabId::new(row.task_id.clone()),
             row,
         );
-        detached.liveness = super::super::subagent_tabs::SubagentTabLiveness::Detached;
+        detached.liveness = super::super::center_tabs::SubagentTabLiveness::Detached;
         assert!(SubagentAddressee::from_tab(&detached).is_none());
     }
 
     #[test]
     fn an_attached_running_tab_arms() {
         let attached = SubagentTabState::attached(
-            super::super::subagent_tabs::SubagentTabId::new("task-7"),
+            super::super::center_tabs::SubagentTabId::new("task-7"),
             running_row(),
         );
         let addressee = SubagentAddressee::from_tab(&attached).expect("attached running tab arms");

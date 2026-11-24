@@ -253,6 +253,53 @@ impl EnvironmentPolicy {
     }
 }
 
+#[cfg(unix)]
+fn install_sandbox_file_utility_path(
+    scratch_path: &Path,
+    environment_policy: &mut EnvironmentPolicy,
+) -> Result<(), ManagedProcessError> {
+    const UTILITIES: &[&str] = &[
+        "chmod", "cp", "install", "ln", "mkdir", "mv", "rm", "rmdir", "touch",
+    ];
+    let bin = scratch_path.join("bin");
+    std::fs::create_dir(&bin).map_err(|error| {
+        ManagedProcessError::SandboxFailed(format!("create sandbox utility directory: {error}"))
+    })?;
+    let mut has_rm = false;
+    for name in UTILITIES {
+        let system_path = ["/bin", "/usr/bin"]
+            .into_iter()
+            .map(|directory| Path::new(directory).join(name))
+            .find(|candidate| candidate.is_file());
+        let Some(system_path) = system_path else {
+            continue;
+        };
+        std::os::unix::fs::symlink(&system_path, bin.join(name)).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!(
+                "link system utility {name} into sandbox scratch: {error}"
+            ))
+        })?;
+        has_rm |= *name == "rm";
+    }
+    if !has_rm {
+        return Err(ManagedProcessError::SandboxFailed(
+            "system rm was not found in /bin or /usr/bin".into(),
+        ));
+    }
+    let mut path = bin.as_os_str().to_os_string();
+    if let Some(existing) = environment_policy
+        .entries()
+        .get(std::ffi::OsStr::new("PATH"))
+    {
+        path.push(":");
+        path.push(existing);
+    }
+    *environment_policy = environment_policy
+        .clone()
+        .with_var(OsString::from("PATH"), path);
+    Ok(())
+}
+
 /// Overflow behavior for a bounded output stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowPolicy {
@@ -1072,6 +1119,8 @@ async fn run_inner(
         })?;
         spec.read_paths.push(scratch_path.clone());
         spec.write_paths.push(scratch_path.clone());
+        #[cfg(unix)]
+        install_sandbox_file_utility_path(&scratch_path, &mut environment_policy)?;
         if let Some(session_scratch) = session_scratch.as_ref() {
             spec.read_paths.push(session_scratch.clone());
             spec.write_paths.push(session_scratch.clone());
@@ -4792,6 +4841,126 @@ mod tests {
             !cancel_marker.exists(),
             "target continued after managed cancellation cleanup"
         );
+    }
+
+    #[cfg(unix)]
+    fn create_user_path_shims(root: &Path) -> PathBuf {
+        let bin = root.join("user-bin");
+        std::fs::create_dir(&bin).expect("user PATH directory");
+        for name in ["rm", "python"] {
+            let executable = bin.join(name);
+            std::fs::write(&executable, "#!/bin/sh\nexit 99\n").expect("shim source");
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+                .expect("shim executable permissions");
+        }
+        bin
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn noncontained_process_keeps_user_rm_first_in_path() {
+        let root = tempfile::tempdir().expect("fixture root");
+        let user_bin = create_user_path_shims(root.path());
+        let mut process = ManagedProcessRequest::new(
+            vec!["/bin/sh".into(), "-c".into(), "command -v rm".into()],
+            root.path().to_path_buf(),
+            ProcessProvenance::default(),
+        );
+        process.environment_policy =
+            EnvironmentPolicy::sanitized().with_var("PATH", user_bin.as_os_str());
+
+        let result = run(process).await.expect("uncontained process succeeds");
+        assert!(result.exit_status.success());
+        assert_eq!(
+            result.stdout.to_string_lossy().trim(),
+            user_bin.join("rm").to_string_lossy()
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn contained_process_pins_file_utilities_without_widening_write_roots() {
+        #[cfg(target_os = "linux")]
+        if crate::security::sandbox::probe_landlock().is_err() {
+            return;
+        }
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside workspace");
+        let user_bin = create_user_path_shims(workspace.path());
+        let fixture = workspace.path().join("delete-me");
+        let outside_target = outside.path().join("must-not-be-created");
+        std::fs::write(&fixture, "delete inside workspace").expect("workspace fixture");
+        let command = "printf '%s|%s|%s|%s\n' \"$CODEGG_SCRATCH_DIR\" \"$(command -v rm)\" \"$(command -v touch)\" \"$(command -v python)\"; rm \"$FIXTURE_PATH\" || exit 10; test ! -e \"$FIXTURE_PATH\" || exit 11; touch \"$OUTSIDE_PATH\" 2>/dev/null && exit 12; test ! -e \"$OUTSIDE_PATH\"";
+        let config = crate::security::sandbox::SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(crate::security::sandbox::SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.path().to_string_lossy().into_owned()]);
+        let mut spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), command.into()],
+                Some(workspace.path()),
+            )
+            .expect("sandbox launch spec");
+        spec.deny_paths.clear();
+        assert!(spec
+            .write_paths
+            .iter()
+            .all(|path| !path.starts_with(outside.path())));
+        assert!(spec
+            .write_paths
+            .iter()
+            .all(|path| { !path.starts_with("/bin") && !path.starts_with("/usr/bin") }));
+
+        let mut process = ManagedProcessRequest::new(
+            vec!["/bin/sh".into(), "-c".into(), command.into()],
+            workspace.path().to_path_buf(),
+            ProcessProvenance::default(),
+        );
+        process.environment_policy = EnvironmentPolicy::sanitized()
+            .with_var("PATH", user_bin.as_os_str())
+            .with_var("FIXTURE_PATH", fixture.as_os_str())
+            .with_var("OUTSIDE_PATH", outside_target.as_os_str());
+        process.sandbox = SandboxRequest::Required(spec);
+        let helper =
+            crate::security::sandbox::sandbox_helper_path().expect("sandbox helper must resolve");
+        let result = run_inner(process, None, Some(&helper))
+            .await
+            .expect("contained child completes");
+        assert!(
+            matches!(result.sandbox, SandboxExecutionOutcome::Enforced { .. }),
+            "sandbox enforcement must be observed"
+        );
+        assert!(
+            result.exit_status.success(),
+            "exit={:?} stderr={}",
+            result.exit_status.code(),
+            result.stderr.to_string_lossy()
+        );
+        assert!(
+            !fixture.exists(),
+            "the system rm must delete a granted file"
+        );
+        assert!(
+            !outside_target.exists(),
+            "the contained child must not write outside its workspace"
+        );
+        let fields = result.stdout.to_string_lossy();
+        let mut fields = fields.trim().split('|');
+        let scratch = PathBuf::from(fields.next().expect("scratch path"));
+        assert_eq!(
+            PathBuf::from(fields.next().expect("resolved rm")),
+            scratch.join("bin/rm")
+        );
+        assert_eq!(
+            PathBuf::from(fields.next().expect("resolved touch")),
+            scratch.join("bin/touch")
+        );
+        assert_eq!(
+            PathBuf::from(fields.next().expect("resolved python")),
+            user_bin.join("python")
+        );
+        assert!(fields.next().is_none());
     }
 
     #[cfg(target_os = "linux")]

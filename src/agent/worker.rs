@@ -2254,8 +2254,8 @@ async fn execute_agent_task(
         ..Default::default()
     });
 
-    let model_profile =
-        crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
+    let model_profile = crate::model_profile::ModelProfileResolver::new(&config)
+        .resolve_for_provider(Some(&provider_name), &model_name);
     let available_agents = agents.as_ref().clone();
     let runtime_blocks = agent_loop
         .scratch_scope

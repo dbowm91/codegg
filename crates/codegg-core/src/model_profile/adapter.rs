@@ -676,6 +676,12 @@ mod tests {
     }
 
     #[test]
+    fn an_opencode_go_deepseek_model_repairs_a_fenced_tool_call() {
+        let resolved = resolve_adapter(None, "opencode_go/deepseek-v4.1-flash");
+        assert_eq!(resolved.text_tool_repair.as_deref(), Some("fenced_code"));
+    }
+
+    #[test]
     fn all_builtin_adapter_definitions_parse() {
         // Fail-fast in tests so a TOML typo cannot become a daemon
         // panic on first model-profile lookup (see M2).

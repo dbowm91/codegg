@@ -49,8 +49,8 @@
 //! follows, and the cursor the read asked for. A page that arrives after a
 //! switch, a reconnect, a close or a run replacement is **dropped**.
 
+use crate::app::state::center_tabs::SubagentTabId;
 use crate::app::state::routing::{RouteCheck, UiRouteToken};
-use crate::app::state::subagent_tabs::SubagentTabId;
 use crate::app::state::transcript_cache::{
     PageOutcome, TranscriptCache, TranscriptFollowStatus, MAX_TRANSCRIPT_FETCHES_PER_PASS,
     MAX_TRANSCRIPT_GAP_RECOVERIES, MAX_TRANSCRIPT_PAGES_PER_PASS,

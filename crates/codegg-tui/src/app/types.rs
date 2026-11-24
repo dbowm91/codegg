@@ -649,11 +649,11 @@ pub enum TuiMsg {
         task_id: String,
     },
     /// Move to the next subagent tab, wrapping through the conversation.
-    NextSubagentTab,
+    NextCenterTab,
     /// Move to the previous subagent tab, wrapping through the conversation.
-    PreviousSubagentTab,
+    PreviousCenterTab,
     /// Close the active subagent tab, returning to the main buffer.
-    CloseSubagentTab,
+    CloseCenterTab,
     /// Select a project tab by visible index.
     SelectProjectTabByIndex {
         index: usize,

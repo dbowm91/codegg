@@ -14,7 +14,7 @@
 //! and the attached/detached distinction. This module owns only the *rows* and
 //! the mouse hit geometry, and reconciles the two on every arriving snapshot.
 
-use crate::app::state::subagent_tabs::{SubagentTabId, SubagentTabState, SubagentTabs};
+use crate::app::state::center_tabs::{SubagentTabId, SubagentTabState, SubagentTabs};
 use crate::app::state::tasks::is_live_state;
 use crate::wrap::ellipsize_to_width;
 use codegg::protocol::projection::dto::AgentRunTranscriptProjection;

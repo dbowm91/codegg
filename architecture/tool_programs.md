@@ -206,6 +206,8 @@ below are eligible for programmatic invocation:
 | `git_read` | `ProgrammaticOnly` (hidden) | `ReadOnly` | `operation`, `truncated`, `results` (unwrapped `GitPayload`) | disabled (workspace-version dependent) |
 | `lsp_read` | `ProgrammaticOnly` (hidden) | `ReadOnly` | `operation`, `result_count`, `truncated`, `results` (canonical `LspToolOutput`) | disabled (server-state dependent) |
 
+Use `git_read` for programmatic Git access. The model-visible `git_query` facade is `DirectOnly`, so it is not an admissible program tool; request `git_read` instead.
+
 Thirteen deterministic validators (`src/tool/deterministic.rs`, shared
 `EggsactTool::contract()` override) are additionally eligible, all
 `DirectOrProgrammatic` / `ReadOnly` / `Idempotent` with the shared

@@ -889,9 +889,9 @@ impl App {
             TuiMsg::OpenSubagentTab { task_id } => {
                 self.open_subagent_tab(&task_id);
             }
-            TuiMsg::NextSubagentTab => self.next_subagent_tab(),
-            TuiMsg::PreviousSubagentTab => self.previous_subagent_tab(),
-            TuiMsg::CloseSubagentTab => self.close_subagent_tab(),
+            TuiMsg::NextCenterTab => self.next_center_tab(),
+            TuiMsg::PreviousCenterTab => self.previous_center_tab(),
+            TuiMsg::CloseCenterTab => self.close_center_tab(),
             TuiMsg::ToggleComposerMode => {
                 crate::commands::work_orders::toggle_composer_mode(self);
             }

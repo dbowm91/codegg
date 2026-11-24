@@ -705,7 +705,8 @@ impl AgentLoop {
         &mut self,
         request: &mut ChatRequest,
     ) -> Result<crate::context::ContextPlan, AppError> {
-        let adapter = crate::model_profile::resolve_adapter(None, &request.model);
+        let adapter =
+            crate::model_profile::resolve_adapter(Some(self.services.provider.id()), &request.model);
         let compiler = self
             .services
             .prompt_compiler_fingerprint
@@ -1413,7 +1414,7 @@ impl AgentLoop {
         self.apply_agent_config(&mut request);
         self.apply_semantic_routing(&mut request).await?;
         let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
-            .resolve(&request.model);
+            .resolve_for_provider(Some(self.services.provider.id()), &request.model);
 
         let exec_policy = crate::agent::policy::ExecutionPolicy::from_profile(
             &model_profile,
@@ -1950,7 +1951,7 @@ impl AgentLoop {
                 }
                 let adapter =
                     crate::model_profile::ModelProfileResolver::new(&self.services.config)
-                        .resolve_adapter(None, &request.model);
+                        .resolve_adapter(Some(self.services.provider.id()), &request.model);
                 if let Some(profile) = adapter.text_tool_repair.as_deref() {
                     if !autonomy.adapter_repair_allowed() {
                         // Repair budget exhausted: M002 permits at most one

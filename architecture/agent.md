@@ -271,6 +271,15 @@ duplicate objective/progress projection. M004 activates durable rollover:
 (A-J) and `inject_installed_continuation_for_turn` restores the latest
 installed projection at turn start with newer-goal merge.
 
+Delegated role output contracts remain in force across follow-ups: a follow-up
+sets the task direction for that turn but does not cancel or replace the role
+output shape. When the two cannot both be satisfied, the child keeps the role
+format and reports the conflict within it. Before a delegated report makes a
+repository-behavior claim, it must inspect relevant source with bounded,
+read-only tools and distinguish source-established behavior from inference or
+unverified claims. This is an evidence-quality rule, not additional tool
+authority.
+
 ### Per-Turn Reasoning Capability
 
 The resolved model profile carries a per-model **reasoning capability

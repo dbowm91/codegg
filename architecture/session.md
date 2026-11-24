@@ -693,6 +693,13 @@ increasing `time_created` after the session's current maximum so the canonical
 no durable session, and `message.session_id` is a foreign key). See
 `architecture/agent.md` for who calls it.
 
+The append reads both session existence and the current maximum timestamp before
+inserting, so it opens with `begin_immediate` rather than `pool.begin()`. Taking
+the write lock before those reads prevents SQLite's deferred read-lock upgrade
+from failing with `SQLITE_BUSY` without honoring `busy_timeout` when another
+daemon writer is active. The transaction keeps the complete transcript batch
+atomic; any remaining store error still reaches turn completion's warning.
+
 `fork(id)` copies the newest 5000 messages, not the oldest: a fork branches
 from where the session is now, so truncating from the old end would drop the
 turn it was branched from. Only parts belonging to a copied message come

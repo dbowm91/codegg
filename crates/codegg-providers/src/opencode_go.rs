@@ -29,6 +29,61 @@ use http::header::{HeaderName, HeaderValue};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+static RAW_RESPONSE_CAPTURE: std::sync::OnceLock<Option<std::path::PathBuf>> =
+    std::sync::OnceLock::new();
+
+fn raw_response_capture_path() -> Option<&'static std::path::Path> {
+    RAW_RESPONSE_CAPTURE
+        .get_or_init(|| {
+            std::env::var_os("CODEGG_DIAG_RAW_RESPONSE").map(std::path::PathBuf::from)
+        })
+        .as_deref()
+}
+
+static RAW_REQUEST_CAPTURE: std::sync::OnceLock<Option<std::path::PathBuf>> =
+    std::sync::OnceLock::new();
+
+fn raw_request_capture_path() -> Option<&'static std::path::Path> {
+    RAW_REQUEST_CAPTURE
+        .get_or_init(|| {
+            std::env::var_os("CODEGG_DIAG_RAW_REQUEST").map(std::path::PathBuf::from)
+        })
+        .as_deref()
+}
+
+fn capture_raw_request_body(body: &serde_json::Value) {
+    let Some(path) = raw_request_capture_path() else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = std::io::Write::write_all(
+            &mut file,
+            format!(
+                "---REQUEST---\n{}\n",
+                serde_json::to_string(body).unwrap_or_default()
+            )
+            .as_bytes(),
+        );
+    }
+}
+
+fn capture_raw_response_chunk(chunk: &[u8]) {
+    let Some(path) = raw_response_capture_path() else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = std::io::Write::write_all(&mut file, chunk);
+    }
+}
+
 /// Body-free SSE framing counters separating active incomplete frames from
 /// completed frames that produce no canonical ChatEvent; no payload is retained.
 #[derive(Default)]
@@ -379,6 +434,7 @@ impl Provider for OpenCodeGoProvider {
 
         // 2/5. Encode through the shared kernel for the resolved surface.
         let body = self.encode_body(&route, request)?;
+        capture_raw_request_body(&body);
 
         // 6. One request. No retry to another surface is ever attempted.
         let builder = self.request_builder(&route, request, &body)?;
@@ -455,6 +511,7 @@ impl Provider for OpenCodeGoProvider {
             )| async move {
                 match body.next().await {
                     Some(Ok(chunk)) => {
+                        capture_raw_response_chunk(&chunk);
                         chunk_count = chunk_count.saturating_add(1);
                         byte_count = byte_count.saturating_add(chunk.len() as u64);
                         let completed_frames_before = sse_progress.completed_frames;

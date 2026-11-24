@@ -818,7 +818,7 @@ async fn old_checkpoint_without_work_plan_renders_safely() {
     assert!(provenance_from_body(&installed.payload.body)
         .unwrap()
         .is_none());
-    let projection = rollover::render_installed_projection(&installed, None);
+    let projection = rollover::render_installed_projection(&installed, None, false);
     assert!(projection.contains("legacy objective"));
     // Normal compaction remains functional when reset is disabled.
     let policy = ContextEpochPolicy::default();

@@ -405,9 +405,9 @@ fn subagent_tab_letters_resolve_under_both_encodings() {
         let label = if vim_mode { "vim" } else { "default" };
         for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
             for (letter, expected) in [
-                ('N', InputAction::NextSubagentTab),
-                ('P', InputAction::PreviousSubagentTab),
-                ('X', InputAction::CloseSubagentTab),
+                ('N', InputAction::NextCenterTab),
+                ('P', InputAction::PreviousCenterTab),
+                ('X', InputAction::CloseCenterTab),
             ] {
                 assert_eq!(
                     map.get(&(modifiers, KeyCode::Char(letter))).cloned(),
@@ -457,15 +457,15 @@ fn subagent_tab_letters_are_distinct_from_the_project_tab_chords() {
             Some(chord_action),
             "Ctrl+Alt+{letter} must keep driving project tabs"
         );
-        assert_ne!(chord, Some(InputAction::NextSubagentTab));
-        assert_ne!(chord, Some(InputAction::PreviousSubagentTab));
+        assert_ne!(chord, Some(InputAction::NextCenterTab));
+        assert_ne!(chord, Some(InputAction::PreviousCenterTab));
     }
 
     // And the Shift spellings must not have shadowed an existing bare letter.
     for letter in ['n', 'p', 'x'] {
         assert_ne!(
             press(KeyCode::Char(letter), KeyModifiers::NONE, InputMode::Normal),
-            Some(InputAction::NextSubagentTab),
+            Some(InputAction::NextCenterTab),
             "lowercase {letter} must not open the tasks tab family"
         );
     }
@@ -480,9 +480,9 @@ fn no_subagent_tab_binding_is_reachable_as_a_control_shift_chord() {
         for (modifiers, code) in bindings.keys() {
             let targets_a_tab = matches!(
                 bindings.get(&(*modifiers, *code)),
-                Some(InputAction::NextSubagentTab)
-                    | Some(InputAction::PreviousSubagentTab)
-                    | Some(InputAction::CloseSubagentTab)
+                Some(InputAction::NextCenterTab)
+                    | Some(InputAction::PreviousCenterTab)
+                    | Some(InputAction::CloseCenterTab)
             );
             if targets_a_tab {
                 assert!(

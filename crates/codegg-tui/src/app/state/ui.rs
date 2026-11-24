@@ -50,9 +50,8 @@ pub struct UiState {
     /// manifest persists a sidebar-visibility preference that predates
     /// placements and still has to be written.
     ///
-    /// Do not branch behavior on this: a read here is the bug this field's
-    /// existence invites, since it looks like the answer and silently answers
-    /// a coarser question than the one being asked.
+    /// Do not branch behavior on this: it looks like the answer and silently
+    /// answers a coarser question than the one being asked.
     pub sidebar_visible: bool,
     /// M006-D: whether the file-tree pane holds keyboard focus.
     ///
@@ -140,6 +139,8 @@ pub struct UiState {
     /// View state: it is rebuilt from each projection snapshot, so an absent
     /// snapshot empties it rather than leaving stale rows on screen.
     pub subagents: SubagentState,
+    /// The open documents, and which one the center is showing.
+    pub files: crate::app::state::center_tabs::FileTabs,
 }
 
 impl UiState {

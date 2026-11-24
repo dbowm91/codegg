@@ -5,10 +5,9 @@
 //! Responsibility is decomposed by module: `commands` (intent/effect
 //! contract), `input` (key handling and bindings), `modal` (dialog
 //! mounting; top-modal-only focus owned by `FocusManager`),
-//! `project_session` (multi-project tab/session lifecycle),
-//! `prompt_turn` (prompt and turn submission lifecycle), `plugin_ui`
-//! (plugin effects), and `render` (frame composition). Shared live
-//! state lives in `state/`; message and dialog types in `types.rs`.
+//! `project_session` (multi-project tab/session lifecycle), `prompt_turn`
+//! (prompt and turn submission lifecycle), `plugin_ui` (plugin effects),
+//! and `render` (frame composition). Shared live state lives in `state/`.
 
 #[cfg(test)]
 mod command_argument_tests;
@@ -30,6 +29,7 @@ pub(crate) use commands::send_tui;
 pub use commands::{
     SessionMutationOp, ShellPromotionStageResult, TerminalResumeRequest, TuiCommand,
 };
+
 pub use types::{
     CompletionType, ConnectionLifecycleAction, Dialog, HistoryEntry, SessionStatus, TodoEntry,
     TuiMsg,
@@ -1037,6 +1037,7 @@ impl App {
                 diagnostics: Default::default(),
                 plugin_ui_caps: codegg::protocol::ui::PluginUiCapabilities::all_supported(),
                 subagents: Default::default(),
+                files: Default::default(),
             },
             session_state: SessionState {
                 session: None,
@@ -1625,6 +1626,7 @@ impl App {
                 diagnostics: Default::default(),
                 plugin_ui_caps: codegg::protocol::ui::PluginUiCapabilities::all_supported(),
                 subagents: Default::default(),
+                files: Default::default(),
             },
             session_state: SessionState {
                 session: None,
@@ -4237,10 +4239,34 @@ impl App {
         // them. With the buffer unfocused every unclaimed key falls
         // through to the ordinary composer, so opening the editor does
         // not disturb session composition.
-        if matches!(self.ui_state.routes.current(), crate::route::Route::Editor)
-            && crate::commands::editor::handle_editor_key(self, key)
-        {
-            return;
+        if matches!(self.ui_state.routes.current(), crate::route::Route::Editor) {
+            // The center tab chords are app-level, not buffer verbs, and the
+            // editor's Normal mode claims P for paste-after. The editor branch
+            // runs before the global binding map, so without this the chord
+            // would paste into the document instead of leaving it.
+            let tab_chord = crate::input::handle_key_with_bindings(
+                key,
+                Some(&self.ui_state.bindings),
+                self.ui_state.input_mode,
+            );
+            match tab_chord {
+                Some(InputAction::NextCenterTab) => {
+                    self.process_msg(TuiMsg::NextCenterTab);
+                    return;
+                }
+                Some(InputAction::PreviousCenterTab) => {
+                    self.process_msg(TuiMsg::PreviousCenterTab);
+                    return;
+                }
+                Some(InputAction::CloseCenterTab) => {
+                    self.process_msg(TuiMsg::CloseCenterTab);
+                    return;
+                }
+                _ => {}
+            }
+            if crate::commands::editor::handle_editor_key(self, key) {
+                return;
+            }
         }
         // M002: the composer's Normal-mode claim table. Consulted **before**
         // the global binding map, because a claimed letter belongs to the
@@ -4567,14 +4593,14 @@ impl App {
             Some(InputAction::CloseProjectTab) => {
                 self.process_msg(TuiMsg::CloseProjectTab);
             }
-            Some(InputAction::NextSubagentTab) => {
-                self.process_msg(TuiMsg::NextSubagentTab);
+            Some(InputAction::NextCenterTab) => {
+                self.process_msg(TuiMsg::NextCenterTab);
             }
-            Some(InputAction::PreviousSubagentTab) => {
-                self.process_msg(TuiMsg::PreviousSubagentTab);
+            Some(InputAction::PreviousCenterTab) => {
+                self.process_msg(TuiMsg::PreviousCenterTab);
             }
-            Some(InputAction::CloseSubagentTab) => {
-                self.process_msg(TuiMsg::CloseSubagentTab);
+            Some(InputAction::CloseCenterTab) => {
+                self.process_msg(TuiMsg::CloseCenterTab);
             }
             Some(InputAction::RetryTranscriptFollow) => {
                 self.retry_transcript_follow();
@@ -12258,8 +12284,17 @@ impl App {
     /// The row is bounded to 1 and the labels are trimmed to the width
     /// available (see `fit_bar_tabs`), so opening tabs cannot cost the
     /// transcript more than a single row no matter how many are open.
-    pub fn subagent_tab_strip_height(&self) -> u16 {
-        u16::from(!self.ui_state.subagents.tabs.is_empty())
+    pub fn center_tab_strip_height(&self) -> u16 {
+        u16::from(!self.ui_state.subagents.tabs.is_empty() || !self.ui_state.files.is_empty())
+    }
+
+    pub fn center_bar_tabs(&self) -> Vec<CenterBarTab> {
+        let mut entries = self.ui_state.subagents.tabs.bar_tabs();
+        if let Some(main) = entries.first_mut() {
+            main.active = matches!(self.active_center_tab(), CenterTabRef::Main);
+        }
+        entries.extend(self.ui_state.files.bar_tabs());
+        entries
     }
 
     /// Open the subagent with this projection `task_id` as a buffer tab.
@@ -12297,8 +12332,10 @@ impl App {
             // of the whole session subscription. The session refresh stays
             // as the fallback for a daemon that does not serve the page
             // read at all.
+            //
+            // Taking the center is part of opening it.
             if let Some(tab_id) = self.ui_state.subagents.tabs.active_tab_id().cloned() {
-                crate::commands::transcript_follow::on_tab_focused(self, &tab_id);
+                self.activate_center_tab(CenterTabRef::Subagent(tab_id));
             }
         }
         opened
@@ -12347,43 +12384,175 @@ impl App {
     /// Returns whether a subagent tab is showing afterwards. `false` with no
     /// subagent tabs open is not a failure: the conversation stays selected,
     /// which is the same "no dead key" rule `toggle_tasks_list` follows.
-    fn cycle_subagent_tab(&mut self, offset: isize) -> bool {
-        let cycled = self.ui_state.subagents.cycle_tabs(offset);
-        if cycled {
-            // A tab that gains focus catches up from the authoritative
-            // cursor. A background tab is not read: it stays dirty and
-            // waits, so a hidden tab generates no traffic.
-            if let Some(tab_id) = self.ui_state.subagents.tabs.active_tab_id().cloned() {
-                crate::commands::transcript_follow::on_tab_focused(self, &tab_id);
+    pub fn center_tab_refs(&self) -> Vec<CenterTabRef> {
+        let mut refs = vec![CenterTabRef::Main];
+        refs.extend(
+            self.ui_state
+                .subagents
+                .tabs
+                .ordered()
+                .into_iter()
+                .map(|tab| CenterTabRef::Subagent(tab.tab_id.clone())),
+        );
+        refs.extend(
+            self.ui_state
+                .files
+                .ordered()
+                .into_iter()
+                .map(|tab| CenterTabRef::File(tab.id.clone())),
+        );
+        refs
+    }
+
+    pub fn active_center_tab(&self) -> CenterTabRef {
+        if let Some(tab) = self.ui_state.subagents.tabs.active() {
+            return CenterTabRef::Subagent(tab.tab_id.clone());
+        }
+        if let Some(tab) = self.ui_state.files.active() {
+            return CenterTabRef::File(tab.id.clone());
+        }
+        CenterTabRef::Main
+    }
+
+    pub(crate) fn activate_center_tab(&mut self, tab: CenterTabRef) {
+        match tab {
+            CenterTabRef::Main => {
+                self.swap_editor_state(None);
+                self.ui_state.subagents.tabs.clear_active();
+                self.ui_state.files.clear_active();
+                self.leave_editor_route();
+            }
+            CenterTabRef::Subagent(id) => {
+                self.swap_editor_state(None);
+                self.ui_state.files.clear_active();
+                self.ui_state.subagents.tabs.set_active(&id);
+                self.leave_editor_route();
+                self.follow_focused_subagent(&id);
+            }
+            CenterTabRef::File(id) => {
+                self.swap_editor_state(Some(&id));
+                self.ui_state.files.set_active(&id);
+                self.ui_state.subagents.tabs.clear_active();
+                self.enter_editor_route();
             }
         }
-        cycled
     }
 
-    /// `Shift+N`: show the next subagent tab, wrapping through the
-    /// conversation.
-    pub fn next_subagent_tab(&mut self) {
-        self.cycle_subagent_tab(1);
-    }
-
-    /// `Shift+P`: show the previous subagent tab, wrapping through the
-    /// conversation.
-    pub fn previous_subagent_tab(&mut self) {
-        self.cycle_subagent_tab(-1);
-    }
-
-    /// `Shift+X`: close the active subagent tab.
-    ///
-    /// Closes nothing but the tab. The run keeps going, because whether a user
-    /// is *watching* a subagent has never had any bearing on whether it
-    /// finishes.
-    pub fn close_subagent_tab(&mut self) {
-        let closed = self.ui_state.subagents.tabs.close_active();
-        if let Some(tab) = closed {
-            self.messages_state
-                .toasts
-                .info(&format!("Closed {}", tab.label()));
+    pub fn cycle_center_tab(&mut self, offset: isize) {
+        let entries = self.center_tab_refs();
+        if entries.is_empty() {
+            return;
         }
+        let current = self.active_center_tab();
+        let index = entries
+            .iter()
+            .position(|entry| *entry == current)
+            .unwrap_or(0) as isize;
+        let len = entries.len() as isize;
+        let next = entries[((index + offset).rem_euclid(len)) as usize].clone();
+        self.activate_center_tab(next);
+    }
+
+    pub fn next_center_tab(&mut self) {
+        self.cycle_center_tab(1);
+    }
+
+    pub fn previous_center_tab(&mut self) {
+        self.cycle_center_tab(-1);
+    }
+
+    pub fn close_center_tab(&mut self) {
+        let entries = self.center_tab_refs();
+        let current = self.active_center_tab();
+        let index = entries
+            .iter()
+            .position(|entry| *entry == current)
+            .unwrap_or(0);
+        match &current {
+            CenterTabRef::Main => return,
+            CenterTabRef::Subagent(id) => {
+                if let Some(tab) = self.ui_state.subagents.tabs.remove_tab(id) {
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Closed {}", tab.label()));
+                }
+            }
+            CenterTabRef::File(id) => {
+                crate::commands::editor::close_file_tab(self, id);
+            }
+        }
+        // The tab that took the closed one's place takes the screen; the one
+        // before it does when the closed tab was last.
+        let remaining = self.center_tab_refs();
+        let next = if remaining.is_empty() {
+            CenterTabRef::Main
+        } else if index < remaining.len() {
+            remaining[index].clone()
+        } else {
+            remaining[remaining.len() - 1].clone()
+        };
+        self.activate_center_tab(next);
+    }
+
+    pub(crate) fn swap_editor_state(&mut self, target: Option<&FileTabId>) {
+        if let Some(path) = self.editor_state.path.clone() {
+            let scope = self.editor_state.scope;
+            let owner = FileTabId::new(&path, scope);
+            let state = std::mem::take(&mut self.editor_state);
+            if let Some(tab) = self.ui_state.files.get_mut(&owner) {
+                tab.parked = Some(state);
+            } else {
+                // The document on screen has no tab of its own; put the
+                // state back rather than dropping it on the floor.
+                self.editor_state = state;
+            }
+        }
+        let Some(target) = target else {
+            return;
+        };
+        let parked = self
+            .ui_state
+            .files
+            .get_mut(target)
+            .and_then(|tab| tab.parked.take());
+        self.editor_state = parked.unwrap_or_default();
+        if self.editor_state.path.is_none() {
+            if let Some(tab) = self.ui_state.files.get(target) {
+                self.editor_state.path = Some(tab.path.clone());
+                self.editor_state.scope = tab.scope;
+            }
+        }
+    }
+
+    pub(crate) fn editor_state_for_generation(
+        &mut self,
+        generation: u64,
+    ) -> Option<&mut crate::app::state::editor::EditorState> {
+        if self.editor_state.generation == generation {
+            return Some(&mut self.editor_state);
+        }
+        self.ui_state.files.parked_with_generation(generation)
+    }
+
+    fn enter_editor_route(&mut self) {
+        if !matches!(self.ui_state.routes.current(), crate::route::Route::Editor) {
+            self.ui_state
+                .routes
+                .navigate_to(crate::route::Route::Editor);
+        }
+    }
+
+    fn leave_editor_route(&mut self) {
+        if !matches!(self.ui_state.routes.current(), crate::route::Route::Editor) {
+            return;
+        }
+        if !self.ui_state.routes.back() {
+            self.ui_state.routes.navigate_to(crate::route::Route::Home);
+        }
+    }
+
+    fn follow_focused_subagent(&mut self, id: &SubagentTabId) {
+        crate::commands::transcript_follow::on_tab_focused(self, id);
     }
 
     /// Rows the unified tasks overlay needs, including its per-group headers.
@@ -17800,6 +17969,124 @@ mod keybind_export_dispatch_tests {
         assert!(
             !app.focus_manager.is_empty(),
             "the box must still be mounted after Esc in Export"
+        );
+    }
+}
+
+#[cfg(test)]
+mod center_tab_tests {
+    use super::*;
+    use crate::app::state::center_tabs::{CenterTabRef, FileTabId};
+    use codegg_protocol::document::DocumentScope;
+
+    fn app() -> App {
+        App::new_for_testing("/tmp".to_string())
+    }
+
+    /// Open a document as a tab, the way the file tree does.
+    fn open_document(app: &mut App, path: &str) -> FileTabId {
+        let id = app
+            .ui_state
+            .files
+            .open_or_focus(path, DocumentScope::Workspace)
+            .expect("the tab opens");
+        app.activate_center_tab(CenterTabRef::File(id.clone()));
+        id
+    }
+
+    #[test]
+    fn a_document_opens_as_a_tab_beside_the_one_already_open() {
+        let mut app = app();
+        let first = open_document(&mut app, "src/lib.rs");
+        let second = open_document(&mut app, "src/main.rs");
+        assert_eq!(app.ui_state.files.len(), 2, "both documents stay open");
+        assert_eq!(
+            app.active_center_tab(),
+            CenterTabRef::File(second),
+            "the document just opened is the one on screen"
+        );
+        assert_eq!(
+            app.ui_state.files.get(&first).map(|tab| tab.path.clone()),
+            Some("src/lib.rs".to_string()),
+            "the first document keeps its tab"
+        );
+    }
+
+    #[test]
+    fn the_strip_lists_the_conversation_and_the_open_documents() {
+        let mut app = app();
+        open_document(&mut app, "src/lib.rs");
+        let entries = app.center_bar_tabs();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].main, "the conversation leads the strip");
+        assert_eq!(entries[1].label, "lib.rs");
+    }
+
+    #[test]
+    fn cycling_moves_between_the_conversation_and_the_documents() {
+        let mut app = app();
+        open_document(&mut app, "src/lib.rs");
+        open_document(&mut app, "src/main.rs");
+
+        app.cycle_center_tab(1);
+        assert_eq!(
+            app.active_center_tab(),
+            CenterTabRef::Main,
+            "the cycle wraps past the last tab to the conversation"
+        );
+        app.cycle_center_tab(1);
+        assert_eq!(
+            app.active_center_tab(),
+            CenterTabRef::File(FileTabId::new("src/lib.rs", DocumentScope::Workspace))
+        );
+    }
+
+    #[test]
+    fn a_parked_document_keeps_its_state_when_it_comes_back() {
+        let mut app = app();
+        let id = open_document(&mut app, "src/lib.rs");
+        app.editor_state.path = Some("src/lib.rs".to_string());
+
+        app.activate_center_tab(CenterTabRef::Main);
+        assert!(
+            app.editor_state.path.is_none(),
+            "the conversation is on screen, so no document is"
+        );
+
+        app.activate_center_tab(CenterTabRef::File(id));
+        assert_eq!(
+            app.editor_state.path.as_deref(),
+            Some("src/lib.rs"),
+            "the document comes back with its identity"
+        );
+    }
+
+    #[test]
+    fn a_run_opened_from_the_panel_takes_the_center_from_a_document() {
+        let mut app = app();
+        open_document(&mut app, "src/lib.rs");
+        app.ui_state
+            .subagents
+            .set_rows(vec![crate::app::state::subagents::SubagentRow {
+                transcript: None,
+                child_instance_id: Some("child-1".to_string()),
+                task_id: "1".to_string(),
+                run_id: None,
+                display_name: Some("Sally".to_string()),
+                agent: "explore".to_string(),
+                description: "work".to_string(),
+                profile: None,
+                usefulness: None,
+                status: "running".to_string(),
+            }]);
+        assert!(app.open_subagent_tab("1"), "the tab opens");
+        assert!(
+            matches!(app.active_center_tab(), CenterTabRef::Subagent(_)),
+            "the run is the one on screen"
+        );
+        assert!(
+            app.ui_state.files.active().is_none(),
+            "a document is not on screen at the same time as a run"
         );
     }
 }

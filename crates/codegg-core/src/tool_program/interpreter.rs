@@ -118,6 +118,15 @@ impl ProgramValue {
         }
     }
 
+    fn from_tool_result_child(value: &serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                ProgramValue::ToolResult(value.clone())
+            }
+            _ => ProgramValue::from_json(value.clone()),
+        }
+    }
+
     /// Is this value falsy? (None, false, 0, 0.0, empty string/list/dict)
     pub fn is_falsy(&self) -> bool {
         match self {
@@ -138,6 +147,15 @@ impl ProgramValue {
             ProgramValue::String(s) => Ok(s.len() as u64),
             ProgramValue::List(v) => Ok(v.len() as u64),
             ProgramValue::Dict(v) => Ok(v.len() as u64),
+            ProgramValue::ToolResult(value) => match value {
+                serde_json::Value::String(s) => Ok(s.len() as u64),
+                serde_json::Value::Array(items) => Ok(items.len() as u64),
+                serde_json::Value::Object(items) => Ok(items.len() as u64),
+                _ => Err(InterpreterError::TypeError(format!(
+                    "len() not supported for {:?}",
+                    std::mem::discriminant(self)
+                ))),
+            },
             _ => Err(InterpreterError::TypeError(format!(
                 "len() not supported for {:?}",
                 std::mem::discriminant(self)
@@ -2262,6 +2280,54 @@ impl MeteredInterpreter {
                         InterpreterError::IndexError(format!("index {} out of range", idx))
                     })
             }
+            (ProgramValue::ToolResult(value), ProgramValue::String(key_str)) => {
+                let object = value.as_object().ok_or_else(|| {
+                    InterpreterError::TypeError(format!(
+                        "cannot index {:?} with {:?}",
+                        std::mem::discriminant(collection),
+                        std::mem::discriminant(key)
+                    ))
+                })?;
+                object
+                    .get(key_str)
+                    .map(ProgramValue::from_tool_result_child)
+                    .ok_or_else(|| InterpreterError::KeyError(key_str.clone()))
+            }
+            (ProgramValue::ToolResult(value), ProgramValue::Int(index)) => match value {
+                serde_json::Value::Array(items) => {
+                    let index = if *index < 0 {
+                        items.len() as i64 + index
+                    } else {
+                        *index
+                    };
+                    usize::try_from(index)
+                        .ok()
+                        .and_then(|index| items.get(index))
+                        .map(ProgramValue::from_tool_result_child)
+                        .ok_or_else(|| {
+                            InterpreterError::IndexError(format!("index {} out of range", index))
+                        })
+                }
+                serde_json::Value::String(text) => {
+                    let index = if *index < 0 {
+                        text.chars().count() as i64 + index
+                    } else {
+                        *index
+                    };
+                    usize::try_from(index)
+                        .ok()
+                        .and_then(|index| text.chars().nth(index))
+                        .map(|character| ProgramValue::String(character.to_string()))
+                        .ok_or_else(|| {
+                            InterpreterError::IndexError(format!("index {} out of range", index))
+                        })
+                }
+                _ => Err(InterpreterError::TypeError(format!(
+                    "cannot index {:?} with {:?}",
+                    std::mem::discriminant(collection),
+                    std::mem::discriminant(key)
+                ))),
+            },
             _ => Err(InterpreterError::TypeError(format!(
                 "cannot index {:?} with {:?}",
                 std::mem::discriminant(collection),
@@ -2702,13 +2768,39 @@ mod tests {
         }
     }
 
-    fn run_program(source: &str) -> ProgramResult {
+    struct StructuredResultBroker(serde_json::Value);
+
+    #[async_trait::async_trait]
+    impl BrokerCallback for StructuredResultBroker {
+        async fn execute_call(
+            &self,
+            _request: &CallRequest,
+        ) -> Result<CallResult, InterpreterError> {
+            Ok(CallResult {
+                output: ProgramValue::ToolResult(self.0.clone()),
+                artifacts: vec![],
+                success: true,
+            })
+        }
+    }
+
+    fn run_tool_program_with_broker(
+        source: &str,
+        broker: &dyn BrokerCallback,
+        max_value_growth: Option<u64>,
+    ) -> ProgramResult {
         let result = compile_program(source).unwrap();
-        let limits = RuntimeLimits::from(&result.ir.bounds);
+        let mut limits = RuntimeLimits::from(&result.ir.bounds);
+        if let Some(max_value_growth) = max_value_growth {
+            limits.max_value_growth = max_value_growth;
+        }
         let mut interp = MeteredInterpreter::new(result.ir, limits);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let broker = NoopBroker;
-        rt.block_on(interp.run(&broker, None))
+        rt.block_on(interp.run(broker, None))
+    }
+
+    fn run_program(source: &str) -> ProgramResult {
+        run_tool_program_with_broker(source, &NoopBroker, None)
     }
 
     #[test]
@@ -2723,6 +2815,45 @@ mod tests {
         let result = run_program("emit(\"hello\")\n");
         assert_eq!(result.status, ProgramStatus::Completed);
         assert_eq!(result.output, Some(ProgramValue::String("hello".into())));
+    }
+
+    #[test]
+    fn tool_program_can_inspect_structured_call_results() {
+        let broker = StructuredResultBroker(serde_json::json!({
+            "items": [{"name": "alpha"}, {"name": "beta"}]
+        }));
+        let result = run_tool_program_with_broker(
+            "result = call({\"tool\": \"mock\"})\nemit([len(result), len(result[\"items\"]), result[\"items\"][0][\"name\"]])\n",
+            &broker,
+            None,
+        );
+        assert_eq!(result.status, ProgramStatus::Completed);
+        assert_eq!(
+            result.output,
+            Some(ProgramValue::List(vec![
+                ProgramValue::Int(1),
+                ProgramValue::Int(2),
+                ProgramValue::String("alpha".into()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn tool_program_result_inspection_respects_growth_budget() {
+        let broker = StructuredResultBroker(serde_json::json!({
+            "body": "x".repeat(512)
+        }));
+        let result = run_tool_program_with_broker(
+            "result = call({\"tool\": \"mock\"})\nemit(len(result[\"body\"]))\n",
+            &broker,
+            Some(256),
+        );
+        assert_eq!(result.status, ProgramStatus::Failed);
+        assert_eq!(result.failure_class, Some(FailureClass::BudgetExhausted));
+        assert!(result
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("exceeds max 256")));
     }
 
     #[test]

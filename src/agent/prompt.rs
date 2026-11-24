@@ -69,6 +69,11 @@ fn build_base_prompt_blocks(ctx: PromptContext<'_>) -> Vec<PromptBlock> {
             &format!("agent:output:{role}"),
             subagent_output_contract(role),
         ));
+        blocks.push(PromptBlock::required(
+            PromptBlockKind::RoleContract,
+            "agent:follow-up-output-precedence",
+            delegated_follow_up_contract(),
+        ));
     }
     blocks.push(PromptBlock::required(
         PromptBlockKind::ModelAdapter,
@@ -479,7 +484,11 @@ impl PromptCompiler {
 }
 
 fn base_harness_contract() -> &'static str {
-    "You are operating inside codegg, a coding agent harness. Use tools to inspect the repository before making claims about files, code, or project structure. Do not claim tests passed unless tool output confirms the test result. Prefer minimal, correct changes over broad rewrites."
+    "You are operating inside codegg, a coding agent harness. Use tools to inspect the repository before making claims about files, code, or project structure. For repository-behavior claims in delegated reports, inspect relevant source with bounded, read-only tools; separate behavior established by source from inference, and label anything unverified. Do not claim tests passed unless tool output confirms the test result. Prefer minimal, correct changes over broad rewrites."
+}
+
+fn delegated_follow_up_contract() -> &'static str {
+    "Follow-up contract: Treat a follow-up as the current task direction for that turn; it does not cancel or replace this delegated role's output contract. Satisfy both where possible. If they conflict, preserve the output contract and report the conflict within its required format."
 }
 
 /// Steering contract for long-horizon planning. Two surfaces:
@@ -930,6 +939,30 @@ mod tests {
         assert!(prompt.contains("Fast executor"));
         assert!(!prompt.contains("Available tools:"));
         assert!(!prompt.contains("Available skills:"));
+    }
+
+    #[test]
+    fn delegated_prompt_preserves_output_contract_and_requires_source_evidence() {
+        let agent = test_agent_with_role("explore", Some("explorer"));
+        let config = test_config();
+        let profile = infer_builtin_profile("openai/gpt-5");
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agent,
+            config: &config,
+            model_profile: &profile,
+            tools: &["read".to_string(), "grep".to_string()],
+            skills: &[],
+            custom_instructions: None,
+            is_plan_mode: false,
+            agents: &[],
+        });
+
+        assert!(prompt.contains("Output contract: Return a compact report"));
+        assert!(
+            prompt.contains("Follow-up contract: Treat a follow-up as the current task direction")
+        );
+        assert!(prompt.contains("bounded, read-only tools"));
+        assert!(prompt.contains("separate behavior established by source from inference"));
     }
 
     #[test]

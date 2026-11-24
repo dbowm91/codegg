@@ -512,7 +512,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::SubagentTranscriptPass { tab_id } => {
             super::super::commands::transcript_follow::continue_pass(
                 app,
-                &crate::app::state::subagent_tabs::SubagentTabId::new(tab_id),
+                &crate::app::state::center_tabs::SubagentTabId::new(tab_id),
             );
         }
         TuiCommand::ChatHistoryLoaded {

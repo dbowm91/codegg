@@ -107,6 +107,52 @@ resolver logs an error and returns `fallback_resolved_adapter(model)` —
 a synthetic `generic` profile with fingerprint `fallback:generic` and
 source layer `fallback:generic`, so resolution still succeeds.
 
+### The Provider Is The Authority
+
+`resolve_adapter(provider, model)` takes the provider that serves the
+model, and a caller that knows it passes it in. The wire model id cannot
+say which gateway serves it: `deepseek-v4.1-flash` is a model *name*, and
+a name says nothing about the deployment that answers it.
+
+The provider and the model id answer two different questions, and the
+resolver must not let one stand in for the other:
+
+- The **provider** says which deployment serves the model. It selects the
+  adapter that describes that deployment: its context window, its tool
+  contract, its text-repair profile.
+- The **model id** says which family the model belongs to.
+
+When the provider is known it decides.
+`ModelProfileResolver::resolve_for_provider()` is the entry point every
+turn-scoped caller uses: the agent loop's execution policy, the follow-up
+drain, the delegated child's profile, the context plan's adapter
+fingerprint and the CLI's prompt compiler all resolve through it.
+
+When the provider is *not* known, the resolver infers one from the id's
+spelling — the family substring list in step 1 above. That inference is a
+**fallback**, not a source of truth, and it is the one that misfires: it
+reads `deepseek`, `qwen`, `qwq` and `kimi` as the `local` family, so
+a gateway-served DeepSeek used to inherit the local-runtime profile — a
+32 000-token window, a 4 000-token output reservation and the local-strict
+prompt contract — while the deployment it actually ran on answered
+33 000-token prompts without complaint.
+
+A profile that understates the window does not fail loudly. Every turn
+compacts, the reduction has nothing left to keep, the conversation is
+dropped, and the agent continues against a system prompt alone — blind to
+the tool results it already has. The model then answers a request it can
+only half see, which is where a malformed tool call comes from.
+
+Two consequences worth stating:
+
+- A provider that names no adapter resolves to `generic`, not to a family
+  inferred from the name. A deployment that matches no adapter contract has
+  **no established capability**, and that is the honest answer — the same
+  one the reasoning-capability surface already gives.
+- A local runtime keeps the local-strict profile, because `ollama`,
+  `lmstudio`, `vllm`, `sglang` and `local` are the provider ids that
+  profile claims.
+
 ### Adapter Inheritance
 
 All adapters merge over `generic`. The `merge_adapter()` function
@@ -364,6 +410,27 @@ repair grammar for models that emit tool calls as prose:
 | `hermes_xml` | Hermes XML-style tool calls |
 | `invoke_json` | JSON envelope invocation |
 | `raw_json_envelope` | Raw JSON with envelope wrapping |
+| `fenced_code` | A fenced code block whose info string names a tool |
+
+#### The fenced profile (`fenced_code`)
+
+Some models answer a tool request with a markdown fence instead of a
+structured call — a ` ```bash ` block holding the command — and then
+narrate, because the harness never dispatched a call and the turn ends
+with prose. The `fenced_code` profile recovers exactly that shape:
+
+- a fence whose info string is not a tool in the current surface is a
+  documentation example and is ignored;
+- a fence whose body is a JSON object supplies the arguments;
+- a fence whose body is raw text supplies the tool's argument only when
+  that tool declares exactly one required string parameter;
+- anything ambiguous is left alone rather than guessed.
+
+The profile is therefore no wider than the syntax it recovers, and a
+model that fences something naming no tool still gets no call. It is
+enabled per adapter — the `opencode-go-deepseek` adapter declares it for
+the `opencode_go` provider's DeepSeek models — or per model through the
+`model_profile.<model>.text_tool_repair` config override.
 
 The profile names are parsed by
 `codegg_providers::text_tool_parser::TextRepairProfile::parse`; an

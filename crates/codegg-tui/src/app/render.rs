@@ -178,7 +178,7 @@ impl App {
         let hint_budget = usize::from(outer.pane.width).saturating_sub(4);
         let composer_hint = self.composer_hint_text_bounded(hint_budget);
         let hint_rows = u16::from(composer_hint.is_some());
-        let tab_rows = self.subagent_tab_strip_height();
+        let tab_rows = self.center_tab_strip_height();
         // The overlay's rows are derived **once** for the frame: the claim
         // below and the painter further down are two readers of one build.
         // `tasks_strip_height` reads this cache instead of deriving again.
@@ -273,7 +273,7 @@ impl App {
             self.render_component_fallback(frame, viewport_chunk, "Messages render error");
         }
         if let Some(area) = plan.tab_bar {
-            self.render_subagent_tab_strip(frame, area);
+            self.render_center_tab_strip(frame, area);
         }
 
         // The subagent rows the `/subagent` addressee lookup reads are
@@ -1720,7 +1720,7 @@ impl App {
     /// an empty pane.
     fn delegated_transcript_lines(
         &self,
-        tab: &crate::app::state::subagent_tabs::SubagentTabState,
+        tab: &crate::app::state::center_tabs::SubagentTabState,
     ) -> Vec<Line<'static>> {
         use codegg::protocol::projection::dto::AgentRunTranscriptProjection;
         let theme = self.ui_state.theme.clone();
@@ -1841,7 +1841,7 @@ impl App {
         &self,
         entry: &codegg::protocol::projection::dto::AgentRunTranscriptEntryProjection,
     ) -> Vec<Line<'static>> {
-        use crate::app::state::subagent_tabs::MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES;
+        use crate::app::state::center_tabs::MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES;
         use codegg::protocol::projection::dto::{AgentRunTranscriptKind, AgentRunTranscriptRole};
         let theme = self.ui_state.theme.clone();
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -1923,7 +1923,7 @@ impl App {
     /// not the same claim, and none of them is "the subagent did nothing".
     fn transcript_follow_lines(
         &self,
-        tab: &crate::app::state::subagent_tabs::SubagentTabState,
+        tab: &crate::app::state::center_tabs::SubagentTabState,
     ) -> Vec<Line<'static>> {
         use crate::app::state::transcript_cache::TranscriptFollowStatus;
         let theme = self.ui_state.theme.clone();
@@ -2025,11 +2025,10 @@ impl App {
     /// width the bar trims older tabs and "which one am I reading" can no
     /// longer be answered by position.
     ///
-    /// The row carries three things, and they share **one** width budget: the
-    /// tab labels on the left, the active tab's persona next to the entry it
-    /// describes, and the key hints on the right. The budget is computed once,
-    /// in [`plan_strip`], so what is drawn is exactly what was measured.
-    fn render_subagent_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
+    /// The row carries three things on **one** width budget: the tab labels,
+    /// the active tab's persona, and the key hints. The budget is computed
+    /// once, in [`plan_strip`], so what is drawn is what was measured.
+    fn render_center_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -2040,11 +2039,9 @@ impl App {
         // through. A carved-out row is still a row — fill it, then decorate it.
         let block = Block::default().style(Style::default().bg(theme.background));
         frame.render_widget(block, area);
-        let plan = crate::app::state::subagent_tabs::plan_strip(
-            self.ui_state.subagents.tabs.bar_tabs(),
-            area.width as usize,
-        );
-        let separator = crate::app::state::subagent_tabs::BAR_SEPARATOR;
+        let plan =
+            crate::app::state::center_tabs::plan_strip(self.center_bar_tabs(), area.width as usize);
+        let separator = crate::app::state::center_tabs::BAR_SEPARATOR;
         let muted = Style::default().fg(theme.muted);
 
         // Left region: the tab entries, then the active tab's persona.
@@ -2107,7 +2104,7 @@ impl App {
             };
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    crate::app::state::subagent_tabs::BAR_HINTS,
+                    crate::app::state::center_tabs::BAR_HINTS,
                     muted,
                 )))
                 .alignment(Alignment::Right),

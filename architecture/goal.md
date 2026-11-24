@@ -306,6 +306,13 @@ pub struct GoalUsageUpdate {
 **Note**: There is no `goal_set` tool. Goals are created via TUI
 `/goal set` commands which call `GoalStore::create_active()` directly.
 
+A continuation frame can show an objective even without a durable active Goal
+(the objective then falls back to the immutable session-origin prompt). It
+therefore includes `Goal tools: active` or `Goal tools: inactive`, derived from
+the snapshot's host-owned active-goal state rather than from objective text.
+This status prevents the model from inferring tool availability from an
+objective; resolved tool schemas and policy remain authoritative.
+
 ### Checkpoint System (`crates/codegg-core/src/goal/checkpoint.rs`)
 
 - `create_checkpoint_file()` (:9) — creates `.codegg/goals/{id}.checkpoint.md`

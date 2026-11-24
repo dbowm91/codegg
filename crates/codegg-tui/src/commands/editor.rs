@@ -34,6 +34,7 @@ use codegg_protocol::lsp::{
     LspReadResultDto, LspReadStatus,
 };
 
+use crate::app::state::center_tabs::{CenterTabRef, FileTabId};
 use crate::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
 use crate::app::{App, TuiCommand};
 use crate::async_cmd::{spawn_registered_tui_task, spawn_scoped_registered_tui_task};
@@ -139,6 +140,30 @@ pub fn normalize_relative_path(input: &str) -> Result<String, String> {
 
 // ── Open / close ─────────────────────────────────────────────────────────────
 
+fn open_document_as_tab(app: &mut App, path: &str, scope: DocumentScope) -> bool {
+    let Some(tab_id) = app.ui_state.files.open_or_focus(path, scope) else {
+        app.messages_state.toasts.warning(
+            "Cannot open document: the file tab limit is reached - close a tab with Shift+X",
+        );
+        return false;
+    };
+    // Put the tab on screen; the previous document is parked in its own tab.
+    app.activate_center_tab(CenterTabRef::File(tab_id));
+    // A tab opened before still holds its attachment, so switching back to
+    // it needs no new open.
+    if app.editor_state.is_open()
+        && app.editor_state.path.as_deref() == Some(path)
+        && app.editor_state.scope == scope
+    {
+        app.messages_state
+            .toasts
+            .info("Document is already open in the editor");
+        enter_editor_normal(app);
+        return false;
+    }
+    true
+}
+
 /// Open one workspace-relative document in the editor primary view.
 pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
     open_editor_in(app, raw_path, DocumentScope::Workspace);
@@ -164,17 +189,7 @@ pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope
             return;
         }
     };
-    // A second open of the same document is rejected by the daemon with
-    // `AlreadyOpen`; a switch closes the previous attachment first so one
-    // controller never owns two.
-    if app.editor_state.is_open()
-        && app.editor_state.path.as_deref() == Some(path.as_str())
-        && app.editor_state.scope == scope
-    {
-        app.messages_state
-            .toasts
-            .info("Document is already open in the editor");
-        enter_editor_normal(app);
+    if !open_document_as_tab(app, &path, scope) {
         return;
     }
     let context = match app.project_execution_context() {
@@ -291,17 +306,7 @@ pub(crate) fn open_editor_via_command(app: &mut App, raw_path: &str) {
             return;
         }
     };
-    // A second open of the same document is rejected by the daemon with
-    // `AlreadyOpen`; a switch closes the previous attachment first so one
-    // controller never owns two.
-    if app.editor_state.is_open()
-        && app.editor_state.path.as_deref() == Some(path.as_str())
-        && app.editor_state.scope == DocumentScope::Workspace
-    {
-        app.messages_state
-            .toasts
-            .info("Document is already open in the editor");
-        enter_editor_normal(app);
+    if !open_document_as_tab(app, &path, DocumentScope::Workspace) {
         return;
     }
     let scope = crate::command_route::scope_for(app);
@@ -600,6 +605,19 @@ pub(crate) fn apply_editor_opened(
     state: DocumentState,
 ) {
     if app.editor_state.generation != generation {
+        // The open belongs to a document that is no longer on screen.
+        if let Some(editor) = app.editor_state_for_generation(generation) {
+            if let Some(message) = error {
+                let _ = editor.request.fail(request_id, message);
+            } else {
+                let _ = editor.request.finish(request_id);
+                editor.status = EditorStatus::from_state(&state);
+                if let Some(session) = editor.session.as_mut() {
+                    session.presentation_mut().reset_for_open();
+                }
+            }
+            editor.operation = None;
+        }
         return;
     }
     if let Some(message) = error {
@@ -2216,6 +2234,12 @@ fn accept_selected_completion(app: &mut App) {
 /// a late result cannot be applied to a future attachment.
 pub(crate) fn close_editor(app: &mut App) {
     app.cancel_lsp_diagnostics_stream();
+    // The document on screen belongs to a tab, so closing it closes the tab.
+    if let Some(id) = app.ui_state.files.active_id().cloned() {
+        close_file_tab(app, &id);
+        leave_editor_view(app);
+        return;
+    }
     if !app.editor_state.is_open() {
         leave_editor_view(app);
         return;
@@ -2232,6 +2256,38 @@ pub(crate) fn close_editor(app: &mut App) {
         },
     );
     leave_editor_view(app);
+}
+
+pub(crate) fn close_file_tab(app: &mut App, id: &FileTabId) {
+    if app.ui_state.files.active_id() == Some(id) {
+        // Hand the document back to its tab so the close finds it in one place.
+        app.swap_editor_state(None);
+    }
+    let Some(tab) = app.ui_state.files.remove_tab(id) else {
+        return;
+    };
+    let Some(state) = tab.parked else {
+        return;
+    };
+    let Some(session) = state.session else {
+        return;
+    };
+    let controller = session.controller();
+    let tx = app.tui_cmd_tx.clone();
+    let scope_tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
+    spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_document_close",
+        scope_tab_id,
+        None,
+        None,
+        async move {
+            let _ = controller.close().await;
+            None
+        },
+    );
 }
 
 /// Leave the editor route without touching the attachment.

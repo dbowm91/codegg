@@ -1,0 +1,14 @@
+schema_version = 1
+
+[adapter]
+id = "opencode-go-deepseek"
+version = 1
+priority = 5
+description = "OpenCode Go DeepSeek models that answer a tool request with a fenced code block"
+
+[[match]]
+provider = ["opencode_go"]
+model_regex = "(?i)deepseek"
+
+[tools]
+text_tool_repair = "fenced_code"

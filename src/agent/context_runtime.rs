@@ -23,7 +23,8 @@ impl AgentLoop {
         &self,
         request: &ChatRequest,
     ) -> Vec<crate::context::ContextBlock> {
-        let adapter = crate::model_profile::resolve_adapter(None, &request.model);
+        let adapter =
+            crate::model_profile::resolve_adapter(Some(self.services.provider.id()), &request.model);
         let compiler = self
             .services
             .prompt_compiler_fingerprint
@@ -773,7 +774,7 @@ impl AgentLoop {
             return;
         };
         // Newer active goal outranks the checkpoint (M002 precedence).
-        let goal_override = match self.services.goal_store.clone() {
+        let (goal_override, goal_tools_active) = match self.services.goal_store.clone() {
             Some(store) => match store.active_for_session(&self.session_id).await {
                 Ok(Some(goal)) if goal.status == crate::goal::model::GoalStatus::Active => {
                     let checkpoint_goal_id = checkpoint
@@ -790,15 +791,16 @@ impl AgentLoop {
                         (Some(id), Some(rev)) => id != goal.id.as_str() || goal.revision > rev,
                         _ => true,
                     };
-                    if is_newer && !goal.objective.trim().is_empty() {
+                    let goal_override = if is_newer && !goal.objective.trim().is_empty() {
                         Some((goal.objective.clone(), goal.next_action.clone()))
                     } else {
                         None
-                    }
+                    };
+                    (goal_override, true)
                 }
-                _ => None,
+                _ => (None, false),
             },
-            None => None,
+            None => (None, false),
         };
         let recorded_identity = checkpoint
             .payload
@@ -843,7 +845,8 @@ impl AgentLoop {
         } else {
             tracing::debug!("continuation checkpoint has no usable exact prefix identity; retaining incoming history");
         }
-        let block = rollover::render_installed_projection(&checkpoint, goal_override);
+        let block =
+            rollover::render_installed_projection(&checkpoint, goal_override, goal_tools_active);
         if block.trim().is_empty() {
             return;
         }
@@ -2015,7 +2018,11 @@ impl AgentLoop {
                     };
                     is_newer.then(|| (goal.objective.clone(), goal.next_action.clone()))
                 });
-                crate::context::rollover::render_installed_projection(checkpoint, override_goal)
+                crate::context::rollover::render_installed_projection(
+                    checkpoint,
+                    override_goal,
+                    active_goal.is_some(),
+                )
             }
             None => String::new(),
         };

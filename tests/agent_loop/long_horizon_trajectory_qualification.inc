@@ -2079,7 +2079,7 @@ async fn prior_checkpoint_version_remains_readable() {
     assert!(provenance_from_body(&installed.payload.body)
         .unwrap()
         .is_none());
-    let projection = rollover::render_installed_projection(&installed, None);
+    let projection = rollover::render_installed_projection(&installed, None, false);
     assert!(projection.contains("legacy objective"));
 }
 
@@ -2552,7 +2552,7 @@ async fn eight_transition_trajectory_with_epoch_reset() {
             let todos: Vec<String> = vec![];
             let handles = vec![format!("ctx://tool/{session_id}/0/c0")];
             let steering = vec![M005_STEERING.to_string()];
-            let frame = rollover::render_installed_projection(&installed, None);
+            let frame = rollover::render_installed_projection(&installed, None, false);
             let fresh_inputs = FreshEpochInputs {
                 system_instructions: "system: canonical instructions",
                 objective: M005_OBJECTIVE,

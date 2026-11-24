@@ -1257,6 +1257,23 @@ argument aliases, closed reasoning transforms, tool choice, and parallel-tool
 constraints. Callers without a projection receive conservative behavior. The
 provider crate does not infer model policy from model names.
 
+### Raw wire capture (diagnostics)
+
+The OpenCode Go provider can tee its own wire traffic to a file for
+diagnosis. Both captures are opt-in and off unless the environment
+variable is set:
+
+- `CODEGG_DIAG_RAW_RESPONSE` — the raw response body, appended as it
+  arrives. It is the model's own output.
+- `CODEGG_DIAG_RAW_REQUEST` — the encoded request body, appended per
+  request. The credential travels in a header and is never in the body, so
+  the captured body carries no secret.
+
+The capture exists because the provider had no response diagnostic at all:
+a wire-shape question could only be answered by reading the gateway's own
+logs. It is a diagnostic seam, not a telemetry surface — nothing reads the
+files back, and the agent loop does not consult them.
+
 ### Extended-thinking control (`/reasoning`)
 
 Extended thinking is configured in four places, applied in this order —

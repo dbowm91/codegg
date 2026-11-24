@@ -144,7 +144,7 @@ pub struct SidebarConvergence {
 /// One subagent advertised by the `Subagents` section.
 ///
 /// `task_id` is the projection's canonical task identity and the same string
-/// [`crate::app::state::subagent_tabs::SubagentTabs`] keys on, so
+/// [`crate::app::state::center_tabs::SubagentTabs`] keys on, so
 /// activating this row opens *the* tab rather than a second one that merely
 /// looks similar. `name` is the curated display name when the projection
 /// carried one and the agent type otherwise — the same fallback rule
