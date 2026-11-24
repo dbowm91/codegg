@@ -1975,7 +1975,15 @@ async fn main() -> Result<(), AppError> {
     let use_debug_file = env_log_level.is_some() || cli.verbose >= 2;
 
     if use_debug_file {
-        if let Ok(log_file) = std::fs::File::create("codegg_debug.log") {
+        let debug_log_path = codegg::core::instance::DaemonPaths::resolve().log_path;
+        if let Some(parent) = debug_log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let debug_log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&debug_log_path);
+        if let Ok(log_file) = debug_log_file {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()

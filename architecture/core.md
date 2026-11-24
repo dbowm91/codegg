@@ -1161,6 +1161,20 @@ A retired parent turn does not close the door. Ownership is session-scoped
 and durable, so a run whose parent turn has ended is still readable by the
 session that owns it — the read never consults the turn.
 
+## Diagnostics live in the user-scoped instance, never in the workspace
+
+`RUST_LOG` (or `-vv`) makes the CLI write its tracing to a file. That file
+used to be created **relative to the process's working directory**, so a daemon
+started in an agent's workspace wrote its log into that workspace: it appeared
+in every `ls` and `glob`, and it made the workspace's change detection
+report the harness's own output as a change — which is what turned a read-only
+`python_script` analyze run into a failed run.
+
+The log now goes to the user-scoped instance path, `DaemonPaths::log_path` —
+the same file `codegg daemon logs` reads — so it is never inside a
+workspace, and the client appends to it rather than truncating the daemon's
+diagnostics.
+
 ## Source verification
 
 Verified 2026-10-06 against `crates/codegg-core/src/lib.rs`, `src/lib.rs`,
