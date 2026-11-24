@@ -237,6 +237,19 @@ pick authenticates with the key the user replaced — the rotation appears to do
 nothing. Refusing the ambiguous case is what makes the store a safe source; a
 `no-account` label in a candidate list means a legacy account-less record.
 
+**A credential provider is registered only when a credential resolves for it.**
+`register_credential_provider` adds a provider through the resolver above, so a
+provider whose credential does not resolve is not in the registry at all. A
+turn that names such a provider is refused with `provider_not_found` *before*
+it reaches the behaviour its own name describes, and that refusal says nothing
+about the behaviour. A test that names one must therefore supply the key
+itself — the way `MINIMAX_API_KEY` supplies the `minimax` provider's — rather
+than inherit one from the operator's shell: a test whose pass or fail depends
+on the ambient environment is not a test. The same rule holds for the durable
+connection a test seeds: a connection row and its catalog rows make the
+provider *selectable*, but the registry still needs the credential the
+resolver can find.
+
 ### Turn Credential Authority (connection binding)
 
 A turn bound to a durable connection authenticates with *that connection's*
@@ -1403,7 +1416,11 @@ the order **operator/config override ▸ adapter baseline ▸ discovery overlay
    the dimensions it declares and may only **narrow** the compiled
    baseline;
 2. the adapter-declared baseline is the compiled, deterministic record
-   shipped in `crates/codegg-core/assets/model-adapters/`;
+   shipped in `crates/codegg-core/assets/model-adapters/`. A **match**
+   may carry its own record, and it **replaces** the adapter's family
+   record for the models it names: a match names exact model ids, so its
+   record is the narrower claim (see
+   [model-adapters.md](model-adapters.md));
 3. the discovery overlay (provider catalog metadata) may only narrow — an
    overlay that introduces a label, a bound, or an always-reasons value the
    effective record does not already carry is **rejected in full** and the

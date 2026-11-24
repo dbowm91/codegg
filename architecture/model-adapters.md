@@ -221,6 +221,24 @@ A label is carried verbatim; a depth label is never converted into a
 token budget; a bound is never invented for a model whose maximum nobody
 has published.
 
+### The Per-Model Record
+
+A **match** is the most specific statement the registry can make: it names
+exact model ids. A match may therefore carry its own `reasoning_capability`,
+and that record **replaces** the adapter's family record for the models the
+match names — the model's own ladder is the narrower claim, and a family
+record that survived it would keep offering labels the model refuses.
+
+This is the slot a **published per-model contract** lands in. A provider
+that publishes each model's reasoning ladder gets it recorded once, in the
+asset, instead of being re-derived from the model name at every call site.
+The record is validated at build time with the same rules as a family
+record, so a malformed one cannot compile into the binary.
+
+The winning **match** is kept during resolution, not only the winning
+adapter: the adapter alone cannot say which of its matches applied, and the
+per-model record is exactly the part that depends on that answer.
+
 ### The Merge Rule
 
 Adapters merge over `generic`, and the capability record merges by
@@ -319,6 +337,47 @@ Only families with a published contract carry a record:
 published contracts vary materially across the versions inside one
 family, and a family-scoped record that guessed at them would be a
 fabrication. An undeclared family is `Unknown`, not `Unsupported`.
+
+### The `opencode_go` Per-Model Records
+
+`opencode_go` publishes a **per-model** capability block on its own
+`GET /zen/go/v1/models` catalog (`capabilities.reasoning`), so its records
+are **match-level**, not family-level: one asset file carries one record
+per model (`assets/model-adapters/opencode_go.toml`), and the DeepSeek
+models' records live in `opencode_go_deepseek.toml` because that is the
+adapter whose match wins for them.
+
+| Model | effort | disable | budget | Published ladder |
+|---|---|---|---|---|
+| `deepseek-v4.1-flash` | `supported` | `unknown` | `unsupported` | `low, high, max` |
+| `deepseek-v4-pro` | `supported` | `unknown` | `unsupported` | `high, max` |
+| `glm-5.3`, `glm-5.3-flash` | `supported` | `unknown` | `unsupported` | `low, high, max` |
+| `grok-4.7` | `supported` | `unknown` | `unsupported` | `low, medium, high, xhigh` |
+| `gpt-6-luna`, `gpt-5.6-luna` | `supported` | `supported` | `unsupported` | `none, low, medium, high, xhigh, max` |
+| `hy3` | `supported` | `supported` | `unsupported` | `none, low, high` |
+| `hy4-preview` | `supported` | `supported` | `unsupported` | `none, high` |
+| `kimi-k3` | `supported` | `unknown` | `unsupported` | `max` |
+| `qwen3.8-max` | `supported` | `supported` | `supported` (max `262144`) | `low, medium, xhigh` |
+| `qwen3.7-plus` | `unknown` | `supported` | `supported` (max `262144`) | — |
+| `minimax-m3` | `unknown` | `supported` | `unsupported` | toggle only |
+
+Three rules decided the mapping, and each one is a rule about the
+**wire**, not about the model:
+
+- **The published labels minus `"none"` are the effort ladder.** `"none"`
+  is the provider's spelling for "reasoning off", which is the *disable*
+  dimension, not an effort level.
+- **The dimensions follow the wire surface the model resolves to.**
+  `opencode_go` models resolve to Chat Completions and Responses, which
+  carry an effort label and no thinking budget; a model whose surface
+  cannot express a dimension declares it `unsupported`, so the frontend
+  never offers a selection that would go nowhere.
+- **`disable` stays `unknown` when the contract publishes neither a
+  toggle nor `"none"`.** Nobody published whether the model can be turned
+  off, which is not the same claim as "it cannot be".
+
+The provenance date of the catalog read is recorded in the asset itself,
+so a stale ladder is a visible fact rather than an invisible drift.
 
 ## Key Types & APIs
 

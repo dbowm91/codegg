@@ -705,8 +705,10 @@ impl AgentLoop {
         &mut self,
         request: &mut ChatRequest,
     ) -> Result<crate::context::ContextPlan, AppError> {
-        let adapter =
-            crate::model_profile::resolve_adapter(Some(self.services.provider.id()), &request.model);
+        let adapter = crate::model_profile::resolve_adapter(
+            Some(self.services.provider.id()),
+            &request.model,
+        );
         let compiler = self
             .services
             .prompt_compiler_fingerprint

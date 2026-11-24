@@ -47,7 +47,10 @@ impl ProviderTurnAdapter {
                 if let Some(provider_context_limit) = provider_context_limit(&error) {
                     let model_profile =
                         crate::model_profile::ModelProfileResolver::new(&loop_.services.config)
-                            .resolve_for_provider(Some(loop_.services.provider.id()), &request.model);
+                            .resolve_for_provider(
+                                Some(loop_.services.provider.id()),
+                                &request.model,
+                            );
                     let fits = loop_
                         .compact_after_provider_context_overflow(
                             request,

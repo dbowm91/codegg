@@ -278,6 +278,101 @@ mod tests {
         assert_eq!(adapter.text_tool_repair.as_deref(), Some("fenced_code"));
     }
 
+    /// The resolver hands the published ladder over verbatim.
+    #[test]
+    fn an_opencode_go_model_resolves_the_ladder_the_gateway_publishes() {
+        let config = Config::default();
+        let resolver = ModelProfileResolver::new(&config);
+
+        let flash = resolver.resolve_for_provider(Some("opencode_go"), "deepseek-v4.1-flash");
+        let capability = flash
+            .reasoning_capability
+            .expect("the published ladder is recorded");
+        assert_eq!(
+            capability.accepted_effort_labels,
+            Some(vec![
+                "low".to_string(),
+                "high".to_string(),
+                "max".to_string()
+            ])
+        );
+        assert_eq!(
+            capability.effort_status,
+            codegg_config::schema::ReasoningCapabilityStatus::Supported
+        );
+
+        // A narrower ladder stays narrow.
+        let pro = resolver.resolve_for_provider(Some("opencode_go"), "deepseek-v4-pro");
+        assert_eq!(
+            pro.reasoning_capability
+                .and_then(|record| record.accepted_effort_labels),
+            Some(vec!["high".to_string(), "max".to_string()])
+        );
+    }
+
+    /// An exact-model record names the model, not its route.
+    #[test]
+    fn a_qualified_model_id_reaches_the_same_record_a_bare_one_does() {
+        let config = Config::default();
+        let resolver = ModelProfileResolver::new(&config);
+
+        let qualified = resolver.resolve("opencode_go/deepseek-v4.1-flash");
+        assert_eq!(
+            qualified
+                .reasoning_capability
+                .and_then(|record| record.accepted_effort_labels),
+            Some(vec![
+                "low".to_string(),
+                "high".to_string(),
+                "max".to_string()
+            ]),
+            "a qualified id must reach the model's own published ladder"
+        );
+
+        // The record must not leak onto an unpublished model.
+        let unpublished = resolver.resolve("opencode_go/space-bunny");
+        assert!(
+            unpublished.reasoning_capability.is_none(),
+            "a model nobody published a contract for keeps no record"
+        );
+    }
+
+    /// A per-model record must not cost the model its tool policy.
+    #[test]
+    fn a_per_model_capability_does_not_displace_the_tool_policy() {
+        let config = Config::default();
+        let resolver = ModelProfileResolver::new(&config);
+        let adapter = resolver.resolve_adapter(Some("opencode_go"), "deepseek-v4.1-flash");
+        assert_eq!(adapter.adapter_id, "opencode-go-deepseek");
+        assert_eq!(adapter.text_tool_repair.as_deref(), Some("fenced_code"));
+
+        // A family-adapter model keeps its generic contract.
+        let luna = resolver.resolve_adapter(Some("opencode_go"), "gpt-6-luna");
+        assert_eq!(luna.text_tool_repair, None);
+        assert_eq!(luna.profile.prompt_profile, PromptProfileKind::Default);
+    }
+
+    /// A surface that cannot express a dimension declares it unsupported.
+    #[test]
+    fn a_surface_that_cannot_express_a_dimension_declares_it_unsupported() {
+        let config = Config::default();
+        let resolver = ModelProfileResolver::new(&config);
+        let record = resolver
+            .resolve_for_provider(Some("opencode_go"), "qwen3.8-max")
+            .reasoning_capability
+            .expect("the published contract is recorded");
+        assert_eq!(
+            record.effort_status,
+            codegg_config::schema::ReasoningCapabilityStatus::Unsupported
+        );
+        assert_eq!(record.accepted_effort_labels, None);
+        assert_eq!(
+            record.budget_status,
+            codegg_config::schema::ReasoningCapabilityStatus::Supported
+        );
+        assert_eq!(record.max_thinking_budget, Some(262_144));
+    }
+
     #[test]
     fn test_config_override_suffix_match() {
         let mut config = Config::default();

@@ -34,9 +34,7 @@ static RAW_RESPONSE_CAPTURE: std::sync::OnceLock<Option<std::path::PathBuf>> =
 
 fn raw_response_capture_path() -> Option<&'static std::path::Path> {
     RAW_RESPONSE_CAPTURE
-        .get_or_init(|| {
-            std::env::var_os("CODEGG_DIAG_RAW_RESPONSE").map(std::path::PathBuf::from)
-        })
+        .get_or_init(|| std::env::var_os("CODEGG_DIAG_RAW_RESPONSE").map(std::path::PathBuf::from))
         .as_deref()
 }
 
@@ -45,9 +43,7 @@ static RAW_REQUEST_CAPTURE: std::sync::OnceLock<Option<std::path::PathBuf>> =
 
 fn raw_request_capture_path() -> Option<&'static std::path::Path> {
     RAW_REQUEST_CAPTURE
-        .get_or_init(|| {
-            std::env::var_os("CODEGG_DIAG_RAW_REQUEST").map(std::path::PathBuf::from)
-        })
+        .get_or_init(|| std::env::var_os("CODEGG_DIAG_RAW_REQUEST").map(std::path::PathBuf::from))
         .as_deref()
 }
 

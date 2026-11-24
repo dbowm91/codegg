@@ -49,6 +49,8 @@ pub struct AdapterMatch {
     pub model_suffix: Option<String>,
     pub model_regex: Option<String>,
     pub exclude_regex: Option<String>,
+    #[serde(default)]
+    pub reasoning_capability: Option<ReasoningCapabilityRecord>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,9 +70,7 @@ pub struct AdapterProfile {
     pub requires_post_tool_continue_nudge: Option<bool>,
     pub default_reasoning_effort: Option<String>,
     pub default_thinking_budget: Option<usize>,
-    /// The adapter-declared reasoning capability baseline.
-    ///
-    /// `None` means the adapter declared no capability record, so every
+    /// The adapter-declared reasoning capability baseline. `None` means every
     /// dimension is `Unknown` rather than `Unsupported`.
     pub reasoning_capability: Option<ReasoningCapabilityRecord>,
     pub max_parallel_tools: Option<usize>,
@@ -261,14 +261,32 @@ fn provider_for(model: &str) -> &str {
 fn lower(s: &str) -> String {
     s.to_ascii_lowercase()
 }
+/// The ids an `exact_model` may name: the model and each segment after a `/`.
+fn exact_model_candidates(model: &str) -> Vec<&str> {
+    let mut candidates = vec![model];
+    let mut rest = model;
+    while let Some((_, tail)) = rest.split_once('/') {
+        candidates.push(tail);
+        rest = tail;
+    }
+    candidates
+}
+
 fn match_score(m: &AdapterMatch, provider: &str, model: &str) -> Option<u32> {
     let p = lower(provider);
     let id = lower(model);
     if !m.provider.is_empty() && !m.provider.iter().any(|x| lower(x) == p) {
         return None;
     }
-    if !m.exact_model.is_empty() && !m.exact_model.iter().any(|x| lower(x) == id) {
-        return None;
+    if !m.exact_model.is_empty() {
+        let candidates = exact_model_candidates(&id);
+        if !m
+            .exact_model
+            .iter()
+            .any(|declared| candidates.iter().any(|c| *c == lower(declared)))
+        {
+            return None;
+        }
     }
     if let Some(x) = &m.model_prefix {
         if !id.starts_with(&lower(x)) {
@@ -518,22 +536,29 @@ pub fn resolve_adapter(provider: Option<&str>, model: &str) -> ResolvedModelAdap
     for a in definitions() {
         for m in &a.r#match {
             if let Some(score) = match_score(m, provider, model) {
-                candidates.push((score, a.adapter.priority, a));
+                candidates.push((score, a.adapter.priority, a, m));
             }
         }
     }
     candidates.sort_by(|a, b| {
         (b.0, b.1, b.2.adapter.id.as_str()).cmp(&(a.0, a.1, a.2.adapter.id.as_str()))
     });
-    let selected = candidates.first().map(|x| x.2).unwrap_or(generic);
+    let selected = candidates.first();
+    let (adapter, model_capability) = match selected {
+        Some((_, _, adapter, m)) => (*adapter, m.reasoning_capability.clone()),
+        None => (generic, None),
+    };
     let merged;
-    let a = if selected.adapter.id == generic.adapter.id {
-        selected
+    let a = if adapter.adapter.id == generic.adapter.id {
+        adapter
     } else {
-        merged = merge_adapter(generic, selected);
+        merged = merge_adapter(generic, adapter);
         &merged
     };
-    let profile = effective_profile(model, a);
+    let mut profile = effective_profile(model, a);
+    if let Some(capability) = model_capability {
+        profile.reasoning_capability = Some(capability);
+    }
     let canonical = toml::to_string(a).unwrap_or_else(|error| {
         tracing::warn!(error = %error, adapter = %a.adapter.id, "model adapter serialization failed");
         format!("adapter:{}:v{}", a.adapter.id, a.adapter.version)

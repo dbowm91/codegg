@@ -23,8 +23,10 @@ impl AgentLoop {
         &self,
         request: &ChatRequest,
     ) -> Vec<crate::context::ContextBlock> {
-        let adapter =
-            crate::model_profile::resolve_adapter(Some(self.services.provider.id()), &request.model);
+        let adapter = crate::model_profile::resolve_adapter(
+            Some(self.services.provider.id()),
+            &request.model,
+        );
         let compiler = self
             .services
             .prompt_compiler_fingerprint

@@ -3498,6 +3498,7 @@ mod tests {
         _guard: std::sync::MutexGuard<'static, ()>,
         previous: Option<String>,
         previous_config: Option<String>,
+        previous_extra: Vec<(String, Option<String>)>,
         _config_dir: Option<tempfile::TempDir>,
     }
 
@@ -3510,8 +3511,15 @@ mod tests {
                 _guard: guard,
                 previous,
                 previous_config: std::env::var("CODEGG_TUI_CONFIG").ok(),
+                previous_extra: Vec::new(),
                 _config_dir: None,
             }
+        }
+
+        fn set_provider_key(&mut self, name: &str, value: &str) {
+            let previous = std::env::var(name).ok();
+            std::env::set_var(name, value);
+            self.previous_extra.push((name.to_owned(), previous));
         }
 
         /// Install a temporary configuration file for the duration of the
@@ -3534,6 +3542,12 @@ mod tests {
             match self.previous_config.take() {
                 Some(value) => std::env::set_var("CODEGG_TUI_CONFIG", value),
                 None => std::env::remove_var("CODEGG_TUI_CONFIG"),
+            }
+            for (name, previous) in self.previous_extra.drain(..).rev() {
+                match previous {
+                    Some(value) => std::env::set_var(&name, value),
+                    None => std::env::remove_var(&name),
+                }
             }
         }
     }
@@ -3914,10 +3928,11 @@ mod tests {
     /// keeps the call possible.
     #[tokio::test(flavor = "current_thread")]
     async fn a_selection_on_an_unknown_dimension_is_forwarded_unchanged() {
-        let (_env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
-        // The provider needs a live connection and a catalog entry, because
-        // this test's point is that admission lets the turn through to
-        // provider resolution — not that resolution is skipped.
+        let (mut env, daemon, runtime, pool, session_id) = daemon_with_selected_model().await;
+        env.set_provider_key("GENERALCOMPUTE_API_KEY", "test-key-not-used");
+        // The provider needs a live connection, a catalog entry and a
+        // credential, because this test's point is that admission lets the
+        // turn through to provider resolution — not that resolution is skipped.
         let connection_id =
             seed_connection(&pool, ProviderKind::Other("generalcompute".to_string())).await;
         seed_catalog(
