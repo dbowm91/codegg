@@ -649,17 +649,18 @@ fn truncate_report_text(text: &str, cap: usize) -> String {
     format!("{}\n[report truncated]", &text[..end])
 }
 
-/// A3: map a scheduler completion to the marker status string, threading the
-/// vacuous-run flag from `TestParseState` (via `DelegatedTestRun` →
-/// formatted summary `no_tests:` prefix): a `Completed` run that selected
-/// zero tests emits `no_tests`, never `passed`.
+/// A3: map a scheduler completion to the marker status string. The runner's
+/// `no_tests:` summary prefix marks a vacuous run; an unrecovered summary is
+/// `unknown`. Neither is ever `passed`.
 pub(crate) fn test_completion_status(
     status: crate::scheduler::ExecutorStatus,
     summary: &str,
 ) -> &'static str {
     let is_no_tests = summary.contains("no_tests:");
+    let is_degraded = summary.contains("result summary unavailable:");
     match status {
         crate::scheduler::ExecutorStatus::Completed if is_no_tests => "no_tests",
+        crate::scheduler::ExecutorStatus::Completed if is_degraded => "unknown",
         crate::scheduler::ExecutorStatus::Completed => "passed",
         crate::scheduler::ExecutorStatus::Failed => "failed",
         crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
@@ -1129,6 +1130,19 @@ mod tests {
             test_completion_status(ExecutorStatus::Failed, "no_tests: x"),
             "failed",
             "only Completed maps to no_tests"
+        );
+    }
+
+    #[test]
+    fn a_completed_run_whose_summary_is_unavailable_is_never_a_pass() {
+        use crate::scheduler::ExecutorStatus;
+        assert_eq!(
+            test_completion_status(
+                ExecutorStatus::Completed,
+                "result summary unavailable: job finished in Completed"
+            ),
+            "unknown",
+            "a degraded completion carries no verdict, so it is not a pass"
         );
     }
 

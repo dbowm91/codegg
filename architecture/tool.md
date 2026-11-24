@@ -918,6 +918,24 @@ omitted `workdir` rather than inventing one. Both previously had no workspace
 root at all and fell back to `std::env::current_dir()`, so a session's tests and
 scripts ran in the daemon's launch directory.
 
+### The test tool's verdict is never inferred from a summary it did not get
+
+The `test` tool reports its verdict through a `CODEGG_VALIDATION_RESULT`
+marker. The runner's own verdict travels in the summary: a run that selected
+zero tests formats `no_tests: …` into it, and the tool reads that prefix.
+
+That only works while the summary *is* the runner's. When the scheduler cannot
+recover it — the durable-state fallback in `wait_for_completion`, which
+answers from the job row when the completion cache has been evicted — it used
+to synthesise `"job finished in Completed"` instead. That string is not a
+verdict, but it was not empty, so the tool read it as a pass and reported a
+vacuous run as `passed`: the same failure mode the
+`check_test_self_reexec_paths.py` guard warns about, inside the product.
+
+The fallback now marks what it has: the summary is prefixed
+`result summary unavailable:`, and the tool maps that to `unknown` — never
+`passed`. A run whose verdict is not known is not a pass.
+
 ## Missing workspace root is typed, not defaulted
 
 This is now a registry-wide contract rather than a per-tool exception.
