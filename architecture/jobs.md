@@ -788,6 +788,27 @@ the scheduler calls `cancel_descendants` to ensure children do not
 outlive the parent. This runs both in the executor-completion task and
 in `request_cancel`.
 
+### Job-store write transactions take the write lock first
+
+`SqliteJobStore::begin_attempt`, `finish_attempt` and `cancel_descendants`
+read the row they are about to move before they write it. A deferred
+transaction takes no lock, so the first `SELECT` holds a shared read lock
+and the first write cannot upgrade it — SQLite refuses that upgrade
+**without waiting**, so two writers that both read first can both fail with
+`SQLITE_BUSY` instead of one winning and the other waiting its turn. Those
+three transactions therefore open with `BEGIN IMMEDIATE`
+(`begin_with("BEGIN IMMEDIATE")`), taking the writer lock before the read.
+
+The remaining deferred transactions in that store — `create_job`,
+`enqueue`, `mark_attempt_running`, `request_cancel` and `block_job` —
+write first and read outside the transaction, so they never hold a read lock
+they would have to upgrade.
+
+`scripts/check_queue_write_transaction_shape.py` holds this shape. It covers
+the job store as well as the user prompt queue, the shared immediate helper
+and the scratch sweep, and its self-test injects a deferred read-then-write
+job transaction to prove the new check is not vacuous.
+
 ### RunStore Linkage (`JobAttempt.run_id`)
 
 `JobAttempt.run_id: Option<RunId>` links an attempt to a RunStore

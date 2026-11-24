@@ -1744,7 +1744,7 @@ impl JobStore for SqliteJobStore {
     ) -> Result<JobAttempt, JobStoreError> {
         let mut tx = self
             .pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         // Read the authoritative row inside the transaction so a
@@ -2044,7 +2044,7 @@ impl JobStore for SqliteJobStore {
         let now = Utc::now();
         let mut tx = self
             .pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         let attempt_row = sqlx::query("SELECT job_id, state FROM job_attempt WHERE id = ?")
@@ -2596,7 +2596,7 @@ impl JobStore for SqliteJobStore {
         // database operation.
         let mut tx = self
             .pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         let now = Utc::now();
