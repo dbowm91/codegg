@@ -7,7 +7,9 @@ Rust 1.89+, edition 2021.
 ```bash
 scripts/verify.sh quick   # canonical sanity: rustfmt, the generated-asset
                           # checks, 94 guard scripts, and a workspace check
-scripts/verify.sh full    # quick + clippy (-D warnings) + nextest workspace sweep
+scripts/verify.sh full    # quick + clippy (-D warnings) + the trusted sandbox
+                          # helper build (the sandboxed integration tests load it
+                          # from the profile directory) + nextest workspace sweep
                           # (profile ci) + bounded feature pass: nextest -p codegg
                           # --features server,plugins,lsp-test-support --profile subset
                           # --lib --test lsp_test_support --test server_feature

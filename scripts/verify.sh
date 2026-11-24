@@ -729,6 +729,19 @@ run_full() {
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo clippy --workspace --all-targets --locked -- -D warnings"
     (cd "$REPO_ROOT" && cargo clippy --workspace --all-targets --locked -- -D warnings)
 
+    # The sandboxed integration tests load the trusted helper from the
+    # Cargo profile directory. `cargo nextest` builds test targets, not
+    # bins, so the helper is absent and every sandboxed launch fails
+    # instantly — the sweep then reports a product defect that is only a
+    # missing build artifact. CI builds it explicitly; a local sweep that
+    # does not build it is not the same sweep.
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper"
+    (cd "$REPO_ROOT" && cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper)
+    # A restored or pruned cache can leave the binary without the `deps`
+    # directory the integration tests load it from.
+    mkdir -p "$REPO_ROOT/target/debug/deps"
+    cp "$REPO_ROOT/target/debug/codegg-sandbox-helper" "$REPO_ROOT/target/debug/deps/codegg-sandbox-helper"
+
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run --workspace --locked --profile ci"
     (cd "$REPO_ROOT" && cargo nextest run --workspace --locked --profile ci)
 
