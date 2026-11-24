@@ -4683,6 +4683,37 @@ pub struct SearchProviderConfig {
     pub api_key: Option<String>,
 }
 
+static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Replace `path` with `content` in one step: a plain write truncates first,
+/// so two writers leave a document that parses as neither.
+fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let directory = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config".to_string());
+    let sequence = STAGING_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = directory.join(format!(".{name}.tmp-{}-{sequence}", std::process::id()));
+
+    let written = std::fs::File::create(&staging).and_then(|mut file| {
+        file.write_all(content.as_bytes())?;
+        file.sync_all()
+    });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+
+    if let Err(error) = std::fs::rename(&staging, path) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5888,35 +5919,4 @@ mod tests {
         let text = std::fs::read_to_string(path.as_path()).expect("read");
         serde_json::from_str::<Config>(&text).expect("one parseable document");
     }
-}
-
-static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Replace `path` with `content` in one step: a plain write truncates first,
-/// so two writers leave a document that parses as neither.
-fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    use std::io::Write;
-
-    let directory = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "config".to_string());
-    let sequence = STAGING_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let staging = directory.join(format!(".{name}.tmp-{}-{sequence}", std::process::id()));
-
-    let written = std::fs::File::create(&staging).and_then(|mut file| {
-        file.write_all(content.as_bytes())?;
-        file.sync_all()
-    });
-    if let Err(error) = written {
-        let _ = std::fs::remove_file(&staging);
-        return Err(error);
-    }
-
-    if let Err(error) = std::fs::rename(&staging, path) {
-        let _ = std::fs::remove_file(&staging);
-        return Err(error);
-    }
-    Ok(())
 }
