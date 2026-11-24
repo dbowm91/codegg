@@ -1,6 +1,7 @@
 #![allow(clippy::collapsible_match)]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ratatui::layout::Rect;
@@ -15,6 +16,9 @@ use super::super::scroll::CenteredScroll;
 use super::super::section::Section;
 use crate::app::TuiMsg;
 use crate::components::hint_line::HintLine;
+use crate::input::InputMode;
+use codegg_protocol::core::ReasoningMode;
+use codegg_protocol::provider::{reasoning_options, ReasoningCapabilityDto};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ModelDialogTab {
@@ -48,6 +52,12 @@ pub struct ModelDialog {
     pub adding_model: bool,
     pub field_index: usize,
     visible_height: usize,
+    /// Normal navigates; Insert types into the filter.
+    pub mode: InputMode,
+    capabilities: HashMap<String, ReasoningCapabilityDto>,
+    current_level: ReasoningMode,
+    /// A level picked for a model that is not running yet.
+    pending_levels: HashMap<String, ReasoningMode>,
     #[allow(clippy::type_complexity)]
     flat_cache: RefCell<Option<(String, Vec<(String, String, String)>)>>,
 }
@@ -71,6 +81,10 @@ impl Clone for ModelDialog {
             adding_model: self.adding_model,
             field_index: self.field_index,
             visible_height: self.visible_height,
+            mode: self.mode,
+            capabilities: self.capabilities.clone(),
+            current_level: self.current_level.clone(),
+            pending_levels: self.pending_levels.clone(),
             flat_cache: RefCell::new(self.flat_cache.borrow().clone()),
         }
     }
@@ -104,6 +118,10 @@ impl ModelDialog {
             adding_model: false,
             field_index: 0,
             visible_height: 10,
+            mode: InputMode::Normal,
+            capabilities: HashMap::new(),
+            current_level: ReasoningMode::Inherit,
+            pending_levels: HashMap::new(),
             flat_cache: RefCell::new(None),
         }
     }
@@ -123,16 +141,13 @@ impl ModelDialog {
         self.visible_height = height;
     }
 
-    /// Compute the number of rows available for model entries, after subtracting
-    /// non-model rows (tab line, blank spacer, optional filter lines, footer spacer, footer line).
+    /// Rows available for model entries, after the non-model rows.
     pub fn model_row_budget(&self) -> usize {
         let mut budget = self.visible_height;
         // Tab line + blank spacer after tab
         budget = budget.saturating_sub(2);
-        // Optional filter line + spacer
-        if !self.filter.is_empty() {
-            budget = budget.saturating_sub(2);
-        }
+        // Filter line + spacer after it
+        budget = budget.saturating_sub(2);
         // Spacer before footer + footer line
         budget = budget.saturating_sub(2);
         budget
@@ -142,7 +157,174 @@ impl ModelDialog {
         self.current = current.to_string();
     }
 
+    pub fn set_capabilities(&mut self, capabilities: HashMap<String, ReasoningCapabilityDto>) {
+        self.capabilities = capabilities;
+    }
+
+    pub fn set_current_level(&mut self, level: ReasoningMode) {
+        self.current_level = level;
+    }
+
+    pub fn input_mode(&self) -> InputMode {
+        self.mode
+    }
+
+    /// The options one model accepts, in the published order.
+    pub fn ladder(&self, model_id: &str) -> Vec<ReasoningMode> {
+        match self.capabilities.get(bare_model_id(model_id)) {
+            Some(capability) => reasoning_options(Some(capability)).options,
+            None => Vec::new(),
+        }
+    }
+
+    pub fn has_ladder(&self) -> bool {
+        self.selected()
+            .map(|model| !self.ladder(&model).is_empty())
+            .unwrap_or(false)
+    }
+
+    /// The level shown for a model: this box's pick, else the daemon's.
+    pub fn level_for(&self, model_id: &str) -> Option<ReasoningMode> {
+        let bare = bare_model_id(model_id);
+        if let Some(level) = self.pending_levels.get(bare) {
+            return Some(level.clone());
+        }
+        if bare_model_id(&self.current) == bare {
+            return Some(self.current_level.clone());
+        }
+        None
+    }
+
+    /// Move within the highlighted model's ladder by `delta` steps, wrapping.
+    pub fn cycle_level(&mut self, delta: isize) -> Option<ReasoningMode> {
+        let model = self.selected()?;
+        let ladder = self.ladder(&model);
+        if ladder.is_empty() {
+            return None;
+        }
+        let current = self.level_for(&model).unwrap_or(ReasoningMode::Inherit);
+        let index = ladder
+            .iter()
+            .position(|option| *option == current)
+            .unwrap_or(0) as isize;
+        let len = ladder.len() as isize;
+        let next = ((index + delta) % len + len) % len;
+        let level = ladder[next as usize].clone();
+        self.pending_levels
+            .insert(bare_model_id(&model).to_string(), level.clone());
+        Some(level)
+    }
+
+    /// The level this box picked for the highlighted model, if any.
+    pub fn pending_level(&self) -> Option<ReasoningMode> {
+        let model = self.selected()?;
+        self.pending_levels.get(bare_model_id(&model)).cloned()
+    }
+
+    pub fn page_down(&mut self) {
+        self.page(1);
+    }
+
+    pub fn page_up(&mut self) {
+        self.page(-1);
+    }
+
+    /// Inverse-video `NOR`/`INS` badge, matching the help box's exactly.
+    fn mode_badge(&self, theme: &Arc<Theme>) -> Vec<Span<'static>> {
+        let (label, colour) = match self.mode {
+            InputMode::Normal => ("NOR", theme.muted),
+            InputMode::Insert => ("INS", theme.primary),
+        };
+        vec![Span::styled(
+            format!(" {label} "),
+            Style::default()
+                .fg(theme.background)
+                .bg(colour)
+                .add_modifier(Modifier::BOLD),
+        )]
+    }
+
+    /// The thinking levels one model accepts, as the row shows them.
+    fn ladder_spans(
+        &self,
+        model: &str,
+        theme: &Arc<Theme>,
+        row_selected: bool,
+    ) -> Vec<Span<'static>> {
+        let ladder = self.ladder(model);
+        if ladder.is_empty() {
+            return vec![Span::styled("  —", Style::default().fg(theme.muted))];
+        }
+        let active = self.level_for(model);
+        let mut spans = vec![Span::styled("  ", Style::default().fg(theme.muted))];
+        for (index, option) in ladder.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+            }
+            let is_active = active.as_ref() == Some(option);
+            let style = if is_active {
+                let base = Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD);
+                if row_selected {
+                    base.bg(theme.selection)
+                } else {
+                    base
+                }
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            spans.push(Span::styled(option.label().to_string(), style));
+        }
+        spans
+    }
+
+    /// The verbs this box owns right now, as the footer row.
+    fn hint_line(&self) -> HintLine {
+        let mut hint = HintLine::new();
+        match self.mode {
+            InputMode::Normal => {
+                if self.filter.is_empty() {
+                    hint.push_required("Esc", "close");
+                } else {
+                    hint.push_required("Esc", "clear filter");
+                }
+                hint.push("i", "filter").push("↑/↓", "navigate");
+                if self.has_ladder() {
+                    hint.push("h/l", "level");
+                }
+                hint.push("Ctrl+↑/↓", "page")
+                    .push("Enter", "select")
+                    .push("Tab", "configure");
+            }
+            InputMode::Insert => {
+                hint.push_required("Esc", "normal")
+                    .push("type", "to filter")
+                    .push("Backspace", "edit filter")
+                    .push("↑/↓", "navigate");
+                if self.has_ladder() {
+                    hint.push("←/→", "level");
+                }
+            }
+        }
+        hint
+    }
+
+    fn page(&mut self, direction: isize) {
+        let flat = self.flat_filtered();
+        if flat.is_empty() {
+            return;
+        }
+        let window = self.count_visible_models(self.scroll.get()).max(1) as isize;
+        let last = flat.len() as isize - 1;
+        let next = (self.selected as isize + direction * window).clamp(0, last);
+        self.selected = next as usize;
+        let visible = self.count_visible_models(self.scroll.get());
+        self.scroll.clamp(self.selected, flat.len(), visible);
+    }
+
     pub fn initialize_selection(&mut self) {
+        self.mode = InputMode::Normal;
         let flat = self.flat_filtered_full();
         if !flat.is_empty() {
             if !self.current.is_empty() {
@@ -206,17 +388,15 @@ impl ModelDialog {
         }
         row -= 1;
 
-        // Optional filter lines: "filter: ..." + blank line
-        if !self.filter.is_empty() {
-            if row < 1 {
-                return None;
-            }
-            row -= 1;
-            if row < 1 {
-                return None;
-            }
-            row -= 1;
+        // Filter line + blank line, always drawn.
+        if row < 1 {
+            return None;
         }
+        row -= 1;
+        if row < 1 {
+            return None;
+        }
+        row -= 1;
 
         // Now row is the rendered item index in the model area.
         let flat = self.flat_filtered();
@@ -345,6 +525,17 @@ impl ModelDialog {
     pub fn backspace_filter(&mut self) {
         if self.tab == ModelDialogTab::SelectModel {
             self.filter.pop();
+            self.selected = 0;
+            self.scroll.reset();
+            self.update_cache();
+            self.clamp_selection();
+        }
+    }
+
+    /// Drop the whole query and show every model again.
+    pub fn clear_filter(&mut self) {
+        if self.tab == ModelDialogTab::SelectModel {
+            self.filter.clear();
             self.selected = 0;
             self.scroll.reset();
             self.update_cache();
@@ -543,6 +734,15 @@ impl Default for ModelDialog {
     fn default() -> Self {
         Self::new(Arc::new(Theme::dark()))
     }
+}
+
+/// The model id without its provider segment.
+fn bare_model_id(model: &str) -> &str {
+    model
+        .split_once('/')
+        .map(|(_, id)| id)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(model)
 }
 
 #[cfg(test)]
@@ -925,18 +1125,16 @@ fn test_vim_keys_still_move_selection_outside_the_add_model_form() {
 }
 
 #[test]
-fn test_vim_keys_become_literal_text_once_a_filter_is_typed() {
-    // Regression: `/models` defaults to the SelectModel tab, whose filter box
-    // is a real search input, but `j`/`k` were matched as navigation before
-    // the literal-character arm and only guarded on `!adding_model`. A user
-    // could therefore never type `j` or `k` — not even as the first character.
+fn test_vim_keys_are_literal_text_in_insert_mode() {
+    // Regression: `j`/`k` must be typeable in Insert, or a model called
+    // `jam` is unsearchable.
     let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
     dialog.tab = ModelDialogTab::SelectModel;
-    dialog.models = vec!["openai/gpt4".to_string(), "openai/gpt5".to_string()];
+    dialog.models = vec!["openai/j-alpha".to_string(), "openai/j-beta".to_string()];
     dialog.update_cache();
     assert_eq!(dialog.selected, 0);
 
-    // First character: with no filter yet, `j` navigates.
+    // Normal mode: `j` navigates.
     dialog.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('j'),
         crossterm::event::KeyModifiers::NONE,
@@ -944,55 +1142,41 @@ fn test_vim_keys_become_literal_text_once_a_filter_is_typed() {
     assert_eq!(dialog.selected, 1);
     assert!(dialog.filter.is_empty());
 
-    // Type a character, after which `j` must be literal text, not navigation.
-    // Use "gpt" as the stem so the filter still matches both models and the
-    // selection index stays meaningful.
-    for c in ['g', 'p'] {
-        dialog.handle_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char(c),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-    }
-    assert_eq!(
-        dialog.filter, "gp",
-        "plain characters must reach the filter"
-    );
-
+    // Insert: `j` is literal text.
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('i'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(dialog.input_mode(), InputMode::Insert);
     dialog.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('j'),
         crossterm::event::KeyModifiers::NONE,
     ));
     assert_eq!(
-        dialog.filter, "gpj",
-        "j must type into the filter instead of navigating"
+        dialog.filter, "j",
+        "j must type into the filter while Insert is live"
     );
-    // `set_filter` intentionally resets the selection to the first match on
-    // every keystroke, so the filter text — not the index — is what proves
-    // `j` was typed rather than consumed as navigation.
+    // The filter text proves `j` was typed, not consumed as navigation.
     assert_eq!(dialog.selected, 0, "typing resets to the first match");
 
-    // Clearing the query restores navigation, so the guard is not a one-way
-    // door: `j` navigates again once the filter is empty.
+    // Esc returns to Normal and keeps the filter.
     dialog.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Backspace,
+        crossterm::event::KeyCode::Esc,
         crossterm::event::KeyModifiers::NONE,
     ));
-    dialog.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Backspace,
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    dialog.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Backspace,
-        crossterm::event::KeyModifiers::NONE,
-    ));
-    assert!(dialog.filter.is_empty());
+    assert_eq!(dialog.input_mode(), InputMode::Normal);
+    assert_eq!(dialog.filter, "j", "Esc keeps the query");
     dialog.handle_key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('j'),
         crossterm::event::KeyModifiers::NONE,
     ));
-    assert!(
-        dialog.filter.is_empty(),
-        "with an empty filter j must navigate again, not type"
+    assert_eq!(
+        dialog.selected, 1,
+        "j navigates the filtered list again in Normal mode"
+    );
+    assert_eq!(
+        dialog.filter, "j",
+        "navigating must not type into the filter"
     );
 }
 
@@ -1016,12 +1200,8 @@ fn test_enter_no_match_does_nothing() {
 
 impl Component for ModelDialog {
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
-        // The panel docking gesture. Answered under exactly the guard that
-        // already makes `j`/`k` navigation below — "nothing is being
-        // typed" — so there is one rule in this dialog rather than two that
-        // can disagree. While a filter query or the add-model form is live,
-        // `Shift+L` is the letter `L` and must reach the buffer.
-        if self.filter.is_empty() && !self.adding_model {
+        // The panel docking gesture, answered in Normal mode.
+        if self.mode == InputMode::Normal && !self.adding_model {
             if let Some(dir) = crate::panels::direction_of(key) {
                 return Some(TuiMsg::MoveDirection(dir));
             }
@@ -1039,30 +1219,80 @@ impl Component for ModelDialog {
                     self.prev_add_model_field();
                 }
             }
+            // Paging moves the selection a whole window; `Ctrl` chords come first.
+            crossterm::event::KeyCode::PageUp => {
+                self.page_up();
+            }
+            crossterm::event::KeyCode::PageDown => {
+                self.page_down();
+            }
+            crossterm::event::KeyCode::Up
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.page_up();
+            }
+            crossterm::event::KeyCode::Down
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.page_down();
+            }
             crossterm::event::KeyCode::Up => {
                 self.select_up();
             }
             crossterm::event::KeyCode::Down => {
                 self.select_down();
             }
-            // `j`/`k` move the model selection while no query is being typed. Once a
-            // filter is active — or while the add-model form captures text —
-            // they are ordinary characters: a filter query or a model name /
-            // API key may legitimately contain them. Mirrors the filter-aware
-            // guard in `session.rs`.
+            crossterm::event::KeyCode::Left if self.tab == ModelDialogTab::SelectModel => {
+                self.cycle_level(-1);
+            }
+            crossterm::event::KeyCode::Right if self.tab == ModelDialogTab::SelectModel => {
+                self.cycle_level(1);
+            }
+            // Normal mode owns the list.
             crossterm::event::KeyCode::Char('k')
-                if !self.adding_model && self.filter.is_empty() =>
+                if self.mode == InputMode::Normal && !self.adding_model =>
             {
                 self.select_up();
             }
             crossterm::event::KeyCode::Char('j')
-                if !self.adding_model && self.filter.is_empty() =>
+                if self.mode == InputMode::Normal && !self.adding_model =>
             {
                 self.select_down();
             }
+            crossterm::event::KeyCode::Char('h')
+                if self.mode == InputMode::Normal && !self.adding_model =>
+            {
+                self.cycle_level(-1);
+            }
+            crossterm::event::KeyCode::Char('l')
+                if self.mode == InputMode::Normal && !self.adding_model =>
+            {
+                self.cycle_level(1);
+            }
+            // `i` (and `a`) enters the filter, on the Select Model tab.
+            crossterm::event::KeyCode::Char('i')
+                if self.mode == InputMode::Normal
+                    && !self.adding_model
+                    && self.tab == ModelDialogTab::SelectModel =>
+            {
+                self.mode = InputMode::Insert;
+            }
+            crossterm::event::KeyCode::Char('a')
+                if self.mode == InputMode::Normal
+                    && !self.adding_model
+                    && self.tab == ModelDialogTab::SelectModel =>
+            {
+                self.mode = InputMode::Insert;
+            }
             crossterm::event::KeyCode::Char(c) => {
                 if self.tab == ModelDialogTab::SelectModel {
-                    self.set_filter(c);
+                    if self.mode == InputMode::Insert {
+                        self.set_filter(c);
+                    }
                 } else if self.tab == ModelDialogTab::Configure {
                     if !self.adding_model {
                         match c {
@@ -1081,7 +1311,9 @@ impl Component for ModelDialog {
             }
             crossterm::event::KeyCode::Backspace => {
                 if self.tab == ModelDialogTab::SelectModel {
-                    self.backspace_filter();
+                    if self.mode == InputMode::Insert {
+                        self.backspace_filter();
+                    }
                 } else if self.adding_model {
                     self.backspace_add_model_field();
                 }
@@ -1089,7 +1321,10 @@ impl Component for ModelDialog {
             crossterm::event::KeyCode::Enter => {
                 if self.tab == ModelDialogTab::SelectModel {
                     if let Some(model) = self.selected() {
-                        return Some(TuiMsg::SelectModel { model });
+                        return Some(TuiMsg::SelectModel {
+                            model,
+                            reasoning: self.pending_level(),
+                        });
                     }
                 } else if self.adding_model {
                     if self.field_index == 3 {
@@ -1113,6 +1348,12 @@ impl Component for ModelDialog {
             crossterm::event::KeyCode::Esc => {
                 if self.adding_model {
                     self.cancel_adding_model();
+                } else if self.mode == InputMode::Insert {
+                    // Leave Insert with the filter intact.
+                    self.mode = InputMode::Normal;
+                } else if !self.filter.is_empty() {
+                    // Normal mode: Esc clears the filter, then closes.
+                    self.clear_filter();
                 } else {
                     return Some(TuiMsg::CloseDialog);
                 }
@@ -1186,13 +1427,19 @@ impl Component for ModelDialog {
 
         match self.tab {
             ModelDialogTab::SelectModel => {
-                if !self.filter.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled("filter: ", Style::default().fg(theme.muted)),
-                        Span::raw(&self.filter),
-                    ]));
-                    lines.push(Line::from(""));
+                let mut filter_spans =
+                    vec![Span::styled("filter: ", Style::default().fg(theme.muted))];
+                if self.filter.is_empty() {
+                    filter_spans.push(Span::styled(
+                        "(press i to filter)",
+                        Style::default().fg(theme.muted),
+                    ));
+                } else {
+                    filter_spans.push(Span::raw(self.filter.clone()));
                 }
+                filter_spans.extend(self.mode_badge(theme));
+                lines.push(Line::from(filter_spans));
+                lines.push(Line::from(""));
 
                 let flat = self.flat_filtered();
                 let is_empty = flat.is_empty();
@@ -1249,10 +1496,12 @@ impl Component for ModelDialog {
                         Style::default().fg(theme.foreground)
                     };
                     let marker = if is_current { "✓ " } else { "  " };
-                    lines.push(Line::from(vec![
+                    let mut row = vec![
                         Span::styled(marker.to_string(), Style::default().fg(theme.muted)),
                         Span::styled(display_name, style),
-                    ]));
+                    ];
+                    row.extend(self.ladder_spans(&full_model, theme, is_selected));
+                    lines.push(Line::from(row));
                     lines_rendered += 1;
                     models_rendered += 1;
                 }
@@ -1276,14 +1525,7 @@ impl Component for ModelDialog {
 
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    HintLine::from_items(&[
-                        ("Esc", "close"),
-                        ("↑/↓", "navigate"),
-                        ("Enter", "select"),
-                        ("Backspace", "filter"),
-                        ("Tab", "configure"),
-                    ])
-                    .render(0),
+                    self.hint_line().render(0),
                     Style::default().fg(theme.muted),
                 )));
             }
@@ -1463,10 +1705,10 @@ mod hit_test_tests {
         dialog.models = vec!["openai/gpt4".to_string(), "anthropic/claude".to_string()];
         dialog.visible_height = 20;
         dialog.update_cache();
-        // Row 0: tab line, Row 1: blank line
-        // Row 2: provider header "openai" (None)
-        // Row 3: first model "gpt4" (Some(0))
-        let result = dialog.hit_test_model_row(3);
+        // The filter row is always drawn, so the layout is fixed:
+        // Row 0: tab, Row 1: blank, Row 2: filter, Row 3: blank,
+        // Row 4: provider header, Row 5: first model
+        let result = dialog.hit_test_model_row(5);
         assert_eq!(result, Some(0));
     }
 
@@ -1478,10 +1720,9 @@ mod hit_test_tests {
         dialog.filter = "gpt".to_string();
         dialog.visible_height = 20;
         dialog.update_cache();
-        // Row 0: tab, Row 1: blank
-        // Row 2: "filter: gpt", Row 3: blank
-        // Row 4: provider header "openai" (None)
-        // Row 5: first matching model "gpt4" (Some(0))
+        // A typed query does not move the model rows.
+        // Row 0: tab, Row 1: blank, Row 2: "filter: gpt", Row 3: blank,
+        // Row 4: provider header, Row 5: first matching model
         let result = dialog.hit_test_model_row(5);
         assert_eq!(result, Some(0));
         // Row 6 should be None (only 1 match)
@@ -1497,8 +1738,8 @@ mod hit_test_tests {
         assert_eq!(dialog.hit_test_model_row(0), None);
         // Row 1 (blank line) should return None
         assert_eq!(dialog.hit_test_model_row(1), None);
-        // Row 2 (provider header) should return None
         assert_eq!(dialog.hit_test_model_row(2), None);
+        assert_eq!(dialog.hit_test_model_row(3), None);
     }
 
     #[test]
@@ -1526,16 +1767,14 @@ mod hit_test_tests {
         // With scroll=1, we skip flat[0] = ("anthropic", "claude")
         // First visible provider is "openai" (flat[1]), which renders a provider header
         // Row 0: tab, Row 1: blank
-        // Row 2: provider header "openai" → None (header)
-        let result = dialog.hit_test_model_row(2);
+        // Row 4: provider header "openai" → None
+        let result = dialog.hit_test_model_row(4);
         assert_eq!(result, None); // Clicking on provider header returns None
 
-        // Row 3: model "gpt3" at flat_idx=1 → Some(1)
-        let result2 = dialog.hit_test_model_row(3);
+        let result2 = dialog.hit_test_model_row(5);
         assert_eq!(result2, Some(1));
 
-        // Row 4: model "gpt4" at flat_idx=2 → Some(2)
-        let result3 = dialog.hit_test_model_row(4);
+        let result3 = dialog.hit_test_model_row(6);
         assert_eq!(result3, Some(2));
     }
 
@@ -1642,9 +1881,8 @@ mod hit_test_tests {
         dialog.visible_height = 20;
         dialog.update_cache();
 
-        // Content-relative row for first model: 3 (tab=0, blank=1, provider header=2, model=3)
-        // Dialog-relative row = content-relative +1 (top border) =4
-        let result = dialog.hit_test(4); // dialog-relative row 4
+        // Dialog-relative row = content-relative +1 (top border) =6
+        let result = dialog.hit_test(6); // dialog-relative row 6
         assert_eq!(result, Some(0)); // first model index 0
 
         // Click on top border (dialog-relative row 0) → None
@@ -1675,8 +1913,8 @@ mod hit_test_tests {
         dialog.tab = ModelDialogTab::SelectModel;
         // Only 1 model, height so small that header can't fit with model row
         dialog.models = vec!["openai/gpt4".to_string()];
-        dialog.visible_height = 5; // area.height=7 → after borders 5
-                                   // budget =5 -2(tab+blank) -2(spacer+footer) =1 → only model row fits, but header takes 1 row
+        dialog.visible_height = 7; // area.height=9 → after borders 7
+                                   // budget = 7 - 2 - 2 - 2 = 1: only the model row fits.
         dialog.update_cache();
         let budget = dialog.model_row_budget();
         assert_eq!(budget, 1); // Only 1 row for model, no header
@@ -1684,5 +1922,267 @@ mod hit_test_tests {
         // count_visible_models() now shows model WITHOUT header when budget is tight
         // So with budget=1, we can show 1 model (without header)
         assert_eq!(visible, 1);
+    }
+}
+
+#[cfg(test)]
+mod mode_and_level_tests {
+    use super::*;
+    use codegg_protocol::provider::ReasoningCapabilityAxis;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn typed(c: char) -> KeyEvent {
+        key(KeyCode::Char(c))
+    }
+
+    /// A capability carrying a published effort ladder and nothing else.
+    fn capability(labels: &[&str]) -> ReasoningCapabilityDto {
+        ReasoningCapabilityDto {
+            effort: ReasoningCapabilityAxis::Supported,
+            accepted_effort_labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            disable: ReasoningCapabilityAxis::Unknown,
+            budget: ReasoningCapabilityAxis::Unknown,
+            min_budget_tokens: None,
+            max_budget_tokens: None,
+            always_reasons: None,
+        }
+    }
+
+    /// The box with three models, in provider-sorted order.
+    fn dialog() -> ModelDialog {
+        let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
+        dialog.tab = ModelDialogTab::SelectModel;
+        dialog.models = vec![
+            "openai/gpt-5".to_string(),
+            "anthropic/claude".to_string(),
+            "openai/gpt-4".to_string(),
+        ];
+        dialog.update_cache();
+        dialog.initialize_selection();
+        dialog
+    }
+
+    fn render_to_text(dialog: &mut ModelDialog, width: u16, height: u16) -> String {
+        let theme = Arc::new(Theme::default());
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("a test terminal");
+        terminal
+            .draw(|frame| dialog.render(frame, frame.area(), &theme))
+            .expect("draw the model dialog");
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_box_opens_in_normal_mode() {
+        let dialog = dialog();
+        assert_eq!(
+            dialog.input_mode(),
+            InputMode::Normal,
+            "the box is read and navigated first; the filter is entered deliberately"
+        );
+    }
+
+    #[test]
+    fn i_enters_insert_mode_and_esc_returns_to_normal() {
+        let mut dialog = dialog();
+        dialog.handle_key(typed('i'));
+        assert_eq!(dialog.input_mode(), InputMode::Insert);
+        dialog.handle_key(key(KeyCode::Esc));
+        assert_eq!(dialog.input_mode(), InputMode::Normal);
+    }
+
+    #[test]
+    fn esc_in_normal_clears_the_filter_before_it_closes_the_box() {
+        let mut dialog = dialog();
+        dialog.handle_key(typed('i'));
+        dialog.handle_key(typed('g'));
+        assert_eq!(dialog.filter, "g");
+
+        // Esc out of Insert keeps the query.
+        dialog.handle_key(key(KeyCode::Esc));
+        assert_eq!(dialog.filter, "g", "Esc must not discard the query");
+
+        // Esc in Normal clears it instead of closing the box.
+        let msg = dialog.handle_key(key(KeyCode::Esc));
+        assert!(
+            msg.is_none(),
+            "a live filter is cleared before the box closes"
+        );
+        assert_eq!(dialog.filter, "");
+
+        // Only an empty filter lets Esc close the box.
+        let msg = dialog.handle_key(key(KeyCode::Esc));
+        assert!(
+            matches!(msg, Some(TuiMsg::CloseDialog)),
+            "the second Esc closes the box"
+        );
+    }
+
+    #[test]
+    fn a_filtered_model_is_still_selectable_after_esc() {
+        let mut dialog = dialog();
+        dialog.handle_key(typed('i'));
+        dialog.handle_key(typed('c'));
+        dialog.handle_key(key(KeyCode::Esc));
+        assert_eq!(dialog.input_mode(), InputMode::Normal);
+        assert_eq!(
+            dialog.flat_filtered().len(),
+            1,
+            "the query narrows the list the operator selects through"
+        );
+
+        let msg = dialog.handle_key(key(KeyCode::Enter));
+        match msg {
+            Some(TuiMsg::SelectModel { model, reasoning }) => {
+                assert_eq!(model, "anthropic/claude");
+                assert!(
+                    reasoning.is_none(),
+                    "a model picked without a level carries no level"
+                );
+            }
+            other => panic!("expected a model selection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn h_and_l_move_the_thinking_level_of_the_highlighted_model() {
+        let mut dialog = dialog();
+        dialog.set_capabilities(HashMap::from([(
+            "claude".to_string(),
+            capability(&["low", "high", "max"]),
+        )]));
+        // The highlighted model is the first in provider order.
+        assert_eq!(dialog.selected(), Some("anthropic/claude".to_string()));
+
+        dialog.handle_key(typed('l'));
+        assert_eq!(
+            dialog.pending_level(),
+            Some(ReasoningMode::Effort("low".to_string()))
+        );
+        dialog.handle_key(typed('l'));
+        assert_eq!(
+            dialog.pending_level(),
+            Some(ReasoningMode::Effort("high".to_string()))
+        );
+        dialog.handle_key(typed('h'));
+        assert_eq!(
+            dialog.pending_level(),
+            Some(ReasoningMode::Effort("low".to_string())),
+        );
+    }
+
+    #[test]
+    fn the_left_and_right_arrows_move_the_thinking_level_too() {
+        let mut dialog = dialog();
+        dialog.set_capabilities(HashMap::from([(
+            "claude".to_string(),
+            capability(&["low", "high", "max"]),
+        )]));
+
+        dialog.handle_key(key(KeyCode::Right));
+        assert_eq!(
+            dialog.pending_level(),
+            Some(ReasoningMode::Effort("low".to_string())),
+        );
+        dialog.handle_key(key(KeyCode::Left));
+        assert_eq!(
+            dialog.pending_level(),
+            Some(ReasoningMode::Inherit),
+            "the arrows walk the same ladder the letters do"
+        );
+    }
+
+    #[test]
+    fn a_picked_level_travels_with_the_selection() {
+        let mut dialog = dialog();
+        dialog.set_capabilities(HashMap::from([(
+            "claude".to_string(),
+            capability(&["low", "high", "max"]),
+        )]));
+        dialog.handle_key(typed('l'));
+        dialog.handle_key(typed('l'));
+
+        let msg = dialog.handle_key(key(KeyCode::Enter));
+        match msg {
+            Some(TuiMsg::SelectModel { model, reasoning }) => {
+                assert_eq!(model, "anthropic/claude");
+                assert_eq!(
+                    reasoning,
+                    Some(ReasoningMode::Effort("high".to_string())),
+                    "the daemon owns one selection, so the level travels with the model"
+                );
+            }
+            other => panic!("expected a model selection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_model_without_a_capability_offers_no_level() {
+        let mut dialog = dialog();
+        assert!(
+            dialog.ladder("anthropic/claude").is_empty(),
+            "the known-label fallback is not presented as a model's option set"
+        );
+        assert!(dialog.cycle_level(1).is_none());
+        assert!(dialog.pending_level().is_none());
+    }
+
+    #[test]
+    fn ctrl_up_and_ctrl_down_page_through_the_list() {
+        let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
+        dialog.tab = ModelDialogTab::SelectModel;
+        dialog.models = (0..30).map(|i| format!("openai/model-{i:02}")).collect();
+        dialog.visible_height = 12;
+        dialog.update_cache();
+        dialog.initialize_selection();
+        let window = dialog.count_visible_models(0);
+        assert!(window > 1, "the fixture must have a window to page by");
+
+        dialog.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+        assert_eq!(
+            dialog.selected, window,
+            "Ctrl+Down moves a whole window, not one row"
+        );
+        dialog.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+        assert_eq!(dialog.selected, 0, "Ctrl+Up pages back");
+
+        dialog.handle_key(key(KeyCode::PageDown));
+        assert_eq!(dialog.selected, window, "PageDown pages the same way");
+        dialog.handle_key(key(KeyCode::PageUp));
+        assert_eq!(dialog.selected, 0, "PageUp pages back the same way");
+    }
+
+    #[test]
+    fn the_rendered_row_shows_the_models_own_levels_and_the_mode_badge() {
+        let mut dialog = dialog();
+        dialog.set_capabilities(HashMap::from([(
+            "claude".to_string(),
+            capability(&["low", "high", "max"]),
+        )]));
+        let text = render_to_text(&mut dialog, 100, 20);
+        assert!(
+            text.contains("NOR"),
+            "the mode badge is what makes the filter discoverable:\n{text}"
+        );
+        assert!(
+            text.contains("max"),
+            "the published ladder is drawn on the model's row:\n{text}"
+        );
+        assert!(
+            text.contains("h/l level"),
+            "the footer names the level gesture:\n{text}"
+        );
     }
 }

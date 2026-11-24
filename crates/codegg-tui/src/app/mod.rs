@@ -2747,6 +2747,14 @@ impl App {
         }
     }
 
+    /// Write one extended-thinking level through the daemon, which owns it.
+    pub(crate) fn apply_selected_reasoning_level(
+        &mut self,
+        level: codegg::protocol::core::ReasoningMode,
+    ) {
+        crate::commands::reasoning::start_level_update(self, level);
+    }
+
     pub fn set_remote_send_tx(&mut self, tx: mpsc::Sender<RemoteTuiMessage>) {
         self.remote_send_tx = Some(tx);
     }
@@ -4477,6 +4485,10 @@ impl App {
             Some(InputAction::CycleModelForward) => self.process_msg(TuiMsg::CycleModelForward),
             Some(InputAction::CycleModelBackward) => self.process_msg(TuiMsg::CycleModelBackward),
             Some(InputAction::ToggleReasoning) => self.process_msg(TuiMsg::ToggleReasoning),
+            // The same command the `/reasoning` slash command reaches.
+            Some(InputAction::CycleReasoningLevel) => {
+                self.dispatch_builtin_command(crate::command::BuiltinSlashAction::Reasoning, None)
+            }
             Some(InputAction::ExpandAllDisclosures) => self.expand_all_disclosures(),
             Some(InputAction::ToggleTts) => self.process_msg(TuiMsg::ToggleTts),
             Some(InputAction::StopTts) => self.stop_tts(),
@@ -9817,9 +9829,7 @@ impl App {
     /// both ask this rather than each re-deriving it. The panel host has the
     /// mirror-image rule for the docked surface — a focused panel whose
     /// `claims_insert_keys` holds — and those two together are what
-    /// `composer_input_mode` resolves over; neither can answer the other's half
-    /// of the question, because a box is not in the panel host and a panel is
-    /// not a dialog.
+    /// `composer_input_mode` resolves over.
     pub fn terminal_box_owns_keyboard(&self) -> bool {
         self.terminal_box_has_keyboard()
             && self

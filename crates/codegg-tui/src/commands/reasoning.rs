@@ -343,6 +343,14 @@ pub(crate) fn apply_preference_loaded(
     app.ui_state.reasoning_mode = ReasoningMode::from(preference.reasoning_selection.clone());
 }
 
+/// Write one extended-thinking level through the daemon, **verbatim**:
+/// the user picked it, so a cycle would land somewhere else.
+pub(crate) fn start_level_update(app: &mut App, level: ReasoningMode) {
+    let previous = app.ui_state.reasoning_mode.clone();
+    app.ui_state.reasoning_mode = level.clone();
+    start_preference_update(app, override_for(&level), previous);
+}
+
 pub(crate) fn dispatch_reasoning(app: &mut App) {
     // The option set is the **model's**, not a static ladder:
     // the labels the capability publishes, in its own order, a
@@ -351,10 +359,7 @@ pub(crate) fn dispatch_reasoning(app: &mut App) {
     // `/thinking`, which only toggles whether reasoning text is
     // rendered; this one changes what the model is asked to do.
     //
-    // The daemon owns the selection, so it needs somewhere to
-    // store it. Without a daemon connection the command reports
-    // that rather than changing a local value the daemon would
-    // ignore.
+    // The daemon owns the selection, so it needs somewhere to store it.
     if app.core_client.is_none() {
         app.messages_state.toasts.error(
             "Extended thinking unavailable: this frontend has no daemon connection, so \

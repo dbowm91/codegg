@@ -2257,9 +2257,10 @@ fn test_select_model_msg_updates_dialog_current() {
     // Simulate SelectModel message
     let msg = TuiMsg::SelectModel {
         model: models[1].clone(),
+        reasoning: None,
     };
     // Process the message (simplified - just call the handler directly)
-    if let TuiMsg::SelectModel { model } = msg {
+    if let TuiMsg::SelectModel { model, .. } = msg {
         app.agent_state.current_model = model.clone();
         app.dialog_state
             .model_dialog
@@ -2290,9 +2291,8 @@ fn test_mouse_click_selects_model() {
     dialog.models = vec!["openai/gpt4".to_string(), "anthropic/claude".to_string()];
     dialog.set_visible_height(20);
 
-    // Simulate clicking on the first model (dialog-relative row 4: border(0), tab(1), blank(2), provider header(3), model(4))
-    // hit_test() subtracts 1 (top border) → content-relative 3 = first model
-    let result = dialog.hit_test(4);
+    // Dialog-relative row 6: hit_test() subtracts 1 for the top border.
+    let result = dialog.hit_test(6);
     assert_eq!(result, Some(0));
 
     // Simulate the selection
@@ -2342,14 +2342,11 @@ fn test_app_mouse_click_selects_model() {
     // This means dialog-relative row = screen row
     app.dialog_area = Some(Rect::new(0, 0, 60, 20));
 
-    // Click at row 4 (dialog-relative)
-    // - rel_y = 4 (dialog-relative, including borders)
-    // - hit_test(4) subtracts 1 for top border → content-relative 3
-    // - hit_test_model_row(3): tab(0), blank(1), provider header(2), model(3) → Some(0)
+    // Click at row 6: hit_test() subtracts 1 for the top border.
     let mouse_event = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 10,
-        row: 4,
+        row: 6,
         modifiers: crossterm::event::KeyModifiers::empty(),
     };
 
@@ -2443,16 +2440,20 @@ fn test_app_mouse_click_with_filter() {
 // ============================================================================
 
 #[test]
-fn test_model_row_budget_without_filter() {
+fn test_model_row_budget_does_not_depend_on_the_filter() {
     use codegg_tui::components::dialogs::model::ModelDialog;
 
     let mut dialog = ModelDialog::new(Arc::new(Theme::dark()));
     // Set visible_height to 20 (simulating area.height = 22, minus 2 for borders)
     dialog.set_visible_height(20);
-    // budget = 20 - 2 (tab+blank) - 2 (spacer+footer) = 16
-    // No filter, so no filter lines to subtract
-    let _budget = dialog.model_row_budget();
-    assert_eq!(dialog.model_row_budget(), 16);
+    // The filter row is always drawn, so the budget does not change.
+    let without_query = dialog.model_row_budget();
+    dialog.set_filter('g');
+    assert_eq!(
+        dialog.model_row_budget(),
+        without_query,
+        "the budget must not depend on whether a query is typed"
+    );
 }
 
 #[test]
@@ -2474,12 +2475,12 @@ fn test_small_height_shows_at_least_one_model() {
 
     let mut dialog = ModelDialog::new(Arc::new(Theme::dark()));
     dialog.models = vec!["openai/gpt4".to_string()];
-    // Small height: area.height = 7 → visible_height = 7-2 = 5
-    dialog.set_visible_height(5);
+    // Small height: area.height = 9 → visible_height = 9-2 = 7
+    dialog.set_visible_height(7);
     dialog.update_cache();
 
     let budget = dialog.model_row_budget();
-    // budget = 5 - 2 (tab+blank) - 2 (spacer+footer) = 1
+    // budget = 7 - 2 (tab+blank) - 2 (filter+blank) - 2 (spacer+footer) = 1
     assert_eq!(budget, 1);
 
     let visible = dialog.count_visible_models(0);

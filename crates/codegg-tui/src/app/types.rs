@@ -189,8 +189,11 @@ pub enum TuiMsg {
         new_content: Box<str>,
         title: Box<str>,
     },
+    /// A model was chosen in the `/models` box, with the thinking level
+    /// picked there for it, if any.
     SelectModel {
         model: String,
+        reasoning: Option<codegg_protocol::core::ReasoningMode>,
     },
     SelectAgent {
         agent_name: String,
@@ -500,9 +503,7 @@ pub enum TuiMsg {
     // Pure intents. The dialog owns presentation and local view state
     // only; every variant below is routed by `App::process_msg` into the
     // existing `commands/chat.rs` `start_chat_*` seams, which own the
-    // daemon round-trip, authorization, and stale-completion guards. None
-    // of these carries an authority decision — the daemon still decides
-    // whether a send, edit, or redact is allowed.
+    // daemon round-trip, authorization, and stale-completion guards.
     /// Send a composed message, optionally as a reply.
     ChatSend {
         body: String,

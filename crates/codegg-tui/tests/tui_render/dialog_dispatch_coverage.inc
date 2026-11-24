@@ -35,13 +35,14 @@ fn theme() -> Arc<Theme> {
     Arc::new(Theme::dark())
 }
 
-/// The Model dialog owns its filter keys: typing reaches the filter and
-/// `Backspace` pops it.
+/// The Model dialog owns its filter keys: `i` enters the filter, typing
+/// reaches it and `Backspace` pops it.
 #[test]
 fn the_model_dialog_owns_its_filter_keys() {
     let mut focus = FocusManager::new();
     focus.push(Box::new(ModelDialog::new(theme())));
 
+    focus.handle_key(key(KeyCode::Char('i')));
     focus.handle_key(key(KeyCode::Char('g')));
     focus.handle_key(key(KeyCode::Char('p')));
     let filter = focus

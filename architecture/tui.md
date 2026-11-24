@@ -5862,6 +5862,57 @@ the daemon's durable selection converging on the display.
 Pinned by `scripts/check_model_select_convergence.py` and
 `crates/codegg-tui/tests/tui_render/tui_model_selection_persist.inc`.
 
+### The `/models` box: the mode owns the keys, the model owns the levels
+
+The `/models` box (`components/dialogs/model.rs`) is a **filter box with a
+mode**, and the mode — not whether a query happens to be typed — decides
+what a key means:
+
+| Mode | Keys |
+|---|---|
+| Normal (the box opens here) | `i`/`a` enter the filter, `↑/↓`/`j`/`k` navigate, `h`/`l` and `←/→` move the thinking level, `Ctrl+↑/↓` and `PgUp/PgDn` page, `Enter` selects, `Esc` clears a live filter and closes when there is none |
+| Insert | printable characters type into the filter, `Backspace` edits it, `↑/↓` navigate, `←/→` move the thinking level, `Esc` returns to Normal **with the filter intact** |
+
+Three decisions are load-bearing, and each one is a rule about the
+operator's hands rather than about the code:
+
+- **The box opens in Normal.** It is read and navigated first; the filter
+  is entered deliberately. A box that opened in Insert would take every
+  printable key as a filter character and the navigation verbs would be
+  unreachable.
+- **Esc out of Insert keeps the filter.** The filter is what the operator
+  is selecting *through*, so it survives until it is cleared deliberately —
+  and the gesture that clears it is Esc again in Normal, which is why the
+  footer says "Esc clear filter" while a filter is live. This is the same
+  contract the `/help` box answers, and it is why the normalised
+  `NOR`/`INS` badge is drawn on the filter row: without the badge, a
+  keystroke that does nothing is indistinguishable from a keystroke that
+  was swallowed.
+- **The level gesture is advertised only when it acts.** A model that
+  publishes no ladder offers no level, so the footer names `h/l` only
+  while the highlighted model has levels to move through. A footer that
+  named a key the box ignores is the I4 invariant's finding, not a
+  convenience.
+
+The levels themselves are the **model's own**: the daemon publishes each
+model's capability with the catalog, and the box shows exactly that ladder
+(`default · low · high · max · off` for a model whose gateway publishes
+`low, high, max`). A model with no published capability shows a muted dash:
+the known-label ladder is a *fallback vocabulary*, and presenting it as a
+model's option set is what hid `max` from a model that accepts it.
+
+A level picked for a model that is not running yet is held in the box and
+travels with the selection on Enter (`TuiMsg::SelectModel { reasoning }`),
+because the daemon owns **one** selection. A model picked *without* a
+level carries none, so re-selecting the model that is already running never
+rewrites the daemon's stored choice.
+
+The thinking level is also reachable from the composer: `Ctrl+Alt+T`
+(`InputAction::CycleReasoningLevel`) walks the current model's own ladder
+through the same command the `/reasoning` slash command reaches, so the
+key and the command cannot offer different levels. The chord is bound in
+**both** keymaps and is listed in `/help`.
+
 Async commands sent via channel — 245 variants covering: session CRUD,
 archive, fork, bulk ops, share, export, rename, undo delete, import,
 template creation, session message loading, subagent spawn, task/worktree

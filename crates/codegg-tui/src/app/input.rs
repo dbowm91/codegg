@@ -46,7 +46,7 @@ impl App {
                     title,
                 });
             }
-            TuiMsg::SelectModel { model } => {
+            TuiMsg::SelectModel { model, reasoning } => {
                 self.agent_state.current_model = model.clone();
                 self.dialog_state
                     .model_dialog
@@ -57,6 +57,10 @@ impl App {
                 if let Some(tab) = self.project_tabs.active_mut() {
                     tab.model = model.clone();
                 }
+                // The level picked in the box travels with the selection.
+                if let Some(reasoning) = reasoning {
+                    self.apply_selected_reasoning_level(reasoning);
+                }
                 self.persist_model_selection(&model);
                 // `persist_model_selection` only writes the last-used
                 // *preference*, which the next launch restores. The daemon
@@ -65,9 +69,7 @@ impl App {
                 // preference all showed the newly chosen model while the
                 // next turn still ran whatever the daemon had stored — the
                 // divergence behind "I selected mimo 2.6 flash and it ran
-                // muse-spark 1.3". A refusal is reported and the display
-                // re-synchronized rather than left showing a model that
-                // will not run.
+                // muse-spark 1.3".
                 self.persist_durable_model_selection(model.clone());
                 self.close_dialog();
             }

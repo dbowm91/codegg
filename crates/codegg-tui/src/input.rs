@@ -187,6 +187,10 @@ pub enum InputAction {
     CycleModelForward,
     CycleModelBackward,
     ToggleReasoning,
+    /// Advance the extended-thinking selection to the next level the
+    /// **current model** accepts. Distinct from [`InputAction::ToggleReasoning`],
+    /// which opens a reasoning block in the *transcript*.
+    CycleReasoningLevel,
     /// Expand every tool call and every reasoning block in the transcript,
     /// or collapse every one of them.
     ///
@@ -309,6 +313,8 @@ pub enum ActionKey {
     CycleModelForward,
     CycleModelBackward,
     ToggleReasoning,
+    /// See [`InputAction::CycleReasoningLevel`].
+    CycleReasoningLevel,
     /// Expand every tool call and every reasoning block in the transcript, or
     /// collapse every one of them.
     ExpandAllDisclosures,
@@ -384,6 +390,7 @@ impl ActionKey {
             Self::CycleModelForward,
             Self::CycleModelBackward,
             Self::ToggleReasoning,
+            Self::CycleReasoningLevel,
             Self::ExpandAllDisclosures,
             Self::Quit,
             Self::ForceQuit,
@@ -451,6 +458,7 @@ impl ActionKey {
             Self::CycleModelForward => InputAction::CycleModelForward,
             Self::CycleModelBackward => InputAction::CycleModelBackward,
             Self::ToggleReasoning => InputAction::ToggleReasoning,
+            Self::CycleReasoningLevel => InputAction::CycleReasoningLevel,
             Self::ExpandAllDisclosures => InputAction::ExpandAllDisclosures,
             Self::Quit => InputAction::Quit,
             Self::ForceQuit => InputAction::ForceQuit,
@@ -531,6 +539,7 @@ impl ActionKey {
             InputAction::CycleModelForward => Self::CycleModelForward,
             InputAction::CycleModelBackward => Self::CycleModelBackward,
             InputAction::ToggleReasoning => Self::ToggleReasoning,
+            InputAction::CycleReasoningLevel => Self::CycleReasoningLevel,
             InputAction::ExpandAllDisclosures => Self::ExpandAllDisclosures,
             InputAction::Quit => Self::Quit,
             InputAction::ForceQuit => Self::ForceQuit,
@@ -598,6 +607,7 @@ impl ActionKey {
             Self::CycleModelForward => "Cycle model forward",
             Self::CycleModelBackward => "Cycle model backward",
             Self::ToggleReasoning => "Toggle reasoning",
+            Self::CycleReasoningLevel => "Cycle thinking level (Ctrl+Alt+T)",
             Self::ExpandAllDisclosures => "Expand or collapse every detail (Ctrl+Alt+O)",
             Self::Quit => "Quit",
             Self::ForceQuit => "Force quit",
@@ -768,9 +778,22 @@ fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), In
     }
 }
 
+/// The chord that advances the extended-thinking selection: `Ctrl+Alt+T`,
+/// bound in **both** maps. The chord contract is in `architecture/tui.md`.
+fn insert_reasoning_level_binding(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('t'),
+        ),
+        InputAction::CycleReasoningLevel,
+    );
+}
+
 fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     let mut map = HashMap::new();
     insert_panel_direction_bindings(&mut map);
+    insert_reasoning_level_binding(&mut map);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     // Ctrl+C is the unconditional exit; Esc only backs out of whatever is on
@@ -923,20 +946,10 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     map.insert((KeyModifiers::NONE, KeyCode::Char(' ')), InputAction::Help);
     // ── Chord-selection contract ────────────────────────────────────────
     //
-    // Multi-modifier chords must be built from `{CONTROL, ALT}` only. A bare
-    // `Ctrl+<letter>` is unusable because every free bare Ctrl letter is a
-    // terminal control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J
-    // newline, Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend) and binding
-    // one steals the terminal's own job.
-    //
-    // `Ctrl+Shift+<letter>` is *also* unusable, for a subtler reason: without
-    // keyboard-enhancement flags (never pushed — see `tui/terminal.rs`) the
-    // terminal is in legacy xterm encoding, where `Ctrl+Alt+W` and `Ctrl+W`
-    // are the same byte 0x17. crossterm therefore reports `Char('w')` with
-    // CONTROL only, and a `(CONTROL|SHIFT, Char('W'))` binding is
-    // unreachable — worse, the key silently falls through to whichever action
-    // owns the bare-Ctrl twin. That is how the panel switcher ended up firing
-    // `CloseSession`.
+    // Multi-modifier chords must be built from `{CONTROL, ALT}` only: a bare
+    // `Ctrl+<letter>` is a terminal control character, and `Ctrl+Shift`
+    // is undecodable in legacy xterm encoding. The chord contract and its
+    // evidence live in `architecture/tui.md`.
     map.insert(
         (
             KeyModifiers::CONTROL | KeyModifiers::ALT,
@@ -1148,6 +1161,7 @@ pub fn default_bindings() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
 fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     let mut map = HashMap::new();
     insert_panel_direction_bindings(&mut map);
+    insert_reasoning_level_binding(&mut map);
 
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
@@ -1512,6 +1526,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Insert,
             key: "Ctrl+Alt+P",
             action: "Cycle model backward",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Ctrl+Alt+T",
+            action: "Cycle thinking level",
             condition: None,
         },
         HelpEntry {
@@ -3552,5 +3572,50 @@ mod tests {
                 "the workspace dashboard must keep Ctrl+O in the {name} map"
             );
         }
+    }
+
+    /// The chord is bound in **both** maps.
+    #[test]
+    fn ctrl_alt_t_cycles_the_thinking_level_in_both_maps() {
+        let chord = (
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('t'),
+        );
+        for (name, map) in [
+            ("default", build_bindings(None, false)),
+            ("vim", build_bindings(None, true)),
+        ] {
+            assert_eq!(
+                map.get(&chord),
+                Some(&InputAction::CycleReasoningLevel),
+                "the thinking-level chord must be bound in the {name} map"
+            );
+        }
+    }
+
+    /// An action, not a letter, so it is reachable in both composer modes.
+    #[test]
+    fn the_thinking_level_chord_is_reachable_in_insert_and_normal() {
+        let key = make_key(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        for mode in [InputMode::Insert, InputMode::Normal] {
+            assert_eq!(
+                handle_key_with_bindings(key, None, mode),
+                Some(InputAction::CycleReasoningLevel),
+                "the thinking-level chord must work in {mode:?}"
+            );
+        }
+    }
+
+    /// A verb a user cannot find in `/help` does not exist.
+    #[test]
+    fn the_help_lists_the_thinking_level_chord() {
+        let entry = default_help_entries()
+            .into_iter()
+            .find(|entry| entry.key == "Ctrl+Alt+T")
+            .expect("the help must list the thinking-level chord");
+        assert_eq!(entry.action, "Cycle thinking level");
     }
 }

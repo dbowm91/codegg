@@ -144,6 +144,7 @@ fn commit_model_via_dialog(app: &mut App, model: &str) {
     // message; `process_msg` is what receives it.
     app.process_msg(TuiMsg::SelectModel {
         model: model.to_string(),
+        reasoning: None,
     });
 }
 

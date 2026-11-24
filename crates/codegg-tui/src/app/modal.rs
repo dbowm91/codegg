@@ -273,9 +273,7 @@ impl App {
     ///
     /// The box is seeded from the shared tree state rather than building its
     /// own listing, so it opens where a previous browse left off and both
-    /// surfaces agree about the current workspace. A walk is kicked only
-    /// when nothing has been listed yet, or when the shared tree belongs to
-    /// a *different* workspace.
+    /// surfaces agree about the current workspace.
     ///
     /// The listing itself is daemon-owned (ADR-0022, C005) — the TUI never
     /// walks its own filesystem.
@@ -326,6 +324,13 @@ impl App {
                 self.dialog_state
                     .model_dialog
                     .set_current(&self.agent_state.current_model);
+                // The per-model thinking levels the daemon published.
+                self.dialog_state
+                    .model_dialog
+                    .set_capabilities(self.ui_state.reasoning_capabilities.clone());
+                self.dialog_state
+                    .model_dialog
+                    .set_current_level(self.ui_state.reasoning_mode.clone());
                 self.dialog_state.model_dialog.initialize_selection();
                 self.focus_manager
                     .push(Box::new(self.dialog_state.model_dialog.clone()));
