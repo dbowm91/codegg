@@ -1,25 +1,17 @@
 //! The TUI editor's pending-effect mechanism.
 //! See `architecture/tui.md` for its authority and consumption contract.
 //!
-//! Prefix resolution determines the requested effect; the App layer runs it
-//! using the core client, task registry, and UI feedback.
-//!
-//! ## The mechanism, unchanged
-//!
-//! The two halves of a leaf live at different authority levels. The prefix
-//! resolver holds `&mut EditorState` and can decide *what* was asked for;
+//! The two halves of a leaf live at different authority levels: the prefix
+//! resolver holds `&mut EditorState` and decides *what* was asked for, and
 //! only the App layer holds a core client, a task registry and toasts, so it
 //! owns *how* the request runs. The resolver parks the effect on
 //! [`EditorState::pending_effect`] and `handle_editor_key` drains it on the
 //! very next statement.
-//!
-//! Effects are consumed immediately after resolution; a document change
-//! discards a pending effect.
 
 use codegg_protocol::lsp::LspReadOperation;
 
 use crate::document_session::TuiDocumentPresentation;
-use crate::editor::{self, EditorEdit};
+use crate::editor::{self, EditorCommandName, EditorEdit};
 use crate::editor_lsp::EditorDiagnosticStep;
 
 /// One verb whose payload is a block of text — the clipboard's, or a
@@ -140,4 +132,5 @@ pub enum EditorPendingEffect {
     /// feature from a key that never arrived. The message says which, and the
     /// reason is the same text the docs carry.
     Unavailable(&'static str),
+    RunCommand(EditorCommandName),
 }

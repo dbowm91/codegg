@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod config_catalog;
 pub mod document;
+pub mod editor;
 pub mod encryption;
 pub mod error;
 pub mod paths;
@@ -10,6 +11,11 @@ pub mod watcher;
 
 pub use document::{
     parse_yaml, DocumentErrorClass, DocumentFormat, DocumentParseError, StructuredValue,
+};
+pub use editor::{
+    find_project_editor_config_from, global_editor_config_path, load_editor_config,
+    parse_editor_config, EditorConfigFile, EditorSettings, KeyBinding, LoadedEditorConfig,
+    MenuConfig,
 };
 pub use error::{AppError, ConfigError};
 pub use paths::{

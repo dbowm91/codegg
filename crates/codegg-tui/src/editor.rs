@@ -30,6 +30,7 @@ use super::document_session::{
 };
 use super::text_geometry;
 use crate::editor_effect::{ClipboardVerb, EditorPendingEffect};
+use crate::editor_keymap::MenuPath;
 use crate::editor_lsp::EditorDiagnosticStep;
 use crate::editor_match;
 use crate::helix_selection::{Selection, SelectionMode, SelectionState};
@@ -103,25 +104,19 @@ pub const REPLAY_REFUSED: &str =
 /// **Grammar rule: one pending prefix, one terminal key consumed.** A key
 /// arriving while a prefix is armed either matches a leaf or disarms it;
 /// nothing consumes a second key, and no prefix is ever armed on top of
-/// another. The find prefixes keep the rule but change what the terminal
-/// key *is*: `f` takes the next character as its target rather than as a
-/// leaf, which is still exactly one key and still always disarms. A prefix
-/// is also disarmed outright whenever the thing it was waiting for stops
-/// being the thing on screen — opening a different document, leaving the
-/// editor route, moving focus to the tree pane, or a reconciliation
-/// rewriting the text under it. A prefix that outlives its target is a
-/// gesture applied to the wrong buffer, which is the "relative path
-/// resolved against the wrong root" defect in gesture form.
+/// another. A prefix is also disarmed outright whenever the thing it was
+/// waiting for stops being the thing on screen — opening a different
+/// document, leaving the editor route, moving focus to the tree pane, or a
+/// reconciliation rewriting the text under it. A prefix that outlives its
+/// target is a gesture applied to the wrong buffer.
 ///
 /// Adding a grammar means adding a variant here and its leaf in
 /// `commands::editor::resolve_pending_prefix`, never a new field on the
 /// presentation. That is the whole point of the type: `pending_command` and
-/// `yank_prefix_pending` were one flag per feature, which is why Helix's
-/// `[`/`]` grammars each wanted another one.
+/// `yank_prefix_pending` were one flag per feature.
 ///
 /// This module is the presentation model and deliberately knows nothing about
-/// key events, so a leaf is named by the glyph it completes rather than by a
-/// `KeyCode`.
+/// key events, so a leaf is named by the glyph it completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EditorPrefix {
     /// Nothing pending: every key resolves against the keymap.
@@ -138,6 +133,8 @@ pub enum EditorPrefix {
     View,
     /// Helix space mode, armed by `space`. Leaves: [`SPACE_LEAVES`].
     Space,
+    /// A nested minor mode inside the space menu.
+    SpaceMenu(MenuPath),
     /// Helix's unimpaired `[` prefix. Leaves: [`OPEN_BRACKET_LEAVES`].
     OpenBracket,
     /// Helix's unimpaired `]` prefix. Leaves: [`CLOSE_BRACKET_LEAVES`].
@@ -376,6 +373,7 @@ impl EditorPrefix {
             EditorPrefix::Goto => "g".into(),
             EditorPrefix::View => "z".into(),
             EditorPrefix::Space => "space".into(),
+            EditorPrefix::SpaceMenu(path) => path.label().into(),
             EditorPrefix::OpenBracket => "[".into(),
             EditorPrefix::CloseBracket => "]".into(),
             EditorPrefix::FindNext => "f".into(),
@@ -410,18 +408,13 @@ impl EditorPrefix {
     ///
     /// The find prefixes return an empty slice on purpose: their next key is a
     /// *target character*, not a leaf, so there is no glyph that could
-    /// complete them. `r` is empty for the same reason — it takes the
-    /// character to write, not a key that means "replace".
+    /// complete them. `r` is empty for the same reason.
     ///
     /// Every empty row above is a **capture** ([`Self::is_capture`]) or a
     /// prefix whose term is not a glyph at all; a prefix with leaves is one the
-    /// dispatch resolves by glyph lookup. That claim used to be false of
-    /// `[`/`]` — they sat in this arm too, unarmed, until M006 gave them
-    /// [`OPEN_BRACKET_LEAVES`] and [`CLOSE_BRACKET_LEAVES`]. The register
-    /// grammar's second level, [`Self::RegisterNamed`], is the first prefix
-    /// whose term is a **verb** from a closed set rather than a glyph: each of
-    /// the four it accepts needs the captured name as an argument, so a
-    /// `PrefixLeaf` row could name the verb but not the register it acts on.
+    /// dispatch resolves by glyph lookup. The register grammar's second level,
+    /// [`Self::RegisterNamed`], is the first prefix whose term is a **verb**
+    /// from a closed set rather than a glyph.
     pub fn leaves(self) -> &'static [PrefixLeaf] {
         match self {
             EditorPrefix::Goto => GOTO_LEAVES,
@@ -442,6 +435,7 @@ impl EditorPrefix {
             // four it accepts needs the captured name as an argument, so neither
             // fits a `PrefixLeaf` row. `commands::editor::resolve_register_verb`.
             | EditorPrefix::Register
+            | EditorPrefix::SpaceMenu(_)
             | EditorPrefix::RegisterNamed(_) => &[],
         }
     }
@@ -1625,10 +1619,10 @@ pub enum EditorCommandName {
     /// `:goto <n>` — jump to line `n`. Also spelled `:50`.
     ///
     /// Helix-native rather than an invention: Helix's command line documents
-    /// `:goto 123`, and `:123` and `123G` as the same intent. The bare
-    /// numeric spelling is the one a reader reaches for, so it is the one
-    /// this registry answers first.
+    /// `:goto 123`, and `:123` and `123G` as the same intent.
     GotoLine,
+    /// `:llm-insert` — ask the model for an insertion at the cursor.
+    LlmInsert,
 }
 
 impl EditorCommandName {
@@ -1650,6 +1644,7 @@ impl EditorCommandName {
             Self::SelectRegex => "select-regex",
             Self::RenamePreview => "rename-preview",
             Self::GotoLine => "goto",
+            Self::LlmInsert => "llm-insert",
         }
     }
 
@@ -1671,6 +1666,7 @@ impl EditorCommandName {
             Self::SelectRegex => "select every regex match inside each selection",
             Self::RenamePreview => "preview renaming the symbol under the cursor",
             Self::GotoLine => "jump to a line number",
+            Self::LlmInsert => "ask the model for an insertion at the cursor",
         }
     }
 
@@ -1712,6 +1708,7 @@ impl EditorCommandName {
         Self::SelectRegex,
         Self::RenamePreview,
         Self::GotoLine,
+        Self::LlmInsert,
     ];
 }
 
@@ -1764,6 +1761,7 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
         "select-regex" => EditorCommandName::SelectRegex,
         "rename-preview" => EditorCommandName::RenamePreview,
         "goto" => EditorCommandName::GotoLine,
+        "llm-insert" | "llm_insert" => EditorCommandName::LlmInsert,
         _ => return None,
     };
     let argument = argument.filter(|value| !value.is_empty());

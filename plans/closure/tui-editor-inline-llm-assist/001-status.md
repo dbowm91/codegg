@@ -208,7 +208,10 @@ The Decision's substance is unchanged: one-shot request, no turn, no session,
 no tool loop, and a payload carrying the request id, the document identity and
 revision, the model, the effort label and the text. Only the channel differs.
 The ADR was **not** amended; this record and `architecture/tui.md` state the
-deviation, and an owner decision to amend ADR-0066 is still outstanding.
+deviation. The owner decided on 2026-11-25 to **leave it recorded here**
+rather than amend ADR-0066: the Decision's substance is unchanged and only
+the delivery channel differs, so amending an accepted ADR would be a larger
+step than the change warrants.
 
 ### 5.2 The review menu is placed after the region, not on the cursor's next row
 

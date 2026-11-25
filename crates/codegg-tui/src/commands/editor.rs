@@ -44,6 +44,7 @@ use crate::document_session::{
 };
 use crate::editor::{self, EditorCommand, EditorCommandName, EditorMode, EditorPrefix};
 use crate::editor_effect::{ClipboardVerb, EditorPendingEffect};
+use crate::editor_keymap::{MenuAction, MenuPath};
 use crate::editor_lsp::EditorDiagnosticStep;
 use crate::task_lifecycle::TuiTaskKind;
 
@@ -1886,6 +1887,9 @@ pub(crate) fn service_editor_completion_debounce(app: &mut App, now: std::time::
 /// state guard drops the older answer on arrival. Nothing here polls,
 /// retries, or auto-accepts.
 pub(crate) fn start_editor_completion(app: &mut App) {
+    if !app.editor_state.keymap.completion_popup_enabled() {
+        return;
+    }
     app.editor_state.cancel_completion_debounce();
     let scope = match current_completion_scope(app) {
         Ok(scope) => scope,
@@ -4079,10 +4083,6 @@ fn dispatch_editor_key(app: &mut App, key: KeyEvent) -> bool {
             resync_editor(app);
             true
         }
-        BufferKey::RequestInlinePrompt => {
-            open_inline_prompt(app);
-            true
-        }
         BufferKey::RequestInlineApprove => {
             approve_inline_region(app);
             true
@@ -4374,6 +4374,7 @@ fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
         EditorPendingEffect::OpenJumplist => open_editor_jumplist_picker(app),
         EditorPendingEffect::OpenKeymap => toggle_editor_keymap(app),
         EditorPendingEffect::RenamePrompt => open_editor_rename_prompt(app),
+        EditorPendingEffect::RunCommand(command) => run_editor_command(app, command, None),
     }
 }
 
@@ -4740,6 +4741,7 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
         }
         // `:complete` takes no argument; the parser already refuses one.
         EditorCommandName::Complete => start_editor_completion(app),
+        EditorCommandName::LlmInsert => open_inline_prompt(app),
         // The three regex selection verbs. They are **commands** rather than a
         // prompt because a prompt would need its own input mode, its own
         // pending state, and its own disarm contract on buffer switch, reload
@@ -5184,7 +5186,6 @@ enum BufferKey {
     LspRead(LspReadOperation),
     ExpandSyntaxSelection,
     ShrinkSyntaxSelection,
-    RequestInlinePrompt,
     RequestInlineApprove,
     RequestInlineDiscard,
 }
@@ -5854,6 +5855,39 @@ fn resolve_match_arg(
 /// The disarm is unconditional and happens before the leaf is consulted, so
 /// no gesture can leave the machine armed and a key must always be able to
 /// recover it.
+fn resolve_space_menu(
+    state: &mut EditorState,
+    pending: EditorPrefix,
+    key: KeyEvent,
+) -> Option<PrefixResolution> {
+    let path = pending.space_menu_path()?;
+    let entry = {
+        let menu = state.keymap.menu(&path.id())?;
+        menu.entries
+            .iter()
+            .find(|entry| entry.key.matches(key))
+            .copied()
+    }?;
+    Some(match entry.action {
+        MenuAction::Command(command) => {
+            state.pending_effect = Some(EditorPendingEffect::RunCommand(command));
+            PrefixResolution::Handled(BufferKey::Consumed)
+        }
+        MenuAction::Menu(child) => {
+            arm_space_menu(state, child);
+            PrefixResolution::Handled(BufferKey::Consumed)
+        }
+    })
+}
+
+fn arm_space_menu(state: &mut EditorState, path: MenuPath) {
+    if let Some(session) = state.session.as_mut() {
+        session
+            .presentation_mut()
+            .arm_prefix(EditorPrefix::SpaceMenu(path));
+    }
+}
+
 fn resolve_pending_prefix(
     state: &mut EditorState,
     key: KeyEvent,
@@ -5862,9 +5896,7 @@ fn resolve_pending_prefix(
     // The armed prefix is read and the machine disarmed in one step, and the
     // session borrow is **released** before anything else happens. The
     // resolutions below call back into `state`, and a borrow that spanned
-    // them would make the second call a second mutable borrow of the same
-    // state — which is why the `m` grammar's second level, which has to arm
-    // the prefix again, needed this split.
+    // them would be a second mutable borrow of the same state.
     let pending = {
         let Some(session) = state.session.as_mut() else {
             return PrefixResolution::Idle;
@@ -5880,13 +5912,9 @@ fn resolve_pending_prefix(
     // Capture prefixes are resolved *before* the leaf table because their next
     // key is data, not a leaf: `EditorPrefix::leaves` is empty for all of
     // them, so reaching the leaf lookup would send a perfectly good target
-    // down the mismatch path and out to the composer.
-    //
-    // One branch, not two. `is_capture` is the classifier, each grammar's
-    // accept rule is a named function, and the **mismatch** answer is
-    // `capture_mismatch` — so a capture grammar added later cannot arrive
-    // with its own copy of any of the three, and cannot quietly decide that
-    // an unmatched key is swallowed.
+    // down the mismatch path and out to the composer. One branch, not two:
+    // `is_capture` is the classifier, each grammar's accept rule is a named
+    // function, and the **mismatch** answer is `capture_mismatch`.
     if pending.is_capture() {
         // A capture takes the next key as **data**, and a count for it is out
         // of scope (repeating a find is `Alt-.`'s job). The count is taken
@@ -5947,9 +5975,8 @@ fn resolve_pending_prefix(
     }
 
     // The `"` grammar's second level: the name was captured, and this key is
-    // the verb that consumes the selection. It is not a capture (its next key
-    // is a verb, not data) and it is not a leaf table either — each of the
-    // four verbs it honours needs the captured name as an argument.
+    // the verb that consumes the selection. It is not a capture and it is not
+    // a leaf table — each verb it honours needs the captured name.
     if let Some(name) = pending.register_name() {
         // `pending` only ever holds a validated name: the capture refuses
         // everything outside the set. Returning rather than unwrapping keeps a
@@ -5959,6 +5986,10 @@ fn resolve_pending_prefix(
             return capture_mismatch(pending);
         };
         return resolve_register_verb(state, register, key);
+    }
+
+    if let Some(resolved) = resolve_space_menu(state, pending, key) {
+        return resolved;
     }
 
     // One lookup, N leaves. A prefix that has no row for this glyph takes the
@@ -6212,7 +6243,6 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             helix_motion(state, EditorCommand::HalfPageUp, visible_lines);
             BufferKey::Consumed
         }
-        (m, KeyCode::Char('a')) if m == ctrl_alt => BufferKey::RequestInlinePrompt,
         (m, KeyCode::Char('u')) if m == ctrl_alt => BufferKey::RequestInlineApprove,
         (m, KeyCode::Char('v')) if m == ctrl_alt => BufferKey::RequestInlineDiscard,
         (m, KeyCode::Char('j')) | (m, KeyCode::Down) if m == none || m == shift => {
@@ -12727,6 +12757,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_completion_request_is_never_issued_when_the_config_disables_the_popup() {
+        let mut disabled = inserting("hello\n", 5).await;
+        let mut keymap = crate::editor_keymap::EditorKeymap::defaults();
+        keymap.apply(
+            &codegg::config::editor::parse_editor_config("[editor]\ncompletion-popup = false\n")
+                .expect("a readable configuration"),
+        );
+        disabled.editor_state.keymap = keymap;
+
+        assert!(handle_editor_key(&mut disabled, key(KeyCode::F(8))));
+        assert!(
+            disabled.messages_state.toasts.is_empty(),
+            "a disabled popup asks for nothing"
+        );
+        assert!(
+            !disabled.editor_state.completion.is_open(),
+            "and opens no popup"
+        );
+
+        let mut enabled = inserting("hello\n", 5).await;
+        assert!(handle_editor_key(&mut enabled, key(KeyCode::F(8))));
+        assert!(
+            !enabled.messages_state.toasts.is_empty(),
+            "the enabled popup does ask for completions"
+        );
+    }
+
+    #[tokio::test]
     async fn the_lsp_panel_does_not_steal_characters_in_insert_mode() {
         let mut app = inserting("hello\n", 0).await;
         app.editor_state.lsp.open_diagnostics_panel();
@@ -15340,6 +15398,69 @@ mod tests {
             "the space prefix must be claimed by the editor"
         );
         handle_editor_key(app, KeyEvent::new(KeyCode::Char(glyph), KeyModifiers::NONE));
+    }
+
+    /// The space menu's nested gesture, pressed one key at a time.
+    ///
+    /// Three presses, because that is the gesture: `space` opens the space
+    /// menu, `q` opens the menu inside it, and `a` runs the command. A
+    /// helper that pressed the three together would hide a level the
+    /// keyboard cannot reach.
+    #[tokio::test]
+    async fn space_q_a_runs_the_inline_generation_command() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+        assert!(
+            handle_editor_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)
+            ),
+            "the space prefix must be claimed by the editor"
+        );
+        assert_eq!(prefix_on_app(&app), EditorPrefix::Space);
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
+        ));
+        assert!(
+            matches!(prefix_on_app(&app), EditorPrefix::SpaceMenu(_)),
+            "the q menu must be armed, not the space menu"
+        );
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)
+        ));
+        assert!(
+            app.editor_state.inline_assist.is_field_open(),
+            "the last key must run the command the menu bound"
+        );
+    }
+
+    /// A configured menu binds a key the shipped defaults do not.
+    #[tokio::test]
+    async fn a_configured_menu_binds_a_command_the_defaults_do_not() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+        let config = codegg::config::editor::parse_editor_config(
+            "[keys.normal.space.q]\nb = \"llm_insert\"\n",
+        )
+        .expect("a readable configuration");
+        let mut keymap = crate::editor_keymap::EditorKeymap::defaults();
+        keymap.apply(&config);
+        app.editor_state.keymap = keymap;
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)
+        ));
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
+        ));
+        assert!(handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)
+        ));
+        assert!(app.editor_state.inline_assist.is_field_open());
     }
 
     /// Bind the active tab to a canonical project/workspace with `root`.

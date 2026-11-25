@@ -1,0 +1,17 @@
+# The editor's default keymap, in Helix's configuration format.
+#
+# Copy this file to `<config dir>/codegg/editor.toml` (for every project)
+# or to `.codegg/editor.toml` (for one project) and edit it there. The
+# shipped defaults are the base layer; your file is laid over them, so a
+# project file may add one key without restating the rest.
+#
+# `[keys.normal.space.q]` is a minor mode: `space` opens the space menu,
+# `q` opens a menu inside it, and `a` runs the command named
+# `llm_insert`.
+
+[keys.normal.space.q]
+a = "llm_insert"
+
+[editor]
+# Whether the language-server completion popup is shown at all.
+completion-popup = true

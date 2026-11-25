@@ -879,6 +879,8 @@ impl App {
             KeybindConfig { bindings }
         });
         let bindings = super::input::build_bindings(keybinds.as_ref(), vim_mode);
+        let editor_keymap =
+            crate::editor_keymap::EditorKeymap::load(Some(std::path::Path::new(&project_dir)));
         // Saved panel hotkeys, read the same way as keybinds and tolerant of
         // a bad value: a stale or hand-edited entry drops one slot, it does
         // not stop the TUI from starting.
@@ -999,7 +1001,7 @@ impl App {
             &compat_agent_name,
         );
 
-        Self {
+        let mut app = Self {
             ui_state: UiState {
                 running: true,
                 theme: Arc::clone(&theme),
@@ -1337,10 +1339,18 @@ impl App {
             panel_hotkeys: saved_panel_hotkeys,
             terminal_panel_spawn: false,
             workspace_focus: crate::app::state::WorkspaceFocus::default(),
-            editor_state: crate::app::state::EditorState::default(),
+            editor_state: crate::app::state::EditorState {
+                keymap: editor_keymap,
+                ..Default::default()
+            },
             file_tree_state: crate::app::state::file_tree::FileTreeState::default(),
             change_review_state: crate::app::state::change_review::ChangeReviewState::default(),
+        };
+        let problems = app.editor_state.keymap.problems.clone();
+        for problem in &problems {
+            app.messages_state.toasts.error(problem);
         }
+        app
     }
 
     pub fn new_remote(project_dir: String) -> Self {
@@ -12505,6 +12515,7 @@ impl App {
     }
 
     pub(crate) fn swap_editor_state(&mut self, target: Option<&FileTabId>) {
+        let keymap = self.editor_state.keymap.clone();
         if let Some(path) = self.editor_state.path.clone() {
             let scope = self.editor_state.scope;
             let owner = FileTabId::new(&path, scope);
@@ -12518,6 +12529,7 @@ impl App {
             }
         }
         let Some(target) = target else {
+            self.editor_state.keymap = keymap;
             return;
         };
         let parked = self
@@ -12526,6 +12538,7 @@ impl App {
             .get_mut(target)
             .and_then(|tab| tab.parked.take());
         self.editor_state = parked.unwrap_or_default();
+        self.editor_state.keymap = keymap;
         if self.editor_state.path.is_none() {
             if let Some(tab) = self.ui_state.files.get(target) {
                 self.editor_state.path = Some(tab.path.clone());
@@ -18048,6 +18061,27 @@ mod center_tab_tests {
         assert_eq!(
             app.active_center_tab(),
             CenterTabRef::File(FileTabId::new("src/lib.rs", DocumentScope::Workspace))
+        );
+    }
+
+    #[test]
+    fn the_editor_keymap_survives_a_document_opening() {
+        let mut app = app();
+        let mut keymap = crate::editor_keymap::EditorKeymap::defaults();
+        keymap.apply(
+            &codegg::config::editor::parse_editor_config(
+                "[keys.normal.space.q]\nb = \"llm_insert\"\n",
+            )
+            .expect("a readable configuration"),
+        );
+        app.editor_state.keymap = keymap;
+
+        open_document(&mut app, "src/lib.rs");
+
+        let menu = app.editor_state.keymap.menu("space.q").expect("the q menu");
+        assert!(
+            menu.entries.iter().any(|entry| entry.key.label() == "b"),
+            "the configured binding survives the document opening"
         );
     }
 

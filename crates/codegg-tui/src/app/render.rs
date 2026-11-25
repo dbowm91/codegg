@@ -984,6 +984,9 @@ impl App {
         let writable = self.editor_state.is_writer();
         let busy = self.editor_state.is_busy();
         self.render_file_tree_pane(frame, tree_area);
+        let menu = pending_prefix
+            .space_menu_path()
+            .and_then(|path| self.editor_state.keymap.menu_view(path));
         if let Some(session) = self.editor_state.session.as_mut() {
             crate::components::editor::EditorWidget {
                 path: &path,
@@ -995,6 +998,7 @@ impl App {
                 mode,
                 buffer_focused: focus,
                 pending_prefix,
+                menu: menu.as_ref(),
                 command_active,
                 command_line: &command_line,
                 command_selection,

@@ -128,6 +128,27 @@ pub fn global_config_path() -> Option<PathBuf> {
     Some(config_dir.join("codegg").join("codegg.jsonc"))
 }
 
+#[doc = "Returns the user-level editor config location without requiring a file to exist."]
+pub fn global_editor_config_path() -> Option<PathBuf> {
+    let config_dir = dirs::config_dir()?;
+    Some(config_dir.join("codegg").join("editor.toml"))
+}
+
+#[doc = "Finds the nearest project keymap so nested workspaces inherit repository settings."]
+pub fn find_project_editor_config_from(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        let config_path = current.join(".codegg").join("editor.toml");
+        if config_path.exists() {
+            return Some(config_path);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
+}
+
 pub fn system_config_path() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         Some(PathBuf::from(

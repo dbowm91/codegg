@@ -6839,12 +6839,15 @@ ADR-0066; the implementation is
 `crates/codegg-tui/src/editor_inline_assist.rs` (the state) and
 `crates/codegg-tui/src/commands/editor.rs` (the verbs).
 
-**The gesture.** `Ctrl+Alt+a` in the editor's Normal table opens the prompt
-field. The chord family is `{CONTROL, ALT}` only: the app never pushes
-keyboard-enhancement flags, so `Ctrl+Shift+X` is indistinguishable from
-`Ctrl+X`, while `Ctrl+Alt+X` is not. The letter `a` is free — the
-application's chords already take `b d e f n o p r s t x y`, and `i`, `j`
-and `m` are undeliverable because their control bytes are Tab and Enter.
+**The gesture.** `space`, `q`, `a` in the editor's Normal table opens
+the prompt field. It is a key *sequence*, not a chord: `space` is Helix's
+root minor mode, `q` is the menu this configuration added, and `a` is the
+entry inside it. Each level paints the menu it is waiting in, so the reader
+sees `q` and then `a` instead of having to remember the path.
+
+The remaining inline-assist chords keep the `{CONTROL, ALT}` family: the app
+never pushes keyboard-enhancement flags, so `Ctrl+Shift+X` is
+indistinguishable from `Ctrl+X`, while `Ctrl+Alt+X` is not.
 
 **The field owns the keyboard.** While it is open, the prompt field is asked
 before every other editor surface, so a keystroke cannot reach the document
@@ -6977,6 +6980,60 @@ turn, no session, no tool loop, a payload that carries the request id, the
 document identity and revision, the model, the effort label and the text —
 and only the channel differs. The deviation is recorded in the milestone's
 closure record.
+
+### The editor's configurable keymap (Helix-style configuration)
+
+The editor's **minor modes** are configurable, in Helix's own configuration
+format: a TOML file whose tables nest, one table per mode and one table per
+nested minor mode. `[keys.normal.space.q]` with `a = "llm_insert"` means:
+in Normal mode, `space` opens the space menu; inside it, `q` opens a menu of
+its own; inside that, `a` runs the command named `llm_insert`. A table value
+is always a nested minor mode and a string value is always a command name, so
+the table form and the inline form (`q = { a = "llm_insert" }`) parse to the
+same tree.
+
+**Three layers, base first.** The shipped defaults
+(`crates/codegg-tui/assets/editor.toml`, embedded with `include_str!`) are the
+base; the global file (`<config dir>/codegg/editor.toml`) is laid over them;
+the project file (`.codegg/editor.toml`) is laid over that. A layer that
+cannot be read or parsed is **reported, not raised**: a broken user file
+degrades to the defaults rather than refusing to start the TUI. The problems
+are carried on `EditorKeymap::problems`.
+
+**The parser is not the editor's.** `codegg-config` owns the format —
+`crates/codegg-config/src/editor.rs` parses the TOML into `EditorConfigFile`
+and resolves the two file paths — because a configuration file is a
+configuration concern and the config crate is where the layered discovery
+order already lives. It keeps the key spellings as **text**: what `C-x` means
+is the frontend's business, and the config crate must not own key semantics.
+`crates/codegg-tui/src/editor_keymap.rs` interprets them.
+
+**One grammar, one path.** The space menu and its nested menus are one
+grammar, so the pending prefix carries the **path** rather than a level
+counter: `EditorPrefix::Space` is the root and `EditorPrefix::SpaceMenu(path)`
+is a nested menu, and `EditorPrefix::space_menu_path` is what tells the
+resolver which menu's entries the next key is matched against. The path is a
+`Copy` value with a bounded depth (`MAX_MENU_DEPTH`), so the prefix stays
+`Copy` and the presentation keeps exactly one pending-prefix field — the
+property `scripts/check_tui_editor_prefix_state.py` polices.
+
+**The configuration is consulted before the built-in leaves**, so a configured
+key overrides a built-in one of the same name; a key the configuration does
+not claim is not consumed there, and the built-in leaves still get their turn.
+A configured command is **named, not performed**: the resolver parks
+`EditorPendingEffect::RunCommand` and the App layer runs it, because a
+command may need a core client the resolver cannot see.
+
+**Only the space menu is configurable today.** A mode's own chords are the
+editor's own tables, and a file that tries to rebind one is told so rather
+than quietly ignored. The command names are the editor's own, in snake_case
+(`EditorCommandName::config_name`), and `from_config_name` resolves them
+against the registry's own `ALL` list — one list, so a command that is not
+executable is not bindable either.
+
+**The menu is drawn next to the cursor** as a floating overlay, and it lists
+the keys the open menu offers with a one-line label for each. It never
+reserves a row, so the document does not reflow when it opens.
 
 ### The editor's Helix UX surface
 
@@ -8604,6 +8661,13 @@ before `editor_buffer_key` runs, and a leaf is a *second* key after a prefix, so
 the two cannot collide.
 
 ### Completion popup and transactional acceptance (M004)
+
+The popup is drawn **next to the cursor** — below the caret's line when
+there is room, above it when there is not — and it appears **only when the
+server has something to offer**: a `Ready` answer with no candidates draws
+nothing rather than a box saying that there is nothing. The `[editor]`
+section of the editor configuration carries `completion-popup`, and with it
+set to `false` no completion request is made at all.
 
 The completion popup consumes the M003 `LspCompletionGet` surface and
 nothing else. The trigger is `F8` (claimed inside `handle_editor_key` in

@@ -95,6 +95,7 @@ fn draw(fixture: &mut Fixture, snapshot: &DocumentSnapshot, width: u16, height: 
                 mode: EditorMode::Normal,
                 buffer_focused: true,
                 pending_prefix: EditorPrefix::Idle,
+                menu: None,
                 command_active: false,
                 command_line: "",
                 command_selection: 0,

@@ -348,6 +348,7 @@ pub struct EditorState {
     pub semantic_refresh_due_at: Option<std::time::Instant>,
     pub completion_debounce: Option<EditorCompletionDebounce>,
     pub inline_assist: crate::editor_inline_assist::InlineAssistState,
+    pub keymap: crate::editor_keymap::EditorKeymap,
     /// Server-free syntax highlighting for the attached document.
     ///
     /// The always-available floor under the LSP semantic tokens: a bounded
@@ -379,6 +380,7 @@ impl Default for EditorState {
             completion: crate::editor_completion::EditorCompletionState::default(),
             pending_effect: None,
             inline_assist: crate::editor_inline_assist::InlineAssistState::default(),
+            keymap: crate::editor_keymap::EditorKeymap::defaults(),
             highlight: crate::editor_highlight::EditorHighlight::default(),
         }
     }

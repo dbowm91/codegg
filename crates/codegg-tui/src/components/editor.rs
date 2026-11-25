@@ -195,6 +195,7 @@ pub struct EditorWidget<'a> {
     pub buffer_focused: bool,
     /// The armed multi-key prefix, rendered as its pending indicator.
     pub pending_prefix: EditorPrefix,
+    pub menu: Option<&'a crate::editor_keymap::EditorMenuView>,
     /// Whether the `:` command line is open.
     pub command_active: bool,
     /// Authority root the open document is confined to. Drives the global /
@@ -292,7 +293,7 @@ const EDITOR_KEYMAP: &[(&str, &str)] = &[
     ("z c / t / b", "view: centre / top / bottom"),
     ("g g / g G", "start / end of the buffer"),
     ("g t / c / b", "top / middle / bottom of screen"),
-    ("Ctrl+Alt+a", "ask the model for an insertion at the cursor"),
+    ("space q a", "ask the model for an insertion at the cursor"),
     (
         "Ctrl+Alt+u",
         "accept the generated region as one undoable edit",
@@ -346,23 +347,29 @@ impl EditorWidget<'_> {
         let is_generating = inline_assist.is_some_and(InlineAssistState::is_generating);
         self.render_chrome(frame, inner, is_generating);
         let region = inline_assist.and_then(InlineAssistState::region);
-        if text_area.height > 0 {
+        let viewport = if text_area.height > 0 {
             let viewport = self.render_text(frame, text_area, region, region_applies);
-            if let (Some(viewport), Some(region)) = (viewport, region) {
-                let in_region =
-                    inline_assist.is_some_and(|state| state.cursor_in_region(self.cursor_byte));
-                let field_open = inline_assist.is_some_and(InlineAssistState::is_field_open);
-                if in_region && !is_generating && !field_open && region_applies {
-                    self.render_inline_review_menu(frame, text_area, viewport, region);
+            if let Some(viewport) = viewport {
+                self.render_space_menu(frame, text_area, viewport);
+                if let Some(region) = region {
+                    let in_region =
+                        inline_assist.is_some_and(|state| state.cursor_in_region(self.cursor_byte));
+                    let field_open = inline_assist.is_some_and(InlineAssistState::is_field_open);
+                    if in_region && !is_generating && !field_open && region_applies {
+                        self.render_inline_review_menu(frame, text_area, viewport, region);
+                    }
                 }
             }
-        }
+            viewport
+        } else {
+            None
+        };
         // After the text: the match list is a floating overlay, and an overlay
         // painted before the document would be painted over by it.
         self.render_command_matches(frame, text_area);
         self.render_keymap_overlay(frame, text_area);
         self.render_lsp_panel(frame, area);
-        self.render_completion_popup(frame, area);
+        self.render_completion_popup(frame, area, text_area, viewport);
         if let Some(field) = inline_assist.and_then(InlineAssistState::field) {
             self.render_inline_prompt_overlay(frame, text_area, field);
         }
@@ -1133,6 +1140,113 @@ impl EditorWidget<'_> {
             })
     }
 
+    fn cursor_screen_position(&self, area: Rect, viewport: EditorViewport) -> Option<(u16, u16)> {
+        let line = editor::cursor_line(self.snapshot, self.cursor_byte);
+        let row = line.checked_sub(viewport.first_line)?;
+        if row >= viewport.visible_lines as usize {
+            return None;
+        }
+        let line_start = editor::line_start(self.snapshot, line)?;
+        let line_end = editor::line_content_end(self.snapshot, line).unwrap_or(line_start);
+        let Ok(line_text) = self.snapshot.read_bytes(line_start, line_end) else {
+            return None;
+        };
+        let mut offset = self
+            .cursor_byte
+            .saturating_sub(line_start)
+            .min(line_text.len());
+        while offset > 0 && !line_text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let prefix = line_text.get(..offset)?;
+        let raw_column = display_width_str(prefix);
+        if raw_column < viewport.column {
+            return None;
+        }
+        let column = raw_column - viewport.column;
+        if column >= viewport.text_columns as usize {
+            return None;
+        }
+        Some((
+            area.x + viewport.gutter + 1 + column as u16,
+            area.y + row as u16,
+        ))
+    }
+
+    fn render_space_menu(&self, frame: &mut Frame, area: Rect, viewport: EditorViewport) {
+        let Some(menu) = self.menu.filter(|menu| !menu.entries.is_empty()) else {
+            return;
+        };
+        let Some((cursor_x, cursor_y)) = self.cursor_screen_position(area, viewport) else {
+            return;
+        };
+        let content_width = menu
+            .entries
+            .iter()
+            .map(|entry| {
+                display_width_str(&entry.key)
+                    .saturating_add(if entry.is_menu { 2 } else { 0 })
+                    .saturating_add(1)
+                    .saturating_add(display_width_str(&entry.label))
+            })
+            .max()
+            .unwrap_or(0);
+        let title_width = display_width_str(&menu.path).saturating_add(2);
+        let Ok(width) = u16::try_from(content_width.max(title_width).saturating_add(2)) else {
+            return;
+        };
+        let Ok(height) = u16::try_from(menu.entries.len().saturating_add(2)) else {
+            return;
+        };
+        if width > area.width || height > area.height {
+            return;
+        }
+        let Some(rect) = inline_menu_placement(
+            area,
+            cursor_x,
+            cursor_y.saturating_add(1),
+            cursor_y.saturating_sub(height),
+            width,
+            height,
+        ) else {
+            return;
+        };
+        let theme = Arc::clone(&self.theme);
+        let block = Block::default()
+            .title(format!(" {} ", menu.path))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        let lines = menu
+            .entries
+            .iter()
+            .map(|entry| {
+                let key = if entry.is_menu {
+                    format!("{} >", entry.key)
+                } else {
+                    entry.key.clone()
+                };
+                Line::from(vec![
+                    Span::styled(
+                        key,
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(entry.label.as_str(), Style::default().fg(theme.foreground)),
+                ])
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
+            inner,
+        );
+    }
+
     fn render_inline_review_menu(
         &self,
         frame: &mut Frame,
@@ -1797,13 +1911,21 @@ impl EditorWidget<'_> {
     /// [`crate::editor_completion::sanitize_completion_text`] and are
     /// rendered as literal spans. On terminals too narrow to fit, the popup
     /// stays hidden while its keys keep working.
-    fn render_completion_popup(&self, frame: &mut Frame, area: Rect) {
+    fn render_completion_popup(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        placement_area: Rect,
+        viewport: Option<EditorViewport>,
+    ) {
         use crate::editor_completion::{
             sanitize_completion_text, CompletionViewStatus, MAX_COMPLETION_DETAIL_CHARS,
             MAX_COMPLETION_LABEL_CHARS, MAX_COMPLETION_POPUP_ROWS, MAX_COMPLETION_POPUP_WIDTH,
         };
         let state = self.completion;
-        if !state.is_open() {
+        if !state.is_open()
+            || (matches!(state.status, CompletionViewStatus::Ready) && state.candidates.is_empty())
+        {
             return;
         }
         let Some(status) = state.status_line() else {
@@ -1816,9 +1938,7 @@ impl EditorWidget<'_> {
                 lines.push(Line::from("Requesting…"));
             }
             CompletionViewStatus::Ready => {
-                if state.candidates.is_empty() {
-                    lines.push(Line::from("No suggestions"));
-                } else {
+                if !state.candidates.is_empty() {
                     let rows = MAX_COMPLETION_POPUP_ROWS;
                     let start = state
                         .selected
@@ -1901,12 +2021,23 @@ impl EditorWidget<'_> {
         if height < 3 || width < 24 {
             return;
         }
-        let rect = Rect::new(
-            area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
+        let Some(viewport) = viewport else {
+            return;
+        };
+        let Some((cursor_x, cursor_y)) = self.cursor_screen_position(placement_area, viewport)
+        else {
+            return;
+        };
+        let Some(rect) = inline_menu_placement(
+            placement_area,
+            cursor_x,
+            cursor_y.saturating_add(1),
+            cursor_y.saturating_sub(height),
             width,
             height,
-        );
+        ) else {
+            return;
+        };
         let block = Block::default()
             .title(format!(
                 " Completion · {status} · ↑↓ select · Enter apply · Esc "
@@ -2996,6 +3127,7 @@ mod tests {
         mode: EditorMode,
         buffer_focused: bool,
         pending_prefix: EditorPrefix,
+        menu: Option<&'a crate::editor_keymap::EditorMenuView>,
         command_active: bool,
         command_line: &'a str,
         command_selection: usize,
@@ -3038,6 +3170,7 @@ mod tests {
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
+            menu: None,
             command_active: false,
             command_line: "",
             command_selection: 0,
@@ -3117,6 +3250,7 @@ mod tests {
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
+                    menu: options.menu,
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
@@ -3201,6 +3335,7 @@ mod tests {
                     mode: EditorMode::Normal,
                     buffer_focused: true,
                     pending_prefix: EditorPrefix::Idle,
+                    menu: None,
                     command_active: false,
                     command_line: "",
                     command_selection: 0,
@@ -3322,6 +3457,7 @@ mod tests {
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
+                    menu: options.menu,
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
@@ -4464,6 +4600,7 @@ mod tests {
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
+                    menu: options.menu,
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
@@ -4569,9 +4706,19 @@ mod tests {
         height: u16,
         completion: &crate::editor_completion::EditorCompletionState,
     ) -> Vec<String> {
+        render_with_completion_at(text, width, height, 0, completion)
+    }
+
+    fn render_with_completion_at(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        completion: &crate::editor_completion::EditorCompletionState,
+    ) -> Vec<String> {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
-            cursor_byte: 0,
+            cursor_byte: cursor,
             ..TuiDocumentPresentation::default()
         };
         let lsp = crate::editor_lsp::EditorLspState::default();
@@ -4584,6 +4731,7 @@ mod tests {
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
+            menu: None,
             command_active: false,
             command_line: "",
             command_selection: 0,
@@ -4615,6 +4763,7 @@ mod tests {
                     mode: options.mode,
                     buffer_focused: options.buffer_focused,
                     pending_prefix: options.pending_prefix,
+                    menu: options.menu,
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
@@ -4647,6 +4796,84 @@ mod tests {
     }
 
     #[test]
+    fn minor_mode_menu_renders_entries_only_when_present() {
+        let menu = crate::editor_keymap::EditorMenuView {
+            path: "space".to_string(),
+            entries: vec![
+                crate::editor_keymap::EditorMenuEntry {
+                    key: "q".to_string(),
+                    label: "the insert menu".to_string(),
+                    is_menu: true,
+                },
+                crate::editor_keymap::EditorMenuEntry {
+                    key: "a".to_string(),
+                    label: "ask for an insertion".to_string(),
+                    is_menu: false,
+                },
+            ],
+        };
+        let rows = lines_of(&render_buffer(
+            "anchor\n",
+            80,
+            16,
+            0,
+            Options {
+                pending_prefix: EditorPrefix::Space,
+                menu: Some(&menu),
+                ..defaults()
+            },
+        ))
+        .join("\n");
+        assert!(rows.contains("space"), "menu title renders:\n{rows}");
+        assert!(rows.contains("q >"), "submenu key renders:\n{rows}");
+        assert!(
+            rows.contains("the insert menu"),
+            "submenu label renders:\n{rows}"
+        );
+        assert!(
+            rows.contains("a ask for an insertion"),
+            "command renders:\n{rows}"
+        );
+
+        let no_menu = lines_of(&render_buffer(
+            "anchor\n",
+            80,
+            16,
+            0,
+            Options {
+                pending_prefix: EditorPrefix::Space,
+                ..defaults()
+            },
+        ))
+        .join("\n");
+        assert!(
+            !no_menu.contains("the insert menu"),
+            "no menu draws no entries"
+        );
+
+        let empty_menu = crate::editor_keymap::EditorMenuView {
+            path: "space".to_string(),
+            entries: Vec::new(),
+        };
+        let empty = lines_of(&render_buffer(
+            "anchor\n",
+            80,
+            16,
+            0,
+            Options {
+                pending_prefix: EditorPrefix::Space,
+                menu: Some(&empty_menu),
+                ..defaults()
+            },
+        ))
+        .join("\n");
+        assert_eq!(
+            empty, no_menu,
+            "an empty menu draws exactly what no menu draws"
+        );
+    }
+
+    #[test]
     fn completion_popup_lists_candidates_with_selection() {
         let state = completion_state(
             vec![
@@ -4668,6 +4895,33 @@ mod tests {
         assert!(
             rows.contains("suggestions"),
             "header names the state:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_renders_below_the_cursor_with_candidates() {
+        let text = "first line\ncursor line\nlast line\n";
+        let cursor = text.find("cursor line").unwrap();
+        let state = completion_state(
+            vec![completion_candidate("cursor_candidate", true)],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        let rows = render_with_completion_at(text, 80, 24, cursor, &state);
+        let cursor_row = rows
+            .iter()
+            .position(|row| row.contains("cursor line"))
+            .unwrap();
+        let popup_row = rows
+            .iter()
+            .position(|row| row.contains("Completion"))
+            .unwrap();
+        assert!(rows.join("\n").contains("cursor_candidate"));
+        assert!(
+            popup_row > cursor_row,
+            "popup is below the cursor line:\n{}",
+            rows.join("\n")
         );
     }
 
@@ -4699,8 +4953,12 @@ mod tests {
         let state = completion_state(vec![], LspCompletionStatus::Ready, false, false);
         let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
         assert!(
-            rows.contains("No suggestions"),
-            "empty Ready differs:\n{rows}"
+            !rows.contains("No suggestions"),
+            "empty Ready draws no row:\n{rows}"
+        );
+        assert!(
+            !rows.contains("Completion"),
+            "empty Ready draws no popup:\n{rows}"
         );
         let mut errored = crate::editor_completion::EditorCompletionState::default();
         let scope = {
@@ -4896,6 +5154,7 @@ mod tests {
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
+            menu: None,
             command_active: false,
             command_line: "",
             command_selection: 0,
@@ -5034,6 +5293,7 @@ mod tests {
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
+            menu: None,
             command_active: false,
             command_line: "",
             command_selection: 0,
@@ -5306,6 +5566,7 @@ mod tests {
             mode: EditorMode::Normal,
             buffer_focused: true,
             pending_prefix: EditorPrefix::Idle,
+            menu: None,
             command_active: false,
             command_line: "",
             command_selection: 0,

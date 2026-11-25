@@ -534,6 +534,12 @@ instead of leaving the key dead.
 `space` is a menu, and every key in it either does something or says why it
 cannot. Nothing in it is dead.
 
+Pressing `space` draws the menu next to the cursor, so the keys it offers and
+what each one does are on screen rather than in your memory. A key that opens
+a menu of its own shows that menu instead, and `Esc` steps back out.
+
+The menu is yours to extend: see [Configuring the editor](#configuring-the-editor).
+
 | Key | What it does |
 |---|---|
 | `space f` | open the workspace file browser |
@@ -557,6 +563,73 @@ These four say why they cannot run rather than doing nothing:
 | `space b` | one document is open at a time, so there is no list to choose from |
 | `space D` | no server capability backs a separate workspace-diagnostics request; `space d` opens the panel that exists |
 | `space '` | the pickers are not fuzzy, so there is no query to recall |
+
+### Configuring the editor
+
+The editor's keys are configurable in the file format Helix uses: a TOML file
+whose tables nest, one table per mode and one table per nested menu.
+
+Copy the shipped defaults and edit them:
+
+| File | Applies to |
+|---|---|
+| `<config dir>/codegg/editor.toml` | every project |
+| `.codegg/editor.toml` | the project it sits in |
+
+A project file is laid over the global one, so it may add a key without
+restating the rest.
+
+```toml
+[keys.normal.space.q]
+a = "llm_insert"
+```
+
+That reads: in Normal mode, `space` opens the space menu; inside it, `q`
+opens a menu of its own; inside that, `a` runs the command named
+`llm_insert`. The same binding written inline means exactly the same thing:
+
+```toml
+[keys.normal.space]
+q = { a = "llm_insert" }
+```
+
+A key is written as the character you press (`a`), as a named key (`space`,
+`esc`, `ret`, `tab`, `left`, `right`, `up`, `down`, `home`, `end`,
+`pageup`, `pagedown`, `backspace`, `del`, `ins`), or with a modifier
+prefix (`C-x`, `A-x`). A capital letter is the shifted spelling, so `A`
+and `S-a` both mean shift held down with `a`.
+
+The commands a key may name are the editor's own, in snake_case:
+
+| Name | What it does |
+|---|---|
+| `llm_insert` | ask the model for an insertion at the cursor |
+| `complete` | ask the language server for completions at the cursor |
+| `write` | write the buffer to disk |
+| `write_all` | write every open document |
+| `quit` | close the document |
+| `reload` | reload the buffer from disk |
+| `rename_preview` | preview renaming the symbol under the cursor |
+| `split_regex` | split the selection on a regex pattern |
+| `keep_regex` | keep the selections that match a regex |
+| `remove_regex` | remove the selections that match a regex |
+| `select_regex` | select the matches inside the selection |
+| `write_quit` | write the buffer and close the document |
+| `force_quit` | close the document without writing |
+| `new` | open a new document |
+| `open` | open a document by path |
+| `goto_line` | move the cursor to a line |
+
+The `[editor]` section carries the editor's own switches:
+
+```toml
+[editor]
+completion-popup = false
+```
+
+Only the space menu is configurable so far. The editor's own Normal-mode
+chords are not, and a file that tries to change one says so when it loads
+rather than quietly doing nothing.
 
 ### The jumplist
 
@@ -765,10 +838,30 @@ updates.
 
 ### Completion
 
+As you type, the editor asks the language server what could follow and shows
+the answers in a small list **beside the cursor** — below it when there is
+room, above it when there is not. The list never takes a row of its own, so the
+document does not move under you.
+
+The list appears only when the server actually has something to offer. An empty
+answer draws nothing at all rather than a box saying that there is nothing.
+
+If you would rather have no popup at all, switch it off in the editor
+configuration:
+
+```toml
+[editor]
+completion-popup = false
+```
+
+With it off, no completion request is made at all.
+
 ### Inline assist
 
-`Ctrl+Alt+a` asks the model for an insertion at the cursor. A small prompt
-appears over the text; the document's rows do not move.
+`space`, then `q`, then `a` asks the model for an insertion at the cursor. The
+menu says so as you go: `space` shows the menu, `q` shows the capabilities it
+holds, and `a` asks for the insertion. A small prompt appears over the text;
+the document's rows do not move.
 
 The prompt has its own `[NOR]` / `[INS]` badge, its own multi-line text,
 and its own model and thinking level for that request only. `Enter` sends
@@ -783,7 +876,7 @@ you accept it.
 
 | Key | What it does |
 |---|---|
-| `Ctrl+Alt+a` | ask the model for an insertion at the cursor |
+| `space q a` | ask the model for an insertion at the cursor |
 | `Ctrl+Alt+u` | accept the generated region as one undoable edit |
 | `Ctrl+Alt+v` | discard the generated region |
 
