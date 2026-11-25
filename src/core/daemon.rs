@@ -1711,6 +1711,7 @@ impl CoreDaemon {
             | CoreRequest::DocumentSave { project_id, .. }
             | CoreRequest::DocumentReload { project_id, .. }
             | CoreRequest::DocumentClose { project_id, .. }
+            | CoreRequest::EditorInlineGenerate { project_id, .. }
             | CoreRequest::ProjectInitDraftGet { project_id, .. }
             | CoreRequest::ProjectInitPublish { project_id, .. } => Some(project_id),
             CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),

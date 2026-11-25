@@ -106,6 +106,7 @@ SCANNED_FILES: list[str] = [
     "components/editor.rs",
     "app/state/editor.rs",
     "commands/editor.rs",
+    "editor_inline_assist.rs",
 ]
 
 # Declarations that read or enumerate the filesystem. The editor must
@@ -158,6 +159,17 @@ TEXT_FIELD_NAMES: list[str] = [
     "document",
 ]
 
+# The pending generated payload (ADR-0066).
+#
+# The model's answer is **not** document text: it is a bounded payload the
+# frontend holds until the operator approves it, and it never becomes
+# document text before that. Its field name is therefore permitted only
+# where the module declares the bound that keeps it bounded, and only as a
+# plain scalar. The same field name in a file with no declared bound is a
+# finding, and so is a payload held in a container.
+PENDING_PAYLOAD_FIELD = "generated_text"
+PENDING_PAYLOAD_BUDGET = "MAX_EDITOR_INLINE_PAYLOAD_BYTES"
+
 # A `name: Type,` struct field or enum-variant field.
 FIELD_RE = re.compile(
     r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?P<name>[a-z_][a-z0-9_]*)\s*:\s*(?P<type>[^,]+?),?\s*$"
@@ -175,6 +187,8 @@ CFG_TEST_RE = re.compile(r"^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 
 # Declarations that must exist for the guard's rules to be meaningful.
 REQUIRED_DECLARATIONS: list[tuple[str, str]] = [
+    ("editor_inline_assist.rs", "pub struct InlineAssistRegion"),
+    ("editor_inline_assist.rs", PENDING_PAYLOAD_BUDGET),
     ("document_session.rs", "pub struct TuiDocumentPresentation"),
     ("document_session.rs", "pub struct TuiDocumentSession"),
     ("app/state/editor.rs", "pub struct EditorState"),
@@ -225,12 +239,27 @@ def _strip_line_comment(line: str) -> str:
     return line
 
 
-def _check_field(path: Path, line_no: int, raw: str, code: str) -> Finding | None:
+def _check_field(
+    path: Path,
+    line_no: int,
+    raw: str,
+    code: str,
+    budget_declared: bool = False,
+) -> Finding | None:
     field = FIELD_RE.match(code)
     if not field:
         return None
     name = field.group("name")
     field_type = field.group("type").strip()
+    if name == PENDING_PAYLOAD_FIELD:
+        if field_type != "String" or not budget_declared:
+            return Finding(
+                path,
+                line_no,
+                raw.strip(),
+                f"unbounded-pending-payload:{name}",
+            )
+        return None
     if name in TEXT_FIELD_NAMES:
         return Finding(path, line_no, raw.strip(), f"retained-text-field:{name}")
     for container in TEXT_CONTAINER_TYPES:
@@ -265,6 +294,7 @@ def _scan_file(root: Path, relative: str) -> list[Finding]:
         lines = path.read_text().splitlines()
     except UnicodeDecodeError:
         return findings
+    budget_declared = PENDING_PAYLOAD_BUDGET in "\n".join(lines)
 
     # Brace depth at which the `#[cfg(test)]` module body begins, and the
     # depth just inside the innermost `struct`/`enum` body. `None` means the
@@ -290,7 +320,7 @@ def _scan_file(root: Path, relative: str) -> list[Finding]:
                     findings.append(Finding(path, line_no, raw.strip(), f"buffer-owner:{label}"))
 
             if in_type_body:
-                finding = _check_field(path, line_no, raw, code)
+                finding = _check_field(path, line_no, raw, code, budget_declared)
                 if finding is not None:
                     findings.append(finding)
 
@@ -379,7 +409,7 @@ def _render(report: Report, root: Path) -> int:
 # The self-test copies exactly the files this guard scans into a throwaway
 # tree before mutating one, so a case cannot depend on a file the guard does
 # not read and a mutation can never touch the working tree.
-EXPECTED_INJECTIONS = 8
+EXPECTED_INJECTIONS = 10
 
 
 def copy_guard_tree(root: Path, destination: Path) -> None:
@@ -522,6 +552,33 @@ def run_self_test() -> int:
                 root / "crates/codegg-tui/src/document_session.rs",
                 "pub struct TuiDocumentPresentation",
                 "pub struct EditorPresentation",
+            )
+        ]
+
+    @case(
+        "the pending payload is held in an unbounded container",
+        "unbounded-pending-payload:generated_text",
+    )
+    def _unbounded_payload(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/editor_inline_assist.rs",
+                "    pub generated_text: String,\n",
+                "    pub generated_text: Vec<String>,\n",
+            )
+        ]
+
+    @case(
+        "the pending payload is held where no bound is declared",
+        "unbounded-pending-payload:generated_text",
+    )
+    def _payload_without_budget(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/app/state/editor.rs",
+                "    pub inline_assist: crate::editor_inline_assist::InlineAssistState,\n",
+                "    pub inline_assist: crate::editor_inline_assist::InlineAssistState,\n"
+                "    pub generated_text: String,\n",
             )
         ]
 

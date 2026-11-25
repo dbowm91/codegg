@@ -2728,6 +2728,11 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) -> bool {
             }
             state.status = EditorStatus::DirtyLocal;
             state.clear_notice();
+            if state.inline_assist.invalidate_region() {
+                state.set_notice(EditorNotice::Note(
+                    "the document changed — the generated region was discarded".to_string(),
+                ));
+            }
             true
         }
         Err(error) => {
@@ -3327,6 +3332,328 @@ pub(crate) fn editor_insert_literal(state: &mut EditorState, text: &str) {
     submit_edit(state, edit);
 }
 
+const INLINE_CONTEXT_BEFORE: u32 = 2_048;
+const INLINE_CONTEXT_AFTER: u32 = 2_048;
+
+pub(crate) fn open_inline_prompt(app: &mut App) {
+    let Some(session) = app.editor_state.session.as_ref() else {
+        return;
+    };
+    if session.try_snapshot().is_none() {
+        return;
+    }
+    app.editor_state.inline_assist.open_field();
+}
+
+fn inline_effort_labels(app: &App) -> Vec<String> {
+    crate::commands::reasoning::option_set(app)
+        .options
+        .iter()
+        .filter_map(|option| match option {
+            codegg::protocol::core::ReasoningMode::Effort(label) => Some(label.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn handle_inline_prompt_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
+        let models = app.agent_state.models.clone();
+        if let Some(field) = app.editor_state.inline_assist.field_mut() {
+            field.cycle_model(&models);
+        }
+        return true;
+    }
+    if key.code == KeyCode::BackTab {
+        let efforts = inline_effort_labels(app);
+        if let Some(field) = app.editor_state.inline_assist.field_mut() {
+            field.cycle_reasoning(&efforts);
+        }
+        return true;
+    }
+    let Some(field) = app.editor_state.inline_assist.field_mut() else {
+        return false;
+    };
+    match crate::editor_inline_assist::handle_field_key(field, key) {
+        crate::editor_inline_assist::InlinePromptOutcome::Submit => {
+            submit_inline_prompt(app);
+            true
+        }
+        crate::editor_inline_assist::InlinePromptOutcome::Dismiss => {
+            app.editor_state.inline_assist.dismiss_field();
+            app.editor_state.set_notice(EditorNotice::Note(
+                "the inline prompt was dismissed".to_string(),
+            ));
+            true
+        }
+        crate::editor_inline_assist::InlinePromptOutcome::Consumed => true,
+        crate::editor_inline_assist::InlinePromptOutcome::Unhandled => {
+            !(key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL)
+        }
+    }
+}
+
+fn submit_inline_prompt(app: &mut App) {
+    let Some(field) = app.editor_state.inline_assist.field() else {
+        return;
+    };
+    let instruction = field.instruction().trim().to_string();
+    if instruction.is_empty() {
+        app.editor_state.inline_assist.dismiss_field();
+        app.editor_state.set_notice(EditorNotice::Note(
+            "the inline prompt needs an instruction".to_string(),
+        ));
+        return;
+    }
+    let Some(session) = app.editor_state.session.as_ref() else {
+        return;
+    };
+    let Some(info) = session.attachment_info() else {
+        return;
+    };
+    let anchor = session.presentation().cursor_byte as u64;
+    let choices = field.choices().clone();
+    let Some(core_client) = app.core_client.clone() else {
+        app.editor_state.set_notice(EditorNotice::Note(
+            "the inline prompt needs the daemon".to_string(),
+        ));
+        return;
+    };
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let generation = app.editor_state.generation;
+    let document_id = info.document_id.clone();
+    let document_revision = info.revision;
+    app.editor_state.inline_assist.begin_request(
+        crate::editor_inline_assist::InlineAssistRequest {
+            request_id: request_id.clone(),
+            document_id: document_id.clone(),
+            document_revision,
+            generation,
+            anchor,
+            instruction: instruction.clone(),
+        },
+    );
+    app.editor_state.inline_assist.dismiss_field();
+    app.editor_state.set_notice(EditorNotice::Note(
+        "asking the model for an insertion".to_string(),
+    ));
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
+    let project_id = info.project_id.clone();
+    let workspace_id = info.workspace_id.clone();
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_inline_generate",
+        tab_id,
+        None,
+        None,
+        async move {
+            let request = codegg::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                codegg::protocol::core::CoreRequest::EditorInlineGenerate {
+                    request_id: request_id.clone(),
+                    project_id,
+                    workspace_id,
+                    document_id: document_id.clone(),
+                    document_revision,
+                    anchor,
+                    context_before: INLINE_CONTEXT_BEFORE,
+                    context_after: INLINE_CONTEXT_AFTER,
+                    instruction: instruction.clone(),
+                    model: choices.model.clone(),
+                    reasoning: choices.reasoning.clone(),
+                },
+            );
+            let outcome = match core_client.request(request).await {
+                Ok(codegg::protocol::core::CoreResponse::EditorInlineGenerated {
+                    outcome, ..
+                }) => outcome,
+                Ok(codegg::protocol::core::CoreResponse::Error { code, .. }) => {
+                    codegg::protocol::core::EditorInlineOutcome::Refused { code }
+                }
+                Ok(_) => codegg::protocol::core::EditorInlineOutcome::Refused {
+                    code: "unexpected_response".to_string(),
+                },
+                Err(_) => codegg::protocol::core::EditorInlineOutcome::Refused {
+                    code: "transport_error".to_string(),
+                },
+            };
+            Some(TuiCommand::EditorInlineGenerated {
+                request_id,
+                generation,
+                document_id,
+                document_revision,
+                outcome,
+            })
+        },
+    );
+    if task_id.is_none() {
+        app.editor_state.inline_assist.cancel_request();
+        app.editor_state.set_notice(EditorNotice::Note(
+            "the inline prompt could not start".to_string(),
+        ));
+    }
+}
+
+pub(crate) fn apply_editor_inline_generated(
+    app: &mut App,
+    request_id: String,
+    document_id: String,
+    document_revision: u64,
+    outcome: codegg::protocol::core::EditorInlineOutcome,
+) {
+    let answer = crate::editor_inline_assist::InlineAnswer {
+        request_id,
+        document_id,
+        document_revision,
+        outcome,
+    };
+    let result = app
+        .editor_state
+        .inline_assist
+        .apply_answer(&answer, app.editor_state.generation);
+    use crate::editor_inline_assist::InlineAnswerOutcome as Outcome;
+    match result {
+        Outcome::Accepted => {
+            app.editor_state.inline_assist.cancel_request();
+            app.editor_state.set_notice(EditorNotice::Note(
+                "the model answered — review the generated region".to_string(),
+            ));
+        }
+        Outcome::Refused(code) => {
+            app.editor_state.inline_assist.cancel_request();
+            app.editor_state.set_notice(EditorNotice::Rejected(format!(
+                "the inline generation was refused ({code})"
+            )));
+        }
+        Outcome::OverBudget => {
+            app.editor_state.inline_assist.cancel_request();
+            app.editor_state.set_notice(EditorNotice::Rejected(
+                "the generated answer was too large to review".to_string(),
+            ));
+        }
+        Outcome::StaleGeneration | Outcome::StaleRevision => {
+            app.editor_state.inline_assist.cancel_request();
+            app.editor_state.set_notice(EditorNotice::Note(
+                "the document changed — the generated answer was dropped".to_string(),
+            ));
+        }
+        Outcome::Superseded => {
+            app.editor_state.set_notice(EditorNotice::Note(
+                "a newer inline request superseded this one".to_string(),
+            ));
+        }
+    }
+}
+
+pub(crate) fn approve_inline_region(app: &mut App) -> bool {
+    let Some(session) = app.editor_state.session.as_ref() else {
+        return false;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return false;
+    };
+    let Some(info) = session.attachment_info() else {
+        return false;
+    };
+    let region = match app
+        .editor_state
+        .inline_assist
+        .region_for_approval(&info.document_id, info.revision)
+    {
+        Ok(region) => region.clone(),
+        Err(refusal) => {
+            let notice = match refusal {
+                crate::editor_inline_assist::InlineApprovalRefusal::NoRegion
+                | crate::editor_inline_assist::InlineApprovalRefusal::StaleDocument => {
+                    EditorNotice::Note(refusal.message())
+                }
+                crate::editor_inline_assist::InlineApprovalRefusal::StaleRevision { .. } => {
+                    EditorNotice::Rejected(refusal.message())
+                }
+            };
+            app.editor_state.set_notice(notice);
+            return false;
+        }
+    };
+    let Some(mut edit) =
+        crate::editor::insert_text(&snapshot, region.anchor as usize, &region.generated_text)
+    else {
+        app.editor_state.set_notice(EditorNotice::Rejected(
+            "the generated text could not be inserted here".to_string(),
+        ));
+        return false;
+    };
+    edit.stay_insert = false;
+    edit.cursor_after = edit.cursor_after.saturating_sub(1);
+    if !submit_edit(&mut app.editor_state, edit) {
+        return false;
+    }
+    app.editor_state.set_notice(EditorNotice::Note(
+        "the generated region was inserted".to_string(),
+    ));
+    true
+}
+
+fn inline_menu_is_open(app: &App) -> bool {
+    let Some(session) = app.editor_state.session.as_ref() else {
+        return false;
+    };
+    let Some(info) = session.attachment_info() else {
+        return false;
+    };
+    let cursor = session.presentation().cursor_byte;
+    let state = &app.editor_state.inline_assist;
+    !state.is_generating()
+        && !state.is_field_open()
+        && state.region_is_reviewable(&info.document_id, info.revision, cursor)
+}
+
+fn handle_inline_menu_key(app: &mut App, key: KeyEvent) -> bool {
+    if !inline_menu_is_open(app) {
+        return false;
+    }
+    match key.code {
+        KeyCode::Char('a') => {
+            approve_inline_region(app);
+            true
+        }
+        KeyCode::Char('d') => {
+            discard_inline_region(app);
+            true
+        }
+        KeyCode::Char('e') => {
+            let instruction = app
+                .editor_state
+                .inline_assist
+                .region()
+                .map(|region| region.instruction.clone());
+            if let Some(instruction) = instruction {
+                app.editor_state
+                    .inline_assist
+                    .reopen_field_with(instruction);
+                app.editor_state.set_notice(EditorNotice::Note(
+                    "the region was discarded — edit the instruction and try again".to_string(),
+                ));
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn discard_inline_region(app: &mut App) -> bool {
+    let discarded = app.editor_state.inline_assist.discard_region();
+    if discarded {
+        app.editor_state.set_notice(EditorNotice::Note(
+            "the generated region was discarded".to_string(),
+        ));
+    }
+    discarded
+}
+
 /// Delete backwards from the cursor in insert mode.
 pub(crate) fn editor_delete_backward(state: &mut EditorState) {
     if !editable(state) {
@@ -3559,6 +3886,9 @@ fn dispatch_editor_key(app: &mut App, key: KeyEvent) -> bool {
     if app.ui_state.tree_focused && handle_file_tree_key(app, key) {
         return true;
     }
+    if app.editor_state.inline_assist.is_field_open() {
+        return handle_inline_prompt_key(app, key);
+    }
     // Ctrl-T toggles the pane from anywhere in the editor, focused or not.
     if key.code == KeyCode::Char('t') && key.modifiers == KeyModifiers::CONTROL {
         super::file_tree::toggle_tree(app);
@@ -3573,6 +3903,9 @@ fn dispatch_editor_key(app: &mut App, key: KeyEvent) -> bool {
     // The jumplist picker is ahead of both: it is the overlay the reader
     // opened last, and `Esc` must undo the most recent thing they asked for.
     if handle_jumplist_picker_key(app, key) {
+        return true;
+    }
+    if handle_inline_menu_key(app, key) {
         return true;
     }
     if handle_lsp_panel_key(app, key) {
@@ -3744,6 +4077,18 @@ fn dispatch_editor_key(app: &mut App, key: KeyEvent) -> bool {
         }
         BufferKey::RequestResync => {
             resync_editor(app);
+            true
+        }
+        BufferKey::RequestInlinePrompt => {
+            open_inline_prompt(app);
+            true
+        }
+        BufferKey::RequestInlineApprove => {
+            approve_inline_region(app);
+            true
+        }
+        BufferKey::RequestInlineDiscard => {
+            discard_inline_region(app);
             true
         }
         BufferKey::DeleteRanges { ranges, yank } => {
@@ -4839,6 +5184,9 @@ enum BufferKey {
     LspRead(LspReadOperation),
     ExpandSyntaxSelection,
     ShrinkSyntaxSelection,
+    RequestInlinePrompt,
+    RequestInlineApprove,
+    RequestInlineDiscard,
 }
 
 /// Handle one key while the `:` command line is open.
@@ -5843,6 +6191,7 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
     // exactly `ALT`, and one that accepts `ALT | SHIFT` accepts exactly
     // that. The spelling matters because the two are different keys.
     let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+    let ctrl_alt = KeyModifiers::CONTROL | KeyModifiers::ALT;
     // Each arm is `(modifiers, code)` so a bare letter and its uppercase twin
     // are one rule. Terminals disagree about how `D` is encoded, and both
     // spellings have to work.
@@ -5863,6 +6212,9 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             helix_motion(state, EditorCommand::HalfPageUp, visible_lines);
             BufferKey::Consumed
         }
+        (m, KeyCode::Char('a')) if m == ctrl_alt => BufferKey::RequestInlinePrompt,
+        (m, KeyCode::Char('u')) if m == ctrl_alt => BufferKey::RequestInlineApprove,
+        (m, KeyCode::Char('v')) if m == ctrl_alt => BufferKey::RequestInlineDiscard,
         (m, KeyCode::Char('j')) | (m, KeyCode::Down) if m == none || m == shift => {
             helix_motion(state, EditorCommand::MoveDown, visible_lines);
             BufferKey::Consumed

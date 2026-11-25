@@ -1295,6 +1295,35 @@ impl CoreDaemon {
             CoreRequest::WorkspaceDirectoryList { request } => {
                 Ok(self.directory_listing(request).await)
             }
+            CoreRequest::EditorInlineGenerate {
+                request_id,
+                project_id,
+                workspace_id: _,
+                document_id,
+                document_revision,
+                anchor,
+                context_before,
+                context_after,
+                instruction,
+                model,
+                reasoning,
+            } => Ok(self
+                .editor_inline_generate(
+                    crate::core::daemon_editor_inline::InlineGenerateRequest {
+                        request_id,
+                        project_id,
+                        document_id,
+                        document_revision,
+                        anchor,
+                        context_before,
+                        context_after,
+                        instruction,
+                        model,
+                        reasoning,
+                    },
+                    client_id,
+                )
+                .await),
             _ => Ok(doc_error(
                 "document_unimplemented",
                 "unsupported document request",

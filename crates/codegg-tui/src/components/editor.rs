@@ -29,6 +29,7 @@ use codegg_document::DocumentSnapshot;
 
 use crate::document_session::MAX_JUMPLIST_ENTRIES;
 use crate::editor::{self, EditorMode, EditorPrefix, EditorViewport};
+use crate::editor_inline_assist::{InlineAssistRegion, InlineAssistState, InlinePromptField};
 use crate::theme::Theme;
 
 /// Rows of chrome reserved at the **bottom** of the editor block.
@@ -291,6 +292,16 @@ const EDITOR_KEYMAP: &[(&str, &str)] = &[
     ("z c / t / b", "view: centre / top / bottom"),
     ("g g / g G", "start / end of the buffer"),
     ("g t / c / b", "top / middle / bottom of screen"),
+    ("Ctrl+Alt+a", "ask the model for an insertion at the cursor"),
+    (
+        "Ctrl+Alt+u",
+        "accept the generated region as one undoable edit",
+    ),
+    ("Ctrl+Alt+v", "discard the generated region"),
+    (
+        "[a] [d] [e]",
+        "review the generated region: accept, deny, edit",
+    ),
     ("space j", "jumplist — back to a visited position"),
     ("space ?", "this box"),
     ("Esc", "leave select mode / cancel"),
@@ -298,7 +309,17 @@ const EDITOR_KEYMAP: &[(&str, &str)] = &[
 
 impl EditorWidget<'_> {
     /// Paint the editor into `area`.
-    pub fn render(mut self, frame: &mut Frame, area: Rect) {
+    pub fn render(self, frame: &mut Frame, area: Rect) {
+        self.render_with_inline_assist(frame, area, None, false);
+    }
+
+    pub fn render_with_inline_assist(
+        mut self,
+        frame: &mut Frame,
+        area: Rect,
+        inline_assist: Option<&InlineAssistState>,
+        region_applies: bool,
+    ) {
         let theme = Arc::clone(&self.theme);
         let focused = self.buffer_focused;
         // The block's top border carries **no label**. It used to carry
@@ -322,9 +343,19 @@ impl EditorWidget<'_> {
             width: inner.width,
             height: inner.height.saturating_sub(CHROME_ROWS),
         };
-        self.render_chrome(frame, inner);
+        let is_generating = inline_assist.is_some_and(InlineAssistState::is_generating);
+        self.render_chrome(frame, inner, is_generating);
+        let region = inline_assist.and_then(InlineAssistState::region);
         if text_area.height > 0 {
-            self.render_text(frame, text_area);
+            let viewport = self.render_text(frame, text_area, region, region_applies);
+            if let (Some(viewport), Some(region)) = (viewport, region) {
+                let in_region =
+                    inline_assist.is_some_and(|state| state.cursor_in_region(self.cursor_byte));
+                let field_open = inline_assist.is_some_and(InlineAssistState::is_field_open);
+                if in_region && !is_generating && !field_open && region_applies {
+                    self.render_inline_review_menu(frame, text_area, viewport, region);
+                }
+            }
         }
         // After the text: the match list is a floating overlay, and an overlay
         // painted before the document would be painted over by it.
@@ -332,6 +363,9 @@ impl EditorWidget<'_> {
         self.render_keymap_overlay(frame, text_area);
         self.render_lsp_panel(frame, area);
         self.render_completion_popup(frame, area);
+        if let Some(field) = inline_assist.and_then(InlineAssistState::field) {
+            self.render_inline_prompt_overlay(frame, text_area, field);
+        }
     }
 
     /// The editor's **keymap box** — its own catalogue of its keys, in the
@@ -542,7 +576,7 @@ impl EditorWidget<'_> {
     /// its least important element rather than running over the path. A
     /// status row painted on top of the path is two half-legible surfaces
     /// where one legible one was asked for.
-    fn render_chrome(&self, frame: &mut Frame, inner: Rect) {
+    fn render_chrome(&self, frame: &mut Frame, inner: Rect, is_generating: bool) {
         let theme = Arc::clone(&self.theme);
         let row = Rect {
             x: inner.x,
@@ -561,7 +595,7 @@ impl EditorWidget<'_> {
         let path_width = unicode_width::UnicodeWidthStr::width(left_text.as_str());
         let path_share = path_width.min((available / 3).max(1));
         let cluster_budget = available.saturating_sub(path_share).saturating_sub(1);
-        let right = fit_cluster(self.chrome_cluster(&theme), cluster_budget);
+        let right = fit_cluster(self.chrome_cluster(&theme, is_generating), cluster_budget);
         let right_width = right.iter().map(|span| span.width()).sum::<usize>();
         let left_budget = available.saturating_sub(right_width + 1).max(1);
         let left_text = crate::wrap::ellipsize_to_width(&left_text, left_budget);
@@ -623,7 +657,7 @@ impl EditorWidget<'_> {
     /// read-only, the LSP semantic coverage, and the "line too long" marker.
     /// The line number and the column are gone — they restated the cursor,
     /// which is already on screen.
-    fn chrome_cluster(&self, theme: &Theme) -> Vec<ClusterGroup<'_>> {
+    fn chrome_cluster(&self, theme: &Theme, is_generating: bool) -> Vec<ClusterGroup<'_>> {
         // A modal line **owns** the row. The reader is looking at what they
         // are typing, and a cluster of status beside it is a second answer to
         // a question nobody asked — and the row is only one row tall.
@@ -746,6 +780,14 @@ impl EditorWidget<'_> {
         // cursor. It is one group: a count and its "partial" marker are one
         // answer, and half of it would say "3 matches" about a partial search.
         let mut disclosure: Vec<Span<'_>> = Vec::new();
+        if is_generating {
+            disclosure.push(Span::styled(
+                "· generating ",
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         if self.search_active || self.search_count > 0 {
             let plural = if self.search_count == 1 { "" } else { "es" };
             if self.search_line.is_empty() {
@@ -906,10 +948,51 @@ impl EditorWidget<'_> {
     }
 
     /// Gutter plus horizontally scrolled text for the visible slice.
-    fn render_text(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_text(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        region: Option<&InlineAssistRegion>,
+        region_applies: bool,
+    ) -> Option<EditorViewport> {
         let theme = Arc::clone(&self.theme);
-        let viewport: EditorViewport =
-            editor::resolve_viewport(self.presentation, self.snapshot, area.width, area.height);
+        let valid_region =
+            region.filter(|region| self.inline_region_is_valid(region, region_applies));
+        let anchor_line = valid_region.and_then(|region| {
+            let anchor = usize::try_from(region.anchor).ok()?;
+            Some(editor::cursor_line(self.snapshot, anchor))
+        });
+        let requested_region_height = valid_region
+            .map(|region| region.height().min(area.height.saturating_sub(1) as usize))
+            .unwrap_or(0);
+        let mut viewport = editor::resolve_viewport(
+            self.presentation,
+            self.snapshot,
+            area.width,
+            area.height.saturating_sub(requested_region_height as u16),
+        );
+        let visible_region_line = if requested_region_height > 0 {
+            anchor_line.filter(|line| {
+                *line >= viewport.first_line
+                    && *line
+                        < viewport
+                            .first_line
+                            .saturating_add(viewport.visible_lines as usize)
+            })
+        } else {
+            None
+        };
+        let visible_region_height = if visible_region_line.is_some() {
+            requested_region_height
+        } else {
+            viewport =
+                editor::resolve_viewport(self.presentation, self.snapshot, area.width, area.height);
+            0
+        };
+        let rendered_region = visible_region_line.and(valid_region);
+        let region_lines = rendered_region
+            .map(|region| inline_region_lines(region, viewport, visible_region_height, &theme))
+            .unwrap_or_default();
         let cursor_line = editor::cursor_line(self.snapshot, self.cursor_byte);
         // Resolved once per frame, not per row: `selection_range` clamps and
         // resolves lines, and doing that per row would re-walk the selection
@@ -1012,6 +1095,9 @@ impl EditorWidget<'_> {
                 ));
             }
             lines.push(Line::from(spans));
+            if visible_region_line == Some(line_index) {
+                lines.extend(region_lines.iter().cloned());
+            }
         }
         // An empty document still has one logical line, so `lines` is
         // non-empty. Test the text, not the line count.
@@ -1021,6 +1107,9 @@ impl EditorWidget<'_> {
                 "(empty document)",
                 Style::default().fg(theme.muted),
             )));
+            if visible_region_line == Some(0) {
+                lines.extend(region_lines.iter().cloned());
+            }
         }
         frame.render_widget(Clear, area);
         // `Clear` resets every cell to the terminal's own default, so the
@@ -1033,6 +1122,231 @@ impl EditorWidget<'_> {
             area,
         );
         self.render_scrollbar(frame, area, &viewport);
+        Some(viewport)
+    }
+
+    fn inline_region_is_valid(&self, region: &InlineAssistRegion, region_applies: bool) -> bool {
+        region_applies
+            && usize::try_from(region.anchor).is_ok_and(|anchor| {
+                anchor <= self.snapshot.len_bytes()
+                    && editor::clamp_offset(self.snapshot, anchor) == anchor
+            })
+    }
+
+    fn render_inline_review_menu(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        viewport: EditorViewport,
+        region: &InlineAssistRegion,
+    ) {
+        let theme = Arc::clone(&self.theme);
+        let Some(anchor) = usize::try_from(region.anchor).ok() else {
+            return;
+        };
+        let line = editor::cursor_line(self.snapshot, anchor);
+        let Some(row) = line.checked_sub(viewport.first_line) else {
+            return;
+        };
+        if row >= viewport.visible_lines as usize {
+            return;
+        }
+        let Some(line_start) = editor::line_start(self.snapshot, line) else {
+            return;
+        };
+        let line_end = editor::line_content_end(self.snapshot, line).unwrap_or(line_start);
+        let Ok(line_text) = self.snapshot.read_bytes(line_start, line_end) else {
+            return;
+        };
+        let mut offset = anchor.saturating_sub(line_start).min(line_text.len());
+        while offset > 0 && !line_text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let Some(prefix) = line_text.get(..offset) else {
+            return;
+        };
+        let raw_column = display_width_str(prefix);
+        if raw_column < viewport.column {
+            return;
+        }
+        let column = raw_column - viewport.column;
+        let label = " [a] accept  [d] deny  [e] edit ";
+        let width = label.chars().count() as u16;
+        if width + 2 > area.width {
+            return;
+        }
+        let cursor_x = area.x + viewport.gutter + 1 + column as u16;
+        let cursor_y = area.y + row as u16;
+        let below_region = cursor_y.saturating_add(region.height() as u16 + 1);
+        let Some(rect) = inline_menu_placement(
+            area,
+            cursor_x,
+            below_region,
+            cursor_y.saturating_sub(1),
+            width,
+            1,
+        ) else {
+            return;
+        };
+        let x = rect.x;
+        let y = rect.y;
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                label,
+                Style::default()
+                    .fg(theme.background)
+                    .bg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            Rect {
+                x,
+                y,
+                width,
+                height: 1,
+            },
+        );
+    }
+
+    fn render_inline_prompt_overlay(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        field: &InlinePromptField,
+    ) {
+        if area.width < 6 || area.height < 4 {
+            return;
+        }
+        let theme = Arc::clone(&self.theme);
+        let mut instruction_lines = field.lines();
+        if instruction_lines.is_empty() {
+            instruction_lines.push("");
+        }
+        let visible_rows = instruction_lines.len().clamp(1, 8);
+        let width = area.width.min(76);
+        let height = (visible_rows as u16 + 3).min(area.height);
+        let rect = Rect {
+            x: area.x + area.width.saturating_sub(width) / 2,
+            y: area.y + area.height.saturating_sub(height) / 2,
+            width,
+            height,
+        };
+        let block = Block::default()
+            .title(format!(" inline [{}] ", field.mode().badge()))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let choices = Line::from(vec![
+            Span::styled(" model ", Style::default().fg(theme.muted)),
+            Span::styled(
+                field.model_label().to_string(),
+                Style::default().fg(theme.primary),
+            ),
+            Span::styled("  effort ", Style::default().fg(theme.muted)),
+            Span::styled(field.effort_label(), Style::default().fg(theme.primary)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(choices)
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            Rect {
+                height: 1.min(inner.height),
+                ..inner
+            },
+        );
+        let prompt_area = Rect {
+            y: inner.y.saturating_add(1),
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
+        if prompt_area.width == 0 || prompt_area.height == 0 {
+            return;
+        }
+        let caret_line = field.caret_line().min(instruction_lines.len() - 1);
+        let caret_source = instruction_lines[caret_line];
+        let caret_line_start = instruction_lines
+            .iter()
+            .take(caret_line)
+            .map(|line| line.len().saturating_add(1))
+            .sum::<usize>();
+        let mut caret_byte = field
+            .caret()
+            .saturating_sub(caret_line_start)
+            .min(caret_source.len());
+        while !caret_source.is_char_boundary(caret_byte) {
+            caret_byte = caret_byte.saturating_sub(1);
+        }
+        let caret_column = unicode_width::UnicodeWidthStr::width(&caret_source[..caret_byte]);
+        let horizontal_scroll =
+            caret_column.saturating_sub(prompt_area.width.saturating_sub(1) as usize);
+        let row_count = prompt_area.height as usize;
+        let max_scroll = instruction_lines.len().saturating_sub(row_count);
+        let mut first_line = field.scroll().min(max_scroll);
+        if caret_line < first_line {
+            first_line = caret_line;
+        } else if caret_line >= first_line.saturating_add(row_count) {
+            first_line = caret_line.saturating_add(1).saturating_sub(row_count);
+        }
+        first_line = first_line.min(max_scroll);
+        let body_style = Style::default().fg(theme.foreground);
+        let caret_style = Style::default()
+            .fg(theme.background)
+            .bg(theme.primary)
+            .add_modifier(Modifier::BOLD);
+        let prompt_lines = instruction_lines
+            .iter()
+            .enumerate()
+            .skip(first_line)
+            .take(row_count)
+            .map(|(line_index, line)| {
+                let visible_start = display_byte_index(line, horizontal_scroll);
+                let visible_end = display_byte_index(
+                    line,
+                    horizontal_scroll.saturating_add(prompt_area.width as usize),
+                );
+                let visible = line.get(visible_start..visible_end).unwrap_or("");
+                let mut spans = Vec::new();
+                let is_caret_line = line_index == caret_line
+                    && caret_column >= horizontal_scroll
+                    && caret_column < horizontal_scroll.saturating_add(prompt_area.width as usize)
+                    && caret_byte >= visible_start
+                    && caret_byte <= visible_end;
+                if is_caret_line {
+                    let local_caret = caret_byte.saturating_sub(visible_start).min(visible.len());
+                    if local_caret > 0 {
+                        spans.push(Span::styled(visible[..local_caret].to_string(), body_style));
+                    }
+                    if local_caret < visible.len() {
+                        let caret_end = visible[local_caret..]
+                            .char_indices()
+                            .nth(1)
+                            .map(|(offset, _)| local_caret + offset)
+                            .unwrap_or(visible.len());
+                        spans.push(Span::styled(
+                            visible[local_caret..caret_end].to_string(),
+                            caret_style,
+                        ));
+                        if caret_end < visible.len() {
+                            spans.push(Span::styled(visible[caret_end..].to_string(), body_style));
+                        }
+                    } else {
+                        spans.push(Span::styled(" ", caret_style));
+                    }
+                } else {
+                    spans.push(Span::styled(visible.to_string(), body_style));
+                }
+                Line::from(spans)
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(prompt_lines)
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            prompt_area,
+        );
     }
 
     /// The scrollbar, in the column the viewport already reserves for it.
@@ -2409,6 +2723,47 @@ pub(crate) fn token_style(theme: &Theme, token_type: &str) -> Option<Style> {
     })
 }
 
+fn inline_menu_placement(
+    area: Rect,
+    cursor_x: u16,
+    preferred_y: u16,
+    fallback_y: u16,
+    width: u16,
+    height: u16,
+) -> Option<Rect> {
+    if width > area.width || height > area.height {
+        return None;
+    }
+    let right = area.x + area.width;
+    let bottom = area.y + area.height;
+    let mut x = cursor_x.saturating_add(1);
+    if x.saturating_add(width) > right {
+        x = cursor_x.saturating_sub(width);
+    }
+    if x < area.x {
+        x = area.x;
+    }
+    if x.saturating_add(width) > right {
+        x = right - width;
+    }
+    let mut y = preferred_y;
+    if y.saturating_add(height) > bottom {
+        y = fallback_y;
+    }
+    if y < area.y {
+        y = area.y;
+    }
+    if y.saturating_add(height) > bottom {
+        return None;
+    }
+    Some(Rect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
 fn display_width_str(text: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     UnicodeWidthStr::width(text)
@@ -2534,6 +2889,90 @@ fn preview_disposition(truncated: bool, has_candidate: bool) -> &'static str {
     } else {
         "not applied"
     }
+}
+
+fn inline_region_lines(
+    region: &InlineAssistRegion,
+    viewport: EditorViewport,
+    height: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if height == 0 {
+        return Vec::new();
+    }
+    let style = Style::default()
+        .fg(theme.background)
+        .bg(theme.primary)
+        .add_modifier(Modifier::BOLD | Modifier::ITALIC);
+    let prefix = format!("{:width$}▎", "", width = viewport.gutter as usize);
+    let width = viewport.text_columns as usize;
+    let mut source_lines = region
+        .generated_text
+        .lines()
+        .take(height)
+        .collect::<Vec<_>>();
+    if source_lines.is_empty() {
+        source_lines.push("");
+    }
+    source_lines
+        .into_iter()
+        .map(|source| {
+            let visible = display_window(source, viewport.column, width);
+            let visible_width = unicode_width::UnicodeWidthStr::width(visible.as_str());
+            Line::from(vec![
+                Span::styled(prefix.clone(), style),
+                Span::styled(visible, style),
+                Span::styled(" ".repeat(width.saturating_sub(visible_width)), style),
+            ])
+        })
+        .collect()
+}
+
+fn display_window(text: &str, offset: usize, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let mut column = 0usize;
+    let mut shown = 0usize;
+    let mut visible = String::new();
+    for character in text.chars() {
+        let character_width = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+        let next_column = column.saturating_add(character_width);
+        if next_column <= offset {
+            column = next_column;
+            continue;
+        }
+        if column < offset {
+            let partial_width = next_column.saturating_sub(offset);
+            if shown.saturating_add(partial_width) > width {
+                break;
+            }
+            visible.push_str(&" ".repeat(partial_width));
+            shown = shown.saturating_add(partial_width);
+            column = next_column;
+            continue;
+        }
+        if shown.saturating_add(character_width) > width {
+            break;
+        }
+        visible.push(character);
+        shown = shown.saturating_add(character_width);
+        column = next_column;
+    }
+    visible
+}
+
+fn display_byte_index(text: &str, column_limit: usize) -> usize {
+    let mut column = 0usize;
+    for (byte, character) in text.char_indices() {
+        let next_column =
+            column.saturating_add(unicode_width::UnicodeWidthChar::width(character).unwrap_or(0));
+        if next_column > column_limit {
+            return byte;
+        }
+        column = next_column;
+    }
+    text.len()
 }
 
 #[cfg(test)]
@@ -2707,6 +3146,125 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    fn render_assisted(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        view_scroll: Option<usize>,
+        assist: &InlineAssistState,
+    ) -> (ratatui::buffer::Buffer, TuiDocumentPresentation) {
+        let region_applies = assist
+            .region()
+            .is_some_and(|region| region.applies_to(&region.document_id, region.document_revision));
+        render_assisted_with(
+            text,
+            width,
+            height,
+            cursor,
+            view_scroll,
+            assist,
+            region_applies,
+        )
+    }
+
+    fn render_assisted_with(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        view_scroll: Option<usize>,
+        assist: &InlineAssistState,
+        region_applies: bool,
+    ) -> (ratatui::buffer::Buffer, TuiDocumentPresentation) {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            view_scroll,
+            ..TuiDocumentPresentation::default()
+        };
+        let lsp = crate::editor_lsp::EditorLspState::default();
+        let completion = crate::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: "synced",
+                    status_caveat: false,
+                    notice: None,
+                    find_note: "",
+                    count_label: "",
+                    mode: EditorMode::Normal,
+                    buffer_focused: true,
+                    pending_prefix: EditorPrefix::Idle,
+                    command_active: false,
+                    command_line: "",
+                    command_selection: 0,
+                    search_active: false,
+                    search_line: "",
+                    search_count: 0,
+                    search_partial: false,
+                    scope: codegg_protocol::document::DocumentScope::Workspace,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: true,
+                    busy: false,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    completion: &completion,
+                    highlight: &mut highlight,
+                    presentation: &mut presentation,
+                    theme: Arc::new(Theme::default()),
+                }
+                .render_with_inline_assist(
+                    frame,
+                    Rect::new(0, 0, width, height),
+                    Some(assist),
+                    region_applies,
+                );
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), presentation)
+    }
+
+    fn generated_assist(document_revision: u64, anchor: u64, generated: &str) -> InlineAssistState {
+        let mut assist = InlineAssistState::default();
+        assist.begin_request(crate::editor_inline_assist::InlineAssistRequest {
+            request_id: "request-1".to_string(),
+            document_id: "document-1".to_string(),
+            document_revision,
+            generation: 1,
+            anchor,
+            instruction: "generate".to_string(),
+        });
+        let outcome = assist.apply_answer(
+            &crate::editor_inline_assist::InlineAnswer {
+                request_id: "request-1".to_string(),
+                document_id: "document-1".to_string(),
+                document_revision,
+                outcome: codegg_protocol::core::EditorInlineOutcome::Generated {
+                    model: "test-model".to_string(),
+                    effort: None,
+                    text: generated.to_string(),
+                },
+            },
+            1,
+        );
+        assert_eq!(
+            outcome,
+            crate::editor_inline_assist::InlineAnswerOutcome::Accepted
+        );
+        assist
+    }
+
+    fn row_containing(buffer: &ratatui::buffer::Buffer, text: &str) -> usize {
+        lines_of(buffer)
+            .iter()
+            .position(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("missing row {text:?}: {:?}", lines_of(buffer)))
     }
 
     /// The rendered rows of a painted frame, as plain text.
@@ -3046,6 +3604,200 @@ mod tests {
             cursor.bg, head.bg,
             "a reader who cannot tell a cursor from an extra has no way to \
              know where the keyboard is"
+        );
+    }
+
+    #[test]
+    fn inline_prompt_overlay_is_floating_and_paints_its_choices_and_caret() {
+        let text = (0..20)
+            .map(|line| format!("line{line}\n"))
+            .collect::<String>();
+        let baseline_assist = InlineAssistState::default();
+        let (baseline, baseline_presentation) =
+            render_assisted(&text, 80, 20, 0, None, &baseline_assist);
+        let mut assist = InlineAssistState::default();
+        assist.open_field().set_instruction("ask".to_string());
+        let (rendered, presentation) = render_assisted(&text, 80, 20, 0, None, &assist);
+        assert_eq!(
+            baseline_presentation.visible_lines,
+            presentation.visible_lines
+        );
+        assert_eq!(baseline_presentation.view_scroll, presentation.view_scroll);
+        assert_eq!(lines_of(&baseline)[1], lines_of(&rendered)[1]);
+        let joined = lines_of(&rendered).join("\n");
+        assert!(joined.contains("[INS]"), "{joined}");
+        assert!(joined.contains("inherit"), "{joined}");
+        let rows = lines_of(&rendered);
+        let row = row_containing(&rendered, "ask");
+        let ask_end = rows[row].find("ask").unwrap() + "ask".len();
+        let caret_column = unicode_width::UnicodeWidthStr::width(&rows[row][..ask_end]);
+        assert_eq!(
+            rendered[(caret_column as u16, row as u16)].bg,
+            Theme::default().primary
+        );
+    }
+
+    #[test]
+    fn inline_generation_uses_the_existing_disclosure_slot() {
+        let mut assist = InlineAssistState::default();
+        assist.begin_request(crate::editor_inline_assist::InlineAssistRequest {
+            request_id: "request-1".to_string(),
+            document_id: "document-1".to_string(),
+            document_revision: 0,
+            generation: 1,
+            anchor: 0,
+            instruction: "generate".to_string(),
+        });
+        let (rendered, _) = render_assisted("alpha", 120, 12, 0, None, &assist);
+        assert!(lines_of(&rendered)[10].contains("generating"));
+    }
+
+    #[test]
+    fn inline_region_splices_after_its_anchor_without_changing_document_offsets() {
+        let text = "first\nanchor\nbelow\nlast";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let anchor = text.find("anchor").unwrap();
+        let assist = generated_assist(
+            snapshot.revision().get(),
+            anchor as u64,
+            "draft-one\ndraft-two",
+        );
+        let (baseline, _) =
+            render_assisted(text, 60, 14, anchor, Some(0), &InlineAssistState::default());
+        let (rendered, presentation) = render_assisted(text, 60, 14, anchor, Some(0), &assist);
+        let (without_menu, _) = render_assisted(text, 60, 14, anchor + 1, Some(0), &assist);
+        assert_eq!(
+            row_containing(&without_menu, "below"),
+            row_containing(&baseline, "below") + 2
+        );
+        assert_eq!(
+            row_containing(&rendered, "last"),
+            row_containing(&without_menu, "last"),
+            "the review menu does not move the document's rows"
+        );
+        assert_eq!(
+            row_containing(&rendered, "draft-one") + 1,
+            row_containing(&rendered, "draft-two")
+        );
+        assert_eq!(presentation.visible_lines, 9);
+        assert_eq!(presentation.view_scroll, Some(0));
+        assert_eq!(presentation.cursor_byte, anchor);
+        assert_eq!(snapshot.len_bytes(), text.len());
+        let anchor_row = row_containing(&rendered, "anchor");
+        let rows = lines_of(&rendered);
+        let anchor_text_start = rows[anchor_row].find("anchor").unwrap();
+        let ordinary_column =
+            unicode_width::UnicodeWidthStr::width(&rows[anchor_row][..anchor_text_start + 1]);
+        assert_eq!(
+            rendered[(ordinary_column as u16, anchor_row as u16)].fg,
+            baseline[(ordinary_column as u16, anchor_row as u16)].fg
+        );
+        let region_row = row_containing(&rendered, "draft-one");
+        assert_eq!(
+            rendered[(3, region_row as u16)].bg,
+            Theme::default().primary
+        );
+    }
+
+    #[test]
+    fn a_region_that_no_longer_applies_is_neither_drawn_nor_reviewable() {
+        let text = "first\nanchor\nbelow\nlast";
+        let anchor = text.find("anchor").unwrap();
+        let assist = generated_assist(0, anchor as u64, "draft-one");
+        let (drawn, _) = render_assisted_with(text, 60, 14, anchor, Some(0), &assist, true);
+        let (stale, _) = render_assisted_with(text, 60, 14, anchor, Some(0), &assist, false);
+        assert!(
+            lines_of(&drawn).join("\n").contains("draft-one"),
+            "a region that applies is drawn"
+        );
+        assert!(
+            !lines_of(&stale).join("\n").contains("draft-one"),
+            "a region that no longer applies to the document is not drawn"
+        );
+        assert!(
+            !lines_of(&stale).join("\n").contains("[a] accept"),
+            "a region that no longer applies opens no review menu"
+        );
+    }
+
+    #[test]
+    fn inline_region_height_is_clamped_to_leave_document_visible() {
+        let text = (0..20)
+            .map(|line| format!("line{line}\n"))
+            .collect::<String>();
+        let snapshot = DocumentBuffer::new(&text).snapshot();
+        let generated = (0..30)
+            .map(|line| format!("pending{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let assist = generated_assist(snapshot.revision().get(), 0, &generated);
+        let (rendered, presentation) = render_assisted(&text, 50, 10, 0, Some(0), &assist);
+        let (without_menu, _) = render_assisted(&text, 50, 10, 1, Some(0), &assist);
+        let markers = (0..rendered.area.height)
+            .filter(|row| {
+                (0..rendered.area.width).any(|column| rendered[(column, *row)].symbol() == "▎")
+            })
+            .count();
+        assert_eq!(markers, 6);
+        assert_eq!(presentation.visible_lines, 1);
+        assert!(
+            lines_of(&without_menu)
+                .iter()
+                .any(|row| row.contains("line0")),
+            "the clamped region leaves a document row visible"
+        );
+    }
+
+    #[test]
+    fn the_review_menu_opens_at_the_cursor_and_closes_when_the_cursor_leaves_the_region() {
+        let text = "first\nanchor\nbelow";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let anchor = text.find("anchor").unwrap();
+        let assist = generated_assist(snapshot.revision().get(), anchor as u64, "draft");
+        let (inside, _) = render_assisted(text, 60, 14, anchor, Some(0), &assist);
+        let rows = lines_of(&inside);
+        assert!(
+            rows.iter().any(|row| row.contains("[a] accept")),
+            "the menu opens when the cursor is in the region: {rows:?}"
+        );
+        assert_eq!(
+            row_containing(&inside, "[a] accept"),
+            row_containing(&inside, "anchor") + 2,
+            "the menu is drawn below the region it reviews: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("draft")),
+            "the menu never hides the payload it reviews: {rows:?}"
+        );
+        let (outside, _) = render_assisted(text, 60, 14, anchor + 1, Some(0), &assist);
+        assert!(
+            !lines_of(&outside)
+                .iter()
+                .any(|row| row.contains("[a] accept")),
+            "the menu closes when the cursor leaves the region"
+        );
+    }
+
+    #[test]
+    fn the_review_menu_flips_above_the_cursor_when_the_row_below_leaves_the_area() {
+        let area = Rect::new(0, 0, 40, 10);
+        let placement = super::inline_menu_placement(area, 5, 10, 8, 30, 1).expect("a placement");
+        assert_eq!(placement.y, 8, "the menu flips above the cursor");
+        assert_eq!(placement.x, 6, "the menu stays to the right of the cursor");
+    }
+
+    #[test]
+    fn the_review_menu_clamps_to_the_left_edge_rather_than_leaving_the_area() {
+        let area = Rect::new(0, 0, 40, 10);
+        let placement = super::inline_menu_placement(area, 20, 5, 4, 30, 1).expect("a placement");
+        assert_eq!(placement.x, 0, "the menu is clamped at the left edge");
+        assert!(
+            placement.x + placement.width <= area.x + area.width,
+            "the menu never leaves the text area"
+        );
+        assert!(
+            placement.y + placement.height <= area.y + area.height,
+            "the menu never leaves the text area"
         );
     }
 

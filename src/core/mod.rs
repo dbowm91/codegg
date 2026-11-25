@@ -17,6 +17,7 @@ pub mod daemon_construct;
 pub mod daemon_continuation;
 pub mod daemon_control;
 pub mod daemon_documents;
+pub mod daemon_editor_inline;
 pub mod daemon_family;
 pub mod daemon_git;
 pub mod daemon_goals;

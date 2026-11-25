@@ -6832,6 +6832,152 @@ The capability survived the rebinding. The *keystroke* did not, which is the
 observable cost, and it is why `scripts/check_tui_editor_key_authority.py`
 now asserts the two remaining guard-block chords by name instead of three.
 
+### The editor's inline assist (ADR-0066)
+
+The editor can ask a model for an insertion at the cursor. The contract is
+ADR-0066; the implementation is
+`crates/codegg-tui/src/editor_inline_assist.rs` (the state) and
+`crates/codegg-tui/src/commands/editor.rs` (the verbs).
+
+**The gesture.** `Ctrl+Alt+a` in the editor's Normal table opens the prompt
+field. The chord family is `{CONTROL, ALT}` only: the app never pushes
+keyboard-enhancement flags, so `Ctrl+Shift+X` is indistinguishable from
+`Ctrl+X`, while `Ctrl+Alt+X` is not. The letter `a` is free — the
+application's chords already take `b d e f n o p r s t x y`, and `i`, `j`
+and `m` are undeliverable because their control bytes are Tab and Enter.
+
+**The field owns the keyboard.** While it is open, the prompt field is asked
+before every other editor surface, so a keystroke cannot reach the document
+behind a line the reader believes is capturing it. The field has its own
+NOR/INS mode, its own multi-line text, and its own model and thinking level
+for that request only. It does not share the composer's claim table: on the
+editor route the composer refuses bare text, so a field that leaned on it
+would never see a keystroke.
+
+The field's buffer reuses the composer's multi-line text *model* as a type —
+one implementation of word motions, selection and a bounded undo history —
+but it holds its own instance and its own keyboard. What it borrows is the
+buffer's mechanics; what it never borrows is the composer's claims.
+
+`Esc` in insert mode is the Helix mode step, which is the only way the
+field's normal-mode verbs become reachable. `Esc` in the field's normal
+mode clears the instruction and dismisses the field in one press: the
+instruction goes with it, so a dismissed prompt leaves no residue for a
+later undo to resurrect. `Enter` submits, `Shift+Enter` starts a new line,
+`Tab` cycles the model and `Shift+Tab` cycles the thinking level. The
+catalog is read from the daemon's published list at the moment of the
+keystroke rather than held by the field, so the field holds no list of
+strings at all.
+
+**The pending region is not document text.** The answer is held in a bounded
+payload (`MAX_EDITOR_INLINE_PAYLOAD_BYTES`, `MAX_EDITOR_INLINE_PAYLOAD_LINES`)
+anchored at a document byte offset and at the revision it was asked against.
+The document's bytes, the file on disk, the language server and the undo
+history see nothing until the operator approves. The renderer draws it as a
+differentiated region spliced into the line flow; the region's bytes do not
+enter the cursor's byte arithmetic, the selection ranges, the search matches
+or the undo history.
+
+`scripts/check_tui_editor_text_authority.py` was amended with exactly one
+allowance for this payload: a field named `generated_text` is permitted
+only as a plain `String` in a file that declares the payload bound, and the
+guard's self-test proves both halves — the same field name in a file with no
+declared bound is rejected, and a payload held in a container is rejected.
+
+**The fence.** An answer is applied only when the request id, the editor's
+document generation and the document's **daemon** revision all still match,
+and only for the document the request named. The revision is the daemon's,
+not the frontend's local buffer counter: the two are different counters
+with different lifetimes — the local buffer's revision counts local edits
+and resets to zero when the buffer is replaced by a daemon snapshot, while
+the daemon's revision is the document's own version and is what the daemon
+itself compares the request against. Comparing one against the other
+retires every region at once, which is why the request, the renderer and
+the approval all read the same one.
+
+The region's applicability is **one predicate**, computed once and used by
+all three surfaces that can see it: the renderer draws the region only when
+it applies, the review menu is raised only when it applies, and the
+approval refuses it when it does not. A surface that disagrees with
+another is a surface that claims keys the reader cannot see: the menu's
+`a`, `d` and `e` are live exactly when the menu is drawn.
+
+A newer request supersedes an older one, and the older answer is dropped.
+Every drop is reported in the editor's notice, because a silent drop reads
+as a hang. The pending payload is frontend state and is **not** durable: a
+daemon restart discards it, which is a stated fact rather than a defect,
+because an unapproved insertion has no durable meaning.
+
+**Approve and discard.** Approval revalidates the anchor against the
+document's current daemon revision **and** against the document's identity,
+builds exactly one insertion edit and submits it through `submit_edit`, so
+the editor's undo, cursor and history semantics apply unchanged and one `u`
+takes the whole insertion back. A refused submission leaves the payload in
+place and the document unchanged. Discard drops the payload with no edit, no
+undo entry and no write. There is no second apply path: the region never
+rides `LspPreviewApply`, which refuses a dirty document.
+
+Approval is a **Normal-mode verb**, exactly like a paste: the insertion does
+not hand the keyboard to the document, so the editor stays in Normal and the
+app's key routing stays with it. A presentation in Insert with the routing
+still in Normal is a cursor that looks editable and swallows nothing; and an
+approval that entered Insert would take `u` with it, so the one keystroke
+that takes the whole insertion back would have become a typed `u`.
+
+**The review menu is derived, never latched.** Moving the cursor onto the
+region's anchor raises a floating menu offering `a` (accept), `d` (deny)
+and `e` (edit). Its visibility is recomputed every frame from the
+cursor's byte position against the region's anchor, so a menu that is on
+screen is on screen *because* the cursor is in the region; nothing latches
+it and nothing can leave it stranded. The comparison is in document
+coordinates: the region's own bytes are not document bytes, so the
+region's display height does not enter it.
+
+**The geometry comes from the editor's own viewport.** The anchor is the
+cursor's *display column* on its *screen row*, computed from the editor's
+viewport and the row's horizontal scroll offset. A byte offset is not a
+column, so tabs and wide characters are accounted for, and a cursor
+scrolled out of the horizontal window opens no menu. The menu is drawn on
+the row after the region's block, flipping above the cursor when that row
+would leave the text area, and it is clamped rather than clipped. It never
+reserves a row, so the document's rows do not move when the menu opens.
+
+**The placement is after the region, not on it.** The milestone plan places
+the menu "below and to the right of the cursor". The region is spliced into
+the line flow immediately below the cursor's row, so a menu on the
+cursor's next row would cover the payload it exists to review. The menu is
+therefore placed after the region's own rows: it keeps the cursor's display
+column, so it stays anchored to the cursor, and it leaves the generated
+text readable. Like the editor's other floating surfaces — the keymap box,
+the completion popup, the language-server panel — it is an overlay: it
+covers document pixels rather than reserving rows, and the document's row
+positions are unchanged. This is the one place where the implementation
+follows the plan's *intent* (a cursor-anchored floating menu that never
+reflows the document) over its letter, and the reason is recorded here.
+
+**The menu owns three keys and no more.** While it is open it claims `a`,
+`d` and `e`; every other key falls through to the editor's Normal table,
+which may move the cursor and thereby dismiss the menu. `a` and `d` are
+M001's approve and discard actions — the menu adds a surface, not a second
+apply path with different semantics. `e` is new: it discards the region,
+cancels an in-flight request for that same region, and re-opens the prompt
+field with the previous instruction, so a revised attempt needs no
+retyping. The superseded request's answer is dropped by the existing
+request-id and generation fence.
+
+**The answer travels on the request's response.** ADR-0066 says the answer
+arrives as a new event. The implementation answers the request with
+`CoreResponse::EditorInlineGenerated` instead, and the reason is delivery:
+the editor route has no session, the daemon's event stream is session-scoped,
+and every other editor document flow (`DocumentOpen` →
+`CoreResponse::DocumentSnapshot`, `DocumentChange` →
+`CoreResponse::DocumentChanged`) is request/response rather than
+event-driven. The Decision's substance is unchanged — one-shot request, no
+turn, no session, no tool loop, a payload that carries the request id, the
+document identity and revision, the model, the effort label and the text —
+and only the channel differs. The deviation is recorded in the milestone's
+closure record.
+
 ### The editor's Helix UX surface
 
 The editor's chrome, motions, and selection policy, after the Helix UX

@@ -1,6 +1,7 @@
 # TUI Editor Inline LLM Assist Roadmap
 
-Status: active
+Status: closed (M001 and M002 closed; the closure record is
+`plans/closure/tui-editor-inline-llm-assist/001-status.md`)
 
 Long-term references:
 
@@ -381,5 +382,5 @@ this definition.
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | ready for handoff | `plans/implementation/tui-editor-inline-llm-assist/001-inline-prompt-generation-and-accepted-insertion.md` | — | none |
-| 2 | blocked | `plans/implementation/tui-editor-inline-llm-assist/002-cursor-anchored-review-menu.md` | — | M001 closure |
+| 1 | closed | `plans/implementation/tui-editor-inline-llm-assist/001-inline-prompt-generation-and-accepted-insertion.md` | `plans/closure/tui-editor-inline-llm-assist/001-status.md` | none |
+| 2 | closed | `plans/implementation/tui-editor-inline-llm-assist/002-cursor-anchored-review-menu.md` | `plans/closure/tui-editor-inline-llm-assist/001-status.md` | none |

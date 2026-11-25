@@ -2933,6 +2933,7 @@ pub mod editor;
 pub mod editor_completion;
 pub mod editor_effect;
 pub mod editor_highlight;
+pub mod editor_inline_assist;
 pub mod editor_lsp;
 pub mod editor_match;
 pub mod file_tree;

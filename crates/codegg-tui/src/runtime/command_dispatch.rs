@@ -2039,6 +2039,21 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 error,
             );
         }
+        TuiCommand::EditorInlineGenerated {
+            request_id,
+            generation: _,
+            document_id,
+            document_revision,
+            outcome,
+        } => {
+            super::super::commands::editor::apply_editor_inline_generated(
+                app,
+                request_id,
+                document_id,
+                document_revision,
+                outcome,
+            );
+        }
         TuiCommand::EditorCompletionFinished {
             request_id,
             completion_epoch,

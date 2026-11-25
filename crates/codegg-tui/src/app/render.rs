@@ -933,6 +933,11 @@ impl App {
             );
             return;
         };
+        let region_applies = session.attachment_info().is_some_and(|info| {
+            self.editor_state
+                .inline_assist
+                .region_applies_to(&info.document_id, info.revision)
+        });
         let presentation = session.presentation();
         let cursor = presentation.cursor_byte;
         let mode = presentation.mode;
@@ -1008,7 +1013,12 @@ impl App {
                 presentation: session.presentation_mut(),
                 theme,
             }
-            .render(frame, editor_area);
+            .render_with_inline_assist(
+                frame,
+                editor_area,
+                Some(&self.editor_state.inline_assist),
+                region_applies,
+            );
         }
     }
 

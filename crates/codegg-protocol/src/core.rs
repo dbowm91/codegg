@@ -1468,6 +1468,12 @@ pub enum CoreResponse {
         #[serde(default)]
         lsp_sync: DocumentLspSync,
     },
+    EditorInlineGenerated {
+        request_id: String,
+        document_id: String,
+        document_revision: u64,
+        outcome: EditorInlineOutcome,
+    },
     DocumentWriterLease {
         document_id: String,
         writer_lease: String,
@@ -2709,6 +2715,21 @@ pub enum CoreRequest {
     DocumentClose {
         project_id: String,
         document_id: String,
+    },
+    EditorInlineGenerate {
+        request_id: String,
+        project_id: String,
+        workspace_id: String,
+        document_id: String,
+        document_revision: u64,
+        anchor: u64,
+        context_before: u32,
+        context_after: u32,
+        instruction: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        reasoning: Option<ReasoningOverride>,
     },
     /// C005 (ADR-0022 §3): one bounded daemon-owned workspace directory
     /// listing — inert metadata only (`direct_project` + `file.read`).
@@ -4435,6 +4456,38 @@ pub enum ReasoningOverride {
     Off,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EditorInlineOutcome {
+    Generated {
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        text: String,
+    },
+    Refused {
+        code: String,
+    },
+}
+
+pub mod editor_inline_refusal {
+    pub const UNSUPPORTED: &str = "unsupported";
+    pub const UNKNOWN_MODEL: &str = "unknown_model";
+    pub const MODEL_UNAVAILABLE: &str = "model_unavailable";
+    pub const REASONING_NOT_ADMITTED: &str = "reasoning_not_admitted";
+    pub const INSTRUCTION_TOO_LARGE: &str = "instruction_too_large";
+    pub const CONTEXT_TOO_LARGE: &str = "context_too_large";
+    pub const PROVIDER_ERROR: &str = "provider_error";
+    pub const EMPTY_GENERATION: &str = "empty_generation";
+    pub const TIMEOUT: &str = "timeout";
+    pub const DOCUMENT_MISMATCH: &str = "document_mismatch";
+    pub const DOCUMENT_UNAVAILABLE: &str = "document_unavailable";
+}
+
+pub const MAX_EDITOR_INLINE_INSTRUCTION_BYTES: usize = 4_096;
+
+pub const MAX_EDITOR_INLINE_CONTEXT_BYTES: u32 = 16_384;
+
 /// The known reasoning-effort labels, in the fallback escalation order.
 ///
 /// This is a **convenience set**, not a model's option set. It is the
@@ -5544,6 +5597,145 @@ mod tests {
     #[test]
     fn protocol_version_is_set() {
         assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn the_inline_generate_request_round_trips_on_the_wire() {
+        let request = CoreRequest::EditorInlineGenerate {
+            request_id: "request-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            workspace_id: "workspace-1".to_owned(),
+            document_id: "document-1".to_owned(),
+            document_revision: 7,
+            anchor: 42,
+            context_before: 2048,
+            context_after: 2048,
+            instruction: "add a doc comment".to_owned(),
+            model: Some("opencode_go/minimax-m3".to_owned()),
+            reasoning: Some(ReasoningOverride::Effort {
+                level: "high".to_owned(),
+            }),
+        };
+        let encoded = serde_json::to_value(&request).expect("the request encodes");
+        assert_eq!(encoded["type"], "editor_inline_generate");
+        let decoded: CoreRequest = serde_json::from_value(encoded).expect("the request decodes");
+        match decoded {
+            CoreRequest::EditorInlineGenerate {
+                request_id,
+                document_revision,
+                anchor,
+                instruction,
+                model,
+                reasoning,
+                ..
+            } => {
+                assert_eq!(request_id, "request-1");
+                assert_eq!(document_revision, 7);
+                assert_eq!(anchor, 42);
+                assert_eq!(instruction, "add a doc comment");
+                assert_eq!(model, Some("opencode_go/minimax-m3".to_owned()));
+                assert_eq!(
+                    reasoning,
+                    Some(ReasoningOverride::Effort {
+                        level: "high".to_owned()
+                    })
+                );
+            }
+            other => panic!("expected EditorInlineGenerate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_inline_generate_request_without_a_model_or_reasoning_still_decodes() {
+        let encoded = serde_json::json!({
+            "type": "editor_inline_generate",
+            "request_id": "request-1",
+            "project_id": "project-1",
+            "workspace_id": "workspace-1",
+            "document_id": "document-1",
+            "document_revision": 0,
+            "anchor": 0,
+            "context_before": 0,
+            "context_after": 0,
+            "instruction": "x",
+        });
+        let decoded: CoreRequest = serde_json::from_value(encoded).expect("the request decodes");
+        match decoded {
+            CoreRequest::EditorInlineGenerate {
+                model, reasoning, ..
+            } => {
+                assert_eq!(model, None);
+                assert_eq!(reasoning, None);
+            }
+            other => panic!("expected EditorInlineGenerate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_inline_generated_response_round_trips_on_the_wire() {
+        let response = CoreResponse::EditorInlineGenerated {
+            request_id: "request-1".to_owned(),
+            document_id: "document-1".to_owned(),
+            document_revision: 7,
+            outcome: EditorInlineOutcome::Generated {
+                model: "opencode_go/minimax-m3".to_owned(),
+                effort: Some("high".to_owned()),
+                text: "/// the answer".to_owned(),
+            },
+        };
+        let encoded = serde_json::to_value(&response).expect("the response encodes");
+        assert_eq!(encoded["type"], "editor_inline_generated");
+        let decoded: CoreResponse = serde_json::from_value(encoded).expect("the response decodes");
+        match decoded {
+            CoreResponse::EditorInlineGenerated {
+                request_id,
+                document_id,
+                document_revision,
+                outcome,
+            } => {
+                assert_eq!(request_id, "request-1");
+                assert_eq!(document_id, "document-1");
+                assert_eq!(document_revision, 7);
+                match outcome {
+                    EditorInlineOutcome::Generated {
+                        model,
+                        effort,
+                        text,
+                    } => {
+                        assert_eq!(model, "opencode_go/minimax-m3");
+                        assert_eq!(effort, Some("high".to_owned()));
+                        assert_eq!(text, "/// the answer");
+                    }
+                    other => panic!("expected Generated, got {other:?}"),
+                }
+            }
+            other => panic!("expected EditorInlineGenerated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_inline_refusal_round_trips_with_its_named_code() {
+        let response = CoreResponse::EditorInlineGenerated {
+            request_id: "request-1".to_owned(),
+            document_id: "document-1".to_owned(),
+            document_revision: 7,
+            outcome: EditorInlineOutcome::Refused {
+                code: editor_inline_refusal::MODEL_UNAVAILABLE.to_owned(),
+            },
+        };
+        let encoded = serde_json::to_value(&response).expect("the response encodes");
+        assert_eq!(encoded["outcome"]["kind"], "refused");
+        assert_eq!(encoded["outcome"]["code"], "model_unavailable");
+        let decoded: CoreResponse = serde_json::from_value(encoded).expect("the response decodes");
+        match decoded {
+            CoreResponse::EditorInlineGenerated { outcome, .. } => match outcome {
+                EditorInlineOutcome::Refused { code } => {
+                    assert_eq!(code, editor_inline_refusal::MODEL_UNAVAILABLE);
+                }
+                other => panic!("expected Refused, got {other:?}"),
+            },
+            other => panic!("expected EditorInlineGenerated, got {other:?}"),
+        }
     }
 
     /// The summary is derived from the facts it describes, so it can never

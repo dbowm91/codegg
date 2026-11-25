@@ -182,6 +182,13 @@ pub enum TuiCommand {
     /// the full completion scope (document identity, revision, cursor), so
     /// a result for a moved cursor or an old revision is discarded rather
     /// than displayed.
+    EditorInlineGenerated {
+        request_id: String,
+        generation: u64,
+        document_id: String,
+        document_revision: u64,
+        outcome: codegg::protocol::core::EditorInlineOutcome,
+    },
     EditorCompletionFinished {
         request_id: u64,
         /// Lifetime fencing epoch captured at request time (C003/F2).

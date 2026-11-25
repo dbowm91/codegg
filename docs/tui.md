@@ -765,6 +765,46 @@ updates.
 
 ### Completion
 
+### Inline assist
+
+`Ctrl+Alt+a` asks the model for an insertion at the cursor. A small prompt
+appears over the text; the document's rows do not move.
+
+The prompt has its own `[NOR]` / `[INS]` badge, its own multi-line text,
+and its own model and thinking level for that request only. `Enter` sends
+the instruction, `Shift+Enter` starts a new line, `Tab` cycles the model
+and `Shift+Tab` cycles the thinking level. `Esc` leaves insert mode for
+the prompt's normal mode, where the Helix motions and the selection verbs
+apply; a second `Esc` clears the instruction and dismisses the prompt.
+
+The answer arrives as a marked region at the cursor. It is **not** document
+text: the bytes, the file on disk and the language server see nothing until
+you accept it.
+
+| Key | What it does |
+|---|---|
+| `Ctrl+Alt+a` | ask the model for an insertion at the cursor |
+| `Ctrl+Alt+u` | accept the generated region as one undoable edit |
+| `Ctrl+Alt+v` | discard the generated region |
+
+Move the cursor onto the region — onto the point the answer was asked for —
+and a small menu appears beside it. The menu is derived from where the
+cursor is, so it is there whenever the cursor is in the region and gone
+whenever it is not.
+
+| Key | What it does |
+|---|---|
+| `a` | accept the generated region as one undoable edit |
+| `d` | deny the generated region and discard it |
+| `e` | discard the region and re-open the prompt with the same instruction |
+
+Every other key still belongs to the editor, so moving the cursor away
+dismisses the menu. The menu never takes a row of its own: the document's
+rows stay exactly where they were.
+
+Neither the model nor the thinking level you pick changes the daemon's
+stored selection; both are facts about that one request.
+
 ### Semantic highlighting limits and truncation
 
 ### Very long lines and large file trees

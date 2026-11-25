@@ -347,6 +347,7 @@ pub struct EditorState {
     /// pending, so the render pump does no work at all in the common case.
     pub semantic_refresh_due_at: Option<std::time::Instant>,
     pub completion_debounce: Option<EditorCompletionDebounce>,
+    pub inline_assist: crate::editor_inline_assist::InlineAssistState,
     /// Server-free syntax highlighting for the attached document.
     ///
     /// The always-available floor under the LSP semantic tokens: a bounded
@@ -377,6 +378,7 @@ impl Default for EditorState {
             lsp: crate::editor_lsp::EditorLspState::default(),
             completion: crate::editor_completion::EditorCompletionState::default(),
             pending_effect: None,
+            inline_assist: crate::editor_inline_assist::InlineAssistState::default(),
             highlight: crate::editor_highlight::EditorHighlight::default(),
         }
     }
@@ -554,6 +556,7 @@ impl EditorState {
         self.close_after_save = false;
         self.lsp.reset();
         self.completion.clear();
+        self.inline_assist.clear();
         // A parked effect is aimed at the document the editor was showing.
         // A file picker opened against a document the editor no longer shows
         // is stale, so a document change discards it — the same fate it had

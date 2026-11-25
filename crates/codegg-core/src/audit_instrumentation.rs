@@ -893,6 +893,7 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     // shares the reads' classification rather than emitting per-refresh
     // audit events. Denial *is* audited upstream by `authorize_request`.
     "workspace_directory_list",
+    "editor_inline_generate",
     // Phase 3: a read-only git read. It discloses the repository's own
     // state — branch, dirtiness, changed file names — through the read-only
     // git fact layer, and mutates nothing: there is no write path behind it
