@@ -1878,6 +1878,15 @@ A model the connection cannot serve is **refused, never substituted**. The
 refusal carries a typed code, the request does not fall through to a
 different provider, and the model is not silently swapped for another one.
 
+**The provider transport context.** The one-shot request carries a canonical
+session identity even though it is not a turn: the conversation the client is
+attached to, or a stable bounded id derived from the document when the
+connection has none. This is not bookkeeping. OpenCode Go refuses a request
+with no session context locally, before any network I/O, and that refusal is
+indistinguishable from an upstream failure unless the context is supplied. A
+provider failure is logged with the provider, the wire model and the error
+class; the wire still reports `provider_error`.
+
 **The refusal matrix.** Every refusal is a **stable code**, never a
 sentence: the frontend owns the wording, and an unrecognised code degrades
 to the code itself. The codes live in `codegg_protocol::core::editor_inline_refusal`.

@@ -197,18 +197,23 @@ impl App {
         let present_rows = present_files
             .as_deref()
             .map_or(0, crate::app::present_card::card_height);
+        // A document open on the editor route replaces the composer's rows.
+        let editor_view =
+            self.editor_state.is_open() && matches!(self.ui_state.routes.current(), Route::Editor);
         let claims = FrameClaims {
             todo_rows,
             hint_rows,
             tab_rows,
             tasks_rows,
             present_rows,
-            // The pane's width, not the composer chunk's: the chunk's width is
-            // what this height is asking for, so using it would be circular.
-            prompt_rows: self
-                .prompt_state
-                .prompt
-                .needed_height(outer.max_prompt_rows(), outer.pane.width),
+            // Measured at the pane's width; the chunk's width would be circular.
+            prompt_rows: if editor_view {
+                0
+            } else {
+                self.prompt_state
+                    .prompt
+                    .needed_height(outer.max_prompt_rows(), outer.pane.width)
+            },
         };
         // The plan is the frame's geometry: the painters below read it, and so
         // does the next mouse event. One value, so a click cannot resolve
@@ -2169,6 +2174,9 @@ impl App {
     }
 
     fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
         let bg_block = Block::default().style(Style::default().bg(self.ui_state.theme.input_bg));
         frame.render_widget(bg_block, area);
 

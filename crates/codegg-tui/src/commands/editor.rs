@@ -3765,20 +3765,13 @@ pub(crate) fn enter_editor_normal(app: &mut App) {
     leave_insert_mode(&mut app.editor_state);
 }
 
-/// Leave select mode: the held selection is dropped and the buffer returns to
-/// Normal.
+/// Leave select mode while keeping its held selection visible.
 ///
-/// `Esc` is the way out, and it is a **mode** step rather than an exit — the
-/// document stays open, exactly as `Esc` leaves Insert to Normal.
-///
-/// The selection goes with the mode. A select mode with nothing selected is
-/// a mode the reader cannot see the point of, and the whole reason the mode
-/// exists is the selection it holds.
+/// `Esc` is a **mode** step rather than an exit — the document stays open,
+/// and a later Normal-mode movement is what collapses the selection.
 pub(crate) fn leave_editor_select(app: &mut App) {
     if let Some(session) = app.editor_state.session.as_mut() {
-        let presentation = session.presentation_mut();
-        presentation.mode = EditorMode::Normal;
-        presentation.clear_selections();
+        session.presentation_mut().mode = EditorMode::Normal;
     }
 }
 
@@ -3970,14 +3963,9 @@ fn dispatch_editor_key(app: &mut App, key: KeyEvent) -> bool {
             enter_editor_normal(app);
             app.editor_state.clear_notice();
         } else if app.editor_state.mode() == EditorMode::Select {
-            // Select mode is a *verb* mode, so `Esc` leaves it the way it
-            // entered: the selection goes and the buffer is back to Normal.
-            // The document stays open — `Esc` is a mode step, never an exit.
+            // Select mode is a *verb* mode. `Esc` leaves it but keeps the held
+            // highlight; the next Normal-mode movement collapses it.
             leave_editor_select(app);
-        } else {
-            app.messages_state
-                .toasts
-                .info("Normal mode — the input box takes typing; i edits the file, :q closes it");
         }
         return true;
     }
@@ -9124,6 +9112,10 @@ mod tests {
         // it performs that step explicitly rather than leaving a stale
         // selection for the next `x` to extend.
         consume_selection(&mut state);
+
+        // The grown selection leaves its head on line 2; return to line 1
+        // before proving that `space y` reports the selected line.
+        assert_eq!(normal(&mut state, KeyCode::Char('k')), BufferKey::Consumed);
 
         // `space y` is two events through the same remembered-prefix path a
         // legacy terminal forces, so it needs the same dispatch proof.
@@ -17473,6 +17465,76 @@ mod tests {
                 .pending_count,
             None,
             "`Esc` is the route's disarm, and the count is a partial gesture"
+        );
+    }
+
+    #[tokio::test]
+    async fn escape_in_normal_mode_is_silent() {
+        let (state, _daemon) = opened_writer("alpha\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        let toast_count = app.messages_state.toasts.len();
+        let toast_history_len = app.messages_state.toasts.history_len();
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Esc)));
+        assert_eq!(app.messages_state.toasts.len(), toast_count);
+        assert_eq!(app.messages_state.toasts.history_len(), toast_history_len);
+    }
+
+    #[tokio::test]
+    async fn escape_from_select_keeps_the_highlight() {
+        let (state, _daemon) = opened_writer("alpha\nbravo\ncharlie\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('j'))));
+        assert!(handle_editor_key(&mut app, key(KeyCode::Char('v'))));
+        assert!(handle_editor_key(&mut app, key(KeyCode::Down)));
+
+        let held = {
+            let presentation = app
+                .editor_state
+                .session
+                .as_ref()
+                .expect("open")
+                .presentation();
+            assert_eq!(presentation.mode, EditorMode::Select);
+            assert_eq!(presentation.cursor_byte, 12);
+            presentation.selections.clone()
+        };
+        assert_eq!(held.len(), 1, "the selection is visible before Esc");
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Esc)));
+        let presentation = app
+            .editor_state
+            .session
+            .as_ref()
+            .expect("open")
+            .presentation();
+        assert_eq!(presentation.mode, EditorMode::Normal);
+        assert_eq!(presentation.selections, held, "Esc retains the highlight");
+        assert_eq!(
+            presentation.cursor_byte, 12,
+            "the cursor remains at the head"
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_motion_after_select_escape_starts_at_the_head() {
+        let (state, _daemon) = opened_writer("alpha\nbravo\ncharlie\ndelta\necho\n").await;
+        let mut app = app_on_the_editor_route(state).await;
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('v'),
+            KeyCode::Down,
+            KeyCode::Esc,
+        ] {
+            assert!(handle_editor_key(&mut app, key(code)));
+        }
+        assert_eq!(cursor(&app.editor_state), 12, "the selected head is line 3");
+
+        assert!(handle_editor_key(&mut app, key(KeyCode::Down)));
+        assert_eq!(
+            cursor(&app.editor_state),
+            20,
+            "the motion resumes on line 4"
         );
     }
 

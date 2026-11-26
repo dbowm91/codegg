@@ -452,8 +452,16 @@ the goto leaves that move the cursor.
 
 ### The bottom row
 
-The editor has **one** row of chrome, at the bottom. The file's path is on its
-left; the status cluster is on its right. The cluster reads left to right:
+The editor has **one** row of chrome, at the bottom. It starts with the mode —
+`NOR`, `INS` or `SEL` — so the editor's mode sits in the lower left, where
+Helix puts it. The file's path follows it; the status cluster is on the right.
+
+While a document is open the main composer is **not drawn**: the editor takes
+the whole column, and the mode badge on its bottom row is the surface's
+mode. Switching back to the session tab brings the composer back with its
+draft intact.
+
+The cluster reads left to right:
 
 | Part | What it says |
 |---|---|
@@ -488,6 +496,17 @@ left; the status cluster is on its right. The cluster reads left to right:
 | `zj` / `zk` | scroll the view a line down / up, leaving the cursor where it is |
 
 ### Select mode
+
+`v` starts a character selection and puts `SEL` in the bottom row. Movement
+extends it. `Esc` (or `v` again) leaves Select but **keeps** the highlight,
+and the next `h`/`j`/`k`/`l` resumes from the selection's head — the end you
+moved to — not from where the selection started. A movement is what drops the
+highlight.
+
+`x` selects the line as one action, with the cursor at the line's end; a
+second `x` extends the selection by a line, and a movement after it resumes
+from the end of the last selected line. That is the same rule as `v`: the
+cursor is always the selection's head.
 
 ### Goto mode
 
@@ -541,6 +560,11 @@ menu of its own shows that menu instead, titled with the level you are in
 (`Space`, `Space q`), and `space` steps back out.
 
 The menu is yours to extend: see [Configuring the editor](#configuring-the-editor).
+
+`space q a` asks a model for an insertion at the cursor. Its prompt opens as a
+**full-width band directly under the cursor's line**: the code below it moves
+down rather than being covered, and the band's rows carry no line numbers, so
+it reads as an input rather than as part of the file.
 
 | Key | What it does |
 |---|---|

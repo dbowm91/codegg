@@ -128,6 +128,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The inline editor's prompt is a full-width band under the cursor, not a box
+  in the middle of the screen.** `space q a` now opens the prompt on the row
+  directly below the cursor's line, spanning the editor's whole width. The code
+  below it moves down rather than being covered, and the band's rows carry no
+  line numbers — the border takes the gutter — so it reads as an input rather
+  than as part of the file. A cursor near the bottom of the window shifts the
+  view just enough to keep the whole band visible.
+- **The editor is a whole view: the main composer is hidden while a document is
+  open.** The editor takes the reclaimed rows, and its mode — `NOR`, `INS` or
+  `SEL` — is in the lower left of its bottom row, where Helix puts it. Keys no
+  longer fall through to an input box that is not on screen. Switching back to
+  the session tab restores the composer with its draft intact.
 - **The completion popup sits at your cursor and is as wide as its contents.**
   It used to be a fixed-width panel in the middle of the screen; it now opens
   on the row below your cursor's line with its left edge at your cursor's own
@@ -255,6 +267,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Inline editor generation works against OpenCode Go.** The request left the
+  provider's session context empty, and OpenCode Go refuses such a request
+  locally before any network I/O; the refusal reached the editor as a generic
+  `provider_error` with no cause on screen or in the log. The request now
+  carries the conversation the connection is attached to (or a stable id
+  derived from the document when there is none), and a provider failure is
+  logged with the provider, the model and the error class. Losing the session
+  context is no longer a silent, local failure.
+- **Select mode keeps its highlight, and `v`/`x` move from the head.** `Esc`
+  (or `v` again) leaves Select without dropping the selection; the next
+  `h`/`j`/`k`/`l` resumes from the head, which for `x` is the end of the last
+  selected line. Previously a movement jumped back to where the selection
+  started. Entering Normal mode no longer raises a toast.
 - **`o` and `O` open a line again.** Both keys were bound and both took the
   keyboard, and neither opened anything: the code that opens the line was
   written, tested, and unreachable from the key path, so the keys silently

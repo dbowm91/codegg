@@ -403,16 +403,50 @@ fn the_timeline_overlay_takes_the_keyboard() {
     assert!(!app.composer_holds_keyboard());
 }
 
-/// The editor route keeps the ordinary composer editable unless the user
-/// explicitly focused the document, so opening the editor does not take the
-/// keyboard away from composition.
+/// With no document open the editor route is only a shell message.
 #[test]
-fn the_editor_route_without_a_focused_buffer_leaves_the_composer_alone() {
+fn the_editor_route_without_a_document_leaves_the_composer_alone() {
     let mut app = test_app();
     app.ui_state.input_mode = InputMode::Insert;
     app.ui_state.routes.navigate_to(Route::Editor);
 
     assert!(app.composer_holds_keyboard());
+}
+
+/// A document open on the editor route is a whole view; the composer is not painted.
+#[test]
+fn an_open_document_takes_the_keyboard_in_normal_mode_too() {
+    let mut app = test_app();
+    app.ui_state.input_mode = InputMode::Normal;
+    app.ui_state.routes.navigate_to(Route::Editor);
+    app.editor_state.session = Some(TuiDocumentSession::new(Arc::new(SilentClient)));
+
+    assert!(!app.composer_holds_keyboard());
+}
+
+/// The editor claims the composer's rows; the session tab gives them back.
+#[test]
+fn an_editor_document_reclaims_the_composer_rows_until_the_session_returns() {
+    let mut app = test_app();
+    app.ui_state.routes.navigate_to(Route::Editor);
+    app.editor_state.session = Some(TuiDocumentSession::new(Arc::new(SilentClient)));
+
+    let _ = draw(&mut app, 100, 30);
+    assert_eq!(
+        app.frame_plan.prompt.height, 0,
+        "the document owns the composer's rows"
+    );
+    assert!(
+        app.frame_plan.viewport.height > 0,
+        "the reclaimed rows reach the viewport"
+    );
+
+    app.ui_state.routes.navigate_to(Route::Session("s1".into()));
+    let _ = draw(&mut app, 100, 30);
+    assert!(
+        app.frame_plan.prompt.height > 0,
+        "leaving the editor gives the composer its rows back"
+    );
 }
 
 /// With the document's buffer focused, the document holds the keyboard and

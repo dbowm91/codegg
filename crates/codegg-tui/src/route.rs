@@ -12,12 +12,14 @@ pub enum Route {
     /// Non-modal document editor primary view.
     ///
     /// The editor is identified by this route plus the open
-    /// `EditorState` attachment. The ordinary Session/Task composer
-    /// stays editable while this route is active unless the user
-    /// explicitly focuses the editor buffer, mirroring
-    /// [`Route::Workspace`]. The selected project/workspace comes from
-    /// the active tab's explicit execution context and never confers
-    /// authority by itself.
+    /// `EditorState` attachment. With a document open the editor is a
+    /// **whole view**: the main composer is not painted, its rows go to the
+    /// document, and its mode badge moves into the editor's own bottom row.
+    /// Without a document the route is only a shell message, so the ordinary
+    /// composer stays. This is stricter than [`Route::Workspace`], whose
+    /// filter is not the session composer. The selected project/workspace
+    /// comes from the active tab's explicit execution context and never
+    /// confers authority by itself.
     Editor,
 }
 

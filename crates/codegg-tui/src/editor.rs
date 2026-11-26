@@ -3369,13 +3369,11 @@ pub fn apply_helix_verb(
     match verb {
         HelixVerb::SelectChar => {
             // `v` is a **mode**, and the mode is what the reader can see.
-            // Entering it is what makes a movement grow the selection instead
-            // of dropping it; leaving it is what makes the next movement drop
-            // the selection again. `Esc` leaves it too — this is the same
-            // toggle, reached from the other end.
+            // Entering it makes movement grow the selection; leaving it keeps
+            // the held set until a deliberate Normal-mode movement collapses
+            // it. `Esc` leaves it too — the same transition from another key.
             if presentation.mode == EditorMode::Select {
                 presentation.mode = EditorMode::Normal;
-                state.clear();
             } else {
                 presentation.mode = EditorMode::Select;
                 // Armed on the cursor rather than toggled: the reader asked to
@@ -3392,16 +3390,25 @@ pub fn apply_helix_verb(
             //
             // Growth is per member: members on different lines must each walk
             // to *their* next line, so the surface resolves one point per
-            // member rather than one point for the set.
+            // member rather than one point for the set. The cursor follows the
+            // primary's content-end head, one column past its final character.
             if state.line_select_extends() {
                 state.grow_all_to(|selection| {
                     editor_point(
                         snapshot,
-                        next_line_content_start(snapshot, selection.head.line),
+                        next_line_content_end(snapshot, selection.head.line),
                     )
                 });
             } else {
                 state.select_line();
+                state.grow_all_to(|selection| {
+                    let end = line_content_end(snapshot, selection.head.line)
+                        .unwrap_or(selection.head.byte);
+                    editor_point(snapshot, end)
+                });
+            }
+            if let Some(head) = state.primary().map(|selection| selection.head) {
+                state.set_cursor(head);
             }
         }
         // ── Line-shape verbs ─────────────────────────────────────────────
@@ -3854,14 +3861,14 @@ fn motion_height(presentation: &TuiDocumentPresentation) -> usize {
     }
 }
 
-/// Byte offset of the first content byte on the line after `line`.
+/// Byte offset of the content end on the line after `line`.
 ///
-/// Clamped to the end of the buffer, so `x` on the last line grows into the
-/// terminator rather than past the document.
-fn next_line_content_start(snapshot: &DocumentSnapshot, line: usize) -> usize {
+/// Clamped to the last line, so `x` at the end of the document never moves
+/// past the buffer.
+fn next_line_content_end(snapshot: &DocumentSnapshot, line: usize) -> usize {
     let last = snapshot.len_lines().saturating_sub(1);
-    line_start(snapshot, (line + 1).min(last))
-        .unwrap_or_else(|| line_content_end(snapshot, last).unwrap_or_else(|| snapshot.len_bytes()))
+    line_content_end(snapshot, line.saturating_add(1).min(last))
+        .unwrap_or_else(|| snapshot.len_bytes())
 }
 
 /// What a Helix verb asked the caller to do.
@@ -9347,13 +9354,25 @@ mod tests {
 
     #[test]
     fn selecting_a_line_then_pressing_x_grows_it_by_exactly_one_line() {
-        let snapshot = snapshot_of("one\ntwo\nthree\nfour\n");
-        let mut presentation = presentation_at(1);
+        let snapshot = snapshot_of("alpha\nbravo\ncharlie\ndelta\n");
+        let mut presentation = presentation_at(0);
         apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
+        assert_eq!(
+            presentation.cursor_byte, 5,
+            "x places the cursor at line 1 content end"
+        );
+        assert_eq!(primary(&presentation).unwrap().head.byte, 5);
         assert_eq!(primary(&presentation).unwrap().line_range(), (0, 0));
+        assert_eq!(selection_range(&presentation, &snapshot), Some(0..6));
 
         apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
+        assert_eq!(
+            presentation.cursor_byte, 11,
+            "the second x ends at line 2 content end"
+        );
+        assert_eq!(primary(&presentation).unwrap().head.byte, 11);
         assert_eq!(primary(&presentation).unwrap().line_range(), (0, 1));
+        assert_eq!(selection_range(&presentation, &snapshot), Some(0..12));
 
         // A deliberate movement **drops** the selection outside select mode.
         // A selection that outlives the movement that made it reads as
@@ -9364,14 +9383,67 @@ mod tests {
             &mut presentation,
             HelixVerb::Moved(EditorCommand::MoveDown),
         );
+        assert_eq!(editor_point(&snapshot, presentation.cursor_byte).line, 2);
+        assert_eq!(
+            presentation.cursor_byte, 17,
+            "Down preserves the content-end column"
+        );
         assert!(
             primary(&presentation).is_none(),
             "a movement outside select mode drops the held selection"
         );
-        // The cursor is on line 1 now, so the next `x` re-anchors there
-        // rather than swallowing everything walked past.
+        // The cursor is on line 3, so the next x re-anchors there.
         apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
-        assert_eq!(primary(&presentation).unwrap().line_range(), (1, 1));
+        assert_eq!(primary(&presentation).unwrap().line_range(), (2, 2));
+        assert_eq!(presentation.cursor_byte, 19);
+    }
+
+    #[test]
+    fn moving_left_from_a_line_selection_head_moves_one_column_left() {
+        let snapshot = snapshot_of("alpha\nbravo\n");
+        let mut presentation = presentation_at(0);
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
+        assert_eq!(presentation.cursor_byte, 5);
+
+        apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::Moved(EditorCommand::MoveLeft),
+        );
+        assert_eq!(presentation.cursor_byte, 4);
+        assert!(primary(&presentation).is_none());
+    }
+
+    #[test]
+    fn selecting_an_empty_line_keeps_a_renderable_line_selection() {
+        let snapshot = snapshot_of("alpha\n\ncharlie\n");
+        let mut presentation = presentation_at(6);
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
+
+        let selection = primary(&presentation).expect("empty lines still have a selection");
+        assert_eq!(selection.line_range(), (1, 1));
+        assert_eq!(selection.head, editor_point(&snapshot, 6));
+        assert_eq!(presentation.cursor_byte, 6);
+        assert!(line_selection_covers_line(&snapshot, &selection, 1));
+        assert_eq!(selection_range(&presentation, &snapshot), Some(6..7));
+    }
+
+    #[test]
+    fn leaving_select_with_v_keeps_the_held_selection() {
+        let snapshot = snapshot_of("alpha\n");
+        let mut presentation = presentation_at(1);
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectChar);
+        apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::Moved(EditorCommand::MoveRight),
+        );
+        let held = primary(&presentation).expect("movement created a held selection");
+
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectChar);
+        assert_eq!(presentation.mode, EditorMode::Normal);
+        assert_eq!(primary(&presentation), Some(held));
+        assert_eq!(presentation.cursor_byte, held.head.byte);
     }
 
     #[test]

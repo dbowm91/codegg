@@ -2299,7 +2299,7 @@ the surface that owns the keyboard:
 | 1 | **mounted modal** | `App::focus_manager` | a modal owns the keyboard outright; `on_key` short-circuits to `handle_dialog_key` |
 | 2 | **focused side panel** | `App::panel_owns_keyboard` | the same condition `on_key` uses to consult the panel before the composer |
 | 3 | **the timeline overlay** | `App::ui_state.timeline_visible` | the jump-to-message picker claims the keys before the composer sees them |
-| 4 | **the editor's buffer** | `App::editor_buffer_owns_keyboard` | the editor route keeps the composer editable unless the document was explicitly focused |
+| 4 | **the editor view** | `App::composer_holds_keyboard` (the editor-view arm) | a document open on the editor route is a **whole view**: the composer is not painted there, so no key is routed to it, whatever the buffer's mode. With no document the route is a shell message and the composer owns the keyboard |
 | 5 | **otherwise** | — | the composer owns the keyboard |
 
 `App::panel_owns_keyboard` is the extracted form of the `panel_active`
@@ -2378,8 +2378,10 @@ is the app's **existing** gesture moved into the table — Helix `i` is
 "insert before the caret", the caret stays where it is, and the next character
 is typed at it, which is exactly what the gesture did. The table is the one
 place that says who owns the key; the `None` arm keeps the gesture for the
-surfaces the composer does not own (the editor route with its buffer
-unfocused, a focused panel, the Workspace view's chat pane).
+surfaces the composer does not own (a focused panel, the Workspace view's
+chat pane). The editor route is not one of them: with a document open it is a
+whole view, the composer is not painted, and the editor's own `i` enters
+Insert without the claim table's help.
 
 | Letter | Verb | Condition | Lands with |
 |---|---|---|---|
@@ -6864,6 +6866,17 @@ NOR/INS mode, its own multi-line text, and its own model and thinking level
 for that request only. It does not share the composer's claim table: on the
 editor route the composer refuses bare text, so a field that leaned on it
 would never see a keystroke.
+
+**The field is a document-flow band, not a dialog.** It is spliced into the
+line flow directly under the cursor's line, spans the text area's whole width,
+and consumes its own rows from the viewport, so the document below it moves
+down and nothing is covered. Its rows carry no gutter and no line numbers — the
+border occupies the gutter columns — which is what tells the reader the band is
+an input rather than file text. When the cursor is near the bottom, the render
+window shifts down by the deficit (a render-local adjustment; the stored scroll
+position is untouched) so the whole band stays visible. A window too small to
+host the band plus the cursor's line omits the band rather than falling back to
+a floating box.
 
 The field's buffer reuses the composer's multi-line text *model* as a type —
 one implementation of word motions, selection and a bounded undo history —

@@ -9974,10 +9974,10 @@ impl App {
     /// 3. **The timeline overlay.** `on_key` returns to the timeline before it
     ///    reaches the composer, so the keystrokes are going to the
     ///    jump-to-message picker and not to the composer.
-    /// 4. **The editor's buffer**, when it is explicitly focused — the editor
-    ///    route keeps the composer editable otherwise, and the composer owns
-    ///    the keyboard in that case.
-    /// 5. **Otherwise the composer owns it.**
+    /// 4. **The editor view** — with a document open the composer is not
+    ///    painted and no key reaches it; without one the composer still owns.
+    /// 5. **The focused editor buffer** — `Insert` with a document open.
+    /// 6. **Otherwise the composer owns it.**
     ///
     /// The terminal box needs no arm of its own: it is a modal, so arm 1
     /// already covers it. The overlays that claim only *some* keys — the tasks
@@ -9992,6 +9992,12 @@ impl App {
             return false;
         }
         if self.ui_state.timeline_visible {
+            return false;
+        }
+        // A destination that is not painted cannot be where keys go.
+        if self.editor_state.is_open()
+            && matches!(self.ui_state.routes.current(), crate::route::Route::Editor)
+        {
             return false;
         }
         !self.editor_buffer_owns_keyboard()

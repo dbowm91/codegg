@@ -35,8 +35,8 @@ use crate::theme::Theme;
 
 /// Rows of chrome reserved at the **bottom** of the editor block.
 ///
-/// One row, and only one. It carries the **path on the left** and the
-/// **status cluster on the right**.
+/// One row, and only one. It carries the mode badge first, then the path,
+/// with the status cluster fitted at the right.
 ///
 /// It used to be two: a banner row and a coordinate readout. The readout's
 /// line and column were the cursor restated, and everything else it carried
@@ -191,8 +191,8 @@ pub struct EditorWidget<'a> {
     /// Whether the document owns the keyboard.
     ///
     /// One fact, derived from the route's `input_mode` by the caller: INS
-    /// puts the cursor in the text, NOR hands typing to the bottom input box
-    /// while the Helix verbs stay on the buffer.
+    /// puts the cursor in the text, NOR leaves the Helix verbs on the buffer.
+    /// The editor route has no composer; this is the buffer's own focus.
     pub buffer_focused: bool,
     /// The armed multi-key prefix, rendered as its pending indicator.
     pub pending_prefix: EditorPrefix,
@@ -256,6 +256,51 @@ const PICKER_ROW_BYTES: usize = 512;
 /// Characters of a line a picker row shows.
 const PICKER_ROW_CHARS: usize = 60;
 
+/// The inline prompt's document-flow rows, measured once.
+struct InlinePromptLayout<'a> {
+    instruction_lines: Vec<&'a str>,
+    height: u16,
+}
+
+impl<'a> InlinePromptLayout<'a> {
+    fn new(field: &'a InlinePromptField) -> Self {
+        let mut instruction_lines = field.lines();
+        if instruction_lines.is_empty() {
+            instruction_lines.push("");
+        }
+        let instruction_rows = instruction_lines.len().clamp(1, 8);
+        Self {
+            instruction_lines,
+            height: (instruction_rows + 3) as u16,
+        }
+    }
+}
+
+/// Move only this frame's viewport window so the band fits below the cursor.
+fn fit_inline_prompt_below_cursor(
+    viewport: &mut EditorViewport,
+    cursor_line: usize,
+    band_height: u16,
+) -> bool {
+    let Some(cursor_row) = cursor_line.checked_sub(viewport.first_line) else {
+        return false;
+    };
+    let visible_lines = viewport.visible_lines as usize;
+    if cursor_row >= visible_lines {
+        return false;
+    }
+    let deficit = cursor_row
+        .saturating_add(1)
+        .saturating_add(band_height as usize)
+        .saturating_sub(visible_lines);
+    viewport.first_line = viewport.first_line.saturating_add(deficit);
+    cursor_line
+        .checked_sub(viewport.first_line)
+        .is_some_and(|row| {
+            row.saturating_add(1).saturating_add(band_height as usize) <= visible_lines
+        })
+}
+
 impl EditorWidget<'_> {
     /// Paint the editor into `area`.
     pub fn render(self, frame: &mut Frame, area: Rect) {
@@ -273,9 +318,9 @@ impl EditorWidget<'_> {
         let focused = self.buffer_focused;
         // The block's top border carries **no label**. It used to carry
         // `{path} · {mode} · {status}`, and all three moved: the path and the
-        // status to the single bottom row, the mode to the badge above the
-        // input box. An empty border is the honest result — every signal the
-        // title carried is still on screen, and none of it is on screen twice.
+        // status to the single bottom row, the mode to that row's own badge.
+        // An empty border is the honest result — every signal the title
+        // carried is still on screen, and none of it is on screen twice.
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if focused { theme.primary } else { theme.border }))
@@ -295,8 +340,9 @@ impl EditorWidget<'_> {
         let is_generating = inline_assist.is_some_and(InlineAssistState::is_generating);
         self.render_chrome(frame, inner, is_generating);
         let region = inline_assist.and_then(InlineAssistState::region);
+        let inline_field = inline_assist.and_then(InlineAssistState::field);
         let viewport = if text_area.height > 0 {
-            let viewport = self.render_text(frame, text_area, region, region_applies);
+            let viewport = self.render_text(frame, text_area, region, region_applies, inline_field);
             if let Some(viewport) = viewport {
                 if let Some(region) = region {
                     let in_region =
@@ -321,9 +367,6 @@ impl EditorWidget<'_> {
         self.render_lsp_panel(frame, area);
         self.render_completion_popup(frame, area, text_area, viewport);
         self.render_command_palette(frame, text_area);
-        if let Some(field) = inline_assist.and_then(InlineAssistState::field) {
-            self.render_inline_prompt_overlay(frame, text_area, field);
-        }
     }
 
     /// The `space j` **jumplist picker**, in the keymap box's corner.
@@ -453,20 +496,16 @@ impl EditorWidget<'_> {
             .unwrap_or_default()
     }
 
-    /// The editor's single bottom row: the path on the left, the status
-    /// cluster on the right.
+    /// The editor's single bottom row: the mode badge at left, the path or
+    /// modal input beside it, and the status cluster at right.
     ///
     /// The right slot is the **cluster**: the persistent signals, then the
     /// transient disclosure, then the notice, then the armed prefix. It is
     /// right-aligned rather than wrapped, so the row is always exactly one
     /// row tall and the text area never changes height.
     ///
-    /// The two slots **never overlap**. The cluster is fitted to what the
-    /// path leaves — the path keeps up to a third of the row, and the cluster
-    /// takes the rest — and when even that is not enough, the cluster drops
-    /// its least important element rather than running over the path. A
-    /// status row painted on top of the path is two half-legible surfaces
-    /// where one legible one was asked for.
+    /// The badge's width is reserved first. The path and cluster then share the
+    /// rest as before: a third to the path, the cluster dropping elements.
     fn render_chrome(&self, frame: &mut Frame, inner: Rect, is_generating: bool) {
         let theme = Arc::clone(&self.theme);
         let row = Rect {
@@ -479,47 +518,83 @@ impl EditorWidget<'_> {
             return;
         }
         let available = row.width as usize;
-        // The path keeps what it needs, up to a third of the row. It is the
-        // least urgent thing on the row — it does not change — but a path
-        // squeezed to one column is a path nobody can read either.
+        let mode = match self.mode {
+            EditorMode::Normal => "NOR",
+            EditorMode::Insert => "INS",
+            EditorMode::Select => "SEL",
+        };
+        // The mode is the row's first fact and is never muted; `SEL` most of all.
+        let mode_style = match self.mode {
+            EditorMode::Normal => Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+            EditorMode::Insert => Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+            EditorMode::Select => Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        };
+        let mode_width = unicode_width::UnicodeWidthStr::width(mode);
+        let badge_width = mode_width
+            .saturating_add(usize::from(available > mode_width))
+            .min(available);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(mode, mode_style),
+                Span::raw(if badge_width > mode_width { " " } else { "" }),
+            ]))
+            .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            Rect {
+                width: badge_width as u16,
+                ..row
+            },
+        );
+        if badge_width == available {
+            return;
+        }
+
+        // The badge is reserved before either text slot; the path and cluster
+        // keep their existing relative budget in the columns that remain.
+        let content_x = row.x + badge_width as u16;
+        let content_width = available.saturating_sub(badge_width);
         let (left_text, left_style) = self.chrome_input();
         let path_width = unicode_width::UnicodeWidthStr::width(left_text.as_str());
-        let path_share = path_width.min((available / 3).max(1));
-        let cluster_budget = available.saturating_sub(path_share).saturating_sub(1);
+        let path_share = path_width.min((content_width / 3).max(1));
+        let cluster_budget = content_width.saturating_sub(path_share).saturating_sub(1);
         let right = fit_cluster(self.chrome_cluster(&theme, is_generating), cluster_budget);
         let right_width = right.iter().map(|span| span.width()).sum::<usize>();
-        let left_budget = available.saturating_sub(right_width + 1).max(1);
+        let left_budget = content_width.saturating_sub(right_width + 1).max(1);
         let left_text = crate::wrap::ellipsize_to_width(&left_text, left_budget);
         // Themed like the text area. The block paints its background first,
         // but anything the user has typed into the composer underneath can
-        // leave the terminal's own default behind on this row, and a status
-        // line in a different colour than the document reads as two
-        // different surfaces.
+        // leave the terminal's own default behind on this row.
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(left_text, left_style)))
                 .style(Style::default().bg(theme.background).fg(theme.foreground)),
             Rect {
-                width: left_budget.min(available) as u16,
+                x: content_x,
+                width: left_budget.min(content_width) as u16,
                 ..row
             },
         );
         if right_width == 0 {
             return;
         }
-        let right_x = row.x + (available - right_width) as u16;
+        let right_x = content_x + (content_width - right_width) as u16;
         frame.render_widget(
             Paragraph::new(Line::from(right))
                 .style(Style::default().bg(theme.background).fg(theme.foreground)),
             Rect {
                 x: right_x,
-                width: right_width.min(available) as u16,
+                width: right_width.min(content_width) as u16,
                 ..row
             },
         );
     }
 
-    /// The left slot of the bottom row: the modal input line when one is
-    /// open, and the file's path when none is.
+    /// The text following the bottom-row mode badge: the modal input line
+    /// when one is open, and the file's path when none is.
     fn chrome_input(&self) -> (String, Style) {
         let theme = Arc::clone(&self.theme);
         if self.search_active {
@@ -845,46 +920,104 @@ impl EditorWidget<'_> {
         area: Rect,
         region: Option<&InlineAssistRegion>,
         region_applies: bool,
+        field: Option<&InlinePromptField>,
     ) -> Option<EditorViewport> {
         let theme = Arc::clone(&self.theme);
+        let prompt_layout = field.map(InlinePromptLayout::new);
+        let mut prompt_band_height = prompt_layout
+            .as_ref()
+            .filter(|layout| area.height >= layout.height.saturating_add(1))
+            .map_or(0, |layout| layout.height);
+        // Too little room for the band and a document row: omit it, never float it.
         let valid_region =
             region.filter(|region| self.inline_region_is_valid(region, region_applies));
         let anchor_line = valid_region.and_then(|region| {
             let anchor = usize::try_from(region.anchor).ok()?;
             Some(editor::cursor_line(self.snapshot, anchor))
         });
+        let region_capacity = area
+            .height
+            .saturating_sub(prompt_band_height)
+            .saturating_sub(1) as usize;
         let requested_region_height = valid_region
-            .map(|region| region.height().min(area.height.saturating_sub(1) as usize))
+            .map(|region| region.height().min(region_capacity))
             .unwrap_or(0);
+        let viewport_height = area
+            .height
+            .saturating_sub(prompt_band_height)
+            .saturating_sub(requested_region_height as u16);
         let mut viewport = editor::resolve_viewport(
             self.presentation,
             self.snapshot,
             area.width,
-            area.height.saturating_sub(requested_region_height as u16),
+            viewport_height,
         );
-        let visible_region_line = if requested_region_height > 0 {
-            anchor_line.filter(|line| {
-                *line >= viewport.first_line
-                    && *line
+        let region_is_visible = |viewport: EditorViewport| {
+            anchor_line.is_some_and(|line| {
+                line >= viewport.first_line
+                    && line
                         < viewport
                             .first_line
                             .saturating_add(viewport.visible_lines as usize)
             })
+        };
+        let mut visible_region_height =
+            if requested_region_height > 0 && region_is_visible(viewport) {
+                requested_region_height
+            } else {
+                0
+            };
+        if requested_region_height > 0 && visible_region_height == 0 {
+            viewport = editor::resolve_viewport(
+                self.presentation,
+                self.snapshot,
+                area.width,
+                area.height.saturating_sub(prompt_band_height),
+            );
+        }
+        let cursor_line = editor::cursor_line(self.snapshot, self.cursor_byte);
+        if prompt_band_height > 0
+            && !fit_inline_prompt_below_cursor(&mut viewport, cursor_line, prompt_band_height)
+        {
+            // A scrolled viewport can leave the cursor off-screen; omit the field.
+            prompt_band_height = 0;
+            viewport = editor::resolve_viewport(
+                self.presentation,
+                self.snapshot,
+                area.width,
+                area.height.saturating_sub(visible_region_height as u16),
+            );
+        }
+        if visible_region_height > 0 && !region_is_visible(viewport) {
+            // The band adjustment moved the assist anchor out of view; drop it.
+            visible_region_height = 0;
+            viewport = editor::resolve_viewport(
+                self.presentation,
+                self.snapshot,
+                area.width,
+                area.height.saturating_sub(prompt_band_height),
+            );
+            if prompt_band_height > 0
+                && !fit_inline_prompt_below_cursor(&mut viewport, cursor_line, prompt_band_height)
+            {
+                prompt_band_height = 0;
+                viewport = editor::resolve_viewport(
+                    self.presentation,
+                    self.snapshot,
+                    area.width,
+                    area.height,
+                );
+            }
+        }
+        let visible_region_line = if visible_region_height > 0 {
+            anchor_line.filter(|_| region_is_visible(viewport))
         } else {
             None
         };
-        let visible_region_height = if visible_region_line.is_some() {
-            requested_region_height
-        } else {
-            viewport =
-                editor::resolve_viewport(self.presentation, self.snapshot, area.width, area.height);
-            0
-        };
-        let rendered_region = visible_region_line.and(valid_region);
-        let region_lines = rendered_region
+        let region_lines = visible_region_line
+            .and(valid_region)
             .map(|region| inline_region_lines(region, viewport, visible_region_height, &theme))
             .unwrap_or_default();
-        let cursor_line = editor::cursor_line(self.snapshot, self.cursor_byte);
         // Resolved once per frame, not per row: `selection_range` clamps and
         // resolves lines, and doing that per row would re-walk the selection
         // for every visible line.
@@ -906,7 +1039,10 @@ impl EditorWidget<'_> {
         let current_style = Style::default().bg(theme.alternate_bg);
 
         let total_lines = self.snapshot.len_lines();
-        let mut lines: Vec<Line> = Vec::with_capacity(viewport.visible_lines as usize);
+        let mut lines: Vec<Line> = Vec::with_capacity(
+            viewport.visible_lines as usize + prompt_band_height as usize + visible_region_height,
+        );
+        let mut prompt_band_top_row = None;
         // C002 frame budget: content reads across all visible rows cost at
         // most 256 KiB. Rows past the budget render as a marker without
         // reading a single content byte, so a viewport full of huge lines
@@ -986,6 +1122,12 @@ impl EditorWidget<'_> {
                 ));
             }
             lines.push(Line::from(spans));
+            if prompt_band_height > 0 && line_index == cursor_line {
+                prompt_band_top_row = Some(lines.len() as u16);
+                lines.extend(
+                    std::iter::repeat_with(Line::default).take(prompt_band_height as usize),
+                );
+            }
             if visible_region_line == Some(line_index) {
                 lines.extend(region_lines.iter().cloned());
             }
@@ -994,10 +1136,17 @@ impl EditorWidget<'_> {
         // non-empty. Test the text, not the line count.
         if self.snapshot.is_empty() {
             lines.clear();
+            prompt_band_top_row = None;
             lines.push(Line::from(Span::styled(
                 "(empty document)",
                 Style::default().fg(theme.muted),
             )));
+            if prompt_band_height > 0 && cursor_line == 0 {
+                prompt_band_top_row = Some(lines.len() as u16);
+                lines.extend(
+                    std::iter::repeat_with(Line::default).take(prompt_band_height as usize),
+                );
+            }
             if visible_region_line == Some(0) {
                 lines.extend(region_lines.iter().cloned());
             }
@@ -1013,6 +1162,20 @@ impl EditorWidget<'_> {
             area,
         );
         self.render_scrollbar(frame, area, &viewport);
+        if let (Some(field), Some(layout), Some(top_row)) =
+            (field, prompt_layout.as_ref(), prompt_band_top_row)
+        {
+            if prompt_band_height > 0 {
+                self.render_inline_prompt_band(
+                    frame,
+                    area,
+                    field,
+                    &layout.instruction_lines,
+                    prompt_band_height,
+                    top_row,
+                );
+            }
+        }
         Some(viewport)
     }
 
@@ -1323,27 +1486,23 @@ impl EditorWidget<'_> {
         );
     }
 
-    fn render_inline_prompt_overlay(
+    fn render_inline_prompt_band(
         &self,
         frame: &mut Frame,
         area: Rect,
         field: &InlinePromptField,
+        instruction_lines: &[&str],
+        height: u16,
+        top_row: u16,
     ) {
-        if area.width < 6 || area.height < 4 {
+        if area.width == 0 || height == 0 || top_row.saturating_add(height) > area.height {
             return;
         }
         let theme = Arc::clone(&self.theme);
-        let mut instruction_lines = field.lines();
-        if instruction_lines.is_empty() {
-            instruction_lines.push("");
-        }
-        let visible_rows = instruction_lines.len().clamp(1, 8);
-        let width = area.width.min(76);
-        let height = (visible_rows as u16 + 3).min(area.height);
         let rect = Rect {
-            x: area.x + area.width.saturating_sub(width) / 2,
-            y: area.y + area.height.saturating_sub(height) / 2,
-            width,
+            x: area.x,
+            y: area.y + top_row,
+            width: area.width,
             height,
         };
         let block = Block::default()
@@ -3812,7 +3971,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_prompt_overlay_is_floating_and_paints_its_choices_and_caret() {
+    fn inline_prompt_band_splices_below_cursor_and_preserves_document_rows() {
         let text = (0..20)
             .map(|line| format!("line{line}\n"))
             .collect::<String>();
@@ -3822,23 +3981,113 @@ mod tests {
         let mut assist = InlineAssistState::default();
         assist.open_field().set_instruction("ask".to_string());
         let (rendered, presentation) = render_assisted(&text, 80, 20, 0, None, &assist);
+        let rows = lines_of(&rendered);
+        let cursor_row = row_containing(&rendered, "line0");
+        let band_row = row_containing(&rendered, "inline [INS]");
+        let band_height = 4;
+
+        assert_eq!(band_row, cursor_row + 1, "the band follows its cursor line");
+        assert_eq!(
+            rendered[(1, band_row as u16)].symbol(),
+            "┌",
+            "the border starts at the text area's left edge, including the gutter"
+        );
+        assert_eq!(
+            rendered[(78, band_row as u16)].symbol(),
+            "┐",
+            "the band spans the complete text-area width"
+        );
+        assert_eq!(
+            row_containing(&rendered, "line1"),
+            row_containing(&baseline, "line1") + band_height,
+            "the next document line moves down by the full band height"
+        );
+        for line in 1..=12 {
+            assert_eq!(
+                row_containing(&rendered, &format!("line{line}")),
+                row_containing(&baseline, &format!("line{line}")) + band_height,
+                "document row {line} remains visible below the inserted band"
+            );
+        }
         assert_eq!(
             baseline_presentation.visible_lines,
-            presentation.visible_lines
+            presentation.visible_lines + band_height,
+            "the field reserves its rows from the document viewport"
         );
         assert_eq!(baseline_presentation.view_scroll, presentation.view_scroll);
-        assert_eq!(lines_of(&baseline)[1], lines_of(&rendered)[1]);
-        let joined = lines_of(&rendered).join("\n");
-        assert!(joined.contains("[INS]"), "{joined}");
-        assert!(joined.contains("inherit"), "{joined}");
-        let rows = lines_of(&rendered);
-        let row = row_containing(&rendered, "ask");
-        let ask_end = rows[row].find("ask").unwrap() + "ask".len();
-        let caret_column = unicode_width::UnicodeWidthStr::width(&rows[row][..ask_end]);
+        assert!(rows.join("\n").contains("inherit"), "choices are painted");
+
+        let instruction_row = row_containing(&rendered, "ask");
+        let ask_end = rows[instruction_row].find("ask").unwrap() + "ask".len();
+        let caret_column = unicode_width::UnicodeWidthStr::width(&rows[instruction_row][..ask_end]);
         assert_eq!(
-            rendered[(caret_column as u16, row as u16)].bg,
-            Theme::default().primary
+            rendered[(caret_column as u16, instruction_row as u16)].bg,
+            Theme::default().primary,
+            "the block caret remains visible"
         );
+    }
+
+    #[test]
+    fn inline_prompt_band_keeps_every_gutter_number_on_its_shifted_line() {
+        let text = (0..40)
+            .map(|line| format!("line{line:02}\n"))
+            .collect::<String>();
+        let mut assist = InlineAssistState::default();
+        assist
+            .open_field()
+            .set_instruction("alpha\nbravo\ncharlie".to_string());
+        let cursor = text.find("line20").expect("line 20");
+        let (rendered, _) = render_assisted(&text, 100, 24, cursor, None, &assist);
+        let rows = lines_of(&rendered);
+        let cursor_row = row_containing(&rendered, "line20");
+        let band_row = row_containing(&rendered, "inline [INS]");
+        let band_height = 6;
+
+        assert_eq!(band_row, cursor_row + 1, "the band follows its cursor line");
+        for offset in 0..4 {
+            let number = 21 + offset;
+            let row = row_containing(&rendered, &format!("line{number}"));
+            assert_eq!(
+                row,
+                band_row + band_height + offset,
+                "line{number} is shifted by the band's full height"
+            );
+            let gutter = format!("{} ", number + 1);
+            let number_at = rows[row]
+                .find(&gutter)
+                .unwrap_or_else(|| panic!("no gutter for line{number}: {}", rows[row]));
+            let text_at = rows[row].find(&format!("line{number}")).expect("text");
+            assert!(
+                number_at < text_at,
+                "the number and its text share the shifted row: {}",
+                rows[row]
+            );
+        }
+    }
+
+    #[test]
+    fn inline_prompt_band_fits_below_the_last_document_line() {
+        let text = "first\nlast";
+        let mut assist = InlineAssistState::default();
+        assist.open_field().set_instruction("ask".to_string());
+        let (rendered, _) =
+            render_assisted(text, 50, 12, text.find("last").unwrap(), None, &assist);
+        let last_row = row_containing(&rendered, "last");
+        let band_row = row_containing(&rendered, "inline [INS]");
+        assert_eq!(band_row, last_row + 1);
+        assert_eq!(rendered[(1, band_row as u16)].symbol(), "┌");
+        assert_eq!(rendered[(48, band_row as u16)].symbol(), "┐");
+    }
+
+    #[test]
+    fn inline_prompt_band_is_omitted_when_it_cannot_leave_a_document_row() {
+        let mut assist = InlineAssistState::default();
+        assist.open_field().set_instruction("ask".to_string());
+        let (rendered, _) = render_assisted("first\nlast", 50, 7, 0, None, &assist);
+        let rows = lines_of(&rendered);
+        assert!(!rows.join("\n").contains("inline [INS]"));
+        assert!(!rows.join("\n").contains("inherit"));
+        assert!(rows.join("\n").contains("first"));
     }
 
     #[test]
@@ -4103,8 +4352,8 @@ mod tests {
         }
     }
 
-    /// The editor's single chrome row: the path on the left, the status
-    /// cluster on the right.
+    /// The editor's single chrome row: the mode badge and path on the left,
+    /// the status cluster on the right.
     ///
     /// It is the **last** row of the block, so the assertion does not depend
     /// on the chrome height or on where the block's borders are.
@@ -4112,6 +4361,131 @@ mod tests {
         // The last rendered line is the block's **bottom border**; the
         // chrome row is the one inside it.
         lines.iter().rev().nth(1).cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn normal_mode_badge_is_on_the_bottom_chrome_row() {
+        let row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Normal,
+                ..defaults()
+            },
+        ));
+        assert!(row.contains("NOR"), "{row}");
+    }
+
+    #[test]
+    fn insert_mode_badge_is_on_the_bottom_chrome_row() {
+        let row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Insert,
+                ..defaults()
+            },
+        ));
+        assert!(row.contains("INS"), "{row}");
+    }
+
+    #[test]
+    fn select_mode_badge_is_on_the_bottom_chrome_row() {
+        let row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Select,
+                ..defaults()
+            },
+        ));
+        assert!(row.contains("SEL"), "{row}");
+    }
+
+    #[test]
+    fn mode_badge_keeps_the_path_and_modal_input_next_to_it() {
+        let path_row = banner(&render("content", 60, 8, 0, defaults()));
+        assert!(path_row.contains("NOR src/lib.rs"), "{path_row}");
+
+        let command_row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                command_active: true,
+                command_line: "wq",
+                ..defaults()
+            },
+        ));
+        assert!(command_row.contains("NOR :wq_"), "{command_row}");
+
+        let search_row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                search_active: true,
+                search_line: "needle",
+                ..defaults()
+            },
+        ));
+        assert!(search_row.contains("NOR /needle_"), "{search_row}");
+    }
+
+    #[test]
+    fn mode_badge_names_the_mode_and_is_never_muted() {
+        let theme = Theme::default();
+        let normal = render_buffer("content", 60, 8, 0, defaults());
+        let normal_badge = &normal[(1, 6)];
+        assert_eq!(normal_badge.symbol(), "N");
+        assert_eq!(normal_badge.fg, theme.foreground);
+        assert!(normal_badge.modifier.contains(Modifier::BOLD));
+
+        // The badge describes the buffer's mode, not which surface has the
+        // keyboard: a dialog can take the keyboard without changing the mode.
+        let unfocused = render_buffer(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                ..defaults()
+            },
+        );
+        assert_eq!(unfocused[(1, 6)].fg, theme.foreground);
+
+        let inserting = render_buffer(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Insert,
+                ..defaults()
+            },
+        );
+        assert_eq!(inserting[(1, 6)].fg, theme.primary);
+
+        let selecting = render_buffer(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Select,
+                ..defaults()
+            },
+        );
+        assert_eq!(selecting[(1, 6)].fg, theme.warning);
     }
 
     #[test]
@@ -4555,8 +4929,14 @@ mod tests {
     fn armed_indicator(buffer: &ratatui::buffer::Buffer, height: u16) -> String {
         let theme = Theme::default();
         let row = banner_row(height);
+        let mode_badge_start = (0..buffer.area.width.saturating_sub(2)).find(|x| {
+            buffer[(*x, row)].symbol() == "N"
+                && buffer[(*x + 1, row)].symbol() == "O"
+                && buffer[(*x + 2, row)].symbol() == "R"
+        });
+        let indicator_start = mode_badge_start.map_or(0, |x| x + 3);
         let mut text = String::new();
-        for x in 0..buffer.area.width {
+        for x in indicator_start..buffer.area.width {
             let cell = &buffer[(x, row)];
             if cell.fg == theme.primary && cell.modifier.contains(Modifier::BOLD) {
                 text.push_str(cell.symbol());
@@ -4566,7 +4946,7 @@ mod tests {
     }
 
     /// Every armed prefix puts something different on screen, and an idle editor
-    /// puts nothing there.
+    /// has no pending-prefix indicator.
     ///
     /// The distinctness is the point, not the presence: an indicator that rendered
     /// every prefix identically would let a user believe they had armed a grammar
@@ -4574,7 +4954,7 @@ mod tests {
     /// indicator at all before M002 — the baseline's `bool` had nowhere to render
     /// to — and `space y` is the gesture that made that visible.
     #[test]
-    fn every_pending_prefix_renders_distinctly_and_idle_renders_nothing() {
+    fn every_pending_prefix_renders_distinctly_and_idle_has_no_prefix_indicator() {
         let mut seen: Vec<(EditorPrefix, String)> = Vec::new();
         for prefix in [
             EditorPrefix::Idle,
@@ -4614,7 +4994,7 @@ mod tests {
             if prefix == EditorPrefix::Idle {
                 assert!(
                     indicator.is_empty(),
-                    "an idle editor must not show an indicator: {banner:?}"
+                    "an idle editor must not show a pending-prefix indicator: {banner:?}"
                 );
             } else {
                 assert_eq!(

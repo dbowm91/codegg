@@ -141,6 +141,10 @@ impl CoreDaemon {
             Some((_, id)) => id.to_owned(),
             None => model.clone(),
         };
+        let provider_context = inline_provider_context(
+            self.clients.attached_session_for(client_id),
+            &request.document_id,
+        );
         let mut chat_request = ChatRequest {
             messages: vec![Message::User {
                 content: vec![ContentPart::Text {
@@ -156,14 +160,23 @@ impl CoreDaemon {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
-            context: ProviderRequestContext::default(),
+            context: provider_context,
         };
         let effort = apply_reasoning_choice(&mut chat_request, reasoning);
 
         let collected = tokio::time::timeout(std::time::Duration::from_secs(TIMEOUT_SECS), async {
             let mut stream = match provider.stream(&chat_request).await {
                 Ok(stream) => stream,
-                Err(_) => return Err(refusal::PROVIDER_ERROR),
+                Err(error) => {
+                    tracing::warn!(
+                        provider_id = %provider.id(),
+                        model_id = %chat_request.model,
+                        error_class = error.error_class(),
+                        error = %error,
+                        "inline editor provider stream failed"
+                    );
+                    return Err(refusal::PROVIDER_ERROR);
+                }
             };
             let mut generated = String::new();
             while let Some(event) = stream.next().await {
@@ -178,10 +191,26 @@ impl CoreDaemon {
                         generated.push_str(&delta);
                     }
                     Ok(crate::provider::ChatEvent::Finish { .. }) => break,
-                    Ok(crate::provider::ChatEvent::Error(_)) => {
+                    Ok(crate::provider::ChatEvent::Error(error)) => {
+                        tracing::warn!(
+                            provider_id = %provider.id(),
+                            model_id = %chat_request.model,
+                            error_class = "provider_stream_event",
+                            error = %error,
+                            "inline editor provider stream emitted an error"
+                        );
                         return Err(refusal::PROVIDER_ERROR);
                     }
-                    Err(_) => return Err(refusal::PROVIDER_ERROR),
+                    Err(error) => {
+                        tracing::warn!(
+                            provider_id = %provider.id(),
+                            model_id = %chat_request.model,
+                            error_class = error.error_class(),
+                            error = %error,
+                            "inline editor provider stream failed"
+                        );
+                        return Err(refusal::PROVIDER_ERROR);
+                    }
                     _ => {}
                 }
             }
@@ -236,6 +265,23 @@ impl CoreDaemon {
             connection.provider_kind.as_str(),
             model_id
         ))
+    }
+}
+
+/// The editor's provider context: the conversation the connection is attached
+/// to, or a stable bounded id derived from the document when there is none.
+fn inline_provider_context(
+    attached_session: Option<String>,
+    document_id: &str,
+) -> ProviderRequestContext {
+    let session_id = attached_session.unwrap_or_else(|| {
+        use sha2::Digest;
+        format!("editor-{:x}", sha2::Sha256::digest(document_id.as_bytes()))
+    });
+
+    ProviderRequestContext {
+        session_id: Some(session_id.into()),
+        ..Default::default()
     }
 }
 
@@ -490,6 +536,49 @@ mod tests {
             request.context.reasoning,
             ReasoningControl::Disabled,
             "off must reach the wire as an explicit disable"
+        );
+    }
+
+    #[test]
+    fn editor_provider_context_prefers_the_attached_session() {
+        let context = inline_provider_context(Some("attached-session".to_owned()), "doc-a");
+
+        assert_eq!(
+            context.session_id.as_deref(),
+            Some("attached-session"),
+            "the connection's conversation takes precedence over the document fallback"
+        );
+    }
+
+    #[test]
+    fn editor_provider_context_fallback_is_stable_bounded_and_document_specific() {
+        let first = inline_provider_context(None, "doc-a")
+            .session_id
+            .expect("fallback session id");
+        let same_document = inline_provider_context(None, "doc-a")
+            .session_id
+            .expect("repeated fallback session id");
+        let other_document = inline_provider_context(None, "doc-b")
+            .session_id
+            .expect("other document fallback session id");
+
+        assert_eq!(
+            first, same_document,
+            "one document maps to one stable session id"
+        );
+        assert_ne!(
+            first, other_document,
+            "different documents map to different session ids"
+        );
+        assert!(
+            first.len() <= codegg_core::context::MAX_SESSION_ID_LENGTH,
+            "the projected session id stays within the session limit"
+        );
+        assert!(
+            first
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-'),
+            "the projected session id uses header-safe ASCII characters"
         );
     }
 
