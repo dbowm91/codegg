@@ -13,8 +13,8 @@ max_block_lines = 50
 unlisted_max_comment_lines = 20
 
 [global]
-max_comment_lines = 140879
-max_comment_words = 1258430
+max_comment_lines = 140908
+max_comment_words = 1258758
 max_ratio = 0.1342
 
 # Per-file ceilings. A file may shrink; it may not grow past what is
@@ -225,13 +225,13 @@ max_ratio = 0.1342
 "crates/codegg-tui/src/app/commands.rs" = { max_comment_lines = 502, max_ratio = 0.3494 }
 "crates/codegg-tui/src/app/compact_command_tests.rs" = { max_comment_lines = 24, max_ratio = 0.0843 }
 "crates/codegg-tui/src/app/input.rs" = { max_comment_lines = 108, max_ratio = 0.0874 }
-"crates/codegg-tui/src/app/mod.rs" = { max_comment_lines = 2903, max_ratio = 0.2027 }
+"crates/codegg-tui/src/app/mod.rs" = { max_comment_lines = 2912, max_ratio = 0.2031 }
 "crates/codegg-tui/src/app/modal.rs" = { max_comment_lines = 84, max_ratio = 0.1622 }
 "crates/codegg-tui/src/app/plugin_ui.rs" = { max_comment_lines = 60, max_ratio = 0.2265 }
 "crates/codegg-tui/src/app/present_card.rs" = { max_comment_lines = 25, max_ratio = 0.3206 }
 "crates/codegg-tui/src/app/project_session.rs" = { max_comment_lines = 125, max_ratio = 0.5435 }
 "crates/codegg-tui/src/app/prompt_turn.rs" = { max_comment_lines = 94, max_ratio = 0.3123 }
-"crates/codegg-tui/src/app/render.rs" = { max_comment_lines = 792, max_ratio = 0.2483 }
+"crates/codegg-tui/src/app/render.rs" = { max_comment_lines = 795, max_ratio = 0.2492 }
 "crates/codegg-tui/src/app/state/async_request.rs" = { max_comment_lines = 64, max_ratio = 0.3299 }
 "crates/codegg-tui/src/app/state/center_tabs.rs" = { max_comment_lines = 415, max_ratio = 0.3361 }
 "crates/codegg-tui/src/app/state/change_review.rs" = { max_comment_lines = 77, max_ratio = 0.1965 }
@@ -285,7 +285,7 @@ max_ratio = 0.1342
 "crates/codegg-tui/src/commands/manifest_restore.rs" = { max_comment_lines = 114, max_ratio = 0.4176 }
 "crates/codegg-tui/src/commands/memory.rs" = { max_comment_lines = 23, max_ratio = 0.0288 }
 "crates/codegg-tui/src/commands/observe.rs" = { max_comment_lines = 64, max_ratio = 0.1098 }
-"crates/codegg-tui/src/commands/panels.rs" = { max_comment_lines = 551, max_ratio = 0.6415 }
+"crates/codegg-tui/src/commands/panels.rs" = { max_comment_lines = 565, max_ratio = 0.623 }
 "crates/codegg-tui/src/commands/plugin_management.rs" = { max_comment_lines = 42, max_ratio = 0.0524 }
 "crates/codegg-tui/src/commands/plugins.rs" = { max_comment_lines = 75, max_ratio = 0.0567 }
 "crates/codegg-tui/src/commands/policy.rs" = { max_comment_lines = 100, max_ratio = 0.1336 }
@@ -378,7 +378,7 @@ max_ratio = 0.1342
 "crates/codegg-tui/src/panels/chat.rs" = { max_comment_lines = 135, max_ratio = 0.5134 }
 "crates/codegg-tui/src/panels/chrome.rs" = { max_comment_lines = 53, max_ratio = 0.3272 }
 "crates/codegg-tui/src/panels/help.rs" = { max_comment_lines = 43, max_ratio = 0.5658 }
-"crates/codegg-tui/src/panels/hosted.rs" = { max_comment_lines = 154, max_ratio = 0.55 }
+"crates/codegg-tui/src/panels/hosted.rs" = { max_comment_lines = 157, max_ratio = 0.5608 }
 "crates/codegg-tui/src/panels/mod.rs" = { max_comment_lines = 986, max_ratio = 0.5648 }
 "crates/codegg-tui/src/panels/session.rs" = { max_comment_lines = 31, max_ratio = 0.4079 }
 "crates/codegg-tui/src/panels/terminal.rs" = { max_comment_lines = 193, max_ratio = 0.5203 }

@@ -254,11 +254,14 @@ impl Placeholder {
     fn lines(&self) -> Vec<ratatui::text::Line<'static>> {
         let bold = Style::default().add_modifier(ratatui::style::Modifier::BOLD);
         match &self.state {
+            // M002: a one-line state that describes the panel. The walk can
+            // select every one of these, so the body may not be a call to
+            // action about some *other* surface.
             PlaceholderState::Idle => vec![
                 ratatui::text::Line::from(""),
-                ratatui::text::Line::from("Nothing loaded.").style(bold),
-                ratatui::text::Line::from(""),
-                ratatui::text::Line::from("Open it from the panel manager (⇧S)."),
+                ratatui::text::Line::from(format!("{} has nothing to show yet.", self.id.label()))
+                    .style(bold),
+                ratatui::text::Line::from(self.id.hint()),
             ],
             PlaceholderState::Loading => vec![
                 ratatui::text::Line::from(""),

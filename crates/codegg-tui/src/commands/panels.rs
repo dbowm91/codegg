@@ -373,6 +373,9 @@ fn materialize_hosted_panel(app: &mut App, id: SidePanelId) -> bool {
     if app.dock_target().is_some() {
         return true;
     }
+    // Every step of the walk starts a fresh intent: an older wait must not
+    // adopt a box the user has since navigated away from.
+    app.dock_on_open = None;
     match open_panel_box(app, id) {
         PanelFill::Filled => {
             if let Some(widget) = app.close_dialog() {
@@ -398,18 +401,19 @@ fn materialize_hosted_panel(app: &mut App, id: SidePanelId) -> bool {
         PanelFill::StillLoading => {
             app.panel_host
                 .set_placeholder_state(id, PlaceholderState::Loading);
-            app.messages_state
-                .toasts
-                .info(&format!("{} opened — press L to dock it", id.label()));
-            false
+            // M002: the load is live but its box is not built yet. The walk
+            // keeps the column, and the box is docked into it the moment it
+            // lands — a modal over the column the user just chose is the defect
+            // this replaces.
+            app.dock_on_open = Some(id);
+            true
         }
-        // A box opened, just not for this panel. It keeps the keyboard, and the
-        // panel it actually belongs to is the one that can adopt it.
+        // A box opened, just not for this panel. It belongs to *that* panel, so
+        // that is the one it is docked into; this column is then free to take
+        // the selection.
         PanelFill::OpenedAs(other) => {
-            app.messages_state
-                .toasts
-                .info(&format!("Opened as {} — press L to dock it", other.label()));
-            false
+            app.dock_on_open = Some(other);
+            true
         }
         // Not hosted, so no placeholder exists and nothing was attempted.
         PanelFill::Bespoke => true,
@@ -1455,4 +1459,71 @@ pub(crate) fn dispatch_panels(app: &mut App) {
     // command is typed, not chorded, so it opens the same box
     // from Insert as well.
     crate::commands::panels::open_panel_manager(app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M002: the walk never refuses the column. Every selectable panel keeps
+    /// the selection, whatever its fill did, because the *panel* is what the
+    /// user asked to look at.
+    #[tokio::test]
+    async fn every_panel_the_walk_selects_keeps_the_column() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        for id in SidePanelId::ALL.iter().copied() {
+            assert!(
+                materialize_hosted_panel(&mut app, id),
+                "{} must keep the column selected",
+                id.label()
+            );
+        }
+    }
+
+    /// M002: a box that arrives for the panel the walk selected is docked into
+    /// it, so the box never sits over the column as a modal.
+    #[tokio::test]
+    async fn a_box_for_a_waiting_panel_is_docked_instead_of_mounted() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.dock_on_open = Some(SidePanelId::Context);
+        app.open_dialog(crate::app::Dialog::Context);
+        assert!(
+            app.dock_target().is_some(),
+            "the premise: the box is mounted first"
+        );
+
+        app.dock_waiting_panel();
+
+        assert!(
+            app.dock_target().is_none(),
+            "an adopted box must not stay mounted as a modal"
+        );
+        assert_eq!(
+            app.panel_host
+                .hosted_panel_has_content(SidePanelId::Context),
+            Some(true),
+            "the waiting panel holds the box's own content"
+        );
+    }
+
+    /// M002: a box belonging to a *different* panel is left alone, because
+    /// adopting it would put one panel's content in another's column.
+    #[tokio::test]
+    async fn a_box_for_another_panel_is_left_mounted() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.dock_on_open = Some(SidePanelId::Usage);
+        app.open_dialog(crate::app::Dialog::Context);
+
+        app.dock_waiting_panel();
+
+        assert!(
+            app.dock_target().is_some(),
+            "another panel's box keeps its own mount"
+        );
+        assert_ne!(
+            app.panel_host.hosted_panel_has_content(SidePanelId::Usage),
+            Some(true),
+            "the unrelated waiting panel must not adopt it"
+        );
+    }
 }

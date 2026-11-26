@@ -137,6 +137,10 @@ fn readable_on(
 
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
+        // M002: adopt a finished asynchronous box into the panel that is
+        // waiting for it, before anything is painted, so the column never
+        // shows a modal it is about to absorb.
+        self.dock_waiting_panel();
         let area = frame.area();
         // M007: the Workspace route is a whole view, not a viewport inside the
         // session frame. It owns every region and paints no sidebar, no

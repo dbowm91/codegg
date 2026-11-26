@@ -1230,7 +1230,7 @@ The addendum is complete when all twelve milestones have closure records and:
 | Milestone | Scope | Class | Status |
 |---|---|---|---|
 | M001 | New repository becomes one project; no empty session | capability | partial — launch is a draft (no row); the integration test and receipt are outstanding |
-| M002 | Panel walk fills the column; Terminal NOR | capability / invariant | partial — Terminal NOR landed and is tested; the inline-load contract for every asynchronous filler is not |
+| M002 | Panel walk fills the column; Terminal NOR | capability / invariant | landed — Terminal NOR tested; every fill keeps the column, an asynchronous box is docked into the waiting panel before it paints, and the idle body describes the panel |
 | M003 | Aggregate Diff panel | capability | landed — additive `files` + splitter + panel browser; `tui-test` receipt outstanding |
 | M004 | One model + reasoning preference write | invariant / capability | landed — one CAS, returned preference, store regression test; receipt outstanding |
 | M005 | Lazy sessions and workspace-scoped listing | capability / invariant | landed — draft sessions for launch, `Ctrl+N` and `/new`; the list defaults to the active workspace with a project toggle, hides message-less rows unless asked, and a counted `C` cleanup spares the active session |
@@ -1343,6 +1343,16 @@ grouping across two workspaces, the empty-row filter with the active-session
 exemption, and the cleanup count with its unanswered-counts refusal), and a
 deterministic fix for the `a_refused_clear_reports_itself` fixture, which raced
 the terminal create against its own attach.
+
+**Third pass (M002):** `materialize_hosted_panel` now returns `true` for every
+fill. An asynchronous filler paints `Loading` and records `App::dock_on_open`; the
+frame pass calls `dock_waiting_panel` **before painting**, so the finished box is
+adopted into that panel instead of mounting over it. A box belonging to a different
+panel is docked into *its* panel, never this one. The idle placeholder became a
+one-line description (`<label> has nothing to show yet.` plus the panel's hint)
+rather than a call to action. Three tests cover the contract: every panel in
+`SidePanelId::ALL` keeps the column, a matching box is docked rather than mounted,
+and an unrelated box is left mounted.
 
 **Outstanding evidence:** no `tui-test` receipt has been captured on this head, no
 `plans/implementation/tui-workspace-and-panel-surface-corrective/NNN-*` work package

@@ -3376,6 +3376,29 @@ component on selection: the project catalog with its own NOR/INS filter. `Enter`
 opens or focuses the selected project's tab through the ordinary project-tab path; it
 never opens a modal and never requires `Route::Workspace`.
 
+### The panel walk: an inline load, never a modal (M002)
+
+Selecting a panel from the walk starts its fill and **keeps the column**. The
+outcome is recorded on the panel itself, so the column shows the truth instead of a
+standing "nothing is loaded":
+
+- a synchronous fill is adopted immediately (`PanelFill::Filled`);
+- a refused one paints its reason inline (`PanelFill::Cannot`);
+- an asynchronous one paints `Loading` and is adopted **when its box lands**
+  (`materialize_hosted_panel` sets `App::dock_on_open`; the frame pass calls
+  `dock_waiting_panel` before painting anything, so the box never flashes as a
+  modal).
+
+`materialize_hosted_panel` used to return `false` for the asynchronous case, which
+left a modal over the column and put the badge on a panel that did not own the
+keyboard. It now returns `true` for every fill: the panel is what the user asked to
+look at. A box that belongs to a *different* panel is docked into that panel, not
+this one, because adopting it here would put one panel's content in another's
+column.
+
+The idle placeholder is a one-line state describing the panel — `<label> has nothing
+to show yet.` plus its hint — never a call to action pointing at another surface.
+
 ### Terminal panel: a load is not a typing session (M002)
 
 Selecting the Terminal panel creates or attaches its shell and paints the live PTY

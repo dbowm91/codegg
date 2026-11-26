@@ -355,6 +355,9 @@ pub struct App {
     /// never leak input to the composer. `sidebar` remains the Session
     /// panel's projection, not the region's owner.
     pub panel_host: crate::panels::SidePanelHost,
+    /// M002: the panel the walk is filling asynchronously. A box that arrives
+    /// for it is docked into the column instead of mounting over it.
+    pub(crate) dock_on_open: Option<crate::panels::SidePanelId>,
     pub status_bar: StatusBarWidget,
     /// M007 frontend-local cache of the daemon-resolved runtime policy
     /// (approval mode / sandbox profile / enforcement / reviewer
@@ -1206,6 +1209,7 @@ impl App {
                 saved_panel_placement,
                 &saved_panel_layout,
             ),
+            dock_on_open: None,
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             policy_ui: crate::commands::policy::PolicyUiState::default(),
             session_store: None,
@@ -1800,6 +1804,7 @@ impl App {
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
             panel_host: crate::panels::SidePanelHost::new(),
+            dock_on_open: None,
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             policy_ui: crate::commands::policy::PolicyUiState::default(),
             session_store: None,
@@ -10195,6 +10200,26 @@ impl App {
     /// is nothing to move, and silently selecting a panel would turn a stray
     /// `L` in the transcript into an invisible navigation the user cannot
     /// predict.
+    /// M002: dock a box that arrived for the panel the walk selected.
+    ///
+    /// The walk starts an asynchronous fill and keeps the column selected with
+    /// an inline loading state, so the box must land *in* that panel rather
+    /// than over it: a modal would take the keyboard and the next `Shift+J/K`
+    /// would go to it instead of moving panels.
+    pub(crate) fn dock_waiting_panel(&mut self) {
+        let Some(waiting) = self.dock_on_open else {
+            return;
+        };
+        if self.dock_target() != Some(waiting) {
+            // Not this panel's box (or none yet). Keep waiting.
+            return;
+        }
+        self.dock_on_open = None;
+        if let Some(widget) = self.close_dialog() {
+            self.panel_host.adopt(waiting, widget);
+        }
+    }
+
     pub fn dock_target(&self) -> Option<crate::panels::SidePanelId> {
         use crate::components::component::DialogType;
         use crate::panels::SidePanelId as P;
