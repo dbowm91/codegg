@@ -222,6 +222,169 @@ impl DirectoryListingGate {
     }
 }
 
+/// Which publication policy a managed-document push uses.
+///
+/// ADR-0065 §3 separates these: the publication that gates an interactive
+/// `didOpen` must not wait for a diagnostic that this open has not caused,
+/// while qualification, restart, and the document-change paths keep the
+/// profile policy they already had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicationPolicy {
+    /// The awaited document paths (change, save, reload, create). Uses the
+    /// server profile's readiness policy, exactly as before ADR-0065.
+    Awaited,
+    /// The interactive open path. Does not wait on
+    /// `WaitForDiagnosticsOrTimeout`, so the requested file's `didOpen` is
+    /// not sequenced behind a diagnostic it would itself produce.
+    Interactive,
+}
+
+/// One managed-document publication's outcome.
+///
+/// Three outcomes, not four: `Pending` is the absence of an outcome and
+/// `Legacy` is a decode-only sentinel, so neither can be produced here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedPublication {
+    Synced,
+    Pending,
+    Degraded,
+    Unavailable,
+}
+
+impl ManagedPublication {
+    fn lsp_sync(self) -> crate::protocol::core::DocumentLspSync {
+        match self {
+            Self::Synced => crate::protocol::core::DocumentLspSync::Synced,
+            Self::Pending => crate::protocol::core::DocumentLspSync::Pending,
+            Self::Degraded => crate::protocol::core::DocumentLspSync::Degraded,
+            Self::Unavailable => crate::protocol::core::DocumentLspSync::Unavailable,
+        }
+    }
+
+    /// `lsp_degraded` reports a failure or an absent server, never a
+    /// successful push. A `Pending` open response is therefore `false`.
+    fn degraded(self) -> bool {
+        self.lsp_sync().is_degraded()
+    }
+}
+
+/// The daemon-owned inputs one managed-document publication needs.
+///
+/// A separate owned handle rather than a `&CoreDaemon` method because an
+/// interactive open *schedules* publication and returns (ADR-0065): the
+/// scheduled task outlives the request that spawned it, so it cannot borrow
+/// the daemon. Clone is cheap — every field is an `Arc`.
+#[derive(Clone)]
+pub(crate) struct ManagedPublisher {
+    documents: Arc<crate::document_service::DocumentService>,
+    workspaces: Arc<codegg_core::workspace::WorkspaceRegistry>,
+    lsp_service: Option<Arc<egglsp::service::LspService>>,
+}
+
+impl ManagedPublisher {
+    fn for_daemon(daemon: &CoreDaemon) -> Self {
+        Self {
+            documents: daemon.documents.clone(),
+            workspaces: daemon.workspaces.clone(),
+            lsp_service: daemon.deps.lsp_service.clone(),
+        }
+    }
+
+    /// Clear the sync witness for this revision, unless a newer revision has
+    /// already superseded it.
+    ///
+    /// M006 §4: a failed or cancelled push clears the witness for the
+    /// revision it did not deliver; it does not clear a newer revision that a
+    /// later push already recorded.
+    fn clear_witness_if_current(&self, snapshot: &codegg_protocol::document::DocumentSnapshotDto) {
+        if self
+            .documents
+            .is_lsp_publication_revision_current(&snapshot.document_id, snapshot.revision)
+        {
+            self.documents.clear_lsp_synced(&snapshot.document_id);
+        }
+    }
+
+    /// Push `snapshot`'s text to the server that owns it.
+    ///
+    /// M003's sync witness is preserved exactly: a revision is recorded only
+    /// when the push below succeeds, and every other exit clears the witness,
+    /// so a revision that never reached a server can never later read as
+    /// synchronized. Eviction clears it too (see `DocumentService`),
+    /// matching the `didClose` the close path sends exactly on eviction.
+    async fn publish(
+        &self,
+        snapshot: &codegg_protocol::document::DocumentSnapshotDto,
+        policy: PublicationPolicy,
+    ) -> ManagedPublication {
+        let Some(service) = &self.lsp_service else {
+            // No language-server service at all: nothing was pushed and
+            // nothing failed. The witness is untouched because no server
+            // could have recorded it.
+            return ManagedPublication::Unavailable;
+        };
+        self.documents
+            .note_lsp_publication_revision(&snapshot.document_id, snapshot.revision);
+        let publication_lock = self.documents.lsp_publication_lock(&snapshot.document_id);
+        let _publication_guard = publication_lock.lock().await;
+        if !self
+            .documents
+            .is_lsp_publication_revision_current(&snapshot.document_id, snapshot.revision)
+        {
+            return ManagedPublication::Pending;
+        }
+        let Ok(workspace_id) = codegg_core::workspace::WorkspaceId::parse(&snapshot.workspace_id)
+        else {
+            self.clear_witness_if_current(snapshot);
+            return ManagedPublication::Degraded;
+        };
+        let Some(workspace) = self.workspaces.resolve(&workspace_id).await else {
+            self.clear_witness_if_current(snapshot);
+            return ManagedPublication::Degraded;
+        };
+        let path = workspace.canonical_root.join(&snapshot.relative_path);
+        let result = match policy {
+            PublicationPolicy::Awaited => {
+                service
+                    .set_managed_document(&path, &snapshot.text, snapshot.dirty)
+                    .await
+            }
+            PublicationPolicy::Interactive => {
+                service
+                    .set_managed_document_interactive(&path, &snapshot.text, snapshot.dirty)
+                    .await
+            }
+        };
+        match result {
+            Ok(()) => {
+                record_managed_push_outcome(
+                    &self.documents,
+                    &snapshot.document_id,
+                    snapshot.revision,
+                    true,
+                );
+                ManagedPublication::Synced
+            }
+            Err(error) => {
+                record_managed_push_outcome(
+                    &self.documents,
+                    &snapshot.document_id,
+                    snapshot.revision,
+                    false,
+                );
+                match error {
+                    // No server claims this document. That is the server's
+                    // absence, not a failed push, and it must not read as
+                    // "degraded" to a caller deciding whether to retry.
+                    egglsp::LspError::UnsupportedLanguage(_)
+                    | egglsp::LspError::ServerNotFound(_) => ManagedPublication::Unavailable,
+                    _ => ManagedPublication::Degraded,
+                }
+            }
+        }
+    }
+}
+
 impl CoreDaemon {
     /// Confirm `workspace_id` is one of `project_id`'s workspaces.
     ///
@@ -251,42 +414,108 @@ impl CoreDaemon {
         }
     }
 
+    /// Await one managed-document publication and report whether it failed.
+    ///
+    /// The change, save, and reload arms use this one. ADR-0065 §7 did not
+    /// make those asynchronous, so their `lsp_degraded` keeps the meaning it
+    /// had: the sync this response waited for did not succeed.
     async fn sync_managed_document(
         &self,
         snapshot: &codegg_protocol::document::DocumentSnapshotDto,
     ) -> bool {
-        // M003: the sync witness. A revision is recorded only when the push
-        // below succeeds; every other exit clears the witness, so a revision
-        // that never reached a server can never later read as synchronized.
-        // Eviction clears it too (see `DocumentService`), matching the
-        // `didClose` the close path sends exactly on eviction.
-        let Some(service) = &self.deps.lsp_service else {
-            return false;
-        };
-        let workspace_id = match codegg_core::workspace::WorkspaceId::parse(&snapshot.workspace_id)
-        {
-            Ok(workspace_id) => workspace_id,
-            Err(_) => {
-                self.documents.clear_lsp_synced(&snapshot.document_id);
-                return true;
-            }
-        };
-        let Some(workspace) = self.workspaces.resolve(&workspace_id).await else {
-            self.documents.clear_lsp_synced(&snapshot.document_id);
-            return true;
-        };
-        let path = workspace.canonical_root.join(&snapshot.relative_path);
-        let degraded = service
-            .set_managed_document(&path, &snapshot.text, snapshot.dirty)
+        self.publish_managed_document(snapshot).await.degraded()
+    }
+
+    /// Await one managed-document publication and keep its full outcome.
+    ///
+    /// The paths that answer with a `DocumentSnapshot` need the three-way
+    /// outcome, because "no server claims this language" and "the push
+    /// failed" are different answers and a boolean cannot carry both.
+    async fn publish_managed_document(
+        &self,
+        snapshot: &codegg_protocol::document::DocumentSnapshotDto,
+    ) -> ManagedPublication {
+        ManagedPublisher::for_daemon(self)
+            .publish(snapshot, PublicationPolicy::Awaited)
             .await
-            .is_err();
-        if degraded {
-            self.documents.clear_lsp_synced(&snapshot.document_id);
-        } else {
-            self.documents
-                .record_lsp_synced(&snapshot.document_id, snapshot.revision);
-        }
-        degraded
+    }
+
+    /// Schedule managed publication and return without awaiting it.
+    ///
+    /// ADR-0065 §1: the workspace `DocumentOpen` response deadline is
+    /// document authority — authorization, the open, and the disk refresh.
+    /// Publication continues here, on its own task, because the interactive
+    /// editor must paint the snapshot it was just handed.
+    ///
+    /// The task owns its inputs. A publication that fails after the response
+    /// has gone out does not roll the snapshot back: it clears the sync
+    /// witness (`ManagedPublisher::publish` does that) and the response that
+    /// already said `Pending` never claimed the outcome.
+    fn schedule_managed_publication(
+        &self,
+        snapshot: codegg_protocol::document::DocumentSnapshotDto,
+    ) {
+        let publisher = ManagedPublisher::for_daemon(self);
+        publisher
+            .documents
+            .note_lsp_publication_revision(&snapshot.document_id, snapshot.revision);
+        tokio::spawn(async move {
+            let _ = publisher
+                .publish(&snapshot, PublicationPolicy::Interactive)
+                .await;
+        });
+    }
+
+    /// Debounce the language-server notification that follows a committed
+    /// local edit. The document response is already committed and does not
+    /// wait for this work; the callback records only the pushed revision.
+    fn schedule_managed_change_publication(
+        &self,
+        snapshot: codegg_protocol::document::DocumentSnapshotDto,
+    ) {
+        let publisher = ManagedPublisher::for_daemon(self);
+        publisher
+            .documents
+            .note_lsp_publication_revision(&snapshot.document_id, snapshot.revision);
+        tokio::spawn(async move {
+            let Some(service) = publisher.lsp_service.clone() else {
+                return;
+            };
+            let publication_lock = publisher
+                .documents
+                .lsp_publication_lock(&snapshot.document_id);
+            let _publication_guard = publication_lock.lock().await;
+            if !publisher
+                .documents
+                .is_lsp_publication_revision_current(&snapshot.document_id, snapshot.revision)
+            {
+                return;
+            }
+            let Ok(workspace_id) =
+                codegg_core::workspace::WorkspaceId::parse(&snapshot.workspace_id)
+            else {
+                publisher.documents.clear_lsp_synced(&snapshot.document_id);
+                return;
+            };
+            let Some(workspace) = publisher.workspaces.resolve(&workspace_id).await else {
+                publisher.documents.clear_lsp_synced(&snapshot.document_id);
+                return;
+            };
+            let path = workspace.canonical_root.join(&snapshot.relative_path);
+            let documents = publisher.documents.clone();
+            let document_id = snapshot.document_id.clone();
+            let revision = snapshot.revision;
+            let on_complete = move |synced| {
+                record_managed_push_outcome(&documents, &document_id, revision, synced);
+            };
+            if service
+                .schedule_managed_document_change(&path, snapshot.text, snapshot.dirty, on_complete)
+                .await
+                .is_err()
+            {
+                publisher.documents.clear_lsp_synced(&snapshot.document_id);
+            }
+        });
     }
 
     /// Re-read the document's bytes from disk and reconcile the snapshot.
@@ -425,11 +654,17 @@ impl CoreDaemon {
                 {
                     Ok((snapshot, writer_lease)) => {
                         let snapshot = self.refresh_external_disk(snapshot, client_id, false).await;
-                        let lsp_degraded = self.sync_managed_document(&snapshot).await;
+                        // ADR-0065: this response is document authority. The
+                        // publication that gates `didOpen` continues on its own
+                        // task under the interactive policy, so a cold server
+                        // cannot hold the editor on an empty buffer for the
+                        // profile's diagnostics timeout.
+                        self.schedule_managed_publication(snapshot.clone());
                         Ok(CoreResponse::DocumentSnapshot {
                             snapshot,
                             writer_lease,
-                            lsp_degraded,
+                            lsp_degraded: false,
+                            lsp_sync: codegg_protocol::core::DocumentLspSync::Pending,
                         })
                     }
                     Err(error) => Ok(document_error(error)),
@@ -544,11 +779,12 @@ impl CoreDaemon {
                 {
                     Ok((snapshot, writer_lease)) => {
                         let snapshot = self.refresh_external_disk(snapshot, client_id, true).await;
-                        let lsp_degraded = self.sync_managed_document(&snapshot).await;
+                        let publication = self.publish_managed_document(&snapshot).await;
                         Ok(CoreResponse::DocumentSnapshot {
                             snapshot,
                             writer_lease,
-                            lsp_degraded,
+                            lsp_degraded: publication.degraded(),
+                            lsp_sync: publication.lsp_sync(),
                         })
                     }
                     Err(error) => Ok(document_error(error)),
@@ -663,11 +899,12 @@ impl CoreDaemon {
                 {
                     Ok(snapshot) => {
                         let snapshot = self.refresh_external_disk(snapshot, client_id, false).await;
-                        let lsp_degraded = self.sync_managed_document(&snapshot).await;
+                        let publication = self.publish_managed_document(&snapshot).await;
                         Ok(CoreResponse::DocumentSnapshot {
                             snapshot,
                             writer_lease: None,
-                            lsp_degraded,
+                            lsp_degraded: publication.degraded(),
+                            lsp_sync: publication.lsp_sync(),
                         })
                     }
                     Err(error) => Ok(document_error(error)),
@@ -736,7 +973,11 @@ impl CoreDaemon {
                             .snapshot(&document_id, &project_id, client_id)
                             .await;
                         let lsp_degraded = match snapshot {
-                            Ok(snapshot) => self.sync_managed_document(&snapshot).await,
+                            Ok(snapshot) => {
+                                let unavailable = self.deps.lsp_service.is_none();
+                                self.schedule_managed_change_publication(snapshot);
+                                unavailable
+                            }
                             Err(_) => true,
                         };
                         Ok(CoreResponse::DocumentChanged {
@@ -1054,6 +1295,35 @@ impl CoreDaemon {
             CoreRequest::WorkspaceDirectoryList { request } => {
                 Ok(self.directory_listing(request).await)
             }
+            CoreRequest::EditorInlineGenerate {
+                request_id,
+                project_id,
+                workspace_id: _,
+                document_id,
+                document_revision,
+                anchor,
+                context_before,
+                context_after,
+                instruction,
+                model,
+                reasoning,
+            } => Ok(self
+                .editor_inline_generate(
+                    crate::core::daemon_editor_inline::InlineGenerateRequest {
+                        request_id,
+                        project_id,
+                        document_id,
+                        document_revision,
+                        anchor,
+                        context_before,
+                        context_after,
+                        instruction,
+                        model,
+                        reasoning,
+                    },
+                    client_id,
+                )
+                .await),
             _ => Ok(doc_error(
                 "document_unimplemented",
                 "unsupported document request",
@@ -1464,7 +1734,9 @@ impl CoreDaemon {
                 // A global agent config is not a workspace document: it has
                 // no workspace root to resolve against, and pushing it into
                 // the LSP would both fail and misrepresent it as project code.
-                lsp_degraded: false,
+                // `Unavailable` states that fact; it is not a failed push.
+                lsp_degraded: true,
+                lsp_sync: codegg_protocol::core::DocumentLspSync::Unavailable,
             },
             Err(error) => document_error(error),
         }
@@ -1521,7 +1793,10 @@ impl CoreDaemon {
             Ok((snapshot, writer_lease)) => CoreResponse::DocumentSnapshot {
                 snapshot,
                 writer_lease,
-                lsp_degraded: false,
+                // Same authority as `open_global_agent`: this document is
+                // deliberately outside workspace LSP publication.
+                lsp_degraded: true,
+                lsp_sync: codegg_protocol::core::DocumentLspSync::Unavailable,
             },
             Err(error) => document_error(error),
         }
@@ -1634,6 +1909,19 @@ impl CoreDaemon {
     }
 }
 
+fn record_managed_push_outcome(
+    documents: &crate::document_service::DocumentService,
+    document_id: &str,
+    pushed_revision: u64,
+    succeeded: bool,
+) {
+    if succeeded {
+        documents.record_lsp_synced(document_id, pushed_revision);
+    } else if documents.is_lsp_publication_revision_current(document_id, pushed_revision) {
+        documents.clear_lsp_synced(document_id);
+    }
+}
+
 fn sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
@@ -1643,6 +1931,89 @@ fn sha256(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use codegg_protocol::document::{WorkspaceDirectoryNodeDto, WorkspaceDirectoryNodeKindDto};
+
+    async fn witness_fixture() -> (
+        tempfile::TempDir,
+        Arc<crate::document_service::DocumentService>,
+        String,
+    ) {
+        let root = tempfile::tempdir().expect("create document fixture");
+        std::fs::write(root.path().join("main.rs"), "fn main() {}\n").expect("seed document");
+        let documents = Arc::new(crate::document_service::DocumentService::new());
+        let (snapshot, _) = documents
+            .open(
+                "project-m006".to_owned(),
+                "workspace-m006".to_owned(),
+                root.path(),
+                "main.rs",
+                "client-m006",
+                true,
+                DocumentScope::Workspace,
+            )
+            .await
+            .expect("open managed document");
+        (root, documents, snapshot.document_id)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_flight_push_records_its_revision_not_a_newer_committed_revision() {
+        let (_root, documents, document_id) = witness_fixture().await;
+        documents.note_lsp_publication_revision(&document_id, 1);
+
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let push_documents = documents.clone();
+        let push_document_id = document_id.clone();
+        let push_started = started.clone();
+        let push_release = release.clone();
+        let push = tokio::spawn(async move {
+            push_started.notify_one();
+            push_release.notified().await;
+            record_managed_push_outcome(&push_documents, &push_document_id, 1, true);
+        });
+
+        started.notified().await;
+        documents.note_lsp_publication_revision(&document_id, 2);
+        release.notify_one();
+        push.await.expect("in-flight push task");
+
+        let binding = documents
+            .completion_binding(&document_id)
+            .await
+            .expect("document remains open");
+        assert_eq!(binding.lsp_synced_revision, Some(1));
+        assert!(documents.is_lsp_publication_revision_current(&document_id, 2));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_current_push_clears_its_sync_witness() {
+        let (_root, documents, document_id) = witness_fixture().await;
+        documents.note_lsp_publication_revision(&document_id, 1);
+        record_managed_push_outcome(&documents, &document_id, 1, true);
+        record_managed_push_outcome(&documents, &document_id, 1, false);
+
+        let binding = documents
+            .completion_binding(&document_id)
+            .await
+            .expect("document remains open");
+        assert_eq!(binding.lsp_synced_revision, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn older_failed_push_does_not_clear_a_newer_successful_witness() {
+        let (_root, documents, document_id) = witness_fixture().await;
+        documents.note_lsp_publication_revision(&document_id, 1);
+        record_managed_push_outcome(&documents, &document_id, 1, true);
+        documents.note_lsp_publication_revision(&document_id, 2);
+        record_managed_push_outcome(&documents, &document_id, 2, true);
+        record_managed_push_outcome(&documents, &document_id, 1, false);
+
+        let binding = documents
+            .completion_binding(&document_id)
+            .await
+            .expect("document remains open");
+        assert_eq!(binding.lsp_synced_revision, Some(2));
+    }
 
     fn node(name: &str, path: &str) -> WorkspaceDirectoryNodeDto {
         WorkspaceDirectoryNodeDto {
@@ -1720,24 +2091,37 @@ mod tests {
         );
         let one_len = serialized_listing_response_len(&one_response);
         assert!(full_len > one_len);
-        // Force a trim by feeding an oversized tree: duplicate the nodes
-        // until the full response exceeds the budget, then assert the
-        // enforcer retains a strict prefix with a reason.
-        let mut big = nodes.clone();
-        while {
-            let probe = build_bounded_listing_response(
-                "ws-1".to_owned(),
-                String::new(),
-                listing_with(big.clone()),
-            );
-            let result = result_of(&probe);
-            !result.truncated
-        } {
-            big.extend(nodes.clone());
-            if big.len() > 10_000 {
-                break;
-            }
-        }
+        // Size one oversized tree from a real serialization. Searching for
+        // the boundary re-serializes every intermediate tree.
+        let empty_len = serialized_listing_response_len(&listing_response(
+            "ws-1".to_owned(),
+            String::new(),
+            Vec::new(),
+            false,
+            None,
+            0,
+            WorkspaceDirectoryListStatusDto::Ready,
+        ));
+        let probe_count = 32usize;
+        let probe_nodes: Vec<_> = (0..probe_count)
+            .map(|i| node("a.txt", &format!("p{i}.txt")))
+            .collect();
+        let probe_len = serialized_listing_response_len(&listing_response(
+            "ws-1".to_owned(),
+            String::new(),
+            probe_nodes,
+            false,
+            None,
+            probe_count,
+            WorkspaceDirectoryListStatusDto::Ready,
+        ));
+        assert!(probe_len > empty_len);
+        let per_node = (probe_len - empty_len) / probe_count;
+        assert!(per_node > 0);
+        let count = (MAX_DIRECTORY_LISTING_RESPONSE_BYTES / per_node) + 2;
+        let big: Vec<_> = (0..count)
+            .map(|i| node("a.txt", &format!("p{i}.txt")))
+            .collect();
         let response = build_bounded_listing_response(
             "ws-1".to_owned(),
             String::new(),
@@ -1745,20 +2129,24 @@ mod tests {
         );
         let result = result_of(&response);
         assert!(listing_response_fits_budget(&response));
-        if result.nodes.len() < big.len() {
-            assert!(result.truncated);
-            assert!(
-                result
-                    .truncated_reason
-                    .as_deref()
-                    .is_some_and(|r| r.contains("response budget")),
-                "reason must name the budget, got {:?}",
-                result.truncated_reason
-            );
-            // Prefix order preserved.
-            for (kept, original) in result.nodes.iter().zip(big.iter()) {
-                assert_eq!(kept.name, original.name);
-            }
+        assert!(
+            result.nodes.len() < big.len(),
+            "over-budget listing must drop a trailing node, kept {} of {}",
+            result.nodes.len(),
+            big.len()
+        );
+        assert!(result.truncated);
+        assert!(
+            result
+                .truncated_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("response budget")),
+            "reason must name the budget, got {:?}",
+            result.truncated_reason
+        );
+        for (kept, original) in result.nodes.iter().zip(big.iter()) {
+            assert_eq!(kept.name, original.name);
+            assert_eq!(kept.path, original.path);
         }
     }
 

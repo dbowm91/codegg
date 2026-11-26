@@ -10,7 +10,7 @@ the double compile buys nothing.
 At the baseline `strip` was the only differing field (`dev` kept debuginfo,
 `test` stripped it). The cost was a full second compile of the third-party
 dependency graph *and* of the root library rlib in every verification
-invocation: the hosted job's `cargo build --bin codegg-sandbox-helper` step
+invocation: the hosted job's `cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper` step
 built the whole graph under `dev`, and `cargo nextest run` then rebuilt it
 under `test`. The same double compile hit the local `cargo build` →
 `cargo test` loop.

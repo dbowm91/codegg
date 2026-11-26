@@ -286,8 +286,8 @@ checked by the compiler.
 """
 
 [[no-assertion-exceptions]]
-file = "src/tui/app/state/routing.rs"
-line = 910
+file = "crates/codegg-tui/src/app/state/routing.rs"
+line = 895
 name = "global_token_is_used_for_global_op_routes"
 category = "compile-time-construct"
 construct = "UiRouteToken::global constructor"
@@ -297,8 +297,8 @@ is checked by the compiler.
 """
 
 [[no-assertion-exceptions]]
-file = "src/tui/async_cmd.rs"
-line = 157
+file = "crates/codegg-tui/src/async_cmd.rs"
+line = 150
 name = "spawn_helper_drops_when_receiver_gone"
 category = "no-panic-property"
 helper = "spawn_tui_task"
@@ -308,8 +308,8 @@ does not panic.
 """
 
 [[no-assertion-exceptions]]
-file = "src/tui/async_cmd.rs"
-line = 169
+file = "crates/codegg-tui/src/async_cmd.rs"
+line = 162
 name = "spawn_helper_no_sender_does_not_panic"
 category = "no-panic-property"
 helper = "spawn_tui_task"
@@ -318,8 +318,8 @@ The property is that spawning a TUI task with no sender does not panic.
 """
 
 [[no-assertion-exceptions]]
-file = "src/tui/chat_browser.rs"
-line = 1176
+file = "crates/codegg-tui/src/chat_browser.rs"
+line = 1354
 name = "a_narrow_panel_does_not_panic"
 category = "no-panic-property"
 helper = "rows"
@@ -361,7 +361,7 @@ The property is that parsing arbitrary byte sequences never panics.
 """
 
 [[no-assertion-exceptions]]
-file = "tests/tui_render/tui_project_picker.inc"
+file = "crates/codegg-tui/tests/tui_render/tui_project_picker.inc"
 line = 252
 name = "input_action_new_variants_exist"
 category = "compile-time-construct"

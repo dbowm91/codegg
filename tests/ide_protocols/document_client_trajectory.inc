@@ -92,6 +92,8 @@ fn snapshot(text: &str, revision: u64, dirty: bool, writer: bool) -> CoreRespons
         },
         writer_lease: writer.then(|| "lease-1".into()),
         lsp_degraded: false,
+
+        lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
     }
 }
 

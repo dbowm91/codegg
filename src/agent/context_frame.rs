@@ -130,6 +130,8 @@ pub fn is_codegg_owned_frame(content: &str) -> bool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContextFrame {
     pub user_goal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_tools_active: Option<bool>,
     pub current_task: Option<String>,
     pub constraints: Vec<String>,
     pub decisions: Vec<String>,
@@ -147,8 +149,18 @@ pub struct ContextFrame {
 }
 
 impl ContextFrame {
+    fn append_goal_tools_status(&self, lines: &mut Vec<String>) {
+        if let Some(active) = self.goal_tools_active {
+            lines.push(format!(
+                "- Goal tools: {}",
+                if active { "active" } else { "inactive" }
+            ));
+        }
+    }
+
     pub fn to_control_text(&self) -> String {
         let mut lines = vec!["Current session context:".to_string()];
+        self.append_goal_tools_status(&mut lines);
 
         if let Some(ref goal) = self.user_goal {
             lines.push(format!("- Goal: {}", goal));
@@ -203,6 +215,7 @@ impl ContextFrame {
     /// recognized separately for migration/cleanup.
     pub fn to_continuation_text(&self) -> String {
         let mut lines = vec![CONTINUATION_STATE_MARKER_V1.to_string()];
+        self.append_goal_tools_status(&mut lines);
 
         if let Some(ref goal) = self.user_goal {
             lines.push(format!("- Goal: {}", goal));
@@ -275,6 +288,7 @@ impl ContextFrame {
             && self.security_findings.is_empty()
             && self.next_steps.is_empty()
             && self.artifact_handles.is_empty()
+            && self.goal_tools_active.is_none()
     }
 }
 
@@ -294,11 +308,16 @@ mod tests {
     fn test_frame_with_goal_and_task() {
         let frame = ContextFrame {
             user_goal: Some("Fix the failing test".to_string()),
+            goal_tools_active: Some(true),
             current_task: Some("Investigate test_output".to_string()),
             ..Default::default()
         };
         let text = frame.to_control_text();
+        assert!(text.contains("Goal tools: active"));
         assert!(text.contains("Goal: Fix the failing test"));
+        assert!(frame
+            .to_continuation_text()
+            .contains("- Goal tools: active"));
         assert!(text.contains("Active task: Investigate test_output"));
         assert!(!frame.is_empty());
     }
@@ -321,12 +340,14 @@ mod tests {
     fn test_frame_serialization_roundtrip() {
         let frame = ContextFrame {
             user_goal: Some("Build feature X".to_string()),
+            goal_tools_active: Some(true),
             touched_files: vec!["file.rs".to_string()],
             ..Default::default()
         };
         let json = serde_json::to_string(&frame).unwrap();
         let deserialized: ContextFrame = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.user_goal, frame.user_goal);
+        assert_eq!(deserialized.goal_tools_active, frame.goal_tools_active);
         assert_eq!(deserialized.touched_files, frame.touched_files);
     }
 }

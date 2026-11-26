@@ -477,6 +477,14 @@ pub enum LspReadInvalid {
     NewNameTooLong,
 }
 
+/// A zero-based line range for a semantic-token viewport. `end_line` is
+/// exclusive, matching the LSP `Range` end position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspSemanticTokenRangeDto {
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
 /// Authorized request for one bounded LSP read.
 ///
 /// `session_id` is a locator only. It authorizes through the owning session's
@@ -522,6 +530,10 @@ pub struct LspReadRequestDto {
     /// `textDocument/rename` whose result is rendered, never applied.
     #[serde(default)]
     pub new_name: Option<String>,
+    /// Optional zero-based, end-exclusive viewport range for semantic tokens.
+    /// Missing means the legacy full-document semantic-token read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<LspSemanticTokenRangeDto>,
 }
 
 impl LspReadRequestDto {
@@ -531,7 +543,11 @@ impl LspReadRequestDto {
     /// never reach a language server.
     pub fn validate(&self) -> Result<(), LspReadInvalid> {
         if self.operation.is_workspace() {
-            if self.line.is_some() || self.column.is_some() || !self.path.is_empty() {
+            if self.line.is_some()
+                || self.column.is_some()
+                || !self.path.is_empty()
+                || self.range.is_some()
+            {
                 return Err(LspReadInvalid::IncoherentFields);
             }
             if self.new_name.is_some() {
@@ -556,6 +572,14 @@ impl LspReadRequestDto {
 
         if self.operation.is_point() && self.line.is_none() {
             return Err(LspReadInvalid::IncoherentFields);
+        }
+
+        if let Some(range) = self.range {
+            if self.operation != LspReadOperation::SemanticTokens
+                || range.start_line >= range.end_line
+            {
+                return Err(LspReadInvalid::IncoherentFields);
+            }
         }
 
         match self.operation {
@@ -871,6 +895,19 @@ pub enum LspReadPayloadDto {
         /// The [`LspReadOperation::capability`] key that is missing.
         capability: String,
     },
+}
+
+impl LspReadPayloadDto {
+    /// Construct the bounded semantic-token payload. The extra server token
+    /// is retained only as evidence for the existing truncation caveat.
+    pub fn semantic_tokens(tokens: Vec<LspSemanticTokenDto>) -> Self {
+        let cap = MAX_LSP_SEMANTIC_TOKENS;
+        let truncated = tokens.len() > cap;
+        Self::SemanticTokens {
+            tokens: tokens.into_iter().take(cap).collect(),
+            truncated,
+        }
+    }
 }
 
 /// Result of one LSP read.
@@ -1469,7 +1506,94 @@ mod tests {
             query: None,
             server_id: None,
             new_name: None,
+            range: None,
         }
+    }
+
+    #[test]
+    fn semantic_token_range_round_trips_through_read_request_dto() {
+        let mut request = point(LspReadOperation::SemanticTokens);
+        request.line = None;
+        request.column = None;
+        request.range = Some(LspSemanticTokenRangeDto {
+            start_line: 4,
+            end_line: 12,
+        });
+        assert_eq!(request.validate(), Ok(()));
+
+        let wire = serde_json::to_value(&request).expect("request serializes");
+        let decoded: LspReadRequestDto =
+            serde_json::from_value(wire).expect("range request decodes");
+        assert_eq!(decoded, request);
+        assert_eq!(decoded.range.unwrap().start_line, 4);
+    }
+
+    #[test]
+    fn a_missing_semantic_token_range_round_trips_as_the_legacy_full_read() {
+        let wire = serde_json::json!({
+            "operation": "semantic_tokens",
+            "session_id": "session-1",
+            "path": "src/lib.rs"
+        });
+        let decoded: LspReadRequestDto =
+            serde_json::from_value(wire).expect("legacy request decodes");
+        assert_eq!(decoded.operation, LspReadOperation::SemanticTokens);
+        assert_eq!(decoded.range, None);
+
+        let serialized = serde_json::to_value(&decoded).expect("legacy request serializes");
+        assert!(serialized.get("range").is_none());
+        let round_trip: LspReadRequestDto =
+            serde_json::from_value(serialized).expect("serialized request decodes");
+        assert_eq!(round_trip.range, None);
+    }
+
+    #[test]
+    fn semantic_token_cap_remains_one_thousand() {
+        assert_eq!(MAX_LSP_SEMANTIC_TOKENS, 1000);
+    }
+
+    #[test]
+    fn semantic_token_payload_discards_overflow_and_sets_truncation_caveat() {
+        let cap = MAX_LSP_SEMANTIC_TOKENS;
+        let tokens = (0..=cap)
+            .map(|line| LspSemanticTokenDto {
+                line: line as u32,
+                character: 0,
+                length: 1,
+                token_type: "variable".to_string(),
+                modifiers: Vec::new(),
+            })
+            .collect();
+        let LspReadPayloadDto::SemanticTokens { tokens, truncated } =
+            LspReadPayloadDto::semantic_tokens(tokens)
+        else {
+            panic!("semantic token payload expected");
+        };
+
+        assert!(truncated, "overflow must set the existing caveat");
+        assert_eq!(tokens.len(), cap);
+        assert_eq!(
+            tokens.last().map(|token| token.line),
+            Some((cap - 1) as u32)
+        );
+        assert!(tokens.iter().all(|token| (token.line as usize) < cap));
+    }
+
+    #[test]
+    fn a_semantic_token_range_is_only_valid_for_semantic_tokens_and_nonempty() {
+        let mut request = point(LspReadOperation::SemanticTokens);
+        request.range = Some(LspSemanticTokenRangeDto {
+            start_line: 9,
+            end_line: 9,
+        });
+        assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
+
+        request = point(LspReadOperation::Hover);
+        request.range = Some(LspSemanticTokenRangeDto {
+            start_line: 1,
+            end_line: 2,
+        });
+        assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
     }
 
     #[test]
@@ -1532,6 +1656,7 @@ mod tests {
             query: Some("Foo".to_string()),
             server_id: None,
             new_name: None,
+            range: None,
         };
         assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
     }
@@ -1547,6 +1672,7 @@ mod tests {
             query: Some(String::new()),
             server_id: None,
             new_name: None,
+            range: None,
         };
         assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
     }
@@ -1562,6 +1688,7 @@ mod tests {
             query: Some("x".repeat(MAX_LSP_SYMBOL_QUERY_BYTES + 1)),
             server_id: None,
             new_name: None,
+            range: None,
         };
         assert_eq!(request.validate(), Err(LspReadInvalid::QueryTooLong));
     }

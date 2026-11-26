@@ -245,7 +245,7 @@ max_output_chars = 12000          # truncation limit (1..1_000_000)
 `expose_expert_tools` is currently **inert**: it is resolved into
 `DeterministicToolsRuntimeConfig`
 (`src/tool/integrated_config.rs:204`) and printed by the `codegg` status
-command (`src/main.rs:3300`), but no registration or disclosure path
+command (`crates/codegg-cli/src/main.rs:3300`), but no registration or disclosure path
 reads it. The always-visible / deferred split is fixed in
 `build_eggsact_tools()`, not by this key.
 
@@ -351,7 +351,7 @@ Verified 2026-10-23 against source. Corrected:
   model". It is **inert**: it is resolved into
   `DeterministicToolsRuntimeConfig`
   (`src/tool/integrated_config.rs:204`) and printed by the status command
-  (`src/main.rs:3300`), but no registration or disclosure path reads it.
+  (`crates/codegg-cli/src/main.rs:3300`), but no registration or disclosure path reads it.
 - The config file name was `opencode.json`; the accepted user filenames
   are `codegg.jsonc` / `codegg.json` / `config.json`
   (`crates/codegg-config/src/paths.rs:63-72`).

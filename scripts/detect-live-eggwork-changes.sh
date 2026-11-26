@@ -3,7 +3,13 @@
 # detect-live-eggwork-changes.sh — Decide whether the real live-Eggwork
 # qualification must run for this change (M002 WP4).
 #
-# Policy (see plans/implementation/.../002-*.md WP4):
+# Routine CI no longer calls this script. The live binary is omitted from
+# the verify job because the helper can hang in server-starting for the
+# whole readiness bound. Dispatch `.github/workflows/ci.yml` with
+# `run_live_eggwork` to include it. The decision below remains for local
+# simulation of the old path-sensitive policy.
+#
+# Historical policy (see plans/implementation/.../002-*.md WP4):
 #   - pushes to `main` always qualify (authoritative Linux signal);
 #   - pull requests qualify only when changed paths can affect Eggwork
 #     remote execution, scheduler integration, sandbox/helper behavior,
@@ -36,7 +42,7 @@ BASE_SHA="${2:-}"
 BASE_REF="${3:-}"
 
 # Paths whose changes can affect live Eggwork qualification.
-LIVE_PATTERN='^(src/scheduler/|src/security/sandbox|src/bin/codegg-sandbox-helper\.rs|crates/eggwork-test-node/|tests/eggwork_remote_execution|\.github/workflows/ci\.yml$|\.config/nextest\.toml$|scripts/prebuild-eggwork-fixtures\.sh$|scripts/detect-live-eggwork-changes\.sh$|Cargo\.toml$|Cargo\.lock$)'
+LIVE_PATTERN='^(src/scheduler/|src/security/sandbox|crates/codegg-sandbox/|crates/codegg-sandbox-helper/|crates/eggwork-test-node/|tests/eggwork_remote_execution|\.github/workflows/ci\.yml$|\.config/nextest\.toml$|scripts/prebuild-eggwork-fixtures\.sh$|scripts/detect-live-eggwork-changes\.sh$|Cargo\.toml$|Cargo\.lock$)'
 
 fail_open() {
     echo "detect-live-eggwork: $1; failing open (live_required=true)" >&2

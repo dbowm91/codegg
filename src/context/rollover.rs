@@ -791,6 +791,7 @@ pub fn work_plan_provenance_of(
 pub fn render_installed_projection(
     checkpoint: &codegg_core::session::continuation::ContinuationCheckpoint,
     goal_override: Option<(String, Option<String>)>,
+    goal_tools_active: bool,
 ) -> String {
     let body = &checkpoint.payload.body;
     let objective = goal_override
@@ -908,6 +909,7 @@ pub fn render_installed_projection(
 
     let mut frame = crate::agent::context_frame::ContextFrame {
         user_goal: Some(objective).filter(|s| !s.trim().is_empty()),
+        goal_tools_active: Some(goal_tools_active),
         current_task,
         constraints,
         decisions,

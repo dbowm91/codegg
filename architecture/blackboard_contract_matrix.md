@@ -59,7 +59,7 @@ belong.
 | group join | `crates/codegg-core/src/agent_run_group.rs` — `AgentRunGroupService` | `src/tool/task.rs` — `.create(NewAgentRunGroup {` | agent → `task` tool, `action=create_group` | `tests/core_daemon/workstream_claim_m003.inc`; closure `001-status.md` |
 | blackboard claim | `crates/codegg-core/src/workstream_claim.rs` — `WorkstreamClaimStore` | `src/tool/task.rs` — `.claim(codegg_core::workstream_claim::NewWorkstreamClaim {` | agent → `task` tool, `action=claim` | `tests/core_daemon/workstream_claim_m003.inc`; closure `003-status.md` |
 | peer event | `crates/codegg-core/src/bus/events.rs` — `AppEvent::AgentRunGroupUpdated` | `src/agent/follow_up.rs` — `fn inject_peer_observations` | agent turn → peer hint injected at a provider boundary | `src/agent/follow_up.rs` (`inject_peer_observations`); closure `009-status.md` |
-| session-worktree launch | `crates/codegg-core/src/session_launch.rs` — `SessionLaunchService` | `src/core/session_launch.rs` — `pub async fn launch(` | `codegg launch` (CLI `src/main.rs:2281`) and the TUI worktree actions | `tests/core_daemon/session_launch_service.inc`; closure `006-status.md` |
+| session-worktree launch | `crates/codegg-core/src/session_launch.rs` — `SessionLaunchService` | `src/core/session_launch.rs` — `pub async fn launch(` | `codegg launch` (CLI `crates/codegg-cli/src/main.rs:2281`) and the TUI worktree actions | `tests/core_daemon/session_launch_service.inc`; closure `006-status.md` |
 | group lease | `crates/codegg-core/src/worktree_service.rs` — `WorktreeService::acquire_lease` | `src/core/writer_fence.rs` — `async fn shared_group(` | agent → `task` tool, `placement=serialized_shared` | `tests/shared_checkout_c006.rs`; closure `006-status.md` (C006) |
 | build optimization | `crates/codegg-core/src/jobs/quota.rs` — `ResourceClass::Build` | `src/scheduler/submission.rs` — `apply_resource_policy(&mut spec);` | any build or format job in one workspace | `tests/scheduler_jobs/build_quota_admission.inc`; closure `007-status.md` |
 
@@ -210,5 +210,5 @@ existence only; no build or test run). Checked:
 - **Verified accurate**: `shared_checkout_availability()` and
   `QUALIFIED_SHARED_CHECKOUT_PLATFORMS` at
   `crates/codegg-core/src/run_placement.rs` (the qualified table is
-  `["linux", "macos"]`); `codegg launch` at `src/main.rs` (`async fn cmd_launch`);
+  `["linux", "macos"]`); `codegg launch` at `crates/codegg-cli/src/main.rs` (`async fn cmd_launch`);
   the S0–S4 configuration table; the platform matrix.

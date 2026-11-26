@@ -311,7 +311,7 @@ the shared broadcast.
 cargo test -p codegg --lib acp                  # unit tests for ActivePrompt, helpers
 cargo test -p codegg --lib acp::tests            # lifecycle, cancellation, terminal detection
 cargo test -p codegg --lib acp::helper_tests     # cwd / prompt-block / frame-limit helpers
-python3 -m unittest discover -s dev/harness_lab/tests -v
+python3 -m unittest discover -s dev/harness_lab/tests -v  # local development only
 ```
 
 Test coverage (inline, `src/acp.rs:1178-1695`, split across two modules —
@@ -376,7 +376,7 @@ payload, so the category, the usage, and the usage reason are produced
 together and cannot drift apart.
 
 Verified 2026-10-23 against `src/acp.rs` (1354 lines) and
-`src/main.rs`'s `codegg acp` subcommand.
+`crates/codegg-cli/src/main.rs`'s `codegg acp` subcommand.
 - **Corrected the file length**: the doc said "~736 lines"; the file is
   **1354 lines**. Every `file.rs:line` reference in the doc had drifted
   and was re-derived from the live source: `ACP_PROTOCOL_VERSION` `:22` ->

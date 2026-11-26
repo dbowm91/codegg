@@ -107,6 +107,52 @@ resolver logs an error and returns `fallback_resolved_adapter(model)` —
 a synthetic `generic` profile with fingerprint `fallback:generic` and
 source layer `fallback:generic`, so resolution still succeeds.
 
+### The Provider Is The Authority
+
+`resolve_adapter(provider, model)` takes the provider that serves the
+model, and a caller that knows it passes it in. The wire model id cannot
+say which gateway serves it: `deepseek-v4.1-flash` is a model *name*, and
+a name says nothing about the deployment that answers it.
+
+The provider and the model id answer two different questions, and the
+resolver must not let one stand in for the other:
+
+- The **provider** says which deployment serves the model. It selects the
+  adapter that describes that deployment: its context window, its tool
+  contract, its text-repair profile.
+- The **model id** says which family the model belongs to.
+
+When the provider is known it decides.
+`ModelProfileResolver::resolve_for_provider()` is the entry point every
+turn-scoped caller uses: the agent loop's execution policy, the follow-up
+drain, the delegated child's profile, the context plan's adapter
+fingerprint and the CLI's prompt compiler all resolve through it.
+
+When the provider is *not* known, the resolver infers one from the id's
+spelling — the family substring list in step 1 above. That inference is a
+**fallback**, not a source of truth, and it is the one that misfires: it
+reads `deepseek`, `qwen`, `qwq` and `kimi` as the `local` family, so
+a gateway-served DeepSeek used to inherit the local-runtime profile — a
+32 000-token window, a 4 000-token output reservation and the local-strict
+prompt contract — while the deployment it actually ran on answered
+33 000-token prompts without complaint.
+
+A profile that understates the window does not fail loudly. Every turn
+compacts, the reduction has nothing left to keep, the conversation is
+dropped, and the agent continues against a system prompt alone — blind to
+the tool results it already has. The model then answers a request it can
+only half see, which is where a malformed tool call comes from.
+
+Two consequences worth stating:
+
+- A provider that names no adapter resolves to `generic`, not to a family
+  inferred from the name. A deployment that matches no adapter contract has
+  **no established capability**, and that is the honest answer — the same
+  one the reasoning-capability surface already gives.
+- A local runtime keeps the local-strict profile, because `ollama`,
+  `lmstudio`, `vllm`, `sglang` and `local` are the provider ids that
+  profile claims.
+
 ### Adapter Inheritance
 
 All adapters merge over `generic`. The `merge_adapter()` function
@@ -175,6 +221,24 @@ A label is carried verbatim; a depth label is never converted into a
 token budget; a bound is never invented for a model whose maximum nobody
 has published.
 
+### The Per-Model Record
+
+A **match** is the most specific statement the registry can make: it names
+exact model ids. A match may therefore carry its own `reasoning_capability`,
+and that record **replaces** the adapter's family record for the models the
+match names — the model's own ladder is the narrower claim, and a family
+record that survived it would keep offering labels the model refuses.
+
+This is the slot a **published per-model contract** lands in. A provider
+that publishes each model's reasoning ladder gets it recorded once, in the
+asset, instead of being re-derived from the model name at every call site.
+The record is validated at build time with the same rules as a family
+record, so a malformed one cannot compile into the binary.
+
+The winning **match** is kept during resolution, not only the winning
+adapter: the adapter alone cannot say which of its matches applied, and the
+per-model record is exactly the part that depends on that answer.
+
 ### The Merge Rule
 
 Adapters merge over `generic`, and the capability record merges by
@@ -219,16 +283,40 @@ and `ReasoningCapabilityPolicy`, producing exactly one of:
 
 | Outcome | Meaning |
 |---|---|
-| `Reject` | The selection is refused locally with a typed refusal naming the model and the dimension |
+| `Reject` | The selection is refused locally with a typed refusal naming the model and the dimension. **Nothing on the shipped path produces it**; it stays in the vocabulary for a caller holding facts that warrant it |
 | `WarnDrop` | The unsupported dimension is dropped and a notice records **what was dropped** |
 | `AllowWithWarning` | The selection proceeds with a recorded warning |
 | `Allow` | The selection proceeds unchanged |
 
-The kernel's default policy is **fail-closed**: `unsupported → Reject`,
-`unknown → Reject`, `mixed → WarnDrop`. This milestone relies on that
-default. Its consequence is deliberate: a selection on a dimension the
-effective capability does not declare is refused locally rather than
-forwarded optimistically.
+The policy the daemon ships is `capability::local_admission_policy()`,
+and it is **not** the kernel's fail-closed default:
+
+| Dimension | Kernel default | Shipped | Why |
+|---|---|---|---|
+| `unknown` | `Reject` | `Allow` | No contract is not evidence of unsupported. The selection is forwarded verbatim and the provider is the authority — the same meaning an absent record has everywhere else in this workspace |
+| `unsupported` | `Reject` | `WarnDrop` | A declared `Unsupported` dimension is a fact, so the preference is dropped with a notice and the turn still runs |
+| `mixed` | `WarnDrop` | `WarnDrop` | The kernel's own disposition, retained |
+
+The kernel default is correct only where capability facts exist. CodeGG
+publishes a baseline for three of the seven adapter families, and the
+discovery overlay has no live source, so `google`, `local`, `laguna`, and
+`generic` resolve to an all-`Unknown` record for every model. Under the
+fail-closed default a persisted `Off` — the most common selection there
+is — refused every turn on those four families before any provider request
+was dispatched, and MiniMax's own `disable unsupported` refused the turn
+too. A reasoning preference is a preference, not an admission condition:
+it may choose what is sent, never whether a model call happens.
+
+`Reject` stays in the vocabulary so a future caller with facts that
+warrant it can still refuse. Nothing on the daemon's shipped path
+produces it.
+
+A declared `Unsupported` dimension is applied **per dimension**, before
+the kernel call, because the kernel consults the model's overall status
+first: a partial record (effort `unsupported`, every other dimension
+`unknown`) would otherwise reach the `unknown` disposition and lose the
+one fact it declares. That is exactly the shape an operator override
+creates, so the override would be silently ineffective without it.
 
 The kernel's neutral capability type is **status-only** — it carries no
 accepted-label list and never validates a label — so CodeGG owns the
@@ -249,6 +337,47 @@ Only families with a published contract carry a record:
 published contracts vary materially across the versions inside one
 family, and a family-scoped record that guessed at them would be a
 fabrication. An undeclared family is `Unknown`, not `Unsupported`.
+
+### The `opencode_go` Per-Model Records
+
+`opencode_go` publishes a **per-model** capability block on its own
+`GET /zen/go/v1/models` catalog (`capabilities.reasoning`), so its records
+are **match-level**, not family-level: one asset file carries one record
+per model (`assets/model-adapters/opencode_go.toml`), and the DeepSeek
+models' records live in `opencode_go_deepseek.toml` because that is the
+adapter whose match wins for them.
+
+| Model | effort | disable | budget | Published ladder |
+|---|---|---|---|---|
+| `deepseek-v4.1-flash` | `supported` | `unknown` | `unsupported` | `low, high, max` |
+| `deepseek-v4-pro` | `supported` | `unknown` | `unsupported` | `high, max` |
+| `glm-5.3`, `glm-5.3-flash` | `supported` | `unknown` | `unsupported` | `low, high, max` |
+| `grok-4.7` | `supported` | `unknown` | `unsupported` | `low, medium, high, xhigh` |
+| `gpt-6-luna`, `gpt-5.6-luna` | `supported` | `supported` | `unsupported` | `none, low, medium, high, xhigh, max` |
+| `hy3` | `supported` | `supported` | `unsupported` | `none, low, high` |
+| `hy4-preview` | `supported` | `supported` | `unsupported` | `none, high` |
+| `kimi-k3` | `supported` | `unknown` | `unsupported` | `max` |
+| `qwen3.8-max` | `supported` | `supported` | `supported` (max `262144`) | `low, medium, xhigh` |
+| `qwen3.7-plus` | `unknown` | `supported` | `supported` (max `262144`) | — |
+| `minimax-m3` | `unknown` | `supported` | `unsupported` | toggle only |
+
+Three rules decided the mapping, and each one is a rule about the
+**wire**, not about the model:
+
+- **The published labels minus `"none"` are the effort ladder.** `"none"`
+  is the provider's spelling for "reasoning off", which is the *disable*
+  dimension, not an effort level.
+- **The dimensions follow the wire surface the model resolves to.**
+  `opencode_go` models resolve to Chat Completions and Responses, which
+  carry an effort label and no thinking budget; a model whose surface
+  cannot express a dimension declares it `unsupported`, so the frontend
+  never offers a selection that would go nowhere.
+- **`disable` stays `unknown` when the contract publishes neither a
+  toggle nor `"none"`.** Nobody published whether the model can be turned
+  off, which is not the same claim as "it cannot be".
+
+The provenance date of the catalog read is recorded in the asset itself,
+so a stale ladder is a visible fact rather than an invisible drift.
 
 ## Key Types & APIs
 
@@ -340,6 +469,27 @@ repair grammar for models that emit tool calls as prose:
 | `hermes_xml` | Hermes XML-style tool calls |
 | `invoke_json` | JSON envelope invocation |
 | `raw_json_envelope` | Raw JSON with envelope wrapping |
+| `fenced_code` | A fenced code block whose info string names a tool |
+
+#### The fenced profile (`fenced_code`)
+
+Some models answer a tool request with a markdown fence instead of a
+structured call — a ` ```bash ` block holding the command — and then
+narrate, because the harness never dispatched a call and the turn ends
+with prose. The `fenced_code` profile recovers exactly that shape:
+
+- a fence whose info string is not a tool in the current surface is a
+  documentation example and is ignored;
+- a fence whose body is a JSON object supplies the arguments;
+- a fence whose body is raw text supplies the tool's argument only when
+  that tool declares exactly one required string parameter;
+- anything ambiguous is left alone rather than guessed.
+
+The profile is therefore no wider than the syntax it recovers, and a
+model that fences something naming no tool still gets no call. It is
+enabled per adapter — the `opencode-go-deepseek` adapter declares it for
+the `opencode_go` provider's DeepSeek models — or per model through the
+`model_profile.<model>.text_tool_repair` config override.
 
 The profile names are parsed by
 `codegg_providers::text_tool_parser::TextRepairProfile::parse`; an

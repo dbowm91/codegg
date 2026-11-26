@@ -1,6 +1,9 @@
 # TUI Module
 
-The `tui` module provides the terminal user interface using Ratatui.
+The `codegg-tui` library crate provides the terminal user interface using
+Ratatui. It depends on the root `codegg` service library; the root does not
+re-export or depend on the TUI. The `codegg-cli` package owns the `codegg`
+product executable and the WebSocket attach adapter.
 
 ## Purpose
 
@@ -11,11 +14,11 @@ backends via `CoreClient`.
 
 ## Where It Lives
 
-`src/tui/` — 196 Rust files, ~202,400 lines in total. `src/tui/app/mod.rs` is
+`crates/codegg-tui/src/` — 196 Rust files, ~202,400 lines in total. `crates/codegg-tui/src/app/mod.rs` is
 ~20,300 lines on its own and holds the `App` state machine, the command
-dispatch, and the panel renderers; the rest is split across `src/tui/app/state/`
-(34 files), `src/tui/components/`, `src/tui/panels/`, `src/tui/runtime/`, and
-`src/tui/ui_builders/`. The full tree is under
+dispatch, and the panel renderers; the rest is split across `crates/codegg-tui/src/app/state/`
+(34 files), `crates/codegg-tui/src/components/`, `crates/codegg-tui/src/panels/`, `crates/codegg-tui/src/runtime/`, and
+`crates/codegg-tui/src/ui_builders/`. The full tree is under
 [Directory Structure](#directory-structure).
 
 ## How It Works
@@ -43,7 +46,7 @@ form's kind decides who runs it:
   `CoreRequest::CommandExecute` and the daemon's **inner response** feeds
   the arm's **existing** presentation code. The observable outcome does not
   change: the daemon owns the effect and the authoritative data, the
-  frontend keeps the formatting. The mechanism is `src/tui/command_route.rs`
+  frontend keeps the formatting. The mechanism is `crates/codegg-tui/src/command_route.rs`
   (`route_for()` `:68`, `scope_for()` `:106`, `command_execute()` `:125`,
   `send_command()` `:148`, `unwrap_inner_response()` `:171`).
 - a **frontend effect** is executed locally against the **declared**
@@ -51,7 +54,7 @@ form's kind decides who runs it:
   against an open enum. It creates **no** canonical `Run`.
 
 **`/` recognition has three sites**, and they are not the same question.
-`src/tui/app/prompt_turn.rs:36` refuses to post a slash line into a shared
+`crates/codegg-tui/src/app/prompt_turn.rs:36` refuses to post a slash line into a shared
 chat channel as prompt text; `:71` refuses it when the observer blocks a
 prompt submit; `:116` is the actual dispatch, where a recognised slash line
 becomes a command and the composer is cleared. Free text that merely
@@ -251,11 +254,11 @@ invalidate the frontend continuation without deleting a session that may
 already have been committed by the daemon.
 
 **File diff pipeline**: `FileDiffStatsReady` uses a separate
-`spawn_sidebar_diff_stats()` in `src/tui/file_diff.rs`. Bounded by
+`spawn_sidebar_diff_stats()` in `crates/codegg-tui/src/file_diff.rs`. Bounded by
 semaphore (max 2 concurrent), 1 MiB size caps, binary detection, and
 stale-generation protection.
 
-See `src/tui/async_cmd.rs` for `spawn_tui_task` and
+See `crates/codegg-tui/src/async_cmd.rs` for `spawn_tui_task` and
 `spawn_registered_tui_task`.
 
 ### Blocking on a runtime handle
@@ -263,13 +266,13 @@ See `src/tui/async_cmd.rs` for `spawn_tui_task` and
 A command handler may not block on a runtime handle from inside the runtime.
 
 The event loop is awaited inside `#[tokio::main(flavor = "multi_thread")]`
-(`src/main.rs`), so the loop's future is polled with the runtime context
+(`crates/codegg-cli/src/main.rs`), so the loop's future is polled with the runtime context
 **entered**. `tokio::runtime::Handle::block_on` enters the runtime again, and
 a nested entry panics with *"Cannot start a runtime from within a runtime"*.
 `App::on_key` is synchronous and the event loop's only `catch_unwind` wraps
 rendering rather than key handling, so that panic took the whole process
 down. The `/lsp-*` command arms and the `/worktree` arm in
-`src/tui/app/mod.rs` all waited this way, and so did the `McpCommand::Debug`
+`crates/codegg-tui/src/app/mod.rs` all waited this way, and so did the `McpCommand::Debug`
 arm in `src/mcp/cli.rs` — the MCP CLI is reached from the same `main`.
 
 The wait therefore goes through `tokio::task::block_in_place`, which leaves
@@ -281,19 +284,19 @@ let text = tokio::task::block_in_place(|| {
 });
 ```
 
-`block_in_place` requires a multi-threaded runtime, and `src/main.rs`
+`block_in_place` requires a multi-threaded runtime, and `crates/codegg-cli/src/main.rs`
 declares one. The command's visible result is unchanged: the same string, on
 the same surface.
 
 **Why the existing unit test could not catch it.** The `lsp_doctor` tests in
-`src/tui/app/mod.rs` entered the runtime with `Runtime::new()` plus
+`crates/codegg-tui/src/app/mod.rs` entered the runtime with `Runtime::new()` plus
 `rt.enter()`. `Runtime::enter` sets the current *handle* and the enter depth,
 but it does **not** set the entered flag — only `context::enter_runtime` sets
 that, and only a real `Runtime::block_on` calls it. The nested `block_on`
 therefore found no entered context in the test and succeeded, while the same
 call in production panicked. A regression test has to enter the runtime the
 way production does: the driving future must be polled by a real
-`Runtime::block_on`. `tests/tui_render/nested_runtime_command_dispatch.inc`
+`Runtime::block_on`. `crates/codegg-tui/tests/tui_render/nested_runtime_command_dispatch.inc`
 does that, driving the command through `App::on_key`.
 
 `scripts/check_no_nested_runtime_block_on.py` fails the build when a
@@ -302,7 +305,7 @@ trees. It runs in `scripts/verify.sh quick` and in the hosted CI guard step.
 
 ### AsyncUiRequestState
 
-`AsyncUiRequestState` (`src/tui/app/state/async_request.rs:20`) is a
+`AsyncUiRequestState` (`crates/codegg-tui/src/app/state/async_request.rs:20`) is a
 reusable state machine for async dialog lifecycle:
 
 ```rust
@@ -338,7 +341,7 @@ Never mix `is_current()` + manual mutation; always use `finish`/`fail`.
 ### Background Task Lifecycle
 
 TUI-owned background tasks tracked via `TuiTaskRegistry`
-(`src/tui/task_lifecycle.rs:133`) on `App`.
+(`crates/codegg-tui/src/task_lifecycle.rs:133`) on `App`.
 
 **Key types**:
 - `TuiTaskId(u64)` — monotonically increasing task ID
@@ -397,7 +400,7 @@ handle count.
 
 Sidebar git metadata computed in background, never on render frame.
 
-**Storage**: `GitSidebarState` (`src/tui/app/state/session.rs:134`)
+**Storage**: `GitSidebarState` (`crates/codegg-tui/src/app/state/session.rs:134`)
 holds `root`, `branch`, `dirty`, `staged_count`, `unstaged_count`,
 `untracked_count`, `conflicted_count`, `ahead`, `behind`,
 `operation_state_label`, `available_actions`, `conflicted_paths`,
@@ -443,12 +446,12 @@ carries cached sidebar state to remote clients.
 Daemon-owned presence rendered as a bounded per-project projection.
 The TUI owns no presence truth.
 
-- **State**: `PresenceState` (`src/tui/app/state/presence.rs`) keyed by
+- **State**: `PresenceState` (`crates/codegg-tui/src/app/state/presence.rs`) keyed by
   `project_id` with per-project `request_id` + global `reconnect_epoch`
   stale guards, LRU eviction at 16 projects, stable activity-rank + id
   ordering, and identical `Unavailable` rendering for unauthorized and
   feature-absent projects.
-- **Fetch**: `src/tui/commands/presence.rs` negotiates
+- **Fetch**: `crates/codegg-tui/src/commands/presence.rs` negotiates
   `PresenceCapabilities` then `PresenceSnapshotGet` in one registered
   task. `PresenceHint { project_id }` (from
   `CoreEvent::PresenceUpdated`) only flags resync; the active project
@@ -469,20 +472,20 @@ The TUI owns no presence truth.
 One authorized session followed read-only through the existing
 projection subscription path. The TUI owns no observation truth.
 
-- **State**: `ObserverState` (`src/tui/app/state/observe.rs`) holds at
+- **State**: `ObserverState` (`crates/codegg-tui/src/app/state/observe.rs`) holds at
   most one `ObservedTarget` (project/session locators, observer-owned
   subscription id, authoritative cursor, watermarks) with per-observation
   `request_id` + global `reconnect_epoch` stale guards. Denied and
   unsupported targets render identically as unavailable; `stop`/`clear`
   drops cached state so hidden data is never rendered locally.
-- **Flow**: `src/tui/commands/observe.rs` negotiates
+- **Flow**: `crates/codegg-tui/src/commands/observe.rs` negotiates
   `ProjectionCapabilities`, then `ProjectionSubscribe` (session scope),
   `ProjectionResume` for reconnect/lag/resync, and
   `ProjectionUnsubscribe` on stop — all on registered
   `TuiTaskKind::Command` tasks with `TuiCommand::StartObserve` /
   `ObserveSubscribed` / `ObserveResumed` / `StopObserving` /
   `ObserveUnsubscribed` dispatch arms in
-  `src/tui/runtime/command_dispatch.rs`. `/observe <session-id>`
+  `crates/codegg-tui/src/runtime/command_dispatch.rs`. `/observe <session-id>`
   (`/watch`) resolves the project from the active tab; `/stop-observing`
   (`/unwatch`) tears down only the observer-owned subscription. The
   `/collaborators` panel lists session locators plus the bounded
@@ -509,14 +512,14 @@ projection subscription path. The TUI owns no observation truth.
 Project-scoped chat rendered from daemon `chat.v1` state; the TUI owns
 no durable messages. Full contract in `architecture/collaboration.md`.
 
-- **State**: `ChatState` (`src/tui/app/state/chat.rs`) keyed by
+- **State**: `ChatState` (`crates/codegg-tui/src/app/state/chat.rs`) keyed by
   `project_id` with per-project `request_id` + global `reconnect_epoch`
   stale guards, LRU eviction at 16 projects, a 100-message sliding
   window per active channel, per-project drafts, forward-only read
   markers with derived unread counts, and expiry-filtered composing
   leases. Unauthorized and feature-absent projects render the identical
   `Unavailable` panel and clear cached content.
-- **Flow**: `src/tui/commands/chat.rs` negotiates `ChatCapabilities`
+- **Flow**: `crates/codegg-tui/src/commands/chat.rs` negotiates `ChatCapabilities`
   then channel ensure / history / sync / send / edit / redact /
   read-marker / composing in registered `TuiTaskKind::Command` tasks
   with `TuiCommand::RefreshChat` / `ChatHistoryLoaded` /
@@ -605,12 +608,12 @@ state; the TUI owns no membership truth. Full contract in
   captured project against the active tab and the captured
   `reconnect_epoch`, so stale completions drop. No chat/team cache is
   introduced: views re-fetch through the authorized list paths.
-- **Flow**: `src/tui/commands/team.rs` negotiates `TeamCapabilities`
+- **Flow**: `crates/codegg-tui/src/commands/team.rs` negotiates `TeamCapabilities`
   then membership list (+ `ChatPolicyGet` summary) in one registered
   task, with `TuiCommand::TeamMembershipLoaded` /
   `TeamPrincipalsLoaded` / `TeamTokensLoaded` / `TeamMutationFinished`
   / `TeamTokenCreated` dispatch arms in
-  `src/tui/runtime/command_dispatch.rs`.
+  `crates/codegg-tui/src/runtime/command_dispatch.rs`.
 - **Surface**: bare `/team` opens a FocusManager-backed
   `InfoType::Team` dialog (member list with revisions + M002
   chat-policy summary). Mutations require the visible revision
@@ -640,14 +643,14 @@ contract in `architecture/authorization.md` (ADR-0007).
   `reconnect_epoch`, so stale completions drop.
   `DialogState::control_last` caches the last-known lease for the
   active session (display only; refreshed via `/control`).
-- **Flow**: `src/tui/commands/control.rs` issues `SessionControlGet`
+- **Flow**: `crates/codegg-tui/src/commands/control.rs` issues `SessionControlGet`
   (lease plus inert requests), `SessionControlRequest` (inert),
   `SessionControlTransfer` (controller-only, CAS),
   `SessionControlRelease` (controller-only, CAS), and
   `SessionControlTakeover` (Maintainer/Owner, bounded reason) in
   registered tasks, with `TuiCommand::ControlLoaded` /
   `ControlMutationFinished` dispatch arms in
-  `src/tui/runtime/command_dispatch.rs`. Mutations refresh the lease
+  `crates/codegg-tui/src/runtime/command_dispatch.rs`. Mutations refresh the lease
   view so the indicator and revision stay coherent.
 - **Surface**: bare `/control` opens a scrollable `InfoType::Control`
   dialog (controller principal, turn, revision, last action/actor/
@@ -762,7 +765,7 @@ Three properties are load-bearing:
   table, one `ActivityPhase` enum, and one 100 ms frame table
   (`tui::components::spinner`); the indicator is static text in a bar the one
   frame already redraws. The same guard fails a second frame table anywhere
-  under `src/tui/`, a timer in the reasoning surface, and a reach for the
+  under `crates/codegg-tui/src/`, a timer in the reasoning surface, and a reach for the
   frame chooser from it.
 - The transient toast after `/reasoning` is **preserved** — it confirms the
   action — but it is no longer the only place the selection is visible.
@@ -889,7 +892,7 @@ transcript; the two identities are kept in separate fields.
 the *orchestrator* — the model — as a durable notice injected at the next turn
 boundary, and the agent can read the child's recorded result with
 `task action=get`. The strip, the sidebar panel, the `Ctrl+T` overlay, the
-`/sessions` dialog, and the subagent tab are unchanged: the notice is a
+`/sessions` dialog, and the center tab are unchanged: the notice is a
 channel to the model, not a new row for the user. See `architecture/agent.md`
 "The delegated run's durable terminal notice".
 
@@ -1028,13 +1031,13 @@ bound is a contract, and the display bound is what keeps one row from filling
 the viewport.
 
 **One row, five surfaces, and a deliberate trade.** The strip, the sidebar panel,
-the `Ctrl+T` overlay, the `/sessions` dialog, and the subagent tab all render the
+the `Ctrl+T` overlay, the `/sessions` dialog, and the center tab all render the
 same derived vector. The **sidebar row is a scan surface**: it shows name, agent
 type, and status, and no prose. The other three one-line surfaces show
 `SubagentRow::topic()` — the descriptor when the projection carried one, the task
 description otherwise — because a single terminal line cannot legibly carry two
 pieces of prose and whichever is ellipsized second reads as noise. The
-**subagent tab is the full-fidelity surface**: it renders `Task` and `Agent` side
+**center tab is the full-fidelity surface**: it renders `Task` and `Agent` side
 by side, wrapped and untruncated, which is what makes the one-line trade
 lossless. A node recorded before descriptors existed has neither field, so every
 surface falls back and the tab omits the `Agent` heading rather than leaving one
@@ -1049,7 +1052,7 @@ on prose pushes the three facts a reader scans for to the left, and the persona
 now has a home that can afford it.
 
 **The strip's row is one width budget.** `plan_strip`
-(`src/tui/app/state/subagent_tabs.rs`) computes it once, so what is drawn is
+(`crates/codegg-tui/src/app/state/center_tabs.rs`) computes it once, so what is drawn is
 exactly what was measured. The precedence is fixed: the **key hints**
 (`⇧P/⇧N switch · ⇧X close`) are reserved first and in full, because they are
 the discoverability fix; the **labels** come next and keep their text —
@@ -1070,14 +1073,14 @@ does not yank the buffer out from under the reader.
 
 **The viewport rect has exactly one owner.** `render()` decides between three
 candidates and renders exactly one of them into the rect: the route's own view
-(the transcript), the change review, or the open subagent tab. The change
+(the transcript), the change review, or the open center tab. The change
 review outranks the tab — it is a modal decision surface the user has to
 answer, so a tab must not cover it — and the tab outranks the transcript,
 because the tab *is* the buffer the user asked to read. The previous shape
 rendered the viewport and then rendered the subagent view **over** it, so the
 main conversation stayed legible through the subagent's own text and in the
 rect's last column; the change review had the same defect one level up.
-`ViewportOwner` (`src/tui/app/render.rs`) makes the choice a value rather than
+`ViewportOwner` (`crates/codegg-tui/src/app/render.rs`) makes the choice a value rather than
 an ordering accident, and the ownership is pinned by
 `viewport_owner_tests` and by the ghosting and review-precedence render tests.
 
@@ -1143,8 +1146,29 @@ idle session, which is the first thing a user tries. The same trap applies to
 any "draw an empty-state message" affordance: **reserve the row, then draw the
 message into it.**
 
-**Subagent tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
-`state/subagent_tabs.rs`). Three properties are load-bearing and each closes a
+**Turn-tail deliverable card** (`app/present_card.rs`). A bounded block
+directly above the input box, beneath the tasks overlay, listing the files the
+newest `present` tool call verified. It is a *reader* of the transcript, not a
+store: `latest_declaration` walks the session's messages backwards to the most
+recent `present` call and parses its tool-result text with the tool's own
+`parse_present_display`, so the card cannot drift from the record it describes
+and no component keeps a second list of what was delivered. A refusal does not
+parse, so a refused declaration draws **no** card: the failed call stays at its
+own position with its reason one disclosure away, exactly as every other
+failing tool's reason is.
+
+Three properties bound it. It claims rows only *after* the on-demand `Ctrl+T`
+overlay has, so a user who asked for the overlay gets its rows — `card_height`
+is capped at `MAX_PRESENT_CARD_ROWS` including the header row. It renders only
+on the session route, where the transcript it summarises is the surface on
+screen; on the home, workspace and editor routes there is no turn tail to draw
+it under. And every row is ellipsized rather than wrapped, so the height the
+layout reserved is the height it paints and a long path cannot reflow the
+transcript below it. When the row bound hides files the header says so — the
+total is the truth, not the number of rows that fit.
+
+**Center tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
+`state/center_tabs.rs`). Three properties are load-bearing and each closes a
 hole the obvious implementation leaves:
 
 - **Identity is the projection's `task_id`**, not a fresh UUID. A subagent
@@ -1170,6 +1194,41 @@ the open, and the caller then has a defined outcome to report — `App::
 open_subagent_tab` toasts only when a row exists *and* the set is at capacity.
 Note that `open_task` requires the row to still exist: a panel row alone cannot
 open a tab, because a tab with nothing to render is not a tab.
+
+**Open documents are center tabs too.** The set is one sequence, not two:
+the main conversation, then the delegated runs, then the open documents, and
+`Shift+N` / `Shift+P` / `Shift+X` walk all of it. A document tab is
+keyed by its path **and its scope**, because the same relative path under two
+authority roots is two documents and one tab cannot hold both.
+
+The main entry wears a glyph of its own (`▣`) rather than one of the liveness
+glyphs (`●` live, `○` finished, `✕` detached): those three encode **a run's
+state**, and the main conversation is not a run, so a square from another shape
+family reads as "a tab" without being mistaken for one more piece of liveness.
+It is used nowhere else in the TUI, so it cannot collide with an unrelated
+meaning, and it costs exactly one column — asserted, because a two-column
+marker would silently break the row's width budget.
+
+`MAX_OPEN_FILE_TABS` (16) refuses a new document tab rather than evicting one,
+for the same reason the delegated tabs do: closing a tab the user is reading
+is a worse failure than declining the open, and the refusal has a defined
+outcome to report — a toast naming the chord that frees a slot.
+
+**A document keeps its state while it is off screen.** The editor owns one
+attachment at a time, so the document on screen holds its EditorState in the
+app's editor slot and every other open document holds its own in its tab.
+Switching tabs is therefore a **move**, never a copy: a parked document keeps
+its text, its cursor and its diagnostics, and comes back as it was left. An
+open that completes after the user has moved on is applied to the tab that
+started it, matched by generation, so the reader never sees a half-open
+document.
+
+**The tab chords are app-level, and they outrank the editor's own verbs.**
+The editor's Normal mode claims `P` for paste-after, and the editor branch runs
+before the global binding map, so without a dedicated claim the key that says
+`previous tab` would paste into the document instead of leaving it. The claim
+sits in the editor route, before the editor sees the key, so it holds exactly
+where the reader needs it and nowhere else.
 
 ### Addressing a reply to a running subagent
 
@@ -1323,7 +1382,7 @@ set `Error` on a session that was actively working. The queue milestone that
 follows has to consult turn state to decide between queueing and steering, so a
 path that invalidates that state is a correctness problem, not a cosmetic one.
 
-`src/tui/app/turn_submit.rs` classifies the outcome **once**, at the only point
+`crates/codegg-tui/src/app/turn_submit.rs` classifies the outcome **once**, at the only point
 that knows how the daemon answered, and the typed value travels to the
 completion arm as data — the arm never parses prose:
 
@@ -1459,7 +1518,7 @@ Two wiring facts that are easy to get wrong:
 
 `/queue` is **blocked for observers** by omission in the fail-closed
 `is_observer_allowed_command` allowlist. No code registers it there, and
-`tests/tui_render/user_prompt_queue_box.inc` proves it by executing the predicate against
+`crates/codegg-tui/tests/tui_render/user_prompt_queue_box.inc` proves it by executing the predicate against
 `/queue` and the M005 subcommand names, with `/stats` asserted allowed so the
 suite cannot pass against an always-false stub.
 
@@ -1700,7 +1759,7 @@ startup until this variant was added.
 
 `ratatui::widgets::Paragraph::line_count` is behind the unstable
 `rendered-line-info` feature, so wrapped scrolling cannot be delegated to the
-widget. `src/tui/wrap.rs` owns the shared implementation: `wrap_to_strings` /
+widget. `crates/codegg-tui/src/wrap.rs` owns the shared implementation: `wrap_to_strings` /
 `wrap_count` for word-wrapping with hard-break for overlong tokens, and
 `ellipsize_to_width` for single-row truncation. The chat viewport pre-wraps
 message lines with it (the widget paints no `Paragraph::wrap`, so a line wider
@@ -1715,7 +1774,7 @@ horizontal scrollbar and `scroll_left`/`scroll_right` are no-ops.
 
 #### The styled, word-aware wrap
 
-`src/tui/wrap.rs` owns a second engine, for text that carries a style:
+`crates/codegg-tui/src/wrap.rs` owns a second engine, for text that carries a style:
 `wrap_styled_spans_by_word_rows(spans: &[Span<'static>], width: u16) ->
 Vec<WrappedRow>` and `wrap_styled_spans_by_word(spans: &[Span<'static>],
 width: u16) -> Vec<Line<'static>>`. The main buffer and the composer share
@@ -1742,6 +1801,11 @@ it. Its contract:
 
 A `width` of zero returns the source as one unwrapped row, and an empty source
 returns one empty row, so the row count is never zero for a non-empty buffer.
+
+The contract above is **unchanged by M006**, which changed only the wrap's
+internal cost: the rows, the byte offsets, the styles and the escape handling
+are the same, and an OSC-8 opener and closer still travel whole. What became
+linear is recorded under "The render path's caches (C006)".
 
 **Which paths use it.** The model-authored text — the assistant prose, the
 reasoning body and the streaming tail — reaches the renderer through the
@@ -1772,7 +1836,7 @@ The plain string engine is unchanged and still exists: `wrap_to_strings`,
 
 ### Chat viewport scrolling
 
-The row index (`src/tui/components/messages/layout.rs`) is the contract between
+The row index (`crates/codegg-tui/src/components/messages/layout.rs`) is the contract between
 what is drawn and where you can scroll. `MessageLayoutCache` holds the rows the
 renderer actually emitted and derives every offset from them, so `scroll` is a
 true row index into the drawn buffer.
@@ -1822,7 +1886,7 @@ into a position inside it.
 
 An expanded tool call shows what the call was and what it returned, in a form a
 person can read. The formatting is a **display-side** projection and lives in
-`src/tui/components/messages.rs`:
+`crates/codegg-tui/src/components/messages.rs`:
 
 - `extract_trust_frame_payload_for_display(output: &str) -> &str` pulls the
   payload out of the external-content trust frame. The frame header is
@@ -1883,16 +1947,23 @@ from the tree — the row's remaining width is the only ceiling.
 **The hidden-output count moves into the header.** A collapsed call shows
 ` (+N lines)` between the summary and the affordance, and the **expanded**
 header drops it: with the content visible, the count of hidden lines is noise.
-The count comes from the **drawn body** — the same `output_line_count` the
-rows are built from — so it describes the content that *would* be drawn rather
-than the raw output. (`read` is the one exception: it renders its own
-numbered code, so its count comes from the raw output.) While the call is
-collapsed the daemon-side summary's own `output_lines` entry is suppressed, so
-a row never shows two line counts.
+The count describes the body that *would* be drawn rather than the raw output,
+which is what makes it a count of what there is to expand. (`read` is the one
+exception: it renders its own numbered code, so its count comes from the raw
+output.) While the call is collapsed the daemon-side summary's own
+`output_lines` entry is suppressed, so a row never shows two line counts.
+
+**The collapsed case is the cheap one.** The body is built only under the
+`expanded` test, so a collapsed call — the default — builds no body: no payload
+parse for a body, no formatted rows, no wrapped preview. Its count comes from a
+count-only read of the payload that produces neither a formatted row nor a
+pretty-printed string, which is what keeps the number identical without building
+what is not drawn. An expanded call parses once and draws the body it built, and
+that body's own length is the count.
 
 **Reasoning blocks default to collapsed.** Every construction site of a
 reasoning part sets `collapsed: true` — four in
-`src/tui/components/messages.rs`, one in `src/tui/commands/sessions.rs`. The
+`crates/codegg-tui/src/components/messages.rs`, one in `crates/codegg-tui/src/commands/sessions.rs`. The
 collapsed header reads `Thinking`, or `Thought for <duration>` once the block
 has run. The global `show_thinking` switch hides the reasoning **body** but
 still draws that one-line header.
@@ -1914,7 +1985,7 @@ Two exceptions to the one-row header, and both are deliberate:
 
 ### A row resolves to its part, not to its message
 
-`src/tui/components/messages/layout.rs` records the **part boundaries**
+`crates/codegg-tui/src/components/messages/layout.rs` records the **part boundaries**
 alongside the rows:
 
 ```rust
@@ -1969,7 +2040,7 @@ keybind editor.
   the app never pushes keyboard-enhancement flags: in legacy xterm encoding a
   `Ctrl+Shift+O` keystroke arrives indistinguishable from `Ctrl+O` and fires
   the workspace dashboard. That is the app's **chord contract** (below), and
-  `tests/tui_render/modifier_chords.inc::no_binding_map_contains_a_control_shift_entry`
+  `crates/codegg-tui/tests/tui_render/modifier_chords.inc::no_binding_map_contains_a_control_shift_entry`
   fails if either map binds `CONTROL|SHIFT`.
 - `Ctrl+O` still opens the workspace dashboard in **both** maps. The new chord
   is additive; it does not take the dashboard's key.
@@ -2001,15 +2072,15 @@ added.**
 
 Reference TUI experience over the M002 attach/resume protocol. The
 TUI owns no PTY/process state: `App::interactive_terminals`
-(`src/tui/interactive_terminal.rs`) is a bounded projection of daemon
-handles/output, and `src/tui/commands/interactive_terminal.rs` issues
+(`crates/codegg-tui/src/interactive_terminal.rs`) is a bounded projection of daemon
+handles/output, and `crates/codegg-tui/src/commands/interactive_terminal.rs` issues
 every mutation as a daemon `CoreRequest::InteractiveProcess*` operation
 through the TUI `CoreClient`.
 
 **The transport boundary: interactive terminals are delivered on the
 socket-daemon frontend, and refused by name everywhere else.** Every
 interactive-process operation needs a `CoreClient`, and the `/tui`
-WebSocket attach frontend never has one — `src/client/attach.rs` opens
+WebSocket attach frontend never has one — `crates/codegg-cli/src/client/attach.rs` opens
 that socket and speaks `protocol::tui::TuiMessage`, so no
 `CoreFrame::InteractiveProcess*` can ever be sent from it. That
 frontend's daemon is present and healthy; it simply does not carry
@@ -2228,7 +2299,7 @@ the surface that owns the keyboard:
 | 1 | **mounted modal** | `App::focus_manager` | a modal owns the keyboard outright; `on_key` short-circuits to `handle_dialog_key` |
 | 2 | **focused side panel** | `App::panel_owns_keyboard` | the same condition `on_key` uses to consult the panel before the composer |
 | 3 | **the timeline overlay** | `App::ui_state.timeline_visible` | the jump-to-message picker claims the keys before the composer sees them |
-| 4 | **the editor's buffer** | `App::editor_buffer_owns_keyboard` | the editor route keeps the composer editable unless the document was explicitly focused |
+| 4 | **the editor view** | `App::composer_holds_keyboard` (the editor-view arm) | a document open on the editor route is a **whole view**: the composer is not painted there, so no key is routed to it, whatever the buffer's mode. With no document the route is a shell message and the composer owns the keyboard |
 | 5 | **otherwise** | — | the composer owns the keyboard |
 
 `App::panel_owns_keyboard` is the extracted form of the `panel_active`
@@ -2270,9 +2341,9 @@ reports the mode, and the caret reports the mode *and* the ownership, and both
 read the same derivation.
 
 **The composer owns a closed set of Normal-mode letters, and a claimed letter
-never falls through.** `src/tui/composer_claims.rs` is the single, enumerable
+never falls through.** `crates/codegg-tui/src/composer_claims.rs` is the single, enumerable
 statement of what the composer owns. The app's global binding map
-(`src/tui/input.rs`) is consulted only for letters the composer does **not**
+(`crates/codegg-tui/src/input.rs`) is consulted only for letters the composer does **not**
 claim.
 
 The rule that makes the table worth having is the **fallthrough rule**:
@@ -2307,8 +2378,10 @@ is the app's **existing** gesture moved into the table — Helix `i` is
 "insert before the caret", the caret stays where it is, and the next character
 is typed at it, which is exactly what the gesture did. The table is the one
 place that says who owns the key; the `None` arm keeps the gesture for the
-surfaces the composer does not own (the editor route with its buffer
-unfocused, a focused panel, the Workspace view's chat pane).
+surfaces the composer does not own (a focused panel, the Workspace view's
+chat pane). The editor route is not one of them: with a document open it is a
+whole view, the composer is not painted, and the editor's own `i` enters
+Insert without the claim table's help.
 
 | Letter | Verb | Condition | Lands with |
 |---|---|---|---|
@@ -2426,7 +2499,7 @@ load-bearing beyond the action: `/` is the gesture that **enters command
 mode**, and command mode is what makes the rest of a typed slash command land
 as text. Removing it took away "type `/panels` from Normal mode and press
 Enter" — the only way back into the panel manager from a focused panel, which
-owns every key by contract (`tests/tui_render/tui_side_panels.inc`).
+owns every key by contract (`crates/codegg-tui/tests/tui_render/tui_side_panels.inc`).
 
 Two consequences of the move are recorded rather than hidden. `ToggleAgentRun`
 left `is_normal_only`, because its only spelling is now a chord, and a chord
@@ -2460,7 +2533,7 @@ its own keys, and each has its own guard: the editor's
 
 #### The composer has a text model, and the word geometry is shared
 
-`src/tui/composer_text.rs` owns the composer's buffer: the text, the caret, the
+`crates/codegg-tui/src/composer_text.rs` owns the composer's buffer: the text, the caret, the
 selection state, and a bounded undo history. `PromptWidget` renders it and
 keeps its public API, so the 183 call sites across the app that use the
 widget's accessors did not move. The model exists because the Helix verbs need
@@ -2481,7 +2554,7 @@ lines does this span" without knowing how wide a line is. The composer is a
 editor's type.
 
 **Word geometry is computed once, by a rule both surfaces use.**
-`src/tui/text_geometry.rs` owns a `TextSource` trait and the motions over it:
+`crates/codegg-tui/src/text_geometry.rs` owns a `TextSource` trait and the motions over it:
 `word_forward`, `word_backward`, `word_end`, `move_vertical`, and the
 boundary helpers. The editor adapts its `DocumentSnapshot`; the composer
 adapts its own `String`. The two are the same text with the same words
@@ -2589,11 +2662,11 @@ rules against it rather than to write a second set of tests that says the same
 thing in different words.
 
 **The hint row above the composer is derived from the claim table.**
-`composer_verb_entries` (`src/tui/composer_claims.rs`) is a read-only view over
+`composer_verb_entries` (`crates/codegg-tui/src/composer_claims.rs`) is a read-only view over
 `COMPOSER_CLAIMS`: the live claims, each with its key, its human label, and the
 condition it carries. Three surfaces read it, and none of them keeps a copy:
 
-- The **hint row** (`App::composer_hint_row`, `src/tui/app/mod.rs`) names the
+- The **hint row** (`App::composer_hint_row`, `crates/codegg-tui/src/app/mod.rs`) names the
   composer's **keys** — not their descriptions. The descriptions live in the
   help, one keypress away, and a row that spelled out fourteen verbs would not
   fit a terminal: measured at eighty columns the grouped form runs to
@@ -2601,14 +2674,14 @@ condition it carries. Three surfaces read it, and none of them keeps a copy:
   fit, and the row's job — "which letters are mine right now" — is answered by
   the keys alone.
 - The **help**'s composer section (`composer_help_entries`,
-  `src/tui/input.rs`) is one row per live claim, with the verb's label as the
+  `crates/codegg-tui/src/input.rs`) is one row per live claim, with the verb's label as the
   action and the claim's condition as the row's condition.
 - The **guard** (below) reads the same table and the same labels.
 
 The row's **presence** is gated on the composer holding the keyboard, never on
 the mode: the row is present in Normal and in Insert alike, so `Esc` does not
 reflow the transcript, and only its *text* changes. That is the interactive
-terminal panel's shape (`src/tui/panels/terminal.rs:416`): focus gates the
+terminal panel's shape (`crates/codegg-tui/src/panels/terminal.rs:416`): focus gates the
 row, the mode changes it.
 
 The row is **bounded**. A part is never split, because a row that ends in the
@@ -2627,7 +2700,7 @@ one that does nothing.
 That is why the content builders take a **route**
 (`build_help_lines(vim_mode, active_mode, route)` and
 `searchable_help_rows(vim_mode, active_mode, route)`), and why `HelpRoute` now
-lives in `src/tui/input.rs` beside the content it selects: the route selects
+lives in `crates/codegg-tui/src/input.rs` beside the content it selects: the route selects
 content as well as behaviour. `HelpDialog::with_route` **rebuilds** the
 content, because relabelling the box without rebuilding it would leave the
 chord route teaching a gesture it does not have. The default route is
@@ -2664,7 +2737,7 @@ recorded here so a reader does not have to re-derive them:
 | Character selection includes the head character | `ComposerText::selection_range` | the editor's | the shared machine | **agree** — one machine, generic over the point type |
 | Line selection spans whole lines, one line per press | `ComposerText::select_line` | the editor's | `toggle_line_selection` | **agree** — one machine |
 | A deliberate movement extends a character selection and disarms line growth | `move_caret` → `move_to` | the editor's | `view.nav.move_to` | **agree** — one machine |
-| Word boundary rule | `text_geometry::word_forward` / `word_backward` / `word_end` | the same, via `src/tui/editor.rs` | **its own**: `next_word_end` / `previous_word_start` over the current row | **diverge, deliberately** — the terminal's `e`/`b` are a *row-scoped reader's* motion over a PTY's screen, not a buffer motion |
+| Word boundary rule | `text_geometry::word_forward` / `word_backward` / `word_end` | the same, via `crates/codegg-tui/src/editor.rs` | **its own**: `next_word_end` / `previous_word_start` over the current row | **diverge, deliberately** — the terminal's `e`/`b` are a *row-scoped reader's* motion over a PTY's screen, not a buffer motion |
 | Vertical motion keeps the column the target line allows | `text_geometry::move_vertical` | the same | the terminal's `move_cursor` scrolls at the edges | **diverge by design** — the terminal is a viewport |
 | Paste | M005 | the editor's own roadmap | none | **known difference** (roadmap D5) |
 | Undo / redo | M006 | the editor's own | none | **known difference** — the terminal's scrollback is read-only |
@@ -2759,7 +2832,7 @@ also resets the cursor, offset, selection, and scrub overlay; a held selection
 would otherwise silently re-point at whatever lands on those cells).
 
 **The Helix selection rules live in one coordinate-agnostic module.**
-`src/tui/helix_selection.rs` owns `SelectionState<P>` and nothing else: it does
+`crates/codegg-tui/src/helix_selection.rs` owns `SelectionState<P>` and nothing else: it does
 not know what a point *is*. The terminal instantiates `P = (u16, u16)` viewport
 cells; the editor would instantiate it with byte offsets, which is why the two
 surfaces can share the rules without sharing coordinates. Four consequences are
@@ -2855,7 +2928,7 @@ second key other than `y` disarms it and is then handled normally.
 
 The composer paints **wrapped rows**, the scroll is a **visual-row** offset,
 and the caret's drawn cell is the cell of the caret's **byte**.
-`src/tui/composer_geometry.rs` is the geometry module:
+`crates/codegg-tui/src/composer_geometry.rs` is the geometry module:
 `VisualLayout::new(source, rows)`, `row_count()`, `row_cells(row)`,
 `row_width(row)`, `row_source_start(row)`, `cell_of_byte(byte)`,
 `byte_at(row, column)` and `caret_position(byte)`. The cells and the rendered
@@ -3222,11 +3295,11 @@ keeps its labelled empty state (`" no output — press i to type"`) and the box
 Two independent routes: `TuiMessage::PluginUiEffect` via WebSocket
 and `AppEvent::PluginUiEffect` via `GlobalEventBus`. Both apply session
 filtering before `apply_plugin_ui_effect()`. (`RemoteTuiMessage` is only a
-local import alias for `TuiMessage`, e.g. `src/tui/app/mod.rs:79`.)
+local import alias for `TuiMessage`, e.g. `crates/codegg-tui/src/app/mod.rs:79`.)
 
 ### Command Dispatch
 
-`dispatch_tui_command` (`src/tui/runtime/command_dispatch.rs:84`) is
+`dispatch_tui_command` (`crates/codegg-tui/src/runtime/command_dispatch.rs:84`) is
 `pub(crate) async fn`. The match is overwhelmingly synchronous, but it
 contains five `.await` points, all of the same shape:
 `match core_client.request(req).await` inside the durable-editor arms
@@ -3240,8 +3313,8 @@ spawn-and-complete or fire-and-forget instead.
 
 A slash command's argument is extracted **once**, where the typed line is
 resolved to a registry entry: `Command::argument_from_typed_line`
-(`src/tui/command.rs:421`), called from `App::execute_command`
-(`src/tui/app/mod.rs:5489`) on the built-in action.
+(`crates/codegg-tui/src/command.rs:418`), called from `App::execute_command`
+(`crates/codegg-tui/src/app/mod.rs:5609`) on the built-in action.
 
 The extraction removes the spelling the **user typed** — the entry's
 canonical name *or one of its aliases*. An alias is a spelling of the same
@@ -3251,14 +3324,31 @@ defect one step later.
 
 After the extraction the argument is the only thing a handler receives. An
 arm of the built-in dispatcher (`App::dispatch_builtin_command`,
-`src/tui/app/mod.rs:5653`) never sees the typed line and never reads
+`crates/codegg-tui/src/app/mod.rs:5779`) never sees the typed line and never reads
 `command_palette.query`: the palette's query is the *whole* typed line, and
 a handler that read it re-derived the argument by hand — which is how
 `/search` searched for the literal `"/search foo"` and `/task-del` deleted
-the task `"/task-del 5"`. `scripts/check_command_argument_contract.py`
-fails when an arm reads the palette's query, and when a `Dialog` variant is
-missing from `Dialog::is_open` (`src/tui/app/types.rs:100`), which answers
-"is a dialog on screen?" and must cover every variant that can be.
+the task `"/task-del 5"`. The same rule holds for the arm's handler, which
+since M010 lives in one of the dispatcher's family modules under
+`crates/codegg-tui/src/commands/`: the dispatcher routes to it and passes the extracted
+argument, so a handler that read the query would be re-deriving what it was
+just given. `scripts/check_command_argument_contract.py` fails on a read of
+the query in either half of that surface — assignment and the `String`
+mutators are writes and are accepted, because the palette is typed into —
+and it also fails when a `Dialog` variant is missing from `Dialog::is_open`
+(`crates/codegg-tui/src/app/types.rs:100`), which answers "is a dialog on screen?" and
+must cover every variant that can be.
+
+The guard checks that its own surface is present, and that is not
+belt-and-braces. When M010 moved the 161 arms out of the dispatcher into the
+family modules, the guard kept scanning only the dispatcher's one function:
+it went **vacuous** — reporting clean while the arms it was written for were
+somewhere else — and only its `--self-test` noticed, because the anchor it
+injected at (`B::Help => {`) no longer existed and the injection silently
+fell back to a synthetic fixture that names a different arm. So a missing
+`dispatch_builtin_command`, an absent `crates/codegg-tui/src/commands/` directory, and a
+directory below the module floor are findings in their own right. A scan that
+can lose its subject without saying so is worse than no scan.
 
 Both entry points into the dispatcher resolve the line to a registry entry
 first — the command palette (`App::handle_command_key`) and direct typed
@@ -3284,7 +3374,66 @@ something finer keeps work it must not.
 | The composer's wrapped layout | the buffer's revision and the wrap width | a change to the text or to the width |
 | A message part's Markdown | the message, the part, the part's length and the width | a transcript change that is not an append |
 | The streaming tail's Markdown | the tail's blocks, the text's epoch and the width | a replacement of the text, a width change, a theme change |
+| The streaming tail's **assembled rows** (M004) | there is no second key: the blocks are the assembly's whole input, and every mutation of the block set ends in one re-assembly from the first block it could have changed | a block change — one re-assembly of the suffix, so a token does not re-fold the whole response — served by borrow until the next one; a text replacement, a width change and a palette change move the epoch and drop the cache |
 | The editor's syntax highlight | the path, the theme and the **content** of each scanned line | a change to the content, the language or the palette |
+| The editor's horizontal clamp (M005) | the document's **revision**, the first visible line, the visible line count and the drawn width | a difference in any of those: a scroll is a different first line, a resize is a different width, and a document change moves the revision. It holds an **integer** — the widest visible line, in columns — and no text, and it is dropped with the presentation, so opening a document drops it |
+| The Session panel's populated projection (M001) | the projection stream and its `event_seq`, the active project and session, and every session-derived value the population copies | a difference in any of those, compared against the rows the sidebar already holds; a session teardown |
+| The tasks overlay's rows (M001) | the frame's todo list and the active projection snapshot | the end of the frame |
+| The file tree's rows — the `Ctrl+T` pane's and the `/files` box's (M002) | the listing's revision and that surface's own filter | a change to either; the listing that replaces the previous one, and the project reset that drops the tree |
+| The project chat's rows — the docked panel's and the `/chat` box's (M003) | the reducer's `sequence` (the applied-snapshot revision, for `/chat`), the unread count the divider and badge are drawn from, the active channel, the wrap width, the cursor and the theme | a difference in any of those, compared against the rows already held; a channel switch, a project rebind and a session teardown, each of which drops the model outright |
+| The change review's parsed hunks (M003) | there is no key: the review state already owns the patch | nothing is cached. The render borrows `&patch.hunks` through `DiffViewer::render_hunks_in`, so a frame copies no hunks and there is no state to invalidate |
+
+The chat cache holds **message bodies**, including redacted ones, so its key is
+also a security boundary. The reducer's `sequence` moves when a redaction or an
+edit is applied and the count it renders moves the unread divider; a key
+missing either would serve a body the daemon withdrew, which is the milestone's
+stop condition rather than a stale pixel. Dropping `sequence` from the key is
+the perturbation the redaction test is demonstrated against.
+
+Two M004 entries are about **how** a cached value is handed back rather than
+what is memoized, and both are keys on the same argument:
+
+- The streaming tail keeps its **assembled rows** beside its blocks. The branch
+  that says the rows are already rendered now serves them, where it used to
+  re-assemble the block set — a deep copy of every block's every row, on every
+  rebuild of the streaming message, including the rebuilds a token did not
+  cause. The assembly has no key of its own: the block set is its whole input,
+  so the only correct invalidation is the one that replaces the blocks, and the
+  cache has one place that does it. A cached tail whose blocks changed but
+  whose rows did not is a tail that draws text the response no longer contains.
+  The assembly is also **incremental in the same way the parse is**: the rule
+  is a fold over the line list, so a change re-folds from the first block it
+  could have touched, and the rows of the blocks before it are the rows they
+  were. A token therefore copies the block it grew, not the whole response.
+- A message part's rows are handed back as a **borrow** the caller extends
+  from, so a hit is one copy into the row index rather than two — the cache's
+  clone and the caller's own — and three under a search match, which rebuilt
+  the whole row list to recolour one row. A search now rebuilds that one row and
+  appends the rest from the borrow.
+
+`scripts/check_tui_render_cost.py` pins both shapes: the fast path may not call
+the assembler, and the tool-call body build — the payload parse included — must
+sit behind an `expanded` test.
+
+M005 adds two entries, one a cache and one an invalidation:
+
+- The **horizontal clamp** is memoized on `(revision, first_line,
+  visible_lines, width)`. The width is in the key although the measured value
+  does not depend on it: a resize re-resolves the viewport wholesale, and a
+  clamp left over from another pane's width is a view that can no longer reach
+  the end of its own lines. The cost of that coarser key is one measurement
+  after a resize, and the cost of dropping it is a stale edge.
+- The highlight cache's **prefix check is seeded from the edit**. The check's
+  question is "which is the first row whose content differs from the scan?",
+  and a seed says nothing above the edit changed — so the check starts at the
+  edit's line and stops at the first difference. Every accepted edit places
+  one, on the *post-edit* snapshot (an edit that inserts lines above itself
+  moves every later index), and several edits between two frames combine by
+  `min`. A change **nothing** placed — a daemon-side edit, a reload — has no
+  seed, and the check falls back to line 0. That fallback is the direction the
+  cache's correctness rests on: a missed change above the scan colours rows
+  from a context that no longer exists, and the cache is the only source of a
+  row's spans.
 
 Three things the caches must not change:
 
@@ -3300,6 +3449,20 @@ Three things the caches must not change:
   conditionally-closed conditions stand: C006 changes what is *cached*, not
   how anything is wrapped, and the recorded search defects and the
   escape-atomicity invariant are untouched.
+
+M006 made the wrap's **internal** work linear without touching that
+contract. The item builder resolves a word's span parts, and a separator's
+style, through one cursor that advances with `tokenize`'s segments — which
+`tokenize` emits in source order — so a wrap examines the span list
+`O(spans + words)` times instead of rescanning it from the front for every
+word and every separator. `chunk_word` accumulates each fragment's width from
+the character walk it already performs instead of measuring it again, and the
+plain engine chunks a word by byte range instead of allocating a `Vec` and a
+`String` per word. `wrap_span_rescans` and `wrap_width_measures` count the
+first two. The wrap's own **input copy remains**: the styled primitive takes
+`&[Span<'static>]`, so the text is still copied once per wrap, and removing
+that copy would change the primitive's signature — C006's partly-met criterion
+is therefore unchanged by this milestone.
 - **The row count.** The transcript's rows come from one producer — the
   layout cache — and the scrollbar's row count and the drawn rows are the
   same rows. A cache that changed which rows exist would move the scroll
@@ -3307,15 +3470,62 @@ Three things the caches must not change:
   removed.
 
 The counters that make the cost measurable live in
-`src/tui/render_cost.rs`: they count the wraps, the Markdown parses, the
-highlight scans and the task rows the overlay copies, so a test can assert
-on *how many* of them a frame did rather than on how long it took.
+`crates/codegg-tui/src/render_cost.rs`: they count the wraps, the Markdown parses, the
+highlight scans, the task rows the overlay copies, and — from M001 — the
+frame-buffer retentions, sidebar populations and line builds, subagent-tab
+clones, composer-hint builds, status summaries, full task-list builds and
+watermark scans, so a test can assert on *how many* of them a frame did
+rather than on how long it took. M005 adds the editor's row reads and the
+bytes they examined, the steps its semantic-token scan took, and the lines the
+highlight cache's prefix check re-read; a frame that measures the window and
+then draws it reads each row twice, which is what the first two separate.
+
+M002 adds two more, and they are a pair on purpose. `file_tree_row_builds`
+counts one **flatten** of a listing into its row list; `file_tree_filter_passes`
+counts one application of a surface's filter to a row list. A surface can
+filter rows it did not flatten — the `/files` box filters the structure the
+authority handed it — so neither count implies the other, and a frame that
+changed nothing must show neither.
+
+M003 adds four. `chat_row_builds` counts one miss of a chat surface's row
+cache, which is one full re-wrap of the channel; `chat_wrap_passes` counts one
+**body** a build wraps, so a build of `n` messages is `1` row build and `n`
+wrap passes (a redacted body is not wrapped); `chat_unread_scans` counts one
+derivation of the unread count by scanning the window, which the memo makes a
+per-window-change event rather than a per-draw one; and `review_hunk_copies`
+counts one copied `DiffHunk`. That last producer is attached to the type's
+`Clone` rather than to a call site, so a render path that reintroduces
+`patch.hunks.clone()` is measured without a second place to forget it.
+
+M004 adds four. `tail_row_copies` counts one assembly of the streaming tail's
+rows: its producer sits in the cache's **assembly**, not at the call site that
+materializes the rows into the row index, so an unchanged tail reads zero and a
+block change reads one — one fold of the suffix the change could have touched,
+not one per row of the response. `part_row_copies` counts one copy per
+part a message rebuild appends, which is the floor — the cache owns its rows and
+the transcript owns its own — so the counter catches the *second* copy coming
+back. `tool_body_builds` counts one tool-call **body** built for the transcript,
+which a collapsed call performs none of; the collapsed header's count-only read
+is deliberately not this counter, because it builds no formatted rows — for a
+structured payload that read *is* a parse, so the collapsed path is body-free
+rather than parse-free, and the counter is named for what it measures.
+`code_block_spans` counts the spans the code-block
+wrapper emitted — one per style run per row where it was one per character.
+
+The M001 caches are the frame composition's rather than any one surface's:
+the Session panel's population is skipped when neither the projection
+revision nor any session-derived input moved, and the overlay's row list is
+derived once and read by both the height reservation and the painter. The
+footer's summary is deliberately **not** in this table: its value reads
+across the whole `App` (including a time predicate for the undo prompt), so
+a key that named every field would be as wide as the derivation. M001 leaves
+that derivation in place and records it as deferred.
 
 #### The transcript's retention
 
 The primary transcript is **unbounded**: every message the session received
 stays in memory, in display order, and the user can scroll back to all of
-it. The sibling chat surface (`src/tui/app/state/chat.rs`) caps its
+it. The sibling chat surface (`crates/codegg-tui/src/app/state/chat.rs`) caps its
 per-channel window at 100 messages, but that cap belongs to a *different*
 surface — a chat channel's window, whose daemon-side page size is 1000 — and
 it does not transfer to the transcript, whose durable copy is the session
@@ -3329,9 +3539,53 @@ introducing a second producer of the row count. A bound that removed a
 message the user could previously reach would be a user-visible change, and
 a user-visible change is a different milestone than a cost one.
 
+### The frame plan: one owner of frame geometry (M008)
+
+A frame's regions are planned once, by `TuiLayout::plan_frame`
+(`crates/codegg-tui/src/layout.rs`), into a `FramePlan`: the pane, the header, the
+transcript, the tab bar, the composer's whole allocation, the input box, the
+hint line, the todo strip, the tasks overlay, the deliverable card, the
+footer, the two border strips and the panel edges. `App::render` stores that
+plan and paints from it, and mouse hit-testing reads the same value, so a
+click cannot resolve against a rect the frame did not paint. Three regions
+are recorded by their painter instead of derived — the transcript's
+`scrollbar` gutter, the `completion` popup the filtered rows size, and a
+dialog's rect, which stays `App::dialog_rect`'s single derivation so the
+painted box and the clickable box are one value.
+
+**The carve-order rule is a property of `plan_frame`, and it is stated
+once.** A claim is carved where it is drawn, in the order it is drawn. The
+pane divides into header, transcript, composer and footer. Off the composer's
+top, in this order: the hint line, the todo strip, the tasks overlay, the
+deliverable card — and the input box takes what is left, so the strips'
+vertical order *is* the order of the claims and a claim can never be honoured
+above a row that is drawn below it. The subagent tab bar is carved off the
+**transcript's** top, because that is where it is drawn: charging it to the
+composer would charge one row twice. A claim that does not fit yields rather
+than taking its neighbour's last row, and the overlay and the bar share one
+budget of rows left after every other claim, the bar first — a tab the user
+opened going invisible is worse than a shorter overlay.
+
+Four layout bugs are why the rule is enforced rather than described, and each
+is a case the ordering test reaches: the outer bottom border painted over the
+status line because the footer's own last row was used as the anchor; the
+working strip that owned the exit confirmation's expiry; the retired command
+palette whose hint the completion popup inherited; and a bar charged twice
+for one row.
+
+`plan_frame` is **pure**. Its inputs are the frame, resolved with its panels
+into a `FrameOuter` (the pane, the border strips and the panel edges), the
+row claims (`FrameClaims`: the todo strip, the hint line, the tab bar, the
+overlay, the card and the composer's own height), and the layout's
+configuration. It takes no `&App`, paints nothing and performs no I/O, so
+equal inputs return equal plans. The composer's claim is the one input that
+is a function of width — its height is its wrapped row count — and the caller
+measures it at the pane's width, which `FrameOuter` publishes; the width is
+the plan's own output and cannot be read back out of the plan it feeds.
+
 ## Key Types & APIs
 
-### App (`src/tui/app/mod.rs:328`)
+### App (`crates/codegg-tui/src/app/mod.rs:328`)
 
 ```rust
 pub struct App {
@@ -3384,7 +3638,7 @@ admission seam worth knowing about: `pending_turn_submission` and
 `turn_submit_request` hold the submit that the event loop will hand to the
 core, and `interactive_terminals` owns the live PTY surfaces.
 
-### State Domains (`src/tui/app/state/`)
+### State Domains (`crates/codegg-tui/src/app/state/`)
 
 33 state modules (34 `.rs` files including `mod.rs`):
 
@@ -3415,7 +3669,7 @@ core, and `interactive_terminals` owns the live PTY surfaces.
 | `session_work.rs` | Session work-surface state |
 | `snapshot.rs` | Remote snapshot building |
 | `subagent_addressee.rs` | C007: who the composer is addressed to |
-| `subagent_tabs.rs` | Subagent tab set over the main buffer (Shift+N/P/X) |
+| `center_tabs.rs` | Center tab set over the main buffer (Shift+N/P/X) |
 | `subagents.rs` | SubagentRow projection rows and strip/buffer view state |
 | `tasks.rs` | Ctrl+T tasks overlay rows (todos, subagents, jobs) |
 | `ui.rs` | Theme, layout, routes, dialog, input mode, keybindings, TTS, diagnostics |
@@ -3509,6 +3763,16 @@ authority by `commands::file_tree`. `h` resolves "the parent of this row"
 against the **unfiltered** row set, because that is a structural question and
 the surface's own filtered view cannot answer it.
 
+The structure is **already flattened**: `FileTreeState` owns the one row
+vocabulary — the flatten of the listing and the pane's own filter over it —
+and rebuilds it when its revision moves, so `structure()` hands each surface
+the *unfiltered* rows and no surface re-derives the tree. The `/files` box
+narrows that copy with its own filter and **does not re-flatten**: it caches
+its filtered rows against `(view revision, filter)` and the render path reads
+the cached slice. A box that flattened the tree itself would be a second
+producer of the rows, and the two surfaces' filters would drift apart by
+construction.
+
 The structure reaches every mounted surface through one refresh, in
 `App::render`, ahead of the tree pane, the side panel and the modal dialog.
 The refresh is gated on `FileTreeState::revision`, which every
@@ -3523,21 +3787,39 @@ stack left the docked panel showing a frozen copy of the tree.
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
 | `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
-| `Enter` | **the same motion as `l`**: a directory is entered, a file is opened in the editor |
-| `l` / `→` | **peek into** that directory: it opens in place and the cursor moves into it. On a **file** it opens the file — the key is never dead |
-| `h` / `←` | **up one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level; at the workspace root, collapse in place |
+| `Enter` | **toggle**: a directory opens when closed and closes when open, and the **cursor never moves**; a file is opened in the editor. Stepping in and out are `l` and `h` |
+| `l` / `→` | **peek into** that directory: a closed folder opens in place and the **cursor stays on the folder**; an open one is entered. On a **file** it opens the file — the key is never dead |
+| `h` / `←` | **close** the open directory the cursor is on, wherever it is; otherwise **up one level**: from inside a directory, to its parent row; from a top-level row, the scope slides up one level |
 | `i` | type a **filter** into the pane — the rows narrow as you type |
 | `r` | **refresh**: re-walk the current root |
-| `Esc` | leave insert mode, **keeping the filter**; in Normal mode it does nothing |
+| `Esc` | leave insert mode, **keeping the filter**; in Normal mode, clear it |
 | `q` | close the **box** — in the side panel it does **nothing** |
 | `Shift+Q` | close the box; **leave** the side panel |
+
+`h` closes the **open** directory the cursor is on, at every depth and in every
+scope, and that check comes first. A scoped pane's top-level row used to slide
+the scope away instead, so a folder opened there had no gesture left to close
+it, and a nested folder closed its parent rather than itself. A row that is not
+an open directory keeps the older meaning: up one level.
 
 `Enter` and `l` are **one** verb. `Enter` used to reveal a directory's contents
 in place and leave the cursor alone, which at the listing window's edge
 expanded a directory that has no children in the listing — an "empty
-directory" rather than a move. Both now enter the directory, and both slide the
+directory" rather than a move. Both now open the directory in place and keep
+the cursor on it, both step into it when it is already open, and both slide the
 scope when the directory's children fall outside the daemon's three-level
 listing window.
+
+**Opening a folder is not a move.** The rows an opening adds sit *below* the
+folder's own row, so the row the cursor is on is the same row before and after.
+The cursor used to step into the first child, which dropped the selection a
+row every time a folder opened and made the folder the user was aiming at
+impossible to come back to. `FileTreeState::expand_in_place` therefore opens
+the directory and leaves the selection alone; `FileTreeState::enter_directory`
+is the *other* verb, the one that steps in, and `l` reaches it only when the
+directory is already open. The scope slide is the same story: the relist lands
+with the directory open in the new scope, and the pending cursor names the
+**directory** rather than its first child.
 
 The slide lands on the directory's **grandparent**, not its parent: the
 grandparent is the *shallowest* scope in which the directory's children fit
@@ -3564,18 +3846,19 @@ reported.
 The box's own hotkey row is gone. The row above the composer carries the
 panel's keymap, and a second copy at the bottom of the panel was noise.
 
-**`l` peeks; it does not re-root.** A directory whose children are still
-inside the listing window is expanded **in place** and the cursor moves into
-it, so the parent and the siblings stay on screen and the reader can see where
-they are. Only a directory at the window's edge — the daemon's listing
-reaches three levels — slides the scope to the directory's **parent**: the
-directory stays selected and expanded in place, and everything above the
-parent is dropped. `h` is the mirror: from inside a directory it moves the
-cursor to the parent row and collapses that directory; from a top-level row it
-slides the scope up one level, with the old scope root expanded in the new
-scope; at the workspace root it collapses the selected directory in place, so
-the key is never dead. The pair reads as a horizontal Helix motion — `l` goes
-right (deeper), `h` goes left (shallower).
+**`l` peeks; it does not re-root.** A closed directory whose children are still
+inside the listing window opens **in place** and the cursor **stays on the
+directory**, so the parent and the siblings stay on screen and the reader can
+see where they are. An open one is stepped into instead, the cursor landing on
+its first child. Only a directory at the window's edge — the daemon's listing
+reaches three levels — slides the scope to the directory's **grandparent**,
+where the children fit back inside the window; the directory opens there and
+the cursor stays on it. `h` is the mirror: it closes the open directory the
+cursor is on, wherever it is, and the cursor stays on it; from a row that is
+not an open directory it moves the cursor to the parent row and collapses that
+directory; from a top-level row it slides the scope up one level, with the old
+scope root expanded in the new scope. The pair reads as a horizontal Helix
+motion — `l` goes right (deeper), `h` goes left (shallower).
 
 The **scope** therefore carries the absolute depth while the **indent** stays
 relative to it (`FileTreeState::display_depth`), so a deep scope does not
@@ -3662,13 +3945,13 @@ Both renderers call that one function. They used to carry their own
 is how the box and the pane came to draw different ladders for one tree.
 
 The box's title is a **breadcrumb** — `workspace › src › tui` — for the same
-reason. The flat `Files · src/tui (n shown)` carried the same information and
+reason. The flat `Files · crates/codegg-tui/src (n shown)` carried the same information and
 hid which component `h` steps back through, so stepping out looked arbitrary.
 
-### Swappable side panel (`src/tui/panels/`)
+### Swappable side panel (`crates/codegg-tui/src/panels/`)
 
 The panel column is a **panel host**, not a widget chosen by an `if` in the render
-path. `SidePanelHost` (`src/tui/panels/mod.rs`) owns three pieces of state: which
+path. `SidePanelHost` (`crates/codegg-tui/src/panels/mod.rs`) owns three pieces of state: which
 edge each panel is docked to, which edge the keyboard gestures act on
 (`selected`), and whether that edge's panel holds focus.
 
@@ -3741,7 +4024,7 @@ so growing one shrinks the other. `resolve_resize` answers "which panel's size
 changes, and in which direction", so the same key cannot mean two things
 depending on which side the reader was standing on.
 
-The geometry is `src/tui/panel_resize.rs`, which knows nothing about `App`, and
+The geometry is `crates/codegg-tui/src/panel_resize.rs`, which knows nothing about `App`, and
 it is resolved **ahead of the focused panel** in `App::on_key`. Both orderings
 are forced: a focused panel consumes every key it is shown, so `h/j/k/l` would
 otherwise move the terminal cursor instead of a border; and the main buffer is
@@ -3759,7 +4042,18 @@ edge is dragged: the ratio is integer-divided against the frame height, so a
 one-point change is 0 rows on a short frame and 2 on a tall one — a key that
 appears dead for no stated reason. `TuiLayout::observe_frame` records the last
 rendered height purely so that conversion has a denominator. Sizes are
-runtime-only for this pass; only `ui.panel_placement` is persisted.
+runtime-only for this pass.
+
+**The docked layout — placement and the panel on each edge — is persisted.**
+`panel_placement` names the edge the keyboard drives; `panel_layout` maps
+`right`/`left`/`bottom` to the panel's `config_key`. `SidePanelHost::with_layout`
+restores both at startup. Saving happens on the acts that **arrange** the frame
+— a dock, a swap or a cycle — not on every selection: a config read and write
+per `Enter` in the manager is a filesystem round trip behind a keypress, and
+in-session the slot already keeps whatever was loaded into it. Only the selected edge is revealed: restoring *which* panel an edge
+holds is a preference, while starting with no column at all reads as a broken
+frame. An unknown panel name drops that one edge to its default, the same
+tolerance `panel_hotkeys` applies to a typo.
 
 `select(id)` goes through `slot.occupy`, so displacing a panel by selecting
 another one is remembered exactly as docking is. A user who walks to Chat in
@@ -3786,7 +4080,18 @@ branch. `move_directionally` asks in order:
    is a different edge;
 3. the keyboard is in a panel and the direction is the one leading **away** from
    its edge → return to the main buffer;
-4. otherwise `cycle_step(dir)` → walk the loaded panel types.
+4. otherwise `cycle_step(dir)` → walk the panel types, **loading** each one it
+   lands on through `select_panel` — the same loader a manager commit, a saved
+   hotkey, a dock and the reveal use.
+
+Walking used to change only the slot, so it landed on a hosted panel that said
+"Nothing loaded. Open it from the panel manager" — the trip the gesture exists
+to save. Every stop now materializes: Terminal starts its shell, Chat binds its
+project and asks for the channel list, and the file tree and Files open their
+boxes. A panel therefore cannot be usable from one route and inert from
+another. The one cost is deliberate: an asynchronous panel (Research, Task
+View) opens its box when the walk reaches it, exactly as committing it from the
+manager does.
 
 **The main buffer is a stop, not a gap.** The second column is not "the other
 end of the line" from the first — the buffer sits *between* them. So step 3
@@ -3865,8 +4170,28 @@ inside the column. It replaces the old two-column grid selector, which could
 not be filtered and showed unlabelled buttons in 30 columns. It renders
 [`SidePanelId::ALL`] directly, so the list it shows *is* the registry.
 
+#### Two tiers, one registry
+
+`SidePanelId::class()` splits the registry into `Full` and `Detail`.
+`Full` is the set of surfaces a user lives in — each fills the column with
+something to drive — and `Detail` is a view *of* one of them: a cost breakdown
+belongs to the usage panel, a diff belongs to review. `parent()` names the full
+panel a detail panel belongs to, and the fold map is total in both directions
+(a detail panel always names a full parent; a full panel names none), which a
+test enforces.
+
+The tier is **presentation, not capability**. `PanelListState` lists the full
+panels by default, reveals a detail panel when the filter names it, and lists
+everything behind `A`; the manager renders a folded row as `→ Parent` rather
+than dropping it. A detail panel still docks, still takes focus, and still
+answers its `/` command and its saved hotkey. Hiding a panel from the default
+list is never the way a feature quietly disappears — that is why the fold map
+is a match with a total test rather than a hand-filtered list at the render
+site.
+
 Adding a **hosted** panel is an enum variant, an entry in `SidePanelId::ALL`,
-and `label`/`title`/`hint`/`load_command`/`config_key` arms, **plus an arm in
+a `class`/`parent` arm when it is a view of another panel, and
+`label`/`title`/`hint`/`load_command`/`config_key` arms, **plus an arm in
 `commands::panels::open_panel_box`** — that match has no catch-all, so it is
 the one site outside this file that fails to compile if missed — and a
 `dock_target` arm in `App` so `L` knows where the box goes. `title` must be
@@ -3888,6 +4213,112 @@ because when they were two separate `matches!` literals they drifted the moment
 a fifth bespoke panel was added, and the test agreed with the bug by comparing
 against the same stale literal.
 
+#### One panel chrome
+
+Every panel edge — the five bespoke panels and the hosted fan-out — is painted
+by `PanelChrome` (`crates/codegg-tui/src/panels/chrome.rs`). It is the one producer of four
+decisions: **whether** chrome is drawn, the border style, the title string and
+the title style. The policy is fixed here, not by each panel:
+
+| | focused | unfocused |
+|---|---|---|
+| border | `theme.primary` | `theme.border` |
+| title | `theme.primary` | `theme.muted` |
+| marker | trailing `●` inside the title | absent |
+
+`Modifier::BOLD` is deliberately not part of the signal: the Agents panel
+applied it unconditionally, and a style that is always on cannot mark a
+difference. The title is `SidePanelId::label()`, padded and marked — a panel
+does not spell its own name, and a caller of `render_hosted` passes the label
+and the focus flag rather than a finished string, so it cannot re-encode the
+focus decision.
+
+Chrome is drawn when the column is at least 12×4 (`has_chrome`). Below that a
+panel paints borderless into the whole area: a border plus a title in a
+three-row column consumes the content it frames. `PanelChrome::draw` returns
+the inner rect, so no caller re-derives the inset.
+
+`ChromeStyles::resolve` is public because the dialog frame (`Section`, M003)
+reuses this resolution rather than restating it; `crates/codegg-tui/tests/tui_render/invariants/`
+asserts I3b (a focused surface differs from an unfocused one in border or title
+**style**) for every panel at 20×6, 40×12, 80×24 and 120×40.
+
+#### One dialog frame
+
+Every dialog's outer frame comes from `Section`
+(`crates/codegg-tui/src/components/section.rs`), the dialog's counterpart to `PanelChrome`.
+It resolves its border and title styles through the **same** policy —
+`ChromeStyles::resolve(theme, focused)` — rather than spelling a second pair
+out, so a dialog edge and a panel edge cannot drift apart. That is the
+interface M002 and M003 were ordered on.
+
+`Section` also owns the title string. A caller passes `"Files"`; the primitive
+trims it, drops a caller-supplied `●` (leading or trailing), applies Title
+Case, and then pads the result through `chrome_title`. The three drifts the
+milestone exists to remove — an unpadded `" Job detail"`, a sentence-case
+title, and a dot the caller placed itself — therefore cannot come back through
+a new caller. `Section::draw(area, buf)` answers the inner rect and
+`Section::inner(area)` answers the same rect without painting, so no dialog
+re-derives its own inset. The hint sits on the bottom edge, padded and never
+marked: it names verbs, and the marker names the focused surface.
+
+**A `Section` never paints the `●`, and `focused` does not ask it to.** The
+marker names the **column** that holds the keyboard, which is a fact about a
+panel host that has just framed a docked dialog — so it is the host's job.
+`focused` selects the border and title **colour** only: a modal passes `true`
+because it is the surface holding the interaction, and gets a primary edge and
+primary title. The two decisions were once conflated: a modal that passed
+`focused: false` merely to avoid painting a dot it did not own also got a muted
+title it had not asked for, which is why the muted reading cost contrast
+whereas the primary reading removed it. No modal renders a `●` on its own
+frame; `crates/codegg-tui/tests/tui_render/invariants/docked.rs` renders every fixture through
+the modal path and asserts the outer ring carries none.
+
+**A title that is data rather than a label uses `Section::verbatim`.** A file
+breadcrumb (`"Files · crates/codegg-tui/src (3 shown)"`) and a caller-supplied node title are
+not labels; re-casing them would corrupt the path or the name. The verbatim
+arm still owns the padding and still strips a caller-supplied marker — only
+the casing is the caller's. `Section::new` is for labels and cases them.
+
+**A docked dialog draws no outer border.** The panel host has already painted
+the border, the panel's name and the `●` into the same rect — and that rect
+*includes the border cells* — so a dialog that paints its own edge over it does
+not layer, it overwrites all three, and a focused column then renders
+identically to an unfocused one. `SectionFrame::Hosted` is that rule as a
+variant: it writes **no cell at all** and answers the rect the host's edge
+leaves — not a background fill either, because the host's border cells are
+inside that area. `Component::render_in_panel` is the seam that selects it — a
+dialog's `render` builds the `Owned` section and its `render_in_panel` builds
+the `Hosted` one, so the docked path cannot paint an edge it does not own. The
+trait default stays "delegate to `render`", which is right for a widget with no
+chrome of its own; a dialog that draws a frame overrides the seam, and the
+variant makes the reason visible at the override instead of in a comment.
+`AgentDialog` was the live instance: `docks_as_viewer` was `true`, its `render`
+painted a border, and the file had no `render_in_panel` at all.
+
+The sweep is **39 of the 40 dialog files** — the files under
+`components/dialogs/` that implement `Component`. `panel_list.rs` is list state
+with no `Component` impl and `mod.rs` only declares the modules, so neither is
+a surface and neither is counted. Every one of the 39 builds its outer frame
+and title through `Section`, and every dockable one selects
+`SectionFrame::Hosted` from `render_in_panel`. A box that groups content keeps
+its own edge, and a footer drawn as a rule plus a row of text (`command.rs`'s
+hint bar) keeps that shape because the separator is M005's.
+
+The single exception is `permission.rs`, and the gap is on its title row rather
+than its frame. That row carries a second, right-aligned badge — the request's
+tool icon and risk class, painted in the risk's own colour. `Section` owns one
+title, styled from the focus policy alone, so the badge is not expressible:
+folding it into the title loses the right alignment (the badge then clips
+before the tool name at narrow widths) and drops the only paint of
+`ToolRisk`'s colour, while moving it into the body would add a content row. The
+file keeps its hand-built frame until the primitive grows a title adjunct.
+
+`crates/codegg-tui/tests/tui_render/invariants/docked.rs` is the harness-wide assertion: every
+fixture with `docks_as_viewer` true is rendered through `render_hosted` and must
+leave the host's border, title and `●` intact, and a wrapper that recreates the
+pre-fix shape (dockable, no seam override) must fail it.
+
 **A box and its panel open in different modes.** `HelpDialog::new_with_mode`
 takes the starting mode from its caller, and the two callers disagree on
 purpose. `/help` arrives in **Insert** — it is opened to type a query. The
@@ -3897,6 +4328,16 @@ Insert `j`/`k` are filter text, so a panel hardcoded to Insert does not
 "refuse" to scroll; it types `j` into a filter nobody is watching, which is
 indistinguishable from a dead pane. The panel owns no copy of this logic: it
 hosts the dialog and hands it a mode.
+
+**Stepping onto Chat or Terminal takes the keyboard.** They are the two panels
+with an input surface, so `step_panel` focuses the host for them and for nothing
+else: a chat panel that says "press i to write" must receive that key (without
+focus it fell through to the app's insert verb and armed the *agent* composer,
+badge `[build][LLM]`), and a terminal opens ready for its first command.
+`apply_terminal_attach_finished` then focuses the PTY, so the shell lands INS
+rather than demanding `i`; `Esc` leaves INS for NOR and `i` returns. Every other
+panel keeps the walk's no-seize rule, and a *programmatic* selection — the
+Workspace view showing chat, say — is not a step and never seizes the composer.
 
 **The Terminal panel always has a way in.** `i` routes through
 `type_intent()`: with a handle it emits `TerminalPanelFocus`, and the command
@@ -4063,6 +4504,196 @@ counted by grepping `src/` for the method names and excluding
 the fallback for the bespoke panels, where the host owns the whole surface, and
 it is now correct for no dockable box at all.
 
+**One hint vocabulary.** `crates/codegg-tui/src/components/hint_line.rs` is the single
+producer of a **hint row** — a painted row of `<key> <verb>` items. No hint row
+is composed from a hand-formatted string, a `format!`, an opaque row fragment,
+or a caller-supplied footer string; a caller with items hands the box the
+items, and the box renders them at its own width. A surface spells `(key,
+verb)` items and the builder decides the rest:
+
+- the item form is `<Key> <verb>`, and the separator is ` · ` (space, U+00B7,
+  space) — the dialect the panel row has used all along;
+- the builder never touches the key half of an item: `Esc`, `Enter`, `Tab`,
+  `PgUp`, `PgDn`, `Home/End`, `⌫` and the arrows are proper names, so
+  `push("Enter", "Select")` renders `Enter select` — the verb is the only half
+  the builder owns. A surface still spelling an advertised key lowercase is a
+  content defect, not a formatting one: the I4 baseline is keyed by **spelling**,
+  so re-spelling an advertised key re-banks that ratchet rather than fixing a
+  layout;
+- an empty verb renders the key alone, which is how a row carries a *value*
+  (`30s/5min/2h/1d`, `1-10 of 40`) rather than a verb.
+
+`Component::keymap_hint()` keeps its signature. What changed is what an
+implementation returns: `hint().render(0)`, a built `HintLine`, instead of a
+hand-formatted string.
+
+**What the criterion excludes, and why.** Four kinds of surface name a key and
+are not hint rows. Converting them would satisfy the words and lose what the
+surface is for:
+
+- **tooltips** — a prose line attached to a cell (the sidebar's
+  `tooltip_text`), with no item list and no exit key;
+- **status rows** — the composer's situational layer, the terminal's status
+  header, and the composer's composite row, whose priority order (situational
+  first) the builder's required-first ordering cannot express;
+- **value rows** — `focus: … (Esc leaves focus …)` in a diagnostics dump;
+- **dead strings** — a footer a box discards by its own rule
+  (`InfoDialog::renders_caller_footer`), which is not rendered at all.
+
+**A hint row is painted in a reserved row or chunk, never as the tail of a body
+that clips.** A declared row that no frame contains is a failure, and the
+painted-frame scan counts *rows*, so it never sees one. Two layout traps are
+worth naming because both were live in shipped builds:
+
+- a chunk that reserves `Constraint::Length(1)` and hands it to a bordered
+  `Section` spends the row on the border: `Block::inner` answers height 0 and
+  the paragraph is written into nothing. `Section::owned_height` exists for
+  this arithmetic — `owned_height(1)` is 3;
+- a footer appended to the `Paragraph` that carries the body is not painted at
+  all once the body is taller than its rect. `/keybind`'s row was line 59 of a
+  57-entry list drawn into 28 rows, 31 rows below the last visible line, so no
+  frame contained it. The footer gets its own chunk, and the body keeps its
+  own minimum.
+
+**The declaration and the painted row are both scanned.** A surface advertises
+twice: it *declares* a keymap through `Component::keymap_hint()`, which the
+panel host paints and I4 measures, and it *paints* footers that are the box's
+own — a mode-specific row, a parenthesised border title, a `Paragraph` line
+appended after the body. The two are different advertisements, and a scan that
+read only the declaration could not see a footer written by hand. So
+`crates/codegg-tui/tests/tui_render/invariants/vocabulary.rs` reads both:
+
+- the declared rows, from `keymap_hint()`, and the side panels' rows, from
+  `composer_hints()`; and
+- the painted rows, out of the **rendered frame**. A frame row is split at the
+  column rules first (`│`), because a screen row is not a widget row — a
+  split-diff body row is two columns joined by a rule, and reading it whole made
+  `-  1  │ let x = 1;` look like two one-character hint items. Each column is
+  then split at every separator a hint has ever been written with (` · `, `|`,
+  two or more spaces) and a column is an advertisement only when at least **two
+  of its items are `<key> <verb>`**. That floor is what separates a hint from a
+  help body's `j/k    Move up/down` table row (one item) and from a row of
+  labelled values (`Policy: ask · workspace: main`, none).
+
+There is deliberately **no** source-regex guard over Rust strings: regex
+scanning of Rust misreads it, which is why `scripts/rust_test_scan.py` exists.
+
+Both reads reject a second separator, a colon that joins a key to its verb
+(`Enter: cancel` — a colon inside a value is the value's punctuation), a Title
+Case verb, a hand-spaced row, and an exit key that is not first. The exit rule
+is applied to a row that is **bounded** — one the frame can clip — and it is
+applied to the row's *items*, not its first byte: a row may legitimately open
+with a label (`Confirm …`) or a value (`Question 1/1 …`), and the rule begins at
+the first item that names a key and a verb.
+
+**A footer is the declaration plus the key that leaves.** Where a surface both
+declares a keymap and paints a modal footer, the footer's items are the declared
+ones — same key alias, same verb — plus the modal exit, which the declaration
+must not carry because a docked box is popped off the stack by the host's
+gesture rather than by `Esc`. That is the one *contextual* difference the
+unification preserves: a modal footer names the key that leaves it, a panel row
+names the gesture that docks and undocks it. Everything else about the two rows
+is one vocabulary, and `/session`'s bulk-mode block and `/job-detail`'s four
+state rows are the same rule applied to state: the items change with the state,
+the form does not.
+
+**Three items, one row, and which one leads.** A few rows carry a status value
+next to their verbs — `/info`'s `Showing 1-22 of 60`, `/plugin`'s line range,
+`/source-preview`'s line count. Those are built as items with an **empty verb**,
+and `/info` renders its footer with the footer's own width as the budget rather
+than unbounded: the row is one line at 44 columns, `fit_parts` drops whole items
+from the end, so the order is the priority. The exit leads because the key that
+leaves must survive; the position follows because the surface documents it as
+the only signal that there is more below; the verbs come last because they are
+the one part a reader can recover from the help. A row rendered unbounded there
+would be clipped mid-item by the frame instead, and the position would vanish
+below ~50 columns with nothing failing.
+
+**The required part, and the empty row.** `fit_parts` joins whole parts and
+drops the ones that do not fit; it never cuts one, because a row that ends
+mid-key names a key that does not exist. `HintLine::push_required` marks the
+item that must survive and `render` orders it first, so truncation from the end
+cannot remove it. When the required item alone does not fit, the row renders
+**empty** — the deliberate resolution of the conflict between "never drop the
+exit key" and "never render a partial key". A blank row costs a reader nothing
+they cannot recover: the key is still documented one keypress away, and the
+surface stays exitable. A half-key costs them a keypress that does nothing.
+
+A hint describes a key; it never decides which stage claims the chord. That is
+ADR-0042's, and the two key-authority guards are its arbiter. The vocabulary is
+a rendering concern: the line says what the configuration bound, not what the
+binding is.
+
+**I4: an advertised key is handled, and the measurement means something.** The
+invariant is "pressing the key a surface advertises changes that surface", and
+`crates/codegg-tui/tests/tui_render/invariants/baseline.rs` is its only measurement. Two things
+about it are load-bearing.
+
+*The declaration is the subject; the painted row is the cross-check.* A surface
+declares its keymap in `Component::keymap_hint_line()`, or in
+`Component::advertised_hints()` when it advertises in a footer instead of a panel
+keymap. I4 presses the keys of those `HintLine` items: they are the structured
+`(key, verb)` pairs the producer holds, so the measurement no longer has to parse
+them back out of a string. The rendered rows are read as well, and every key they
+name that the declaration does not is reported as `painted_outside` — a surface
+that advertises outside its own declaration is a finding, and a surface that
+declares nothing is still measured from its row. The two layers are not
+interchangeable: without the declaration the measurement is a parser over pixels,
+and without the row a surface could stop declaring and quietly measure less than
+the screen shows.
+
+*Both advertisement sources are authoritative.* A surface advertises in a
+`keymap_hint` **and** in a painted footer, and when they disagree that
+disagreement is itself a finding rather than a tie to break. `diff` and
+`security_review` were the recorded case: their hints said `^d/^u page` while no
+`CONTROL` arm existed and their own footers, a few rows below, already named the
+keys `handle_key` answers. Correcting the hint to `PgUp/PgDn` fixed a
+contradiction inside one surface, not a missing binding.
+
+*The measurement must be able to press the key.* A key recorded as inert because
+the probe mounted an empty list, or started at a scroll boundary, or pressed it
+after an earlier key had changed the mode, is a statement about the probe. So
+the harness mounts a **fresh fixture per advertised key**, uses a
+content-bearing fixture table for the list surfaces it measures, and prints a
+per-key report — `cargo test --test tui_render -- invariants::baseline
+--nocapture` names every surface, every announced spelling and every verdict, so
+the recorded set can be read back out of the run rather than guessed at.
+
+The recorded residue is **four rows**, each carrying a `reason` the guard
+requires and rejects the absence of:
+
+- `Model`/`Tab` and `WorkspaceDashboard`/`Tab` — `FocusManager::handle_key`
+  intercepts `Tab` before any dialog sees it (ADR-0042), so the dialog's own arm
+  is unreachable through production dispatch. A focus-ring rotation would not
+  deliver either advertised verb, so this is the ownership contract, not a
+  missing widget feature.
+- `SecurityReview`/`H` — the verb copies a hunk to the **system clipboard**. A
+  render measurement must not mutate the operator's pasteboard, and it has no
+  injection point, so the key cannot be exercised.
+- `SecurityReview`/`h` — arming a hunk also arms `H` for the same press set, so
+  `h` cannot be measured without that write.
+
+Those four are the honest limit of what a render harness can prove. Everything
+else the surfaces announce repaints, and a fifth row appearing means a surface
+started advertising something it does not do.
+
+**Seven advertised spellings are outside the parser.** `Home`, `End`, `PageUp`/
+`PgUp`, `PageDown`/`PgDn`, `Backspace`/`⌫`, `[` and `]` appear in hints and
+footers, and `baseline.rs::key_of` cannot turn them into a key.
+`UNREADABLE_SPELLINGS` names them and a test holds that list, so the blind spot
+is enumerated rather than silent. Widening the parser is not a parser change:
+every newly readable key becomes a pressed key, and most of them cannot act on
+the fixture that advertises them — `Diff`/`Home` and `Diff`/`PgUp` start at the
+top, `ProjectChat`/`[ ]` needs a second channel, `SecurityReview`/`]` needs hunk
+context, `WorkspaceDashboard`/`Ctrl+R` needs a daemon — so the recorded set
+moves.
+
+Reading a **painted** row rather than a declaration also invents keys a surface
+never advertised. `Permission`'s footer truncated at 100 columns reads as
+`Esc c`: the `l` of `cancel` is gone, and `c` is a key nothing advertises. That
+is the fragility the structured read removes, and it is why the declaration, not
+the row, is the subject.
+
 **A box's colours come from the theme it is handed, never from one it cached.**
 `Component::render` and `render_in_panel` receive the live `&Arc<Theme>` on every
 frame. A body that stores an `Arc<Theme>` and refreshes it only when the box is
@@ -4089,7 +4720,7 @@ is the defect. They render byte-identically to the impls they replaced.
 The picker is the deliberate exception: `/theme` previews each candidate
 palette, so its column deliberately paints colours that are not the active
 theme's. "Everything follows the live theme" would destroy the feature.
-`tests/tui_render/tui_theme_source_of_truth.inc` encodes both rules — each box must follow a
+`crates/codegg-tui/tests/tui_render/tui_theme_source_of_truth.inc` encodes both rules — each box must follow a
 theme change, and the picker must keep showing candidates.
 
 **A chrome-free body must still compute one viewport.** `InfoDialog` overrides
@@ -4120,7 +4751,7 @@ The general rule for a viewport, since the widgets do not agree on who owns it:
   the rect they are filling on every pass, so the modal and the column are both
   correct by construction.
 - **Externally-owned.** `/tree` and `/theme` carry a `visible_height` field that
-  **no production code ever sets** — only `tests/tui_render/tui.inc` calls
+  **no production code ever sets** — only `crates/codegg-tui/tests/tui_render/tui.inc` calls
   `set_visible_height`, so it stays at its `new()` default of 10 however tall the
   box is. A 12-row `/tree` modal therefore offers 10 rows into 6 usable ones and
   ratatui clips the tail. That mismatch predates this work and was deliberately
@@ -4184,7 +4815,7 @@ Each letter is bound twice, with and without the `SHIFT` modifier, because
 terminals disagree about how to encode a shifted letter. Binding both is safe
 (uppercase `H`/`L` are otherwise unbound in Normal mode) and is the same
 legacy-encoding hazard that made every `Ctrl+Shift+X` chord undecodable — see
-`tests/tui_render/modifier_chords.inc`.
+`crates/codegg-tui/tests/tui_render/modifier_chords.inc`.
 
 **A built-in `Shift+<capital>` is composed text in Insert mode.** Every mnemonic
 in this file is a single capital letter, which is exactly what makes it
@@ -4225,7 +4856,7 @@ target is armed but unbound the text is **dropped with a warning** rather than
 rerouted to the agent, since that silent reroute is the exact mistake the
 badge exists to prevent.
 
-### One chat browser, two surfaces (`src/tui/chat_browser.rs`)
+### One chat browser, two surfaces (`crates/codegg-tui/src/chat_browser.rs`)
 
 `/chat` (`ChatDialog`) and the chat side panel (`ChatPanel`) are two
 renderings of **one** browser. `ChatBrowser` owns everything the two
@@ -4297,6 +4928,20 @@ on the newest message and keeps following arrivals. `k` unpins (history stops
 moving under the user), `j` past the newest re-pins, `G` re-pins. `sync` runs
 on every render and every snapshot, not just on navigation, so a message
 arriving while the user is pinned moves them with it.
+
+**One producer of the rows.** `ChatBrowser::rows` is the only producer of
+`ChatRow`s. It caches the whole model against `(sequence, unread, channel,
+width, cursor, theme)` — `sequence` is the reducer's own counter on the panel
+and the applied-snapshot revision in the window — and hands both surfaces a
+borrow of it plus the viewport anchor it derived when the model was built.
+Both surfaces draw through `window_lines`, which **borrows** the cached text:
+`Paragraph` needs an owned `Vec<Line>`, so a draw materializes the visible
+window once, but it allocates no `String`. A frame that changed nothing
+therefore wraps nothing, rebuilds nothing and reverse-scans nothing, while a
+redaction or an edit — which moves the sequence without changing the window's
+length, the marker, the width or the cursor — is re-rendered on the next
+frame. The two surfaces keep **separate** caches because each browser owns its
+own cursor; a shared cache would serve one surface's selection to the other.
 
 **Contextual keys above the input.** `SidePanel::composer_hints` returns the
 verbs the active panel owns; `App::composer_hint_text` prefers an armed seed
@@ -4464,7 +5109,7 @@ opens the panel manager.
 control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J newline, Ctrl+M enter,
 Ctrl+V literal-next, Ctrl+Z suspend). `Ctrl+Shift+<letter>` is **also**
 unusable, for a subtler reason: the app never pushes keyboard-enhancement
-flags (`src/tui/terminal.rs` enables raw mode, bracketed paste, and mouse
+flags (`crates/codegg-tui/src/terminal.rs` enables raw mode, bracketed paste, and mouse
 capture only), so the terminal is in legacy xterm encoding where
 `Ctrl+Shift+W` and `Ctrl+W` are the same byte `0x17`. crossterm reports
 `Char('w')` with CONTROL only, the `(CONTROL|SHIFT, Char('W'))` binding is
@@ -4472,7 +5117,7 @@ unreachable, and the key silently falls through to whichever action owns the
 bare-Ctrl twin — the panel switcher fired `CloseSession`. `Ctrl+Alt+<letter>`
 has no such collision: legacy encoding sends `ESC` plus one control byte, so
 crossterm reports CONTROL|ALT and the pair is unambiguous against both bare
-`Ctrl+W` and bare `Alt+W`. `tests/tui_render/modifier_chords.inc` asserts the whole set
+`Ctrl+W` and bare `Alt+W`. `crates/codegg-tui/tests/tui_render/modifier_chords.inc` asserts the whole set
 stays disjoint from their unshifted twins.
 
 This affects every multi-modifier chord, not just the panel switcher: sidebar
@@ -4487,7 +5132,7 @@ Entering `Route::Workspace` still auto-selects the Chat panel, preserving the
 M005 behaviour, but the choice is the user's afterwards: `Shift+S` can
 switch away and back without re-entering the view.
 
-### Chat side panel (`src/tui/panels/chat.rs`)
+### Chat side panel (`crates/codegg-tui/src/panels/chat.rs`)
 
 A peer of the `/chat` window (`components/dialogs/chat.rs`) — the same
 workflow in a more convenient place — built on the **same**
@@ -4688,7 +5333,7 @@ panel never calls `process_msg` itself; only `App::on_mouse`'s
 `ClickTarget::Sidebar` arm does, which is what keeps the click and Enter routes
 identical (`a_clicked_subagent_row_opens_the_same_tab_as_enter`).
 
-### UiState (`src/tui/app/state/ui.rs:41`)
+### UiState (`crates/codegg-tui/src/app/state/ui.rs:41`)
 
 ```rust
 pub struct UiState {
@@ -4754,7 +5399,7 @@ pub struct UiState {
 }
 ```
 
-### SessionState (`src/tui/app/state/session.rs:94`)
+### SessionState (`crates/codegg-tui/src/app/state/session.rs:94`)
 
 ```rust
 pub struct SessionState {
@@ -4812,7 +5457,7 @@ rather than dividing by it. `last_error` is the latched turn failure: it is
 cleared only by `TurnStarted`, and `report_turn_error` is for turn failures
 alone, not for shell, clipboard, or theme feedback.
 
-### AgentState (`src/tui/app/state/agent.rs:6`)
+### AgentState (`crates/codegg-tui/src/app/state/agent.rs:6`)
 
 ```rust
 pub struct AgentState {
@@ -4827,7 +5472,7 @@ pub struct AgentState {
 }
 ```
 
-### DialogState (`src/tui/app/state/dialog.rs`)
+### DialogState (`crates/codegg-tui/src/app/state/dialog.rs`)
 
 `DialogState` owns non-visual request metadata, pending authorization, and
 async request generations. Mounted modal components are owned by
@@ -4868,7 +5513,7 @@ behind the one on screen — see *Pending approvals are a queue*),
 Plugin dialogs stored in `PluginUiState`, not `DialogState`.
 A single `Dialog::Plugin` variant handles all plugin dialogs.
 
-### Dialog Variants (`src/tui/app/types.rs:4`)
+### Dialog Variants (`crates/codegg-tui/src/app/types.rs:4`)
 
 ```rust
 pub enum Dialog {
@@ -4894,7 +5539,7 @@ link/focus/size/cursor state, output shows the newest bounded lines,
 and keyboard bytes reach the process only under explicit focus
 (`i` focuses, `Esc` unfocuses, `Esc` again closes with detach).
 
-### DialogType (`src/tui/components/component.rs:22`)
+### DialogType (`crates/codegg-tui/src/components/component.rs:22`)
 
 ```rust
 pub enum DialogType {
@@ -4984,7 +5629,7 @@ with close observes the dropped dashboard state and does nothing.
 canonical lifecycle identity is the live component's `DialogType`; the
 `ui_state.dialog` value is only a derived compatibility mirror.
 
-### Component Trait (`src/tui/components/component.rs:215`)
+### Component Trait (`crates/codegg-tui/src/components/component.rs:215`)
 
 ```rust
 pub trait Component: Send + Any + AsAny {
@@ -4995,6 +5640,9 @@ pub trait Component: Send + Any + AsAny {
         self.render(frame, area, theme);
     }
     fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> { None }
+    fn preferred_area(&self, available: Rect) -> Rect {
+        centered_rect(60, 50, available)
+    }
     fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg>;
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>);
     fn dialog_type(&self) -> DialogType;
@@ -5027,9 +5675,90 @@ Three of these defaults are load-bearing:
 `centered_rect(percent_x, percent_y, area)` lives in the same module and is
 the single definition of the centred-popup shape; it was duplicated in
 `app/mod.rs` and `components/dialogs/run_detail.rs` before it was lifted
-here.
+here. It is also the default `preferred_area`, so the percentage shape is
+still one function.
 
-### FocusManager (`src/tui/components/component/focus.rs`)
+### List state and scroll-follow (M009)
+
+A list surface owns its cursor through `ListCursor`
+(`crates/codegg-tui/src/components/scroll.rs`): a clamped index plus the `CenteredScroll`
+offset it follows, with `ScrollPolicy` naming the rule at the call site.
+`Clamp` is the default; `Wrap` exists only for a surface that means it.
+
+Clamped-index and scroll-follow are **one** rule, not two. `index(len)` clamps
+on read, so a list that shrinks under a cursor cannot leave it out of range,
+and `follow` moves the window only when the index leaves it — composing
+`CenteredScroll`, not reimplementing its centring rule. A converted surface
+therefore has one arithmetic, one window, and a policy test that names it:
+`keybind`, `completion_overlay`, `agent`, `template` and `tree`.
+
+A surface whose rule is genuinely different keeps its own and says why; the
+non-adoption list, with a concrete difference per entry, lives in
+`plans/closure/tui-modularity-and-render-invariants/009-status.md`. The one
+this document names is `McpDialog`: it dispatches over `browse_mode` and
+`action_mode` to separate selection fields, which is two lists sharing a box,
+not one list with a scroll rule. The plan's third control case,
+`ProjectPickerDialog`, is a non-adopter for a different reason: it derives its
+window per render instead of storing and following an offset, so the type's
+offset would have no reader and adopting that offset would move painted rows.
+The worked arithmetic is in the same record.
+
+### Dialog sizing (`crates/codegg-tui/src/components/dialog_size.rs`)
+
+A dialog states a **preference**; the host clamps it. Two verbs, two places,
+and neither is optional:
+
+- `Component::preferred_area(&self, available: Rect) -> Rect` is the dialog's
+  statement. The default is `centered_rect(60, 50, available)` — the legacy
+  popup — so a dialog that does not override it renders exactly as before and
+  adoption is a deliberate edit. A preference is a function of `available` and
+  the dialog's own state only; it must never read the rect it was last given,
+  or a dialog resizes between frames on a live terminal.
+- `App::dialog_rect` is the one caller. It asks the mounted dialog for its
+  preference and runs it through `dialog_size::clamp_area` once, before
+  anything is painted. The rect that is drawn into and the rect the hit test
+  reads are the same value because both come from that call, which is what
+  lets `ProjectPicker` stop being a special case: it states its bounded
+  geometry through the seam like every other dialog.
+
+`clamp_area` is the only code that applies the bounds:
+
+| bound | value | why |
+|---|---|---|
+| minimum | 20×6 | the I2 size; below it a dialog's own layout declines |
+| maximum | 90% of `available`, per axis | a dialog may not take the frame it sits in |
+| placement | centred in `available` | the dialog states a size, not a position |
+
+The bounds can cross on a frame narrower than the minimum. The floor wins and
+is itself capped by the frame, so the answer is always inside `available`: at
+10×3 it is 10×3, and at 20×6 the dialog gets the whole 20×6 frame.
+
+A dialog that adopts the seam states a content height and keeps the legacy
+60% width (`dialog_size::preferred_rows`), so adoption never costs a column:
+
+| dialog | preference |
+|---|---|
+| `ConfirmDialog` | three boxes of 2 + 2 + 3 content rows |
+| `QuestionDialog` | title 1 + `max(3, body rows)` + hint 1 |
+| `GotoDialog` | 3 rows: input, status, help |
+| `ImportDialog` | 10 rows, the busiest state, so the box does not resize as it moves input → preview → done |
+| `InfoDialog` | `max(legacy height, 8 + line count)`; a viewer keeps the legacy height as a floor because its content changes while it is open |
+| `ProjectPickerDialog` | its existing bounded 64×18 geometry, now reached through the seam |
+
+`Section::owned_height(content_rows)` is where a box's border is counted.
+`Section::draw` spends exactly those two rows, so a dialog that sums one
+height per box and splits the same rows into layout chunks cannot subtract
+the border twice — the failure that silently disabled list scrolling when an
+inner rect was passed to something that inset again.
+
+`PermissionDialog` does **not** adopt the seam, and the reason is stated
+rather than implied: its detail box holds wrapped text whose row count is a
+function of the width it is given, and measuring that during sizing would be
+a second measure of the dialog's content per frame. A fixed budget would lose
+detail rows at large frames on the approval surface. It declares no
+preference and gets the legacy popup.
+
+### FocusManager (`crates/codegg-tui/src/components/component/focus.rs`)
 
 ```rust
 pub struct FocusManager {
@@ -5046,7 +5775,7 @@ push/pop preserves the underlying modal's selection. `Tab` and `Shift-Tab`
 wrap against the current component count, including zero and one-control
 dialogs.
 
-### TuiMsg (`src/tui/app/types.rs:155`)
+### TuiMsg (`crates/codegg-tui/src/app/types.rs:155`)
 
 164 variants — synchronous intent from TUI to App, consumed by
 `App::process_msg`. The table below groups the principal intents; it is a
@@ -5068,7 +5797,7 @@ grouping, not the full 164-variant list.
 | Task view | `TaskViewMove`, `TaskViewReorder`, `TaskViewOpen`, `TaskViewRefresh`, `TaskViewCancel`, `TaskViewResume`, `TaskViewDetail` |
 | Task schedule / triggers | `TaskScheduleConfirm`, `TaskScheduleMove`, `TaskTriggerSetup`, `TaskTriggerRevoke`, `TaskTriggerRotate`, `TaskTriggerRefresh`, `TriggerSecretClose`, `TeamTokenSecretClose` |
 
-### TuiCommand (`src/tui/app/commands.rs:56`)
+### TuiCommand (`crates/codegg-tui/src/app/commands.rs:56`)
 
 ### Esc never quits; exiting is explicit
 
@@ -5133,7 +5862,58 @@ on screen that will not run.
 the daemon's durable selection converging on the display.
 
 Pinned by `scripts/check_model_select_convergence.py` and
-`tests/tui_render/tui_model_selection_persist.inc`.
+`crates/codegg-tui/tests/tui_render/tui_model_selection_persist.inc`.
+
+### The `/models` box: the mode owns the keys, the model owns the levels
+
+The `/models` box (`components/dialogs/model.rs`) is a **filter box with a
+mode**, and the mode — not whether a query happens to be typed — decides
+what a key means:
+
+| Mode | Keys |
+|---|---|
+| Normal (the box opens here) | `i`/`a` enter the filter, `↑/↓`/`j`/`k` navigate, `h`/`l` and `←/→` move the thinking level, `Ctrl+↑/↓` and `PgUp/PgDn` page, `Enter` selects, `Esc` clears a live filter and closes when there is none |
+| Insert | printable characters type into the filter, `Backspace` edits it, `↑/↓` navigate, `←/→` move the thinking level, `Esc` returns to Normal **with the filter intact** |
+
+Three decisions are load-bearing, and each one is a rule about the
+operator's hands rather than about the code:
+
+- **The box opens in Normal.** It is read and navigated first; the filter
+  is entered deliberately. A box that opened in Insert would take every
+  printable key as a filter character and the navigation verbs would be
+  unreachable.
+- **Esc out of Insert keeps the filter.** The filter is what the operator
+  is selecting *through*, so it survives until it is cleared deliberately —
+  and the gesture that clears it is Esc again in Normal, which is why the
+  footer says "Esc clear filter" while a filter is live. This is the same
+  contract the `/help` box answers, and it is why the normalised
+  `NOR`/`INS` badge is drawn on the filter row: without the badge, a
+  keystroke that does nothing is indistinguishable from a keystroke that
+  was swallowed.
+- **The level gesture is advertised only when it acts.** A model that
+  publishes no ladder offers no level, so the footer names `h/l` only
+  while the highlighted model has levels to move through. A footer that
+  named a key the box ignores is the I4 invariant's finding, not a
+  convenience.
+
+The levels themselves are the **model's own**: the daemon publishes each
+model's capability with the catalog, and the box shows exactly that ladder
+(`default · low · high · max · off` for a model whose gateway publishes
+`low, high, max`). A model with no published capability shows a muted dash:
+the known-label ladder is a *fallback vocabulary*, and presenting it as a
+model's option set is what hid `max` from a model that accepts it.
+
+A level picked for a model that is not running yet is held in the box and
+travels with the selection on Enter (`TuiMsg::SelectModel { reasoning }`),
+because the daemon owns **one** selection. A model picked *without* a
+level carries none, so re-selecting the model that is already running never
+rewrites the daemon's stored choice.
+
+The thinking level is also reachable from the composer: `Ctrl+Alt+T`
+(`InputAction::CycleReasoningLevel`) walks the current model's own ladder
+through the same command the `/reasoning` slash command reaches, so the
+key and the command cannot offer different levels. The chord is bound in
+**both** keymaps and is listed in `/help`.
 
 Async commands sent via channel — 245 variants covering: session CRUD,
 archive, fork, bulk ops, share, export, rename, undo delete, import,
@@ -5150,7 +5930,7 @@ terminal operations (M003) follow the same pattern:
 `DialogState::terminal_request` so stale completions are dropped.
 
 Project Work Orders M003 completions follow the same pattern through
-`src/tui/commands/work_orders.rs`: `TaskSheetPrefetched`,
+`crates/codegg-tui/src/commands/work_orders.rs`: `TaskSheetPrefetched`,
 `WorkOrderCreated`, `TaskViewRefreshed`, `TaskOccurrenceLoaded`,
 `LaneReordered`, `TaskMutationFinished`, `TaskSessionFocus`,
 `TaskModelPrefetched`, `TaskModelPrefSaved`, plus C001 trigger
@@ -5162,7 +5942,7 @@ time. Slash surface: `/tasks` and `/task` open the WorkOrder Task view
 (capability-gated, legacy fallback with diagnostic), `/schedules`
 keeps low-level schedule diagnostics.
 
-### Routes (`src/tui/route.rs`)
+### Routes (`crates/codegg-tui/src/route.rs`)
 
 ```rust
 pub enum Route {
@@ -5200,19 +5980,32 @@ passes for a scoped `&DocumentSnapshot` borrow and for the bounded
 **Presentation record.** `TuiDocumentPresentation` owns cursor byte,
 selection range, viewport line and column, buffer mode, a two-byte pending
 command prefix, the open insert session, and the **edit history**. The
-history is **one ordered list with a cursor in it** — `history`,
-`history_bytes` and `history_cursor` — not two stacks. `history_cursor` is
-the number of *applied* entries: `0` is the beginning of the history
-(everything is redoable) and `history.len()` is the tip (nothing is
-redoable). An entry never moves between containers, so "undo" and "redo" are
-the same movement in opposite directions, and an entry cannot lose the
-direction it is not currently using.
+history is a **tree**, not a list and not two stacks. `EditorUndoEntry`
+carries a stable identity (`created`), the `parent` it was created from, and
+the child it was last walked to (`last_child`); `history` is the arena
+holding every retained node in creation order, `history_cursor` is the
+**identity** of the node whose text is on screen, and `history_next` is the
+monotonic source of new identities, so a pruned node's identity is never
+reused. `0` is the root state — the text before the oldest retained entry.
+A node never moves and cannot lose the direction it is not currently using,
+and an edit made after an undo becomes a **sibling** of the branch it
+interrupted instead of destroying it: the abandoned branch stays reachable.
 
 Undo entries are capped at **256 entries and 4 MiB in total** — one cap over
-the history, not one per direction — and retain *both* the forward and
+the whole tree, not one per direction — and retain *both* the forward and
 inverse transactions, so a traversal in either direction is exact. The
 two-stack model enforced the bounds twice, so its worst case was twice this;
 the single history is what makes the code match the documented bound.
+
+Pruning takes the **oldest leaf** first; a leaf has no child, so a child a
+retained node still needs can never be dropped. A history that is one
+unbranched chain has only one leaf — the node the cursor is on — so pruning
+drops the chain's oldest node and re-parents its single child to the root,
+which is "drop the oldest entry" in structure-preserving form. If even that
+cannot fit the budget the history is **cleared and disclosed**: the banner
+says so, because a history that silently shortened is one the reader cannot
+reason about. The same rule is what makes the byte budget a bound on the
+tree rather than a bound per branch.
 
 **One history and a time cursor.** `u` and `U` move the cursor back and
 forward one entry. `Alt+u` and `Alt+U` — Helix's `earlier` and `later` — do
@@ -5265,9 +6058,11 @@ run.
 A reconciliation **discards** an open session rather than committing it. The
 text the session described is the pre-reload text, and committing it would
 record a step that restores a document the reader is no longer looking at.
-The redo tail is cleared when the session **opens** and only then: a reader
-who undoes and then types must not have the redo tail resurrected by the
-next keystroke of the new burst.
+Opening a session does **not** discard the branch the reader abandoned: a
+reader who undoes and then types gets a new sibling branch, and the branch
+they left stays reachable by creation order. A history that deleted the tail
+on the next keystroke would destroy work the reader could still have
+returned to — which is the parity gap the tree exists to close.
 
 **Reconciliation clears history.** Open, reload, resync, reconnect, and
 close all clear undo and redo. Save does not: it writes the same local text,
@@ -5367,7 +6162,7 @@ legacy xterm encoding delivers it as two events.
 
 #### Key dispatch authority: ordered stages, one owner per chord
 
-`editor_buffer_key` (`src/tui/commands/editor.rs`) is a **sequence of ordered
+`editor_buffer_key` (`crates/codegg-tui/src/commands/editor.rs`) is a **sequence of ordered
 stages**, and a chord declared in a later stage is unreachable the moment an
 earlier stage claims it. The order is the contract:
 
@@ -5420,7 +6215,7 @@ never lose a path. Two things enforce the rule:
   disarms before consulting it, so a leaf cannot shadow a directly-bound
   chord — the earlier rule that said otherwise was demonstrably false on the
   shipped tree and was replaced.
-- The dispatch-path tests in `src/tui/commands/editor.rs` drive every
+- The dispatch-path tests in `crates/codegg-tui/src/commands/editor.rs` drive every
   Normal-mode arm through `editor_buffer_key` and assert both the reported
   `BufferKey` and the observable state change, so a shadowed arm fails on the
   state change even when the reported effect looks plausible. An
@@ -5447,7 +6242,7 @@ That overlap is deliberate and is documented at its call site.
 A multi-key gesture is *remembered state*, not a chord: `space y` arrives as
 two key events in legacy xterm encoding, exactly as it does in `/terminal`.
 That state lives in one field, `TuiDocumentPresentation::pending_prefix`, typed
-`EditorPrefix` (`src/tui/editor.rs`).
+`EditorPrefix` (`crates/codegg-tui/src/editor.rs`).
 
 **The rule: one pending prefix, one terminal key consumed.** A key arriving
 while a prefix is armed either matches a leaf or disarms it; nothing consumes a
@@ -5544,7 +6339,7 @@ prefix now renders a distinct label bounded by `MAX_EDITOR_PENDING_PREFIX`, and
 `space` renders as the word because a literal space would put nothing on
 screen. A pending prefix the user cannot see is a prefix they cannot predict.
 
-The terminal panel (`src/tui/commands/interactive_terminal.rs`) keeps its own
+The terminal panel (`crates/codegg-tui/src/commands/interactive_terminal.rs`) keeps its own
 `prefix_pending`/`YankPrefix` for the same gesture. Converging the two onto
 one shared state machine is desirable and deliberately **not** done here.
 
@@ -5729,7 +6524,7 @@ user-facing statement of the editor's chords is `docs/tui.md` ("Editor
 language features") plus the table above. The shipped `/help` surface
 (`components::dialogs::help::HelpDialog`, fed by `input::default_help_entries`)
 lists global bindings only and names no editor chord at all, so it cannot
-drift here or there. Note also that `src/tui/components/help_overlay.rs`
+drift here or there. Note also that `crates/codegg-tui/src/components/help_overlay.rs`
 existed only as dead source — it was absent from `components/mod.rs`, so it was
 never compiled, and its `editor_bindings()` table advertised `Ctrl+R (redo)`
 and a `dd dw` row for bindings that do not exist. C001 deleted it and moved its
@@ -5820,6 +6615,34 @@ unknown extension is a plain render, not an error. `theme.code_theme` is
 already light/dark-correct (`select_code_theme`), so the scan's palette
 cannot invert against the surrounding UI.
 
+The default grammar and theme sets are **loaded off the render thread**
+(`ensure_highlight_assets`, started when an editor attaches and kicked by the
+first span request). A frame never waits for them: until the load lands the
+editor paints plain text plus the gutter, which is the same degradation as a
+file with no bundled grammar, and `EditorHighlight`'s draw path can only read
+the handle (`assets()`), never force it. A bounded
+`wait_for_highlight_assets` exists for integration tests, which link the
+library without the `cfg(test)` loader; the shipped path has no such wait.
+
+**A frame comparison must not straddle the load.** A frame drawn before the
+grammar sets land paints plain text, and a frame drawn after them paints
+syntax colours, so two frames of the *same* state differ when the load falls
+between them — the difference is the load's timing, not the renderer. An
+integration test that compares frames therefore waits for the load **before
+the first frame**, and the editor's cost fixtures wait in the constructor
+every frame goes through, rather than in one test that happens to need it.
+
+**The semantic read is a viewport window, not a file dump.**
+`request_editor_semantic_tokens` sends
+`textDocument/semanticTokens/range` for a bounded window from
+`presentation.viewport_line` (`SEMANTIC_TOKEN_VIEWPORT_LINES`, 160 lines),
+so an ordinary 800-line file is coloured past the point a 1000-token
+full-document response would have been cut. A scroll arms the same quiet
+period an edit uses, so a scroll burst is one read. The response still
+respects `MAX_LSP_SEMANTIC_TOKENS`: a window that truncates page-sized token
+density keeps the existing "highlighting truncated" caveat, the cap is not
+raised, and lines the response did not cover stay on the syntect floor.
+
 **Async discipline.** Every controller round trip (open, save, reload,
 resync, close) is spawned with `spawn_scoped_registered_tui_task` and carries
 both a request id and a generation counter. A completion whose generation
@@ -5877,7 +6700,7 @@ milestone's to change.
 machine is left disarmed. `EditorPrefix::Match::swallows_unmatched` is
 `false` for that reason.
 
-**Pair scanning is byte-derived and bounded.** `src/tui/editor_match.rs` owns
+**Pair scanning is byte-derived and bounded.** `crates/codegg-tui/src/editor_match.rs` owns
 the delimiter table (`PAIRS`: `(`, `[`, `{`, `<`, `'`, `"`, `` ` ``) and the
 scans. Every scan runs inside a **window** of at most
 `MAX_SET_VERB_READ_BYTES` (256 KiB) centred on the cursor and snapped to
@@ -6019,6 +6842,232 @@ The capability survived the rebinding. The *keystroke* did not, which is the
 observable cost, and it is why `scripts/check_tui_editor_key_authority.py`
 now asserts the two remaining guard-block chords by name instead of three.
 
+### The editor's inline assist (ADR-0066)
+
+The editor can ask a model for an insertion at the cursor. The contract is
+ADR-0066; the implementation is
+`crates/codegg-tui/src/editor_inline_assist.rs` (the state) and
+`crates/codegg-tui/src/commands/editor.rs` (the verbs).
+
+**The gesture.** `space`, `q`, `a` in the editor's Normal table opens
+the prompt field. It is a key *sequence*, not a chord: `space` is Helix's
+root minor mode, `q` is the menu this configuration added, and `a` is the
+entry inside it. Each level paints the menu it is waiting in, so the reader
+sees `q` and then `a` instead of having to remember the path.
+
+The remaining inline-assist chords keep the `{CONTROL, ALT}` family: the app
+never pushes keyboard-enhancement flags, so `Ctrl+Shift+X` is
+indistinguishable from `Ctrl+X`, while `Ctrl+Alt+X` is not.
+
+**The field owns the keyboard.** While it is open, the prompt field is asked
+before every other editor surface, so a keystroke cannot reach the document
+behind a line the reader believes is capturing it. The field has its own
+NOR/INS mode, its own multi-line text, and its own model and thinking level
+for that request only. It does not share the composer's claim table: on the
+editor route the composer refuses bare text, so a field that leaned on it
+would never see a keystroke.
+
+**The field is a document-flow band, not a dialog.** It is spliced into the
+line flow directly under the cursor's line, spans the text area's whole width,
+and consumes its own rows from the viewport, so the document below it moves
+down and nothing is covered. Its rows carry no gutter and no line numbers — the
+border occupies the gutter columns — which is what tells the reader the band is
+an input rather than file text. When the cursor is near the bottom, the render
+window shifts down by the deficit (a render-local adjustment; the stored scroll
+position is untouched) so the whole band stays visible. A window too small to
+host the band plus the cursor's line omits the band rather than falling back to
+a floating box.
+
+The field's buffer reuses the composer's multi-line text *model* as a type —
+one implementation of word motions, selection and a bounded undo history —
+but it holds its own instance and its own keyboard. What it borrows is the
+buffer's mechanics; what it never borrows is the composer's claims.
+
+`Esc` in insert mode is the Helix mode step, which is the only way the
+field's normal-mode verbs become reachable. `Esc` in the field's normal
+mode clears the instruction and dismisses the field in one press: the
+instruction goes with it, so a dismissed prompt leaves no residue for a
+later undo to resurrect. `Enter` submits, `Shift+Enter` starts a new line,
+`Tab` cycles the model and `Shift+Tab` cycles the thinking level. The
+catalog is read from the daemon's published list at the moment of the
+keystroke rather than held by the field, so the field holds no list of
+strings at all.
+
+**The pending region is not document text.** The answer is held in a bounded
+payload (`MAX_EDITOR_INLINE_PAYLOAD_BYTES`, `MAX_EDITOR_INLINE_PAYLOAD_LINES`)
+anchored at a document byte offset and at the revision it was asked against.
+The document's bytes, the file on disk, the language server and the undo
+history see nothing until the operator approves. The renderer draws it as a
+differentiated region spliced into the line flow; the region's bytes do not
+enter the cursor's byte arithmetic, the selection ranges, the search matches
+or the undo history.
+
+`scripts/check_tui_editor_text_authority.py` was amended with exactly one
+allowance for this payload: a field named `generated_text` is permitted
+only as a plain `String` in a file that declares the payload bound, and the
+guard's self-test proves both halves — the same field name in a file with no
+declared bound is rejected, and a payload held in a container is rejected.
+
+**The fence.** An answer is applied only when the request id, the editor's
+document generation and the document's **daemon** revision all still match,
+and only for the document the request named. The revision is the daemon's,
+not the frontend's local buffer counter: the two are different counters
+with different lifetimes — the local buffer's revision counts local edits
+and resets to zero when the buffer is replaced by a daemon snapshot, while
+the daemon's revision is the document's own version and is what the daemon
+itself compares the request against. Comparing one against the other
+retires every region at once, which is why the request, the renderer and
+the approval all read the same one.
+
+The region's applicability is **one predicate**, computed once and used by
+all three surfaces that can see it: the renderer draws the region only when
+it applies, the review menu is raised only when it applies, and the
+approval refuses it when it does not. A surface that disagrees with
+another is a surface that claims keys the reader cannot see: the menu's
+`a`, `d` and `e` are live exactly when the menu is drawn.
+
+A newer request supersedes an older one, and the older answer is dropped.
+Every drop is reported in the editor's notice, because a silent drop reads
+as a hang. The pending payload is frontend state and is **not** durable: a
+daemon restart discards it, which is a stated fact rather than a defect,
+because an unapproved insertion has no durable meaning.
+
+**Approve and discard.** Approval revalidates the anchor against the
+document's current daemon revision **and** against the document's identity,
+builds exactly one insertion edit and submits it through `submit_edit`, so
+the editor's undo, cursor and history semantics apply unchanged and one `u`
+takes the whole insertion back. A refused submission leaves the payload in
+place and the document unchanged. Discard drops the payload with no edit, no
+undo entry and no write. There is no second apply path: the region never
+rides `LspPreviewApply`, which refuses a dirty document.
+
+Approval is a **Normal-mode verb**, exactly like a paste: the insertion does
+not hand the keyboard to the document, so the editor stays in Normal and the
+app's key routing stays with it. A presentation in Insert with the routing
+still in Normal is a cursor that looks editable and swallows nothing; and an
+approval that entered Insert would take `u` with it, so the one keystroke
+that takes the whole insertion back would have become a typed `u`.
+
+**The review menu is derived, never latched.** Moving the cursor onto the
+region's anchor raises a floating menu offering `a` (accept), `d` (deny)
+and `e` (edit). Its visibility is recomputed every frame from the
+cursor's byte position against the region's anchor, so a menu that is on
+screen is on screen *because* the cursor is in the region; nothing latches
+it and nothing can leave it stranded. The comparison is in document
+coordinates: the region's own bytes are not document bytes, so the
+region's display height does not enter it.
+
+**The geometry comes from the editor's own viewport.** The anchor is the
+cursor's *display column* on its *screen row*, computed from the editor's
+viewport and the row's horizontal scroll offset. A byte offset is not a
+column, so tabs and wide characters are accounted for, and a cursor
+scrolled out of the horizontal window opens no menu. The menu is drawn on
+the row after the region's block, flipping above the cursor when that row
+would leave the text area, and it is clamped rather than clipped. It never
+reserves a row, so the document's rows do not move when the menu opens.
+
+**The placement is after the region, not on it.** The milestone plan places
+the menu "below and to the right of the cursor". The region is spliced into
+the line flow immediately below the cursor's row, so a menu on the
+cursor's next row would cover the payload it exists to review. The menu is
+therefore placed after the region's own rows: it keeps the cursor's display
+column, so it stays anchored to the cursor, and it leaves the generated
+text readable. Like the editor's other floating surfaces — the command
+palette, the completion popup, the language-server panel — it is an overlay:
+it covers document pixels rather than reserving rows, and the document's row
+positions are unchanged. This is the one place where the implementation
+follows the plan's *intent* (a cursor-anchored floating menu that never
+reflows the document) over its letter, and the reason is recorded here.
+
+**The menu owns three keys and no more.** While it is open it claims `a`,
+`d` and `e`; every other key falls through to the editor's Normal table,
+which may move the cursor and thereby dismiss the menu. `a` and `d` are
+M001's approve and discard actions — the menu adds a surface, not a second
+apply path with different semantics. `e` is new: it discards the region,
+cancels an in-flight request for that same region, and re-opens the prompt
+field with the previous instruction, so a revised attempt needs no
+retyping. The superseded request's answer is dropped by the existing
+request-id and generation fence.
+
+**The answer travels on the request's response.** ADR-0066 says the answer
+arrives as a new event. The implementation answers the request with
+`CoreResponse::EditorInlineGenerated` instead, and the reason is delivery:
+the editor route has no session, the daemon's event stream is session-scoped,
+and every other editor document flow (`DocumentOpen` →
+`CoreResponse::DocumentSnapshot`, `DocumentChange` →
+`CoreResponse::DocumentChanged`) is request/response rather than
+event-driven. The Decision's substance is unchanged — one-shot request, no
+turn, no session, no tool loop, a payload that carries the request id, the
+document identity and revision, the model, the effort label and the text —
+and only the channel differs. The deviation is recorded in the milestone's
+closure record.
+
+### The editor's configurable keymap (Helix-style configuration)
+
+The editor's **minor modes** are configurable, in Helix's own configuration
+format: a TOML file whose tables nest, one table per mode and one table per
+nested minor mode. `[keys.normal.space.q]` with `a = "llm_insert"` means:
+in Normal mode, `space` opens the space menu; inside it, `q` opens a menu of
+its own; inside that, `a` runs the command named `llm_insert`. A table value
+is always a nested minor mode and a string value is always a command name, so
+the table form and the inline form (`q = { a = "llm_insert" }`) parse to the
+same tree.
+
+**Three layers, base first.** The shipped defaults
+(`crates/codegg-tui/assets/editor.toml`, embedded with `include_str!`) are the
+base; the global file (`<config dir>/codegg/editor.toml`) is laid over them;
+the project file (`.codegg/editor.toml`) is laid over that. A layer that
+cannot be read or parsed is **reported, not raised**: a broken user file
+degrades to the defaults rather than refusing to start the TUI. The problems
+are carried on `EditorKeymap::problems`.
+
+**The parser is not the editor's.** `codegg-config` owns the format —
+`crates/codegg-config/src/editor.rs` parses the TOML into `EditorConfigFile`
+and resolves the two file paths — because a configuration file is a
+configuration concern and the config crate is where the layered discovery
+order already lives. It keeps the key spellings as **text**: what `C-x` means
+is the frontend's business, and the config crate must not own key semantics.
+`crates/codegg-tui/src/editor_keymap.rs` interprets them.
+
+**One grammar, one path.** The space menu and its nested menus are one
+grammar, so the pending prefix carries the **path** rather than a level
+counter: `EditorPrefix::Space` is the root and `EditorPrefix::SpaceMenu(path)`
+is a nested menu, and `EditorPrefix::space_menu_path` is what tells the
+resolver which menu's entries the next key is matched against. The path is a
+`Copy` value with a bounded depth (`MAX_MENU_DEPTH`), so the prefix stays
+`Copy` and the presentation keeps exactly one pending-prefix field — the
+property `scripts/check_tui_editor_prefix_state.py` polices.
+
+**The configuration is consulted before the built-in leaves**, so a configured
+key overrides a built-in one of the same name; a key the configuration does
+not claim is not consumed there, and the built-in leaves still get their turn.
+A configured command is **named, not performed**: the resolver parks
+`EditorPendingEffect::RunCommand` and the App layer runs it, because a
+command may need a core client the resolver cannot see.
+
+**Only the space menu is configurable today.** A mode's own chords are the
+editor's own tables, and a file that tries to rebind one is told so rather
+than quietly ignored. The command names are the editor's own, in snake_case
+(`EditorCommandName::config_name`), and `from_config_name` resolves them
+against the registry's own `ALL` list — one list, so a command that is not
+executable is not bindable either.
+
+**The menu is a window in the lower right.** It is anchored to the bottom
+right of the text area, flush with the pane's right edge, and it lists the
+keys the open menu offers with a one-line label for each. It never reserves
+a row, so the document does not reflow when it opens. The lower-right corner
+is the one deliberate divergence from Helix, whose menu floats at the cursor:
+the corner is where the editor's own chrome already sits, so the menu never
+covers the text being edited.
+
+**The root menu merges the built-in leaves with the configured ones.** The
+Helix glyphs the editor answers to are listed alongside whatever a
+configuration file adds, and a configured key wins on a clash. A leaf the
+build cannot honour is listed too, dimmed, so the menu never hides a key
+that exists. The window is titled by its level (`Space`, `Space q`) and its
+bottom border carries the pop-back key (`<space>`), so a nested menu says how
+to leave it.
+
 ### The editor's Helix UX surface
 
 The editor's chrome, motions, and selection policy, after the Helix UX
@@ -6033,20 +7082,47 @@ The line number and the column are gone: they restated the caret, which is
 already on screen.
 
 **The cluster reads as one story, left to right.** The **persistent signals**
-come first — the modified state, the scope badge, writable or read-only, the
-LSP semantic-coverage note, the "line too long" marker — then the **transient
-disclosure** (the find note, the search count, the history position), then the
-**notice**, then the **armed prefix**. The armed prefix is **last**, at the far
+come first — the modified state, the language-server state, the scope badge,
+writable or read-only, the LSP semantic-coverage note, the "line too long"
+marker — then the **transient disclosure** (the find note, the search count,
+the history position), then the **notice**, then the **armed prefix**. The armed prefix is **last**, at the far
 right of the row: it is the one element that appears and disappears on its
 own, so it gets a home nothing else competes for, and "did my `g` register?" is
 a question that has to be answered at a glance.
 
+The server-state word is `lsp…` while publication or diagnostics are warming;
+`lsp` requires both a `Synced` document witness and `Ready` diagnostics.
+`lsp degraded`, `lsp unavailable`, and `no lsp` remain distinct. A legacy
+snapshot without a sync witness is not labeled warming. A **safety status**
+(a disk conflict, a lost document, a dead transport, a resync requirement, or a
+read-only attachment) is a *caveat*, not routine status: it takes the caveat
+weight, so it outranks the server-state word instead of being squeezed out by
+it. `EditorStatus::is_caveat` is the single classifier, and the renderer reads
+it through `EditorWidget::status_caveat`. The `F2` list stays manual. The TUI has no bounded editor-readable `$/progress` source, so indexing
+and progress prose are skipped rather than inferred.
+
+**The Insert-mode completion request is a schedule, not an accept path**
+(M004). After an Insert-mode edit changes the document, `handle_editor_key`
+arms one deadline (200 ms, `EDITOR_COMPLETION_DEBOUNCE`) on the editor state.
+A newer edit, leaving Insert, closing or switching the document, a generation
+bump, or any explicit trigger (`F8`, Insert `Ctrl-x`, `:complete`) cancels it,
+and the explicit triggers call `start_editor_completion` immediately instead.
+`service_editor_completion_debounce` re-checks the generation, the active
+editor view, the Insert mode, the local document revision and the completion
+scope before it issues anything; a mismatch drops the schedule without a
+request. The fired request reuses the explicit path and the existing popup.
+Acceptance is unchanged: nothing is inserted on arrival, and a candidate
+applies only on the explicit key through the revision witness. The timer is
+what arms the idle timed loop — without that, the deadline would not fire
+until the next keypress, the same trap as the exit-arm window.
+
 **The two slots never overlap, and the cluster is fitted by rank.** The path
 keeps what it needs up to a third of the row and the cluster takes the rest;
 when the cluster still does not fit, `fit_cluster` drops the **least important
-group** first (`ClusterWeight` in `src/tui/components/editor.rs`) — busy, then
-the modified state, then the writability marker, then the scope badge, then the
-disclosure — and a group that is still too wide on its own is cut from the
+group** first (`ClusterWeight` in `crates/codegg-tui/src/components/editor.rs`) — busy, then
+the modified state, then the server state, then the writability marker, then
+the scope badge, then the disclosure — and a group that is still too wide on
+its own is cut from the
 **right**, because the head of a sentence is the part that answers the question
 ("3 matches · partial" beats "· n/N next/prev"). A caveat ("line too long",
 "highlighting truncated") outranks all of them: dropping a caveat is not a
@@ -6115,12 +7191,24 @@ row has no cell for — so the range alone cannot say "this row is selected".
 `editor::line_selection_covers_line` answers that, and the renderer paints the
 row's whole background.
 
-**`space ?` opens the keymap box** — the editor's own catalogue of its keys, in
-its bottom-right corner. It used to open the `:` command palette, but the `:`
-line is the command matcher and the palette was a second way to reach the same
-commands, so the key that was supposed to answer "what can I press here?"
-answered a different question. The box is a floating overlay: it covers the
-corner of the text area rather than taking rows away from the document.
+**`space ?` opens the command palette** — a centred box with a filter bar, a
+match count, and the editor's own commands. `Enter` runs the selected
+command, or hands a command that takes an argument to the `:` line
+pre-filled. The palette is modal: while it is open it owns every key, so the
+filter never types into the document behind it.
+
+Its rows are two kinds. A **command** is runnable, and it is filtered by its
+own long snake_case name — `goto` finds `goto_line`. A **key** is the
+editor's own binding, listed so it can be looked up, and it is filtered by the
+binding itself or by what it does — `word` finds *next word start*.
+Selecting a key says that it is a key rather than pretending to run it.
+
+**The keymap box is retired.** It used to be a floating catalogue of the
+editor's keys in the bottom-right corner, and it carried the same information
+the palette's key rows carry, scrolled rather than searched. Its rows now
+live in `crates/codegg-tui/src/editor_palette.rs` as `EDITOR_KEYMAP`, so
+nothing was lost: the key that was supposed to answer "what can I press
+here?" still does, in a box the reader can search.
 
 **The composer's hint row carries keys only.** It no longer repeats the
 `COMP`/`NOR`/`INS` prefix — the badge directly above the input box already says
@@ -6133,9 +7221,9 @@ how a keymap becomes a lie.
 `Route::Editor` renders a workspace file tree in a pane to the left of the
 buffer, shown with `Ctrl-T` and hidden by default so the M006-A surface is
 unchanged until the user asks for it. `src/directory_listing.rs` holds the
-single shared walk, `src/tui/file_tree.rs` the presentation node model
-(delegating to the shared walk), `src/tui/app/state/file_tree.rs` the view
-state, and `src/tui/components/file_tree.rs` the widget.
+single shared walk, `crates/codegg-tui/src/file_tree.rs` the presentation node model
+(delegating to the shared walk), `crates/codegg-tui/src/app/state/file_tree.rs` the view
+state, and `crates/codegg-tui/src/components/file_tree.rs` the widget.
 
 **The tree is a navigator, not a content path.** It enumerates directory
 *entries* and never reads file bytes. Opening an entry calls the existing
@@ -6235,7 +7323,7 @@ frame) falls back to `FALLBACK_PAGE_ROWS` rather than making the verb inert.
 is the directory being listed; the title leads with it and names the
 workspace after it, because a pane scoped with `l` showing a workspace-root
 title would misdescribe every row under it. Rows carry a per-type icon from
-the one table in `src/tui/file_icons.rs` — the folder glyph doubles as the
+the one table in `crates/codegg-tui/src/file_icons.rs` — the folder glyph doubles as the
 expansion state, so there is no second caret column in a 22-column pane — and
 the selected row repaints rather than recolors, so the type colour that
 distinguishes a `.rs` from a `.md` survives the cursor landing on it. Icons
@@ -6352,7 +7440,7 @@ gesture family is exactly how a box and its panel drift.
 
 #### `/agents` actions differ by provenance, and the panel says so
 
-`src/tui/panels/agents.rs` holds presentation only (cursor, viewport, armed
+`crates/codegg-tui/src/panels/agents.rs` holds presentation only (cursor, viewport, armed
 action); every action becomes `TuiMsg::AgentPanelAction` and is resolved in
 `commands/agent_editor.rs`, which re-checks provenance so a verb the panel
 could not offer is still refused if it arrives another way.
@@ -6447,9 +7535,9 @@ in one case and "every project" in the other. The scope is therefore shown, not
 remembered:
 
 - the editor status row carries a `[project]` / `[global]` badge, warning-
-  coloured when global (`src/tui/components/editor.rs`);
+  coloured when global (`crates/codegg-tui/src/components/editor.rs`);
 - the `/agents` row badge is `default` / `project` / `global`, with global in
-  the warning colour (`src/tui/panels/agents.rs`);
+  the warning colour (`crates/codegg-tui/src/panels/agents.rs`);
 - the new-agent template states its scope in a header comment, so the
   distinction is still there after the buffer is closed.
 
@@ -6502,10 +7590,10 @@ feel stable: the list behind the cursor changes, the row under it does not.
 
 `/review <preview-id>` opens a modal review of a pending LSP change candidate
 and waits. It applies nothing on open. The user accepts with `a` or rejects with
-`Esc`. `src/tui/unified_diff.rs` parses the candidate's patches,
-`src/tui/app/state/change_review.rs` holds the state machine,
-`src/tui/components/change_review.rs` renders, and
-`src/tui/commands/change_review.rs` owns the commands.
+`Esc`. `crates/codegg-tui/src/unified_diff.rs` parses the candidate's patches,
+`crates/codegg-tui/src/app/state/change_review.rs` holds the state machine,
+`crates/codegg-tui/src/components/change_review.rs` renders, and
+`crates/codegg-tui/src/commands/change_review.rs` owns the commands.
 
 **Scope: saved documents only.** This milestone reviews changes destined for
 *saved* files. The dirty-buffer question — whether an apply may merge into a
@@ -6564,7 +7652,7 @@ async completion carries the request id and review generation, and a
 completion for a review already rejected or superseded is discarded rather than
 applied.
 
-### InputMode (`src/tui/input.rs`)
+### InputMode (`crates/codegg-tui/src/input.rs`)
 
 ```rust
 pub enum InputMode {
@@ -6575,7 +7663,7 @@ pub enum InputMode {
 
 `InputMode` stays a text-editing/Vim concern. The M003 prompt
 submission mode is the separate `ComposerMode::Session | Task`
-(`src/tui/app/state/work_orders.rs`). C001 owns bare Tab at root
+(`crates/codegg-tui/src/app/state/work_orders.rs`). C001 owns bare Tab at root
 prompt focus for `Session <-> Task` in both keymaps; `SwitchAgent`
 migrates to `Ctrl+A` (configurable/discoverable, with `Ctrl+G` as a
 backward-compatible composer alias) and Shift+Tab stays
@@ -6584,7 +7672,7 @@ root routing.
 
 ### InputAction
 
-61 variants (`src/tui/input.rs:137`): `Send`, `Newline`, `Cancel`,
+61 variants (`crates/codegg-tui/src/input.rs:137`): `Send`, `Newline`, `Cancel`,
 `NavigateUp`, `NavigateDown`, `SwitchAgent`, `SelectModel`, `ClearSession`,
 `NewSession`, `ToggleAgentRun`, `ToggleSidebar`, `FocusSidebar`,
 `OpenPanelManager`, `DirectionLeft`, `DirectionRight`, `DirectionUp`,
@@ -6603,14 +7691,14 @@ root routing.
 The four `Direction*` variants are the resolved direction of a chord whose
 final key decides the axis, so the handler that consumes them never has to
 re-derive the axis from the key that was pressed. The three `*SubagentTab`
-variants drive the subagent tab set over the main buffer (Shift+N/P/X);
+variants drive the center tab set over the main buffer (Shift+N/P/X);
 `CloseProjectTab` is the workspace-project equivalent and is a different
 verb.
 
 ### New session (`Ctrl+N`, `/new`)
 
 `NewSession` and `/new` (alias `/clear`) both route through
-`App::new_session` (`src/tui/app/mod.rs`), which clears the composer view and
+`App::new_session` (`crates/codegg-tui/src/app/mod.rs`), which clears the composer view and
 then calls `sessions::start_new_session`. That spawns a registered
 `TuiTaskKind::Command` task issuing `CoreRequest::SessionCreate`, guarded by
 `dialog_state.new_session_request` and completed by
@@ -6626,11 +7714,11 @@ before the first prompt.
 
 With no core client available (daemon unreachable) the action reports an error
 toast instead of silently doing nothing; a failed creation never fabricates a
-session. Covered by `apply_new_session_created_*` in `src/tui/mod.rs`.
+session. Covered by `apply_new_session_created_*` in `crates/codegg-tui/src/mod.rs`.
 
 ### The launch directory starts its own session (`ensure_launch_session`)
 
-`App::ensure_launch_session` (`src/tui/app/project_session.rs`) runs once from
+`App::ensure_launch_session` (`crates/codegg-tui/src/app/project_session.rs`) runs once from
 `main.rs`, after the launch-directory bootstrap and the initial-session load,
 and is a no-op whenever a session is already bound. It exists because the
 inproc (`--standalone`) startup branch only acted for an explicit
@@ -6734,7 +7822,7 @@ tui/
 │       ├── session_work.rs  # Session work-surface state
 │       ├── snapshot.rs     # Remote snapshot building
 │       ├── subagent_addressee.rs # C007: who the composer is addressed to
-│       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
+│       ├── center_tabs.rs # Center tab set over the main buffer (Shift+N/P/X)
 │       ├── subagents.rs    # SubagentRow projection rows + strip/buffer view state
 │       ├── tasks.rs        # Ctrl+T tasks overlay rows (todos, subagents, jobs)
 │       ├── ui.rs           # UiState (theme, layout, routes, keybindings)
@@ -6842,7 +7930,7 @@ tui/
 │   ├── plugin_renderer.rs  # Compat alias for UiNodeRenderer
 │   ├── ui_node_renderer.rs # UiNodeRenderer (UiNode → ratatui/line)
 │   ├── prompt.rs           # PromptWidget
-│   ├── scroll.rs           # CenteredScroll
+│   ├── scroll.rs           # CenteredScroll, ListCursor (index + follow)
 │   ├── sidebar.rs          # SidebarWidget
 │   ├── spinner.rs          # SpinnerWidget
 │   ├── status_bar.rs       # StatusBarWidget
@@ -6871,8 +7959,10 @@ tui/
 ├── editor_completion.rs    # Editor completion popup model
 ├── editor_effect.rs        # M010 editor-level pending effect + clipboard verb
 ├── editor_highlight.rs     # Editor semantic highlight projection
+├── editor_keymap.rs        # The Helix-style editor keymap and its menus
 ├── editor_lsp.rs           # Editor LSP presentation (M006-C)
 ├── editor_match.rs         # Editor match/search state
+├── editor_palette.rs       # The editor's command palette and its key rows
 ├── document_session.rs     # TuiDocumentSession (DocumentController seam)
 ├── file_diff.rs            # Async diff stats for sidebar
 ├── file_icons.rs           # File-kind icon mapping
@@ -6937,10 +8027,10 @@ plugin UI and selected first-party surfaces:
 Domain data -> UiNode builder -> UiNodeRenderer -> ratatui / line output
 ```
 
-- **Builders** live in `src/tui/ui_builders/`.
-- **Renderer** (`UiNodeRenderer` in `src/tui/components/ui_node_renderer.rs`)
+- **Builders** live in `crates/codegg-tui/src/ui_builders/`.
+- **Renderer** (`UiNodeRenderer` in `crates/codegg-tui/src/components/ui_node_renderer.rs`)
   is the single lowering adapter.
-- **Generic dialog** (`UiNodeDialog` in `src/tui/components/dialogs/ui_node.rs`)
+- **Generic dialog** (`UiNodeDialog` in `crates/codegg-tui/src/components/dialogs/ui_node.rs`)
   accepts `UiNode`, supports scroll/page/jump, reuses `DialogType::Plugin`
   slot in FocusManager.
 
@@ -6960,7 +8050,7 @@ No direct TUI config keys in the CodeGG config file (`codegg.jsonc`,
 - Vim mode via config
 - Agent/model selection stored in session
 
-`ActionKey::all()` and `ActionDescriptor` in `src/tui/input.rs` are the single
+`ActionKey::all()` and `ActionDescriptor` in `crates/codegg-tui/src/input.rs` are the single
 exhaustive catalog for configurable actions. The keybinding dialog and
 keyboard help consume that catalog; prompt characters remain an explicit
 non-configurable exception. Exported bindings use the same snake_case names
@@ -7022,7 +8112,7 @@ action.
   binding an inert key advertises a capability the UI does not have. They are
   bound now because they are no longer inert: with a two-pane layout `↑`/`↓`
   cycle the loaded panel type. `the_vertical_pair_is_now_bound_rather_than_reserved`
-  in `tests/tui_render/modifier_chords.inc` is the test that says so.
+  in `crates/codegg-tui/tests/tui_render/modifier_chords.inc` is the test that says so.
 - **Uppercase letters only; bare lowercase is never the directional.** A
   terminal reports `Shift+L` as `Char('L')` with or without SHIFT, but never as
   `Char('l')`. Binding lowercase would claim the plain within-surface vim verbs
@@ -7129,7 +8219,7 @@ action.
   with `Team` — two content types, one panel, which is why `keymap_hint` is
   written per `InfoType` and no test here may key on `DialogType`.
 - **DialogType in component.rs**: `DialogType` lives in
-  `src/tui/components/component.rs` (not `types.rs`, and not a
+  `crates/codegg-tui/src/components/component.rs` (not `types.rs`, and not a
   `component/component.rs` — that directory holds only `context.rs` and
   `focus.rs`).
 - **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant
@@ -7143,7 +8233,7 @@ action.
 - **State domains are 27 modules**: Not the 6 listed in older revisions;
   the domain model expanded across multiple milestones.
 - **Async command stale-completion tests**: Each guarded handler has a
-  stale-completion test in `src/tui/mod.rs::async_cmd_tests`.
+  stale-completion test in `crates/codegg-tui/src/mod.rs::async_cmd_tests`.
 - **The focus manager owns the painted dialog, not `dialog_state`**: 
   `open_dialog` pushes a `clone()` of the dialog onto `FocusManager`, and
   `render_dialog` draws whatever the focus manager holds. Filling only the
@@ -7152,29 +8242,30 @@ action.
   a dialog must write through `focus_manager.with_dialog_mut::<D, _>(..)`
   (or `dialog_mut`) as well. `/sessions` shipped broken for exactly this
   reason — see `reload_fills_the_painted_focus_manager_instance` in
-  `src/tui/commands/sessions.rs`. The C002 subagent/job sections obey the
+  `crates/codegg-tui/src/commands/sessions.rs`. The C002 subagent/job sections obey the
   same rule on open *and* on every live refresh
   (`App::refresh_sessions_dialog_pending_rows`), and
-  `tests/tui_render/tui_sessions_pending_sections.inc::both_instances_receive_the_sections`
+  `crates/codegg-tui/tests/tui_render/tui_sessions_pending_sections.inc::both_instances_receive_the_sections`
   reads the painted clone rather than the App-owned field.
 - **The terminal's own text selection is unavailable**: `EnableMouseCapture`
-  (`src/tui/terminal.rs`) makes the terminal stop offering drag-select, so
+  (`crates/codegg-tui/src/terminal.rs`) makes the terminal stop offering drag-select, so
   the TUI implements its own over the rendered frame buffer
-  (`src/tui/selection.rs`). `App::finish_render` retains the frame buffer
+  (`crates/codegg-tui/src/selection.rs`). `App::finish_render` retains the frame buffer
   each pass; drag inside `ClickTarget::Viewport` sets
   `selection_anchor`/`selection_focus`, mouse-up copies via `arboard`, and
   `Ctrl+C` copies a live selection (falling through when none exists).
   Selection is deliberately scoped to the viewport so the sidebar,
   scrollbar, dialogs, completion popup, and prompt keep their click
   behaviour.
-- **`bottom_border_area` gets its own row, carved off before layout**:
-  `render` splits the last row of the main pane out of `main_area_inner`
-  *before* `session_layout` runs and records it as `bottom_border_area`;
-  `finish_render` paints a `Borders::BOTTOM` block into it. Anchoring the
-  edge on the footer's last row instead — as `render_outer_borders`
-  originally did — painted over the only row the status bar ever had,
-  because `footer_height` is 1 and `StatusBar` takes a border-less early
-  path at that height. The status line disappeared entirely.
+- **The bottom border gets its own row, carved off before layout**:
+  `TuiLayout::frame_outer` splits the last row of the main pane out of the
+  bordered main area *before* `session_layout` runs and records it as
+  `FramePlan::bottom_border`; `finish_render` paints a `Borders::BOTTOM`
+  block into it. Anchoring the edge on the footer's last row instead — as
+  `render_outer_borders` originally did — painted over the only row the
+  status bar ever had, because `footer_height` is 1 and `StatusBar` takes a
+  border-less early path at that height. The status line disappeared
+  entirely.
 - **One completion popup, not two**: `CommandPalette::render` used to paint
   a second, narrower slash popup over the prompt whenever `command_mode`
   was set, while `update_completions` deliberately left `show_completions`
@@ -7208,7 +8299,7 @@ cargo test --test tui_render      # 99 render regression tests
 cargo test --test tui              # integration tests
 ```
 
-### Render Regression Tests (`tests/tui_render/tui_render.inc`)
+### Render Regression Tests (`crates/codegg-tui/tests/tui_render/tui_render.inc`)
 
 Uses `ratatui::backend::TestBackend` across terminal sizes:
 tiny (40×12), small (60×20), normal (100×32), wide (160×40),
@@ -7237,12 +8328,12 @@ does not add editor widgets, keybindings, or a second TUI text buffer.
 ## Source verification
 
 Re-verified the daemon-backed editor diagnostics lifecycle on 2026-10-27
-against `src/tui/commands/editor.rs`, `src/tui/editor_lsp.rs`,
-`src/tui/app/project_session.rs`, and `crates/codegg-client/src/lsp.rs`:
+against `crates/codegg-tui/src/commands/editor.rs`, `crates/codegg-tui/src/editor_lsp.rs`,
+`crates/codegg-tui/src/app/project_session.rs`, and `crates/codegg-client/src/lsp.rs`:
 the editor subscribes after opening/saving/F2, marks a retained view stale on
 stream loss, and uses a separate diagnostics pull to establish readiness.
 
-Verified 2026-10-06 against `src/tui/`: `app/mod.rs` line count
+Verified 2026-10-06 against `crates/codegg-tui/src/`: `app/mod.rs` line count
 (14,358), the 27 `app/state/` modules (28 `.rs` files), `App` at
 `app/mod.rs:222`, `Component` at `components/component.rs:183`,
 `TuiMsg` (116 variants) at `app/types.rs:123`, `Dialog` (46) at
@@ -7256,26 +8347,26 @@ Verified 2026-10-06 against `src/tui/`: `app/mod.rs` line count
 `ComposerMode` (`work_orders.rs:25`), `Route` (`route.rs:2`), and the
 five `.await` points in `dispatch_tui_command`
 (`runtime/command_dispatch.rs:84`). Render-regression test count (99
-`#[test]` in `tests/tui_render/tui_render.inc`) confirmed.
+`#[test]` in `crates/codegg-tui/tests/tui_render/tui_render.inc`) confirmed.
 
-Re-verified during the subagent/job visibility roadmap against `src/tui/`:
+Re-verified during the subagent/job visibility roadmap against `crates/codegg-tui/src/`:
 `app/mod.rs` line count (18,815), the **31** `app/state/` modules (32 `.rs`
 files incl. `mod.rs`), `TuiMsg` (149 variants) at `app/types.rs:123`,
 `InputAction` (62) at `input.rs`, and the render-regression test count (111
-`#[test]` in `tests/tui_render/tui_render.inc`). The Directory Structure counts below were
+`#[test]` in `crates/codegg-tui/tests/tui_render/tui_render.inc`). The Directory Structure counts below were
 corrected in the same pass: `commands/` (37 submodules), `components/dialogs/`
 (40 dialogs), `command.rs` (167 built-ins), and `app/state/` — which had been
 missing `panel_hotkeys.rs`, `subagents.rs`, `subagent_tabs.rs`, and `tasks.rs`
 entirely, so the map silently understated the module count.
 
-Re-verified 2026-10-06 against `src/tui/` and
+Re-verified 2026-10-06 against `crates/codegg-tui/src/` and
 `scripts/check_tui_*`. Corrected the Invariants entry that placed
-`DialogType` at `src/tui/components/component/component.rs` — that path does
-not exist; the enum is at `src/tui/components/component.rs:22`, and
+`DialogType` at `crates/codegg-tui/src/components/component/component.rs` — that path does
+not exist; the enum is at `crates/codegg-tui/src/components/component.rs:22`, and
 `components/component/` contains only `context.rs` and `focus.rs`. Replaced
 `RemoteTuiMessage::PluginUiEffect` with `TuiMessage::PluginUiEffect`;
 `RemoteTuiMessage` is only a local import alias
-(`src/tui/app/mod.rs:79`) for the `TuiMessage` wire enum, which derives
+(`crates/codegg-tui/src/app/mod.rs:79`) for the `TuiMessage` wire enum, which derives
 `Serialize`/`Deserialize`, whereas `TuiCommand` (`app/commands.rs:14`) is the
 in-process runtime channel and is never serialized. Corrected the
 `app/mod.rs` line count to 14,358. Re-confirmed accurate: the five
@@ -7288,25 +8379,25 @@ arms), `TuiCommand` (203) and `InputAction` (50) counts, the 46-variant
 `std::env::current_dir()`; `check_tui_editor_text_authority.py` rejecting
 second text buffers and direct filesystem reads).
 
-Verified 2026-10-23 (deep-dive pass) against `src/tui/`
+Verified 2026-10-23 (deep-dive pass) against `crates/codegg-tui/src/`
 (`app/mod.rs`, `app/types.rs`, `app/commands.rs`, `app/state/*.rs`,
 `app/state/dialog.rs`, `components/component.rs`,
 `components/component/focus.rs`, `input.rs`, `task_lifecycle.rs`,
-`command.rs`, `runtime/command_dispatch.rs`), `tests/tui_render/`, and
+`command.rs`, `runtime/command_dispatch.rs`), `crates/codegg-tui/tests/tui_render/`, and
 `scripts/check_tui_*`. This document is large (7000+ lines), so the
 load-bearing numeric, structural, and API-surface claims were verified
 rather than every line.
 
 Corrected:
-- **Stale file-size claim**: "Where It Lives" said `src/tui/app/mod.rs` is
-  "~14,358 lines". It is now ~20,300 lines, and `src/tui/` as a whole is
+- **Stale file-size claim**: "Where It Lives" said `crates/codegg-tui/src/app/mod.rs` is
+  "~14,358 lines". It is now ~20,300 lines, and `crates/codegg-tui/src/` as a whole is
   196 `.rs` files / ~202,400 lines. The section now carries the real
   numbers and points at the Directory Structure tree.
 - **Stale module counts in the Directory Structure tree**: `app/state/` is
   **33** modules (34 `.rs` files), not 31 (32); `commands/` is **41**
   submodules, not 37; `components/dialogs/` is **41** dialogs, not 40.
   `command.rs` holds **168** built-in commands, not 167 (the count asserted
-  by `built_in_command_count_matches_release_docs`, `src/tui/command.rs:1217`).
+  by `built_in_command_count_matches_release_docs`, `crates/codegg-tui/src/command.rs:1217`).
 - **Stale tree entries**: removed `components/help_overlay.rs` (deleted;
   the tree still listed it as "removed in C001"), and added the modules the
   tree did not mention at all — `app/turn_submit.rs`, `app/state/session_work.rs`,
@@ -7320,8 +8411,8 @@ Corrected:
   `Component` at `components/component.rs:215` (not `:183`);
   `TuiMsg` at `app/types.rs:155` (not `:123`); `TuiCommand` at
   `app/commands.rs:56` (not `:15`); `Dialog` at `app/types.rs:4` (not `:2`);
-  `InputAction` at `src/tui/input.rs:137` (not `:102`);
-  `dispatch_tui_command` at `src/tui/runtime/command_dispatch.rs:87`
+  `InputAction` at `crates/codegg-tui/src/input.rs:137` (not `:102`);
+  `dispatch_tui_command` at `crates/codegg-tui/src/runtime/command_dispatch.rs:87`
   (not `:84`). The `dispatch_tui_command` reference is now stated by symbol
   name as well, so it survives further drift.
 - **Stale variant counts**: `TuiMsg` is **164** variants (not 116);
@@ -7349,19 +8440,19 @@ Corrected:
 
 Confirmed accurate, no change needed:
 - `TuiTaskKind` (13 variants) and `TuiTaskRegistry`
-  (`src/tui/task_lifecycle.rs:133`), `AsyncUiRequestState`
+  (`crates/codegg-tui/src/task_lifecycle.rs:133`), `AsyncUiRequestState`
   (`app/state/async_request.rs:20`), `ComposerMode`
-  (`app/state/work_orders.rs:25`), and `Route` (`src/tui/route.rs:2`).
+  (`app/state/work_orders.rs:25`), and `Route` (`crates/codegg-tui/src/route.rs:2`).
 - `dispatch_tui_command` is `pub(crate) async` with exactly **five**
   `.await` points, all inside the durable-editor arms —
   `EditUndoLatest` / `EditReapplyLatest` / `EditUndo` / `EditReapply` /
   `EditCheckpointList` (`runtime/command_dispatch.rs:2687`, `:2738`,
   `:2792`, `:2846`, `:2898`).
 - `EXIT_ARM_WINDOW` is three seconds
-  (`src/tui/app/state/prompt.rs:126`), and the "two deliberate presses" rule
+  (`crates/codegg-tui/src/app/state/prompt.rs:126`), and the "two deliberate presses" rule
   for `q` and `Ctrl+C` is documented correctly.
 - The render-regression count is 111 `#[test]` in
-  `tests/tui_render/tui_render.inc`.
+  `crates/codegg-tui/tests/tui_render/tui_render.inc`.
 - `FocusManager` is `stack: VecDeque<Box<dyn Component>>`, and `push`
   returns `bool` and refuses a duplicate `DialogType` — the doc's listing is
   now explicit about that, because a hidden second owner is the failure it
@@ -7373,11 +8464,11 @@ Confirmed accurate, no change needed:
   gesture interception gated on `Component::docks_as_viewer()`.
 
 Verified 2026-10-23 (repository audit corrective C001) against
-`src/tui/app/mod.rs`, `src/mcp/cli.rs`, `src/main.rs`,
-`tests/tui_render/nested_runtime_command_dispatch.inc`, and the vendored
+`crates/codegg-tui/src/app/mod.rs`, `src/mcp/cli.rs`, `crates/codegg-cli/src/main.rs`,
+`crates/codegg-tui/tests/tui_render/nested_runtime_command_dispatch.inc`, and the vendored
 `tokio` 1.52.3 sources (`runtime/context/runtime.rs`,
 `runtime/context/runtime_mt.rs`, `runtime/scheduler/multi_thread/mod.rs`,
-`runtime/handle.rs`). Confirmed: `src/main.rs` declares
+`runtime/handle.rs`). Confirmed: `crates/codegg-cli/src/main.rs` declares
 `#[tokio::main(flavor = "multi_thread")]`, and that is the runtime the TUI
 event loop and `codegg mcp debug` both run on; `context::enter_runtime` is the
 only thing that sets `EnterRuntime::Entered`, and `Runtime::enter()` does not
@@ -7398,12 +8489,16 @@ successful save, and on F2. The TUI installs its loss-aware event receiver
 before the project subscription, then performs an authoritative
 `LspDiagnosticsGet`; the status-free subscription snapshot is only a stream
 baseline and can never be shown as `Ready`. F2 opens a bounded list with
-severity, message, and source range; gutter markers identify lines with
-diagnostics. A `Ready` result replaces the complete current-file set,
+severity, message, and source range; the editor also underlines the covered
+text with a theme severity color while keeping the gutter marker. This inline
+underline is presentation of that same retained Ready snapshot, not another
+authority. A `Ready` result replaces the complete current-file set,
 including clearing it when empty. `NotReady`, request failure, stream gap,
 and transport loss preserve the last complete set and mark it stale where
-one exists. A gap releases and recreates the authorized subscription; there
-is no frontend readiness polling.
+one exists. Underlines use the existing bounded UTF-16 position conversion,
+clip to the line slice already read for the viewport, and refuse an over-budget
+line without allocating another row. A gap releases and recreates the
+authorized subscription; there is no frontend readiness polling.
 
 F3 requests hover, F4 definition, F5 references, F6 document symbols, and F7
 workspace symbol search for the word at the cursor. Results are bounded and
@@ -7428,13 +8523,13 @@ TUI retains no document text outside the controller snapshot.
 ### Editor LSP keymap and its degradation contract (M013)
 
 M013 bound Helix's LSP gestures into the M005 leaf tables
-(`src/tui/editor.rs`: `SPACE_LEAVES`, `GOTO_LEAVES`) rather than adding a
+(`crates/codegg-tui/src/editor.rs`: `SPACE_LEAVES`, `GOTO_LEAVES`) rather than adding a
 second prefix mechanism. `PrefixAction::Effect(EditorPendingEffect)` is a
 fourth arm rather than a bool or an `EditorCommand`, because an LSP leaf moves
 no cursor and edits no text. (M010's W1 generalized the arm: it was
 `PrefixAction::Lsp(EditorLspLeafEffect)` until then, and the effect enum was
 LSP-typed because a file picker is not an LSP fact. The arm, the enum and the
-pending slot now live in `src/tui/editor_effect.rs`.)
+pending slot now live in `crates/codegg-tui/src/editor_effect.rs`.)
 
 | Key | Effect |
 |---|---|
@@ -7456,7 +8551,7 @@ pending slot now live in `src/tui/editor_effect.rs`.)
 | `space b` | **unavailable**: one document is attached at a time |
 | `space j` | **unavailable**: no visited-position history |
 | `space D` | **unavailable**: no server capability backs a separate workspace-diagnostics request |
-| `space c` / `space C` | **unavailable**: no comment syntax is known for the edited buffer |
+| `space c` / `space C` | toggle the line comment / wrap the range in the block pair, using the edited buffer's own grammar tokens; refused, with the extension named, when the syntax declares no token |
 | `space '` | **unavailable**: the pickers are not fuzzy, so there is no query to recall |
 | `space a` | the **code-action read** — the actions the server would offer at the cursor, each with the diff of its own edit; the panel is the picker |
 | `=` | the **format preview** — what the formatter would change, and the change review when it can be applied |
@@ -7477,7 +8572,7 @@ the editor no longer shows is stale.
 picker and a clipboard verb with nowhere to live: they are not LSP facts, and
 `EditorLspState` is reset wholesale on a scope change, which is the wrong
 fate for an effect that is not about the language server at all. The type
-moved to `src/tui/editor_effect.rs` and now carries `Clipboard`,
+moved to `crates/codegg-tui/src/editor_effect.rs` and now carries `Clipboard`,
 `YankPrimary`, `OpenFilePicker` and `OpenCommandPalette` beside the reads.
 
 **The file browser is daemon-owned, so the editor's gesture is a *request* for
@@ -7614,6 +8709,26 @@ the two cannot collide.
 
 ### Completion popup and transactional acceptance (M004)
 
+The popup is drawn **at the cursor**: its left edge is the caret's own
+column, and it opens on the row below the caret's line, flipping above only
+when there is no room below. It is **content-sized** — the box is as wide as
+its widest candidate, not a fixed panel across the middle of the screen — and
+it appears **only when the server has something to offer**: a `Ready` answer
+with no candidates draws nothing rather than a box saying that there is
+nothing.
+
+A candidate that cannot be applied says **why**. The row names the reason
+the server gave — `· snippet`, `· needs extra edits`, `· has a server
+command`, `· out of range`, `· too large`, `· insert and replace` —
+instead of a flat *unavailable*, so a reader can tell a candidate the editor
+will not apply from one the server has not finished describing.
+
+The acceptance lands **at the cursor**: the range the server sends is the
+range that is applied, resolved against the current snapshot, so the text
+changes on the caret's own line at the caret's own word. The `[editor]`
+section of the editor configuration carries `completion-popup`, and with it
+set to `false` no completion request is made at all.
+
 The completion popup consumes the M003 `LspCompletionGet` surface and
 nothing else. The trigger is `F8` (claimed inside `handle_editor_key` in
 **both** modes, so it never falls through to the global bindings) and
@@ -7626,6 +8741,15 @@ make completion unreachable from a terminal that can send function keys. While o
 so a keystroke is never both typed and interpreted as popup input. `Esc`
 dismisses and preserves the editing mode — it never quits the editor — and
 a re-trigger supersedes the in-flight request by request id.
+
+The debounced Insert-completion path schedules the same request after a
+200 ms quiet interval following a document-changing edit; a newer edit resets
+the deadline. It is a request schedule, not an accept path. The due timer is
+serviced by the event-loop timed pump, which wakes while a schedule is pending
+without requiring another keypress, then calls the existing
+`start_editor_completion` path. Explicit `F8`, Insert `Ctrl-x`, and
+`:complete` supersede the idle schedule. Mode/route/document changes cancel it.
+The reply remains advisory and no candidate is inserted on arrival.
 
 The selection is advisory until acceptance. `Enter` re-validates scope,
 generation, attachment identity, and revision against the current state,
@@ -7640,7 +8764,7 @@ guard and never paints. Untrusted labels, details, and error strings render
 as sanitized literal spans, and the popup hides (keys still live) on
 terminals too narrow to fit it.
 
-C003 status and fencing corrections (`src/tui/editor_completion.rs`).
+C003 status and fencing corrections (`crates/codegg-tui/src/editor_completion.rs`).
 Identity binding is split from status-specific revision policy: the
 document id is verified for every status, but only `Ready` requires the
 exact requested revision (plus a consistent sync witness when present).
@@ -7671,8 +8795,8 @@ exactly as before.
 
 ### Semantic token fidelity (C001)
 
-Structural validation (`src/tui/editor_lsp.rs::validate_semantic_tokens`)
-is separated from style mapping (`src/tui/components/editor.rs::token_style`)
+Structural validation (`crates/codegg-tui/src/editor_lsp.rs::validate_semantic_tokens`)
+is separated from style mapping (`crates/codegg-tui/src/components/editor.rs::token_style`)
 and bounded drawing (`line_spans`). The frontend received-token cap is
 `MAX_EDITOR_SEMANTIC_TOKENS`, which mirrors the protocol maximum
 `MAX_LSP_SEMANTIC_TOKENS` (1000); the 100-item `MAX_EDITOR_READ_ITEMS` cap
@@ -7718,6 +8842,14 @@ instead of scanning a multi-megabyte line. `measure_frame_cost` mirrors the
 render loop exactly so tests assert deterministic budgets rather than
 wall-clock time.
 
+M005 leaves that bound in place and tightens it. `measure_frame_cost`'s
+accounting is unchanged — a row is still charged its `MAX_RENDER_LINE_BYTES`
+prefix against the frame budget — while the bytes actually read fall: the
+horizontal clamp is measured once per `(revision, first line, height, width)`
+rather than once per frame, and a row's read is its column window's bytes
+rather than its line's. A cursor at the far end of a multi-megabyte line still
+costs a bounded prefix; it is now a smaller one, and it is read once.
+
 A line past the per-line budget renders its prefix as plain text (no
 per-token spans, which would cost the whole line) with a warning-styled
 `…[too long]` row suffix; rows past the frame budget render as the marker
@@ -7755,7 +8887,7 @@ entire retained-node budget before any source directory was walked. The other
 walkers here (`python_script::snapshot`, `python_script::executor`,
 `research::sources::local_repo`) already skipped it; the list had drifted.
 
-C004 single-flight admission (`src/tui/file_tree_coordinator.rs`): at most
+C004 single-flight admission (`crates/codegg-tui/src/file_tree_coordinator.rs`): at most
 one blocking scan executes (global cap 1, preferred per plan), with at most
 one coalesced latest-only pending intent. The permit is held from event-loop
 `try_admit` until the blocking work's completion arrives; aborting the async
@@ -7786,7 +8918,7 @@ channel the UI reports an explicit error instead of requesting synchronously
 on the event loop.
 
 C005 daemon-owned listing (ADR-0022, accepted): the TUI no longer walks at
-all. `src/tui/commands/file_tree.rs` sends `WorkspaceDirectoryList` with
+all. `crates/codegg-tui/src/commands/file_tree.rs` sends `WorkspaceDirectoryList` with
 the tab's project/workspace binding over the attached core client; the
 daemon resolves its canonical root, verifies the project/workspace binding,
 validates the prefix, and runs the single shared walk
@@ -7872,10 +9004,10 @@ restart could change the outcome. Guarded by
 Model navigation is `Tab`/`BackTab` (`move_model`), while `Up`/`Down` move the
 connection highlight.
 
-Re-verified 2026-10-25 against `src/tui/command_route.rs` (`route_for`,
+Re-verified 2026-10-25 against `crates/codegg-tui/src/command_route.rs` (`route_for`,
 `scope_for`, `command_execute`, `send_command`, `unwrap_inner_response`),
-`src/tui/app/prompt_turn.rs:36`, `:71` and `:116`, `src/tui/app/commands.rs`,
-`src/tui/command.rs` and `crates/codegg-core/src/command_catalog.rs`: the
+`crates/codegg-tui/src/app/prompt_turn.rs:36`, `:71` and `:116`, `crates/codegg-tui/src/app/commands.rs`,
+`crates/codegg-tui/src/command.rs` and `crates/codegg-core/src/command_catalog.rs`: the
 three `/`-recognition sites are the three questions they are documented as,
 and the cached built-in rows and `BuiltinSlashAction` variants are unchanged
 from `origin/main` (`cb4ceed9d`).

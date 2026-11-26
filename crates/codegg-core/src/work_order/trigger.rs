@@ -1,28 +1,6 @@
-//! Narrow external task-trigger capability (Project Work Orders M005).
-//!
-//! ## Capability shape
-//!
-//! - The bearer has the form `cggtr_<trigger-id>.<secret>` where the
-//!   secret is 32 CSPRNG bytes in URL-safe base64 without padding. The
-//!   public locator finds the row without scanning hashes; the secret
-//!   verifies against a SHA-256 verifier (same primitive posture as the
-//!   personal-token digest store, without sharing its table or granting
-//!   principal authority).
-//! - Only the verifier persists. The plaintext is returned exactly once
-//!   at creation; if lost, revoke and create a new trigger.
-//! - Firing latches exactly one gate on the trigger's bound work order
-//!   and wakes the M002 coordinator. It never starts an agent or session
-//!   directly, never widens authority, and never returns project, prompt,
-//!   session, model, or gate detail to the unaffiliated caller.
-//! - `POST`-only at the HTTP seam (enforced outside this module); `GET`
-//!   has zero side effect. Secrets never appear in query strings,
-//!   projections, logs, audit metadata, or error bodies.
-//!
-//! ## Ownership
-//!
-//! Long-term references: ADR-0005 §12
-//! (`plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`),
-//! `plans/subsystems/project-work-orders-task-view-roadmap.md` M005.
+//! Trigger secrets are returned once; only verifiers persist, and secrets never enter queries, logs, projections, or errors.
+//! Firing latches one bound-work-order gate without widening authority or starting execution.
+//! Unaffiliated callers receive no work-order details; HTTP is POST-only and GET is inert. See `architecture/work_orders.md`.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

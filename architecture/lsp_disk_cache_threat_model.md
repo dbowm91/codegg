@@ -102,7 +102,7 @@ Each workspace root gets a subdirectory identified by a normalized hash of its c
 
 The clear commands are TUI slash commands dispatched through
 `BuiltinSlashAction::LspCacheClear` / `LspCacheStatus`
-(`src/tui/app/mod.rs`), and they act on the in-memory cache only. There
+(`crates/codegg-tui/src/app/mod.rs`), and they act on the in-memory cache only. There
 is no disk directory to remove today.
 
 **Gap**: There is no proactive background cleanup of expired entries. Stale
@@ -370,7 +370,7 @@ Re-verified 2026-10-23 against `crates/egglsp/src/cache.rs`,
 `crates/egglsp/src/context.rs`, `crates/egglsp/src/download.rs`,
 `crates/egglsp/tests/lsp_cache_benchmark.rs`,
 `crates/codegg-config/src/schema.rs`, `crates/codegg-config/src/paths.rs`,
-`src/tool/mod.rs`, `src/tool/lsp.rs`, and `src/tui/command.rs`.
+`src/tool/mod.rs`, `src/tool/lsp.rs`, and `crates/codegg-tui/src/command.rs`.
 This document's design/forward-looking claims are prospective by intent;
 only the measured claims below were checked.
 
@@ -379,7 +379,7 @@ only the measured claims below were checked.
 - **§4, clear-command behavior.** The previous revision said
   `/lsp-cache-clear` "removes all entries for a specific workspace root".
   The bare form clears the **whole** cache: the TUI handler
-  (`BuiltinSlashAction::LspCacheClear` in `src/tui/app/mod.rs`) treats an
+  (`BuiltinSlashAction::LspCacheClear` in `crates/codegg-tui/src/app/mod.rs`) treats an
   empty argument and `--all` identically and calls
   `LspTool::clear_semantic_cache`. The root-scoped form is
   `/lsp-cache-clear <path>`, which calls
@@ -448,7 +448,7 @@ only the measured claims below were checked.
 - `LspContextItem.payload` is `Option<serde_json::Value>`, as section 7
   states.
 - The `/lsp-cache-clear` and `/lsp-cache-status` commands exist and are
-  registered in `src/tui/command.rs`
+  registered in `crates/codegg-tui/src/command.rs`
   (`BuiltinSlashAction::LspCacheClear` / `LspCacheStatus`); the previous
-  revision's `src/tui/app/mod.rs:5728`/`:12529` line references had
+  revision's `crates/codegg-tui/src/app/mod.rs:5728`/`:12529` line references had
   drifted and are now given as symbols.

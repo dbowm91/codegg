@@ -1,0 +1,27 @@
+{
+  "target": "/fixture/target",
+  "args": [
+    "fixture"
+  ],
+  "env": [
+    [
+      "FIXTURE",
+      "1"
+    ]
+  ],
+  "read_paths": [
+    "/fixture/read"
+  ],
+  "write_paths": [
+    "/fixture/write"
+  ],
+  "deny_paths": [
+    "/fixture/deny"
+  ],
+  "linux_protected_mount_view": false,
+  "linux_process_isolation": false,
+  "linux_offline_network": false,
+  "protected_readonly_paths": [],
+  "path_identities": [],
+  "expected_created_git_pointers": []
+}

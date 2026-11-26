@@ -42,6 +42,7 @@ pub mod memory;
 pub mod patch_util;
 pub mod plan;
 pub mod plugin;
+pub mod present;
 pub mod process_admission;
 pub mod process_capability;
 pub mod program_cache;
@@ -449,11 +450,8 @@ pub struct ToolRegistryOptions {
     /// Explicit Windows shell selection for raw shell commands. `None`
     /// selects the platform default; structured argv bypasses shell parsing.
     pub windows_shell: Option<crate::config::schema::WindowsShellKind>,
-    /// Phase 2: canonical workspace root for filesystem tools. When
-    /// `Some`, tools that previously inferred their `allowed_root` from
-    /// `std::env::current_dir()` should prefer this value. New code
-    /// should always set this; older call sites that omit it are
-    /// tracked by the `check_daemon_cwd_usage` static guard.
+    /// Canonical workspace root for filesystem tools; path authority must not derive
+    /// from process-global cwd. A missing root is represented explicitly and refused.
     pub workspace_root: Option<std::path::PathBuf>,
     /// Canonical per-turn session default directory. This is a default only;
     /// `workspace_root` remains the path authorization and sandbox ceiling.
@@ -2270,21 +2268,15 @@ mod python_submission_wiring_tests {
         )
     }
 
-    /// `python_script` is advertised in the tool schema and documented as a
-    /// real capability, but it used to be constructed *without* the
-    /// submission service, so `execute` always failed closed with
-    /// `ToolError::Disabled` in the daemon runtime. Every existing test
-    /// constructed the tool directly and so never exercised the production
-    /// registration path — the two `Disabled` tests actually pinned the
-    /// defect rather than catching it.
-    ///
-    /// `ToolRegistryOptions::default()` legitimately carries no submission
-    /// service (subagents and tool-program sandboxes do not get one), so the
-    /// negative control below is the *unwired* shape and this test builds the
-    /// registry the way the daemon does (`src/core/daemon_turns.rs` threads
-    /// `deps.submission` into `ToolRegistryOptions`).
+    /// The daemon threads `deps.submission` into `ToolRegistryOptions`.
+    /// Without that service, `execute` fails closed as `Disabled`. This
+    /// harness starts no worker, so waiting for completion always sits on
+    /// the tool's `timeout + 30s` bound. A queued Python job is the wiring
+    /// proof; that wait is not.
     #[tokio::test]
     async fn python_tool_is_constructed_with_submission_service() {
+        use codegg_core::jobs::{JobKind, JobState, JobStoreQuery};
+
         // Both halves share a workspace root so the submission service stays
         // the only variable: the tool refuses an omitted `workdir` when it has
         // no workspace authority, and that refusal would otherwise pre-empt
@@ -2292,9 +2284,6 @@ mod python_submission_wiring_tests {
         let root = tempfile::tempdir().expect("workspace fixture");
         let workspace_root = Some(root.path().to_path_buf());
 
-        // Negative control: without a service the tool fails closed with the
-        // scheduler-admission message. This is the exact state production was
-        // stuck in, so it pins the signature of the defect.
         let unwired = ToolRegistry::with_options(ToolRegistryOptions {
             git_read_only: None,
             workspace_root: workspace_root.clone(),
@@ -2308,39 +2297,76 @@ mod python_submission_wiring_tests {
                 "mode": "analyze"
             }))
             .await;
-        let disabled_without_scheduler = matches!(
-            &unwired_result,
-            Err(ToolError::Disabled(msg)) if msg.contains("scheduler admission")
-        );
         assert!(
-            disabled_without_scheduler,
+            matches!(
+                &unwired_result,
+                Err(ToolError::Disabled(msg)) if msg.contains("scheduler admission")
+            ),
             "negative control: an unscheduled registry must still fail closed, got {unwired_result:?}"
         );
 
         let submission = submission_service_for_test().await;
+        let store = Arc::clone(submission.scheduler().store());
         let registry = ToolRegistry::with_options(ToolRegistryOptions {
             git_read_only: None,
             workspace_root,
             submission: Some(submission),
             ..ToolRegistryOptions::default()
         });
-        let result = registry
+        let mut probe = tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let jobs = store
+                    .list_jobs(JobStoreQuery {
+                        kinds: vec![JobKind::Python],
+                        limit: Some(4),
+                        ..JobStoreQuery::default()
+                    })
+                    .await
+                    .expect("list jobs");
+                if !jobs.is_empty() {
+                    return jobs;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("wired python_script admitted no Python job within 2s");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+        let execute = registry
             .get("python_script")
             .expect("python_script must be registered")
             .execute(serde_json::json!({
                 "code": "print('hello-python')",
-                "mode": "analyze",
-                // Bounded so the test proves reachability quickly rather
-                // than running a real analysis to completion.
-                "timeout": 2
-            }))
-            .await;
-
-        if let Err(ToolError::Disabled(msg)) = result {
-            panic!(
-                "python_script must not fail closed on scheduler admission when a \
-                 submission service is configured: {msg}"
-            );
+                "mode": "analyze"
+            }));
+        tokio::select! {
+            result = execute => {
+                probe.abort();
+                if let Err(ToolError::Disabled(msg)) = result {
+                    panic!(
+                        "python_script must not fail closed on scheduler admission when a \
+                         submission service is configured: {msg}"
+                    );
+                }
+                panic!(
+                    "execute finished without an observable Python job, so admission was not proven: {result:?}"
+                );
+            }
+            joined = &mut probe => {
+                let jobs = joined.expect("admission probe");
+                assert_eq!(
+                    jobs.len(),
+                    1,
+                    "wired python_script must admit exactly one Python job, got {jobs:?}"
+                );
+                assert_eq!(jobs[0].kind, JobKind::Python);
+                assert_eq!(
+                    jobs[0].state,
+                    JobState::Queued,
+                    "admission must queue the job, not finish it in this workerless harness"
+                );
+            }
         }
     }
 

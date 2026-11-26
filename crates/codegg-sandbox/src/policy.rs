@@ -1,0 +1,1477 @@
+//! Backend-neutral containment policy.
+//!
+//! A policy is a statement about *paths*, not about any one OS mechanism:
+//! what may be read, what may be written, and what must never be touched.
+//! Backends compile a [`BackendPolicy`] into their native form (Landlock
+//! ruleset, SBPL profile, …).
+//!
+//! ## Tool compatibility
+//!
+//! CodeGG's containment has to survive contact with real developer tooling.
+//! A deny-first allowlist that exposes only the workspace plus a couple of
+//! library directories is *nominally* stronger and *practically* useless:
+//! `git` cannot read `/etc/gitconfig`, `cargo` cannot read `~/.cargo`,
+//! `gh` cannot read `~/.config/gh`, and nothing can resolve a hostname
+//! without `/etc/resolv.conf`. A sandbox that fails every command is not
+//! containment, it is denial.
+//!
+//! Read roots are deliberately curated: shared user configuration and cache
+//! ancestors can contain credentials, so only toolchain data needed to run
+//! installed tools is included. Explicit denies are carved out of broader
+//! allow roots before a deny-first backend sees them. Writes are limited to
+//! the workspace, stateless device nodes, and launch-scoped scratch.
+
+use std::path::{Path, PathBuf};
+
+use super::SandboxLaunchSpec;
+
+/// Path sets a backend compiles into its native containment rules.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BackendPolicy {
+    /// Roots the target may read.
+    pub read_roots: Vec<PathBuf>,
+    /// Directories that may be listed while their denied descendants remain
+    /// excluded from file reads.
+    pub read_dir_roots: Vec<PathBuf>,
+    /// Roots the target may write. Empty means no writes at all.
+    pub write_roots: Vec<PathBuf>,
+    /// Roots the target may never read or write.
+    ///
+    /// Meaningful for backends that allow by default (Seatbelt). Backends
+    /// that are deny-first by construction (Landlock) get these for free;
+    /// the list is still populated so the policy describes one intent
+    /// regardless of which mechanism enforces it.
+    pub denied_roots: Vec<PathBuf>,
+}
+
+/// Resolve a policy root for later backend compilation. On Windows this is a
+/// conservative lexical and reparse-point check only; it is not a security
+/// boundary against a path being replaced after the check. M004 must bind
+/// enforcement to opened handles and ACL identity before constrained runs are
+/// enabled.
+pub fn resolve_policy_path(path: &std::path::Path) -> Result<PathBuf, String> {
+    #[cfg(unix)]
+    {
+        path.canonicalize().map_err(|error| error.to_string())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        let raw = path.as_os_str().to_string_lossy();
+        let folded = raw.replace('/', "\\");
+        if folded.starts_with(r"\\?\") {
+            return Err("extended-length device paths are not accepted as policy roots".into());
+        }
+        if folded.starts_with(r"\\") || folded.starts_with(r"\\.\") {
+            return Err("UNC and device namespace paths are not accepted as policy roots".into());
+        }
+        if !path.is_absolute() {
+            return Err("Windows policy roots must be absolute drive paths".into());
+        }
+        if folded
+            .split('\\')
+            .skip(1)
+            .any(|component| component.contains(':'))
+        {
+            return Err("alternate data stream syntax is not accepted in policy roots".into());
+        }
+        if path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err("parent traversal is not accepted in Windows policy roots".into());
+        }
+
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            current.push(component.as_os_str());
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+                    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                        return Err(format!(
+                            "reparse-point component is not accepted in policy root: {}",
+                            current.display()
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        path.canonicalize().map_err(|error| error.to_string())
+    }
+}
+
+impl BackendPolicy {
+    /// Canonicalize, de-duplicate, and drop non-existent grant entries.
+    ///
+    /// Canonicalization is what makes a policy portable across `/tmp` ->
+    /// `/private/tmp` symlinks and per-user worktree aliases; de-duplication
+    /// keeps generated profiles bounded when roots overlap.
+    fn normalized(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut seen = Vec::new();
+        let mut out = Vec::with_capacity(roots.len());
+        for root in roots {
+            let Ok(canonical) = std::fs::canonicalize(&root) else {
+                continue;
+            };
+            if !seen.contains(&canonical) {
+                seen.push(canonical.clone());
+                out.push(canonical);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Build a normalized policy from raw roots.
+    pub fn new(read: Vec<PathBuf>, write: Vec<PathBuf>, denied: Vec<PathBuf>) -> Self {
+        let denied_roots = Self::normalized_denies(denied);
+        Self {
+            read_roots: Self::normalized(read),
+            read_dir_roots: Vec::new(),
+            write_roots: Self::normalized(write),
+            denied_roots,
+        }
+    }
+
+    /// Compile the requested sets into the closest Landlock allowlist.
+    ///
+    /// Deny descendants are removed from file grants while their ancestors
+    /// keep a separate directory-listing right, so a denied file is hidden
+    /// without making its parent unreadable. **That deny-first carving is
+    /// Landlock's alone.**
+    ///
+    /// Seatbelt does not consume the carved result: `seatbelt::sbpl_profile`
+    /// renders `write_roots` and `denied_roots` in SBPL's last-rule-wins order
+    /// and never reads `read_roots` or `read_dir_roots`. Its read posture is
+    /// `(allow default)` plus the explicit credential denies, so this method's
+    /// shape is not the macOS contract and must not be read as one.
+    pub fn landlock_effective(&self) -> Self {
+        let (read_roots, read_dir_roots) =
+            Self::carve_read_denied(self.read_roots.clone(), &self.denied_roots);
+        Self {
+            read_roots,
+            read_dir_roots,
+            write_roots: Self::carve_denied(self.write_roots.clone(), &self.denied_roots),
+            denied_roots: self.denied_roots.clone(),
+        }
+    }
+
+    /// Resolve existing deny paths and preserve absent paths relative to the
+    /// nearest existing canonical parent. Absence during policy construction
+    /// must not remove protection for a future credential file.
+    fn normalized_denies(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for root in roots {
+            let resolved = if let Ok(path) = std::fs::canonicalize(&root) {
+                Some(path)
+            } else {
+                let mut missing = Vec::new();
+                let mut ancestor = root.as_path();
+                while !ancestor.exists() {
+                    let Some(name) = ancestor.file_name() else {
+                        break;
+                    };
+                    missing.push(name.to_os_string());
+                    let Some(parent) = ancestor.parent() else {
+                        break;
+                    };
+                    ancestor = parent;
+                }
+                std::fs::canonicalize(ancestor).ok().map(|mut parent| {
+                    for component in missing.into_iter().rev() {
+                        parent.push(component);
+                    }
+                    parent
+                })
+            };
+            if let Some(path) = resolved {
+                if !out.contains(&path) {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Landlock has no deny rules. Split each broad allow root around denied
+    /// descendants so an ancestor allowance cannot expose a credential.
+    /// An absent denied child is omitted from grants and stays denied if it is
+    /// later created beneath an allowed root.
+    fn carve_denied(roots: Vec<PathBuf>, denied: &[PathBuf]) -> Vec<PathBuf> {
+        fn carve(root: &Path, denied: &[PathBuf], out: &mut Vec<PathBuf>) {
+            if denied.iter().any(|deny| root.starts_with(deny)) {
+                return;
+            }
+            let nested: Vec<_> = denied
+                .iter()
+                .filter(|deny| deny.starts_with(root))
+                .collect();
+            if nested.is_empty() {
+                out.push(root.to_path_buf());
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(root) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let raw = entry.path();
+                let Ok(child) = std::fs::canonicalize(&raw) else {
+                    continue;
+                };
+                if !child.starts_with(root) {
+                    continue;
+                }
+                if denied.iter().any(|deny| child.starts_with(deny)) {
+                    continue;
+                }
+                if nested.iter().any(|deny| deny.starts_with(&child)) {
+                    carve(&child, denied, out);
+                } else {
+                    out.push(child);
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for root in roots {
+            carve(&root, denied, &mut out);
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Preserve directory listing on ancestors of denied files without
+    /// granting file-read rights through those ancestors.
+    fn carve_read_denied(roots: Vec<PathBuf>, denied: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        fn carve(
+            root: &Path,
+            denied: &[PathBuf],
+            read: &mut Vec<PathBuf>,
+            read_dir: &mut Vec<PathBuf>,
+        ) {
+            if denied.iter().any(|deny| root.starts_with(deny)) {
+                return;
+            }
+            let nested: Vec<_> = denied
+                .iter()
+                .filter(|deny| deny.starts_with(root))
+                .collect();
+            if nested.is_empty() {
+                read.push(root.to_path_buf());
+                return;
+            }
+            if !root.is_dir() {
+                return;
+            }
+            read_dir.push(root.to_path_buf());
+            let Ok(entries) = std::fs::read_dir(root) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let raw = entry.path();
+                let Ok(child) = std::fs::canonicalize(&raw) else {
+                    continue;
+                };
+                if !child.starts_with(root) {
+                    continue;
+                }
+                if denied.iter().any(|deny| child.starts_with(deny)) {
+                    continue;
+                }
+                if nested.iter().any(|deny| deny.starts_with(&child)) {
+                    carve(&child, denied, read, read_dir);
+                } else {
+                    read.push(child);
+                }
+            }
+        }
+
+        let mut read = Vec::new();
+        let mut read_dir = Vec::new();
+        for root in roots {
+            carve(&root, denied, &mut read, &mut read_dir);
+        }
+        read.sort();
+        read.dedup();
+        read_dir.sort();
+        read_dir.dedup();
+        (read, read_dir)
+    }
+
+    /// Derive the policy for one launch description.
+    pub fn for_spec(spec: &SandboxLaunchSpec) -> Self {
+        Self::new(
+            spec.read_paths.clone(),
+            spec.write_paths.clone(),
+            spec.deny_paths.clone(),
+        )
+    }
+}
+
+/// Refuse a launch when an existing denied regular file has hardlink aliases.
+/// Path-based sandbox backends cannot distinguish two names for one inode;
+/// proceeding could expose the denied credential through its other name.
+pub fn validate_denied_paths(denied: &[PathBuf]) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        for path in denied {
+            let metadata = match std::fs::metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                // The process cannot traverse this host-protected path, so
+                // its ordinary filesystem permissions already deny the same
+                // child. This commonly covers `/root/.ssh` for a non-root
+                // daemon; do not make unrelated constrained launches fail
+                // because the host has an inaccessible account directory.
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "cannot inspect denied sandbox path {}: {error}",
+                        path.display()
+                    ));
+                }
+            };
+            if metadata.is_file() && metadata.nlink() > 1 {
+                return Err(format!(
+                    "sandbox cannot safely exclude hardlinked denied file: {}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Landlock cannot express a deny below a recursively writable ancestor.
+/// Refuse such a requested grant instead of carving an incomplete set of
+/// child roots and pretending the workspace is writable under the same
+/// policy.
+pub fn validate_landlock_write_exclusions(
+    write_paths: &[PathBuf],
+    denied_paths: &[PathBuf],
+) -> Result<(), String> {
+    let writes = BackendPolicy::normalized(write_paths.to_vec());
+    let denied = BackendPolicy::normalized_denies(denied_paths.to_vec());
+    for write in &writes {
+        for deny in &denied {
+            if write.starts_with(deny) || deny.starts_with(write) {
+                return Err(format!(
+                    "Landlock cannot represent a denied path beneath writable root: {}",
+                    deny.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// System and selected read-only toolchain locations needed to run a command.
+///
+/// This is the "tool compatible" half of the policy. It grants **read**
+/// only; none of these paths become writable under any profile.
+#[cfg(unix)]
+pub fn tool_read_allowances() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = [
+        // Interpreter/runtime search path and shared objects. On macOS the
+        // toolchain lives in `/usr` (with `/bin`, `/sbin`, `/lib*` as
+        // compatibility symlinks); on Linux the dynamic loader and shared
+        // libraries live under the same roots.
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/opt",
+        "/etc",
+        "/dev",
+        "/sys",
+        "/private/etc",
+        "/private/var/db/timezone",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+
+    // `/proc` and `/var/run` were granted as trees until C002. A tree grant on
+    // `/proc` makes `/proc/<other-pid>/environ` readable for a same-uid
+    // process, and Landlock cannot subtract from a granted tree, so the two
+    // are named narrowly instead of granted whole.
+    paths.extend(narrow_host_reads());
+
+    if let Some(home) = home_dir() {
+        // Shared configuration and cache ancestors may hold credentials.
+        // Expose installed Rust programs and read-only downloaded inputs,
+        // while keeping Cargo/Rustup credentials and mutable state excluded.
+        for relative in [".cargo/bin", ".cargo/registry", ".cargo/git"] {
+            paths.push(home.join(relative));
+        }
+    }
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_read_allowances(&rustup_home));
+    }
+    paths
+}
+
+/// The narrow replacements for the `/proc` and `/var/run` tree grants.
+///
+/// Every entry is a file or a directory that carries no other process's state:
+/// the self-scoped `/proc` entries, the kernel's informational files, the
+/// read-only sysctl view, and the resolver file a name lookup reads when a
+/// distribution places it under `/run` rather than `/etc`.
+///
+/// Landlock resolves these aliases in the helper, whose PID survives target
+/// `exec`. Bubblewrap omits host aliases; process isolation supplies private
+/// `/proc` instead.
+#[cfg(unix)]
+fn narrow_host_reads() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = [
+        "/proc/self",
+        "/proc/thread-self",
+        "/proc/meminfo",
+        "/proc/cpuinfo",
+        "/proc/stat",
+        "/proc/loadavg",
+        "/proc/uptime",
+        "/proc/version",
+        "/proc/filesystems",
+        "/proc/sys",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+
+    // Name lookup reads the resolver's file; grant the file that exists rather
+    // than the directory that holds it.
+    for candidate in [
+        "/run/systemd/resolve/stub-resolv.conf",
+        "/run/systemd/resolve/resolv.conf",
+        "/run/resolvconf/resolv.conf",
+    ] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// True for `/proc` aliases that would resolve to the helper, not the sandboxed target.
+pub fn is_self_proc_alias(path: &std::path::Path) -> bool {
+    matches!(
+        path.to_str(),
+        Some("/proc/self") | Some("/proc/thread-self")
+    )
+}
+
+fn configured_rustup_home() -> Option<PathBuf> {
+    std::env::var_os("RUSTUP_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| {
+            home_dir()
+                .map(|home| home.join(".rustup"))
+                .filter(|path| path.is_dir())
+        })
+}
+
+fn rustup_credential_deny_paths(root: &Path) -> [PathBuf; 2] {
+    [root.join("credentials"), root.join("credentials.toml")]
+}
+
+#[cfg(unix)]
+fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
+    let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
+        return Vec::new();
+    };
+    if root_metadata.file_type().is_symlink() {
+        return Vec::new();
+    }
+    let Ok(canonical_root) = root.canonicalize() else {
+        return Vec::new();
+    };
+
+    ["settings.toml", "toolchains", "update-hashes"]
+        .into_iter()
+        .filter_map(|relative| {
+            let path = canonical_root.join(relative);
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            if metadata.file_type().is_symlink() {
+                return None;
+            }
+            let canonical = path.canonicalize().ok()?;
+            canonical.starts_with(&canonical_root).then_some(canonical)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn rustup_read_allowances(root: &Path) -> Vec<PathBuf> {
+    if resolve_policy_path(root).is_err() {
+        return Vec::new();
+    }
+    ["settings.toml", "toolchains", "update-hashes"]
+        .into_iter()
+        .filter_map(|relative| {
+            let path = root.join(relative);
+            resolve_policy_path(&path).ok().map(|_| path)
+        })
+        .collect()
+}
+
+/// Windows runtime and installed-tool locations required to execute native
+/// commands. These roots are read inputs for a future enforcement backend;
+/// they do not enable Windows constrained launches in this milestone.
+#[cfg(windows)]
+pub fn tool_read_allowances() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(system_root) = windows_env_dir("SystemRoot").or_else(|| windows_env_dir("WINDIR")) {
+        paths.extend([
+            system_root.clone(),
+            system_root.join("System32"),
+            system_root.join("SysWOW64"),
+            system_root.join("System32/WindowsPowerShell/v1.0"),
+        ]);
+    }
+    for name in ["ProgramFiles", "ProgramFiles(x86)", "CommonProgramFiles"] {
+        if let Some(root) = windows_env_dir(name) {
+            paths.push(root);
+        }
+    }
+    if let Some(home) = home_dir() {
+        for relative in [
+            ".cargo",
+            ".gitconfig",
+            ".npm",
+            ".cache",
+            "AppData/Local/Programs",
+            "AppData/Roaming/npm",
+        ] {
+            paths.push(home.join(relative));
+        }
+    }
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_read_allowances(&rustup_home));
+    }
+    paths
+}
+
+/// Shared scratch and global package caches are intentionally absent. The
+/// managed process owner supplies a fresh private scratch root per launch.
+#[cfg(unix)]
+pub fn tool_write_allowances() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// Temporary and package-cache write roots used by native developer tools.
+/// M004 must replace ambient TEMP/TMP authority with per-run scratch before
+/// it advertises constrained Windows execution.
+#[cfg(windows)]
+pub fn tool_write_allowances() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for name in ["TEMP", "TMP"] {
+        if let Some(root) = windows_env_dir(name) {
+            paths.push(root);
+        }
+    }
+    if let Some(home) = home_dir() {
+        for relative in [
+            ".cargo",
+            ".rustup",
+            ".npm",
+            ".cache",
+            "AppData/Local/Temp",
+            "AppData/Local/Cargo",
+        ] {
+            paths.push(home.join(relative));
+        }
+    }
+    paths
+}
+
+/// Stateless device nodes that must stay writable under **every** profile,
+/// including `ReadOnly`.
+///
+/// These are not filesystem state: writing to `/dev/null` discards the
+/// bytes, reading `/dev/urandom` returns entropy, and a PTY is the terminal
+/// the user is already talking to. Denying them is not containment — it is
+/// breakage with no security benefit, because `sh -c 'cmd > /dev/null'` and
+/// every `2>&1` fail outright without them. Under Landlock this also matters:
+/// the read allowance for `/dev` grants no `WriteFile` right, so a
+/// redirect-capable shell needs these named explicitly in the write set.
+#[cfg(unix)]
+pub fn device_write_allowances() -> Vec<PathBuf> {
+    [
+        "/dev/null",
+        "/dev/zero",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/tty",
+        "/dev/console",
+        "/dev/ptmx",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect()
+}
+
+#[cfg(windows)]
+pub fn device_write_allowances() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// Credential material and CodeGG's own secret store.
+///
+/// Denied on every backend. Under a deny-first backend this is redundant,
+/// but it is stated here so the policy has one intent and so a future
+/// allow-default backend inherits it for free.
+#[cfg(unix)]
+pub fn sensitive_deny_paths() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = [
+        // Host-wide secrets and privilege material. Named individually
+        // rather than by subtree: a blanket `/var/db` also covers
+        // `/var/db/timezone`, which time-zone-aware programs read, and
+        // normalization would silently reintroduce the conflict the
+        // `no_deny_path_covers_a_read_allowance_root` test forbids.
+        "/etc/sudoers",
+        "/etc/shadow",
+        "/etc/gshadow",
+        "/root/.ssh",
+        // Directory Service store: local account hashes.
+        "/var/db/dslocal",
+        "/var/db/dhcpd_leases",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+
+    if let Some(home) = home_dir() {
+        for relative in [
+            ".ssh",
+            ".aws",
+            ".gnupg",
+            ".gpg",
+            ".kube",
+            ".docker",
+            ".netrc",
+            ".npmrc",
+            ".pypirc",
+            ".git-credentials",
+            ".config/git/credentials",
+            ".pgpass",
+            ".my.cnf",
+            ".vault-token",
+            ".password-store",
+            ".local/share/keyrings",
+            ".config/op",
+            ".yarnrc.yml",
+            ".gem/credentials",
+            ".cargo/credentials",
+            ".cargo/credentials.toml",
+            ".cargo/config",
+            ".cargo/config.toml",
+            ".config/gh/hosts.yml",
+            ".config/gcloud",
+            ".azure",
+            ".terraform.d",
+            // CodeGG's own durable credential store. A sandboxed command
+            // must never be able to read the secrets the agent itself uses.
+            ".config/codegg",
+            ".codegg",
+            ".bash_history",
+            ".zsh_history",
+            "Library/Messages",
+            "Library/Mail",
+            "Library/Safari",
+            "Library/Cookies",
+            "Library/Keychains",
+            "Library/Application Support/codegg",
+        ] {
+            paths.push(home.join(relative));
+        }
+    }
+    if let Some(rustup_home) = configured_rustup_home() {
+        paths.extend(rustup_credential_deny_paths(&rustup_home));
+    }
+    paths
+}
+
+#[cfg(windows)]
+pub fn sensitive_deny_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = home_dir() {
+        for relative in [
+            ".ssh",
+            ".aws",
+            ".gnupg",
+            ".gpg",
+            ".kube",
+            ".docker",
+            ".netrc",
+            ".npmrc",
+            ".pypirc",
+            ".gem/credentials",
+            ".config/gh/hosts.yml",
+            ".config/gcloud",
+            ".azure",
+            ".terraform.d",
+            ".config/codegg",
+            ".codegg",
+            "AppData/Roaming/codegg",
+            "AppData/Local/codegg",
+            "AppData/Roaming/Microsoft/Credentials",
+            "AppData/Local/Microsoft/Credentials",
+            "AppData/Roaming/Microsoft/Protect",
+            "AppData/Local/Microsoft/Vault",
+        ] {
+            paths.push(home.join(relative));
+        }
+    }
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .or_else(|| {
+            home_dir()
+                .map(|home| home.join(".rustup"))
+                .filter(|path| path.is_dir())
+        });
+    if let Some(rustup_home) = rustup_home {
+        paths.extend(rustup_credential_deny_paths(&rustup_home));
+    }
+    paths
+}
+
+/// `$HOME`, if it exists and is a usable home directory.
+#[cfg(unix)]
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+#[cfg(windows)]
+fn home_dir() -> Option<PathBuf> {
+    windows_profile_root()
+}
+
+#[cfg(windows)]
+pub fn windows_profile_root() -> Option<PathBuf> {
+    windows_env_dir("USERPROFILE").filter(|path| path.is_dir())
+}
+
+#[cfg(windows)]
+fn windows_env_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+/// Snapshot the device/inode identity of a policy path.
+///
+/// The snapshot is taken **before** the object is opened for a rule, so an
+/// object substituted afterwards is refused by [`verify_path_identity`]
+/// instead of being granted. `symlink_metadata` is deliberate: a canonical
+/// policy root is not an alias, and a path that is one now has changed since
+/// the policy was built.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub fn capture_path_identity(path: &Path) -> Result<super::SandboxPathIdentity, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "cannot snapshot sandbox path identity {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "sandbox path is a symlink and cannot be granted: {}",
+            path.display()
+        ));
+    }
+    Ok(super::SandboxPathIdentity {
+        path: path.to_path_buf(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+/// Verify that an opened object is the one the policy captured.
+///
+/// A grant is bound to the object, not the name it was reached by: a root that
+/// was renamed or replaced between policy construction and rule compilation is
+/// refused here rather than granted in its new form.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub fn verify_path_identity(
+    path: &Path,
+    expected: &super::SandboxPathIdentity,
+    actual: &std::fs::Metadata,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    if actual.dev() == expected.device && actual.ino() == expected.inode {
+        return Ok(());
+    }
+    Err(format!(
+        "sandbox path changed after its identity was captured: {}",
+        path.display()
+    ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::SandboxConfig;
+    use std::path::Path;
+
+    fn exists(path: &Path) -> bool {
+        path.exists()
+    }
+
+    #[test]
+    fn read_allowances_cover_the_interpreter_search_path() {
+        let roots = BackendPolicy::normalized(tool_read_allowances());
+        // Every one of these is needed before a shell can start at all.
+        // Compared after canonicalization: `/bin` is `/usr/bin` and `/etc`
+        // is `/private/etc` on macOS, which is exactly why the policy
+        // canonicalizes before a backend ever sees it.
+        for required in ["/usr", "/bin", "/etc"] {
+            let resolved = Path::new(required)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(required));
+            assert!(
+                roots.contains(&resolved),
+                "{required} must be readable or no command can start: {roots:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_host_read_grants_name_no_process_tree() {
+        let reads = tool_read_allowances();
+        let names: Vec<String> = reads
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        // A tree grant on either root is the C002 finding: `/proc` makes
+        // `/proc/<other-pid>/environ` readable for a same-uid process, and
+        // `/var/run` exposes whatever a distribution keeps under `/run`.
+        for tree in ["/proc", "/var/run", "/run"] {
+            assert!(
+                !names.iter().any(|name| name == tree),
+                "`{tree}` is granted as a tree again: {names:?}"
+            );
+        }
+        assert!(
+            names.iter().any(|name| name == "/proc/self"),
+            "the self-scoped `/proc` entry is what keeps the command's own \
+             `/proc/self/exe` readable: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.contains("/environ")),
+            "a grant naming `environ` is a leak, not a narrowing: {names:?}"
+        );
+    }
+
+    #[test]
+    fn rustup_read_allowances_expose_only_selected_toolchain_inputs() {
+        let root = tempfile::tempdir().expect("Rustup home");
+        std::fs::write(root.path().join("settings.toml"), "profile = 'minimal'\n")
+            .expect("Rustup settings");
+        std::fs::create_dir(root.path().join("toolchains")).expect("toolchains");
+        std::fs::create_dir(root.path().join("update-hashes")).expect("update hashes");
+        std::fs::create_dir(root.path().join("downloads")).expect("unrelated Rustup data");
+        std::fs::create_dir(root.path().join("credentials")).expect("credential directory");
+        let allowances = rustup_read_allowances(root.path());
+        let canonical_root = root.path().canonicalize().expect("canonical Rustup home");
+        assert_eq!(allowances.len(), 3);
+        assert!(allowances.contains(&canonical_root.join("settings.toml")));
+        assert!(allowances.contains(&canonical_root.join("toolchains")));
+        assert!(allowances.contains(&canonical_root.join("update-hashes")));
+        assert!(!allowances.contains(&canonical_root.join("downloads")));
+        assert!(!allowances.contains(&canonical_root));
+        assert!(!allowances.contains(&canonical_root.join("credentials")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rustup_read_allowances_reject_symlinked_root_and_allowance_roots() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let external = tempfile::tempdir().expect("external Rustup data");
+        std::fs::write(
+            external.path().join("settings.toml"),
+            "credential = 'secret'\n",
+        )
+        .expect("external settings");
+        std::fs::create_dir(external.path().join("toolchains")).expect("external toolchains");
+        std::fs::create_dir(external.path().join("update-hashes")).expect("external update hashes");
+
+        let linked_root = fixture.path().join("linked-rustup");
+        std::os::unix::fs::symlink(external.path(), &linked_root).expect("Rustup root symlink");
+        assert!(
+            rustup_read_allowances(&linked_root).is_empty(),
+            "a symlinked RUSTUP_HOME must not turn its target into a grant"
+        );
+
+        let root = fixture.path().join("rustup");
+        std::fs::create_dir(&root).expect("Rustup root");
+        std::fs::write(root.join("settings.toml"), "profile = 'minimal'\n")
+            .expect("Rustup settings");
+        std::os::unix::fs::symlink(external.path().join("toolchains"), root.join("toolchains"))
+            .expect("toolchains symlink");
+        std::fs::create_dir(root.join("update-hashes")).expect("update hashes");
+        let allowances = rustup_read_allowances(&root);
+        let canonical_root = root.canonicalize().expect("canonical Rustup root");
+        let canonical_external = external.path().canonicalize().expect("canonical target");
+        assert!(!allowances
+            .iter()
+            .any(|path| path.starts_with(&canonical_external)));
+        assert!(!allowances.contains(&canonical_root.join("toolchains")));
+        assert!(allowances.contains(&canonical_root.join("settings.toml")));
+        assert!(allowances.contains(&canonical_root.join("update-hashes")));
+    }
+
+    #[test]
+    fn device_nodes_are_writable_but_ordinary_paths_are_not() {
+        let roots = BackendPolicy::normalized(device_write_allowances());
+        assert!(
+            roots.contains(&PathBuf::from("/dev/null")),
+            "without /dev/null every shell redirect fails: {roots:?}"
+        );
+        assert!(
+            !roots.iter().any(|root| root.starts_with("/etc")),
+            "device allowances must not leak into real filesystem paths: {roots:?}"
+        );
+    }
+
+    #[test]
+    fn shared_scratch_and_global_cache_roots_are_not_writable() {
+        assert!(tool_write_allowances().is_empty());
+    }
+
+    #[test]
+    fn sensitive_paths_are_denied() {
+        // The deny intent is platform-independent; normalization drops entries
+        // that do not exist on this host (e.g. `~/.ssh` on a fresh CI runner),
+        // so assert intent on the raw curated set.
+        let raw = sensitive_deny_paths();
+        assert!(
+            raw.iter().any(|root| root.ends_with(".ssh")),
+            "ssh keys must be on the deny list"
+        );
+        assert!(
+            raw.iter().any(|root| root.ends_with("codegg")),
+            "CodeGG's own credential store must be on the deny list"
+        );
+        assert!(
+            raw.iter().any(|root| root.ends_with(".cargo/credentials")),
+            "Cargo credentials must stay explicitly denied"
+        );
+        assert!(
+            raw.iter()
+                .any(|root| root.ends_with(".cargo/credentials.toml")),
+            "Cargo credential TOML must stay explicitly denied"
+        );
+        if let Some(rustup_home) = configured_rustup_home() {
+            assert!(
+                raw.iter()
+                    .any(|root| root == &rustup_home.join("credentials")),
+                "Rustup credentials must stay explicitly denied"
+            );
+            assert!(
+                raw.iter()
+                    .any(|root| root == &rustup_home.join("credentials.toml")),
+                "Rustup credential TOML must stay explicitly denied"
+            );
+        }
+    }
+
+    #[test]
+    fn overridden_rustup_home_credentials_are_denied() {
+        let rustup_home = tempfile::tempdir().expect("private Rustup home");
+        assert_eq!(
+            rustup_credential_deny_paths(rustup_home.path()),
+            [
+                rustup_home.path().join("credentials"),
+                rustup_home.path().join("credentials.toml")
+            ]
+        );
+    }
+
+    const CURATED_HOME_DENY_ROWS: &[&str] = &[
+        ".git-credentials",
+        ".config/git/credentials",
+        ".pgpass",
+        ".my.cnf",
+        ".vault-token",
+        ".password-store",
+        ".local/share/keyrings",
+        ".config/op",
+        ".yarnrc.yml",
+        ".bash_history",
+        ".zsh_history",
+        "Library/Messages",
+        "Library/Mail",
+        "Library/Safari",
+        "Library/Cookies",
+    ];
+
+    #[test]
+    fn curated_credential_deny_set_is_complete() {
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        let raw = sensitive_deny_paths();
+        for relative in CURATED_HOME_DENY_ROWS {
+            assert!(
+                raw.iter().any(|root| root == &home.join(relative)),
+                "{relative} is classified for denial in architecture/security.md \
+                 but is absent from sensitive_deny_paths()"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_curated_credential_denies_resolve_under_the_nearest_parent() {
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        let canonical_home = home.canonicalize().expect("canonical HOME");
+        for relative in CURATED_HOME_DENY_ROWS {
+            let raw = home.join(relative);
+            let denied = BackendPolicy::new(Vec::new(), Vec::new(), vec![raw.clone()]).denied_roots;
+            assert_eq!(
+                denied.len(),
+                1,
+                "{relative} must resolve to exactly one deny"
+            );
+            let resolved = &denied[0];
+            assert!(
+                resolved.ends_with(relative)
+                    || std::fs::canonicalize(&raw).is_ok_and(|canonical| canonical == *resolved),
+                "a missing deny must stay denied relative to its nearest existing parent: \
+                 {relative} -> {resolved:?}"
+            );
+            assert_ne!(
+                *resolved, canonical_home,
+                "resolving {relative} must never widen into all of HOME"
+            );
+        }
+    }
+
+    #[test]
+    fn curated_credential_denies_render_after_write_reallows() {
+        let workspace = tempfile::tempdir().expect("workspace fixture");
+        let spec = SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+            target: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), "true".to_string()],
+            read_paths: vec![workspace.path().to_path_buf()],
+            write_paths: vec![workspace.path().to_path_buf()],
+            deny_paths: sensitive_deny_paths(),
+        };
+        let policy = BackendPolicy::for_spec(&spec);
+        let profile = crate::seatbelt::sbpl_profile(&policy);
+        let last_reallow = profile
+            .rfind("(allow file-write*")
+            .expect("a writable root must be re-allowed");
+        let home = home_dir().expect("HOME is required for the curated deny set");
+        for relative in CURATED_HOME_DENY_ROWS {
+            let raw = home.join(relative);
+            let resolved = policy
+                .denied_roots
+                .iter()
+                .find(|root| {
+                    root.ends_with(relative)
+                        || std::fs::canonicalize(&raw).is_ok_and(|canonical| canonical == **root)
+                })
+                .unwrap_or_else(|| {
+                    panic!("no resolved deny for {relative}: {:?}", policy.denied_roots)
+                });
+            for operation in ["file-read*", "file-write*"] {
+                let rule = format!("(deny {operation} (subpath \"{}\"))", resolved.display());
+                let at = profile
+                    .find(&rule)
+                    .unwrap_or_else(|| panic!("{rule} must be rendered in the SBPL profile"));
+                assert!(
+                    at > last_reallow,
+                    "{rule} must follow every write re-allow rule"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalization_drops_missing_paths_and_canonicalizes_symlinks() {
+        let normalized = BackendPolicy::normalized(vec![
+            PathBuf::from("/definitely/missing/codegg-policy-path"),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/tmp"),
+        ]);
+        assert!(
+            !normalized
+                .iter()
+                .any(|path| path.to_string_lossy().contains("codegg-policy-path")),
+            "a missing path must not reach a backend policy"
+        );
+        // `/tmp` canonicalizes to `/private/tmp`; the point is that both
+        // copies collapse onto that one resolved path.
+        let resolved = Path::new("/tmp").canonicalize().expect("canonical /tmp");
+        assert_eq!(
+            normalized.iter().filter(|path| **path == resolved).count(),
+            1,
+            "duplicates must collapse so generated profiles stay bounded: {normalized:?}"
+        );
+        for path in &normalized {
+            assert!(exists(path), "{} must exist", path.display());
+        }
+    }
+
+    #[test]
+    fn broad_allowance_is_split_around_existing_and_future_denies() {
+        let dir = tempfile::tempdir().expect("fixture root");
+        // Policy roots are canonicalized; on macOS the system temp root is a
+        // symlink (`/var/folders/...` -> `/private/var/folders/...`), so the
+        // fixture paths must be resolved before they are compared.
+        let root = std::fs::canonicalize(dir.path()).expect("canonical fixture root");
+        let safe = root.join("safe");
+        let secret_dir = root.join("credentials");
+        std::fs::create_dir_all(&safe).expect("safe directory");
+        std::fs::create_dir_all(&secret_dir).expect("secret directory");
+        std::fs::write(secret_dir.join("token"), b"secret").expect("secret fixture");
+        let future_secret = secret_dir.join("future-token");
+        let policy = BackendPolicy::new(
+            vec![root.clone()],
+            vec![root.clone()],
+            vec![secret_dir.join("token"), future_secret.clone()],
+        )
+        .landlock_effective();
+        assert!(policy.read_roots.iter().any(|r| r == &safe));
+        assert!(policy.read_dir_roots.iter().any(|r| r == &root));
+        assert!(policy.write_roots.iter().any(|r| r == &safe));
+        assert!(!policy.read_roots.iter().any(|r| r.starts_with(&secret_dir)));
+        assert!(!policy
+            .write_roots
+            .iter()
+            .any(|r| r.starts_with(&secret_dir)));
+        assert!(policy.denied_roots.contains(&future_secret));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlinked_denied_files_reject_the_policy() {
+        let dir = tempfile::tempdir().expect("fixture root");
+        let denied = dir.path().join("credential");
+        let alias = dir.path().join("workspace-alias");
+        std::fs::write(&denied, b"secret").expect("credential fixture");
+        std::fs::hard_link(&denied, &alias).expect("hardlink alias");
+        let error = validate_denied_paths(&[denied]).expect_err("hardlink must fail closed");
+        assert!(error.contains("hardlinked denied file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_inaccessible_deny_path_does_not_block_preflight() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("fixture root");
+        let protected = dir.path().join("protected");
+        std::fs::create_dir(&protected).expect("protected fixture");
+        let secret = protected.join("secret");
+        std::fs::write(&secret, "host-protected").expect("secret fixture");
+        std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o000))
+            .expect("remove traversal permission");
+
+        let metadata = std::fs::metadata(&secret);
+        let validation = validate_denied_paths(std::slice::from_ref(&secret));
+        std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o700))
+            .expect("restore fixture permissions");
+        if metadata.is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied) {
+            assert!(
+                validation.is_ok(),
+                "host DAC already blocks the path: {validation:?}"
+            );
+        } else {
+            eprintln!("skipped: test process can traverse mode-000 fixture directory");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_alias_of_denied_file_is_not_granted() {
+        let dir = tempfile::tempdir().expect("fixture root");
+        let secret = dir.path().join("secret");
+        let allowed = dir.path().join("allowed");
+        std::fs::create_dir_all(&allowed).expect("allowed directory");
+        std::fs::write(&secret, b"secret").expect("secret fixture");
+        std::os::unix::fs::symlink(&secret, allowed.join("alias")).expect("symlink alias");
+        let policy = BackendPolicy::new(
+            vec![dir.path().to_path_buf()],
+            Vec::new(),
+            vec![secret.clone()],
+        )
+        .landlock_effective();
+        assert!(
+            !policy.read_roots.iter().any(|root| root == &secret),
+            "canonicalized symlink aliases of a denied file must not be granted: {policy:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn carving_does_not_turn_external_symlinks_into_new_grants() {
+        let root = tempfile::tempdir().expect("allowed root");
+        let outside = tempfile::tempdir().expect("outside root");
+        std::fs::write(outside.path().join("secret"), b"outside").expect("outside fixture");
+        std::os::unix::fs::symlink(outside.path(), root.path().join("escape"))
+            .expect("external symlink");
+        let policy = BackendPolicy::new(
+            vec![root.path().to_path_buf()],
+            Vec::new(),
+            vec![root.path().join("future-deny")],
+        )
+        .landlock_effective();
+        assert!(
+            !policy
+                .read_roots
+                .iter()
+                .any(|grant| grant.starts_with(outside.path())),
+            "carving an allow root must not grant an external symlink target: {policy:?}"
+        );
+    }
+
+    #[test]
+    fn landlock_rejects_writable_ancestor_of_a_denied_path() {
+        let dir = tempfile::tempdir().expect("fixture root");
+        let future_deny = dir.path().join("credentials/new-token");
+        let error = validate_landlock_write_exclusions(&[dir.path().to_path_buf()], &[future_deny])
+            .expect_err("Landlock cannot subtract a deny from a writable ancestor");
+        assert!(error.contains("cannot represent a denied path"), "{error}");
+    }
+
+    #[test]
+    fn no_deny_path_covers_a_read_allowance_root() {
+        // A deny that *contains* an allowance silently breaks the tooling the
+        // allowance exists for: denying all of `/etc` blocks `/etc/hosts` and
+        // `/etc/resolv.conf`, denying all of `/var` blocks the per-user
+        // temporary directory. Backend compilation preserves the parent's
+        // listing right separately while excluding the denied descendants.
+        let read = BackendPolicy::normalized(tool_read_allowances());
+        for denied in BackendPolicy::normalized(sensitive_deny_paths()) {
+            for allowed in &read {
+                assert!(
+                    !allowed.starts_with(&denied),
+                    "deny {denied:?} would swallow read allowance {allowed:?}, \
+                     breaking the tools that allowance exists for"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_sensitive_path_wrapper_matches_the_policy() {
+        // `get_sensitive_paths` feeds `SandboxConfig::deny_paths`; if it
+        // drifts from the policy, callers silently get a different sandbox
+        // than the one the tests describe.
+        let mut config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_deny_paths(crate::get_sensitive_paths());
+        let workspace = tempfile::tempdir().expect("workspace fixture");
+        config.allowed_paths = vec![workspace.path().to_string_lossy().into_owned()];
+        let spec = config
+            .launch_spec(
+                "sh",
+                &["-c".to_string(), "true".to_string()],
+                Some(workspace.path()),
+            )
+            .expect("launch spec");
+        // The spec carries the curated denies verbatim: `launch_spec`
+        // deliberately leaves them unresolved so an absent credential file
+        // stays denied, and `normalized_denies` resolves them when a backend
+        // compiles the policy.
+        for expected in sensitive_deny_paths() {
+            assert!(
+                spec.deny_paths.iter().any(|path| path == &expected),
+                "wrapper dropped the curated deny path {expected:?}"
+            );
+        }
+        // Resolution still happens before a backend sees the policy, and
+        // matches the canonicalized form the allow sets are normalized to.
+        let resolved = BackendPolicy::for_spec(&spec).denied_roots;
+        for expected in BackendPolicy::normalized(sensitive_deny_paths()) {
+            assert!(
+                resolved.iter().any(|path| path == &expected),
+                "compiled policy dropped the curated deny path {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_derives_from_a_launch_spec() {
+        let dir = tempfile::tempdir().expect("workspace fixture");
+        let spec = SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+            target: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), "true".to_string()],
+            read_paths: vec![dir.path().to_path_buf()],
+            write_paths: vec![dir.path().to_path_buf()],
+            deny_paths: sensitive_deny_paths(),
+        };
+        let policy = BackendPolicy::for_spec(&spec);
+        let canonical = dir.path().canonicalize().expect("canonical root");
+        assert!(policy.read_roots.contains(&canonical));
+        assert!(policy.write_roots.contains(&canonical));
+        assert!(
+            !policy.denied_roots.is_empty(),
+            "a policy must carry the deny intent into the backend"
+        );
+    }
+
+    #[test]
+    fn a_grant_root_replaced_after_identity_capture_is_refused() {
+        let directory = tempfile::tempdir().expect("fixture root");
+        let root = directory.path().join("granted");
+        std::fs::create_dir(&root).expect("grant root");
+
+        // The policy captures the object before a backend opens it.
+        let identity = capture_path_identity(&root).expect("identity snapshot");
+        let unchanged = std::fs::symlink_metadata(&root).expect("unchanged metadata");
+        verify_path_identity(&root, &identity, &unchanged)
+            .expect("the unchanged root is the object the policy captured");
+
+        // Replace the root with a symlink after the policy saw the directory.
+        let displaced = directory.path().join("displaced");
+        std::fs::rename(&root, &displaced).expect("displace the grant root");
+        std::os::unix::fs::symlink(&displaced, &root).expect("symlink replacement");
+
+        let swapped = std::fs::symlink_metadata(&root).expect("replacement metadata");
+        let error = verify_path_identity(&root, &identity, &swapped)
+            .expect_err("a grant root replaced after policy construction must refuse");
+        assert!(
+            error.contains("changed after its identity was captured"),
+            "the refusal must name the identity change: {error}"
+        );
+
+        // A symlink is never a grant root even before it is opened, because a
+        // path that became an alias is no longer the canonical policy root.
+        let alias_error =
+            capture_path_identity(&root).expect_err("a symlinked grant root must refuse");
+        assert!(
+            alias_error.contains("symlink and cannot be granted"),
+            "the refusal must name the alias: {alias_error}"
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_policy_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn windows_roots_use_known_folders_and_retain_credential_denies() {
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap();
+        let reads = tool_read_allowances();
+        assert!(reads.iter().any(|path| path.ends_with("System32")));
+        assert!(reads.iter().any(|path| path.starts_with(&home)));
+        let writes = tool_write_allowances();
+        assert!(writes.iter().any(|path| {
+            std::env::var_os("TEMP").is_some_and(|temp| path.as_os_str() == temp.as_os_str())
+        }));
+        let denies = sensitive_deny_paths();
+        assert!(denies.contains(&home.join(".ssh")));
+        assert!(denies.contains(&home.join(".config/codegg")));
+        assert!(device_write_allowances().is_empty());
+    }
+
+    #[test]
+    fn windows_policy_path_rejects_unc_device_ads_and_traversal() {
+        for rejected in [
+            r"\\server\share\repo",
+            r"\\?\C:\repo",
+            r"\\.\PhysicalDrive0",
+            r"C:\repo\secrets:stream",
+            r"C:\repo\..\outside",
+        ] {
+            assert!(
+                resolve_policy_path(Path::new(rejected)).is_err(),
+                "must reject {rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_policy_path_rejects_junction_components() {
+        let fixture = tempfile::tempdir().expect("fixture root");
+        let target = fixture.path().join("target");
+        let junction = fixture.path().join("junction");
+        std::fs::create_dir(&target).expect("target directory");
+        // execution-ownership: test_only
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("start junction fixture command");
+        assert!(
+            output.status.success() && junction.is_dir(),
+            "native Windows runner must create a junction fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(resolve_policy_path(&junction).is_err());
+    }
+
+    #[test]
+    fn windows_policy_path_normalizes_case_aliases() {
+        let fixture = tempfile::tempdir().expect("fixture root");
+        let mixed = fixture.path().join("CaseAlias");
+        std::fs::create_dir(&mixed).expect("fixture directory");
+        let lower = PathBuf::from(mixed.to_string_lossy().to_lowercase());
+        let upper = PathBuf::from(mixed.to_string_lossy().to_uppercase());
+        assert_eq!(
+            resolve_policy_path(&lower).expect("lower-case path"),
+            resolve_policy_path(&upper).expect("upper-case path")
+        );
+    }
+
+    #[test]
+    fn windows_policy_roots_cannot_be_resolved_through_search_path() {
+        assert!(resolve_policy_path(Path::new("powershell.exe")).is_err());
+        assert!(resolve_policy_path(Path::new("cmd.exe")).is_err());
+    }
+
+    #[test]
+    fn windows_rustup_allowances_remain_resolvable_policy_paths() {
+        let rustup = tempfile::tempdir().expect("Rustup home");
+        for relative in ["settings.toml", "toolchains", "update-hashes"] {
+            let path = rustup.path().join(relative);
+            if path.extension().is_some() {
+                std::fs::write(path, "fixture").expect("Rustup settings");
+            } else {
+                std::fs::create_dir(path).expect("Rustup data directory");
+            }
+        }
+        let allowances = rustup_read_allowances(rustup.path());
+        assert_eq!(allowances.len(), 3);
+        assert!(allowances
+            .iter()
+            .all(|path| resolve_policy_path(path).is_ok()));
+    }
+}

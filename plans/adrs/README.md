@@ -22,6 +22,17 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
+## Embedding-host identity migration (2026-11-17)
+
+The rebase brought mainline's accepted ADR-0061 into the embedding-host branch,
+where a different accepted decision had the same number. Mainline retains ADR-0061;
+ADR-0062 remains assigned to bundled palette contrast, and the embedding-host wire
+decision is now ADR-0063. Its exact former record is archived under
+`plans/archive/embedding-host-adr-id-aliases/`, with source provenance in
+`plans/adrs/embedding-host-adr-id-migration.md`. The decision, status, and
+acceptance date are unchanged; only its identity and inbound references moved.
+The archived alias is provenance, not an active allocation.
+
 ## Linux/command identity migrations (2026-10-14 onward)
 
 The C004 identity corrective archived the exact pre-migration Linux and command
@@ -215,3 +226,46 @@ deferred to a separate OS-isolation project; option C (advisory path claims)
 remains rejected. Accepted ADR-0002 and ADR-0032 are unmodified and the legacy
 isolated behavior is unchanged.
 Check concurrent branch ADR identity allocation before integration.
+
+## ADR-0064 root compile-unit ownership (accepted 2026-11-21)
+
+The project maintainer accepted
+`ADR-0064-root-compile-unit-ownership.md` on 2026-11-21. Acceptance authorizes
+milestones 001 and 002 at `plans/implementation/root-compile-boundary/`.
+ADR-0063 remains the embedding-host wire decision; the next free number was
+ADR-0065 when this note was written. This decision
+does not amend ADR-0016, ADR-0046, or ADR-0061, and it does not discharge the
+deferred binary-topology item in `plans/registry.md`.
+
+## ADR-0066 editor inline generation (accepted 2026-11-24)
+
+`ADR-0066-editor-inline-generation-and-pending-region-contract.md` is
+**accepted** on 2026-11-24. The maintainer chose **Option A**: the generated
+answer is a **pending region that is not document text** until the operator
+approves it, and the request is a **new one-shot `CoreRequest`** rather than
+a session turn, because the editor route has a document and no session and a
+turn would write into the session transcript and inherit its durable model
+selection. The acceptance releases **M001** of
+`plans/subsystems/tui-editor-inline-llm-assist-roadmap.md` for handoff and
+authorizes nothing else; M002 stays blocked on M001's closure. It does not
+amend ADR-0011, ADR-0021, ADR-0049 or ADR-0050, and it does not promote the
+line's contract into `plans/000-` — the canonical long-term specification is
+still silent on inline AI assistance, so the contract stays **interim** under
+`plans/003-planning-process.md`. This worktree's `plans/adrs/` maximum at
+allocation was ADR-0065. The next free number after this allocation is
+ADR-0067, subject to the same cross-branch check ADR-0065's note records.
+
+## ADR-0065 interactive document open (accepted 2026-11-22)
+
+`ADR-0065-interactive-document-open-does-not-await-language-server-publication.md`
+is **accepted** on this branch. Acceptance was recorded by starting M001 of the
+roadmap below (`plans/closure/tui-editor-ide-presence/001-status.md`), which
+implements the Decision (Option C) and no other option. It allocates ADR-0065, which the ADR-0064 note
+named as the next free number. This worktree's `plans/adrs/` maximum at
+allocation was ADR-0064. Other branches were not exhaustively searched; if one
+has already allocated ADR-0065, renumber this decision rather than merging two
+into one file. The next free number after this allocation is ADR-0066, subject
+to that cross-branch check. Acceptance is recorded by starting M001 of
+`plans/subsystems/tui-editor-ide-presence-roadmap.md`, which implements the
+Decision and no other option. This decision does not amend ADR-0011, ADR-0012,
+ADR-0021, ADR-0034, or ADR-0064.

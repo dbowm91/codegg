@@ -891,6 +891,7 @@ impl ContinuationSnapshot {
         }
         ContextFrame {
             user_goal: Some(self.objective.clone()).filter(|goal| !goal.trim().is_empty()),
+            goal_tools_active: Some(self.goal.is_some()),
             current_task: self.current_task.clone(),
             constraints: self.semantic.constraints.clone(),
             decisions: self.semantic.decisions.clone(),
@@ -1114,6 +1115,10 @@ mod tests {
         assert_eq!(snapshot.objective, "goal objective authoritative");
         assert_eq!(snapshot.objective_source, ObjectiveSource::ActiveGoal);
         assert_eq!(snapshot.goal.as_ref().unwrap().revision, 7);
+        assert!(snapshot
+            .to_context_frame()
+            .to_continuation_text()
+            .contains("- Goal tools: active"));
         // Origin remains provenance.
         assert_eq!(snapshot.origin_text.as_deref(), Some("origin prompt"));
         assert!(snapshot.origin_digest.is_some());
@@ -1139,6 +1144,10 @@ mod tests {
         assert_eq!(snapshot.objective, "origin only");
         assert_eq!(snapshot.objective_source, ObjectiveSource::SessionOrigin);
         assert!(snapshot.goal.is_none());
+        assert!(snapshot
+            .to_context_frame()
+            .to_continuation_text()
+            .contains("- Goal tools: inactive"));
     }
 
     #[test]

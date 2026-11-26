@@ -1,0 +1,45 @@
+schema_version = 1
+
+[adapter]
+id = "opencode-go-deepseek"
+version = 1
+priority = 5
+description = "OpenCode Go DeepSeek models that answer a tool request with a fenced code block"
+
+# The per-model reasoning contract, from the gateway's published model
+# catalog (`GET https://opencode.ai/zen/go/v1/models`, read 2026-11-24).
+#
+# These records live in THIS adapter rather than in the family one because
+# this adapter is the one that wins for a DeepSeek model: it carries the
+# fenced-code tool repair, and an exact-model match anywhere else would win
+# the selection and take that repair with it.
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["deepseek-v4.1-flash"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["low", "high", "max"]
+disable_status = "unknown"
+budget_status = "unsupported"
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["deepseek-v4-pro"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["high", "max"]
+disable_status = "unknown"
+budget_status = "unsupported"
+
+# The remaining DeepSeek models publish no reasoning contract, so this match
+# declares no capability at all: every dimension stays unestablished, which is
+# what "nobody published a contract for this" means.
+[[match]]
+provider = ["opencode_go"]
+model_regex = "(?i)deepseek"
+
+[tools]
+text_tool_repair = "fenced_code"

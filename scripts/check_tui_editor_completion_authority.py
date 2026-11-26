@@ -120,7 +120,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_tui_editor_key_authority as key_authority  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-COMMANDS = REPO_ROOT / "src" / "tui" / "commands" / "editor.rs"
+COMMANDS = REPO_ROOT / "crates" / "codegg-tui" / "src" / "commands" / "editor.rs"
 
 # The function whose trigger arms this guard reads.
 TARGET_FUNCTION = "handle_completion_key"
@@ -292,7 +292,7 @@ def resolve_trigger(index: int, statement: str, base_line: int) -> Trigger:
     code_match = CODE_CLAIM_RE.search(statement)
     if code_match is None:
         raise ParseError(
-            f"src/tui/commands/editor.rs:{base_line + index + 1}: "
+            f"crates/codegg-tui/src/commands/editor.rs:{base_line + index + 1}: "
             f"unresolved trigger statement: {statement}"
         )
 
@@ -317,7 +317,7 @@ def resolve_trigger(index: int, statement: str, base_line: int) -> Trigger:
         named = modifier_match.group(1)
         if named not in MODIFIERS:
             raise ParseError(
-                f"src/tui/commands/editor.rs:{base_line + index + 1}: "
+                f"crates/codegg-tui/src/commands/editor.rs:{base_line + index + 1}: "
                 f"unresolved modifier {named!r}"
             )
         modifiers = frozenset({named})
@@ -327,7 +327,7 @@ def resolve_trigger(index: int, statement: str, base_line: int) -> Trigger:
     for mode in MODE_CLAIM_RE.findall(statement):
         if mode not in MODES:
             raise ParseError(
-                f"src/tui/commands/editor.rs:{base_line + index + 1}: "
+                f"crates/codegg-tui/src/commands/editor.rs:{base_line + index + 1}: "
                 f"unresolved mode {mode!r}"
             )
         modes.add(mode)

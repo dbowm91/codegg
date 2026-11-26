@@ -183,9 +183,6 @@ pub mod tool_program_m015_artifact_pipeline;
 #[path = "tool_program_m015_authority_contract.inc"]
 pub mod tool_program_m015_authority_contract;
 
-#[path = "tool_program_m015_daemon_failpoints.inc"]
-pub mod tool_program_m015_daemon_failpoints;
-
 #[path = "tool_program_m015_descendant_convergence.inc"]
 pub mod tool_program_m015_descendant_convergence;
 
@@ -194,12 +191,6 @@ pub mod tool_program_m015_notification_recovery;
 
 #[path = "tool_program_m015_recovery.inc"]
 pub mod tool_program_m015_recovery;
-
-#[path = "tool_program_m016_notification_replay.inc"]
-pub mod tool_program_m016_notification_replay;
-
-#[path = "tool_program_m017_notification_confirmation.inc"]
-pub mod tool_program_m017_notification_confirmation;
 
 #[path = "tool_program_model_behavior.inc"]
 pub mod tool_program_model_behavior;

@@ -173,6 +173,7 @@ impl AgentLoop {
             description: "Auto-triggered security review".to_string(),
             depth: 1,
             max_tool_calls: None,
+            max_wall_clock_secs: None,
             parent_model,
             workspace_root: Some(self.workspace_root.clone()),
             default_working_directory: None,

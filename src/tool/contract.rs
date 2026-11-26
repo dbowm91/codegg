@@ -424,6 +424,18 @@ impl ToolValue {
         }
     }
 
+    /// Build an ordinary execution error value.
+    pub fn execution_error(reason: String) -> Self {
+        Self {
+            display: reason,
+            value: None,
+            artifacts: Vec::new(),
+            provenance: None,
+            terminal_status: ToolTerminalStatus::Error,
+            truncated: false,
+        }
+    }
+
     /// Build a denied value.
     pub fn denied(reason: String) -> Self {
         Self {

@@ -201,6 +201,11 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileModify),
         ),
+        R::EditorInlineGenerate { .. } => OperationDescriptor::new(
+            "editor_inline_generate",
+            ScopeKind::DirectProject,
+            Some(Capability::FileRead),
+        ),
         // Creating a file is a write: it materializes bytes inside the
         // workspace, so it carries `FileModify` rather than the read
         // capability `DocumentOpen` uses. Grading it as a read would let a
@@ -1662,6 +1667,19 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
     use codegg_protocol::core::CoreRequest as R;
     vec![
         R::Initialize,
+        R::EditorInlineGenerate {
+            request_id: String::new(),
+            project_id: String::new(),
+            workspace_id: String::new(),
+            document_id: String::new(),
+            document_revision: 0,
+            anchor: 0,
+            context_before: 0,
+            context_after: 0,
+            instruction: String::new(),
+            model: None,
+            reasoning: None,
+        },
         R::AssetRefresh {
             request: codegg_protocol::core::AssetRefreshRequestDto {
                 scope: codegg_protocol::core::AssetRefreshScopeDto {
@@ -2974,6 +2992,7 @@ fn dummy_lsp_read_get() -> codegg_protocol::lsp::LspReadRequestDto {
         query: None,
         server_id: None,
         new_name: None,
+        range: None,
     }
 }
 

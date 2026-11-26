@@ -70,12 +70,6 @@ pub mod sandbox_policy_wiring;
 #[path = "security_review_panel.inc"]
 pub mod security_review_panel;
 
-#[path = "security_review_receipt.inc"]
-pub mod security_review_receipt;
-
-#[path = "security_review_runner.inc"]
-pub mod security_review_runner;
-
 #[path = "ssrf.inc"]
 pub mod ssrf;
 

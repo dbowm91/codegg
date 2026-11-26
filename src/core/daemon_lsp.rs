@@ -1266,17 +1266,32 @@ impl CoreDaemon {
             }
             LspReadOperation::SemanticTokens => {
                 let cap = codegg_protocol::lsp::MAX_LSP_SEMANTIC_TOKENS;
-                match operations
-                    .semantic_tokens_for_warm_client(key, target, cap + 1)
-                    .await
-                {
-                    Ok(tokens) => {
-                        // Ask for one extra so `truncated` is a measured fact
-                        // rather than a guess at the cap.
-                        let truncated = tokens.len() > cap;
-                        let tokens = tokens
+                let range = request.range.map(|range| crate::lsp::lsp_types::Range {
+                    start: crate::lsp::lsp_types::Position {
+                        line: range.start_line,
+                        character: 0,
+                    },
+                    end: crate::lsp::lsp_types::Position {
+                        line: range.end_line,
+                        character: 0,
+                    },
+                });
+                let result = match range {
+                    Some(range) => {
+                        operations
+                            .semantic_tokens_for_warm_client_in_range(key, target, range, cap + 1)
+                            .await
+                    }
+                    None => {
+                        operations
+                            .semantic_tokens_for_warm_client(key, target, cap + 1)
+                            .await
+                    }
+                };
+                match result {
+                    Ok(tokens) => LspReadPayloadDto::semantic_tokens(
+                        tokens
                             .into_iter()
-                            .take(cap)
                             .map(|token| codegg_protocol::lsp::LspSemanticTokenDto {
                                 line: token.line,
                                 character: token.start,
@@ -1284,9 +1299,8 @@ impl CoreDaemon {
                                 token_type: token.token_type,
                                 modifiers: token.modifiers,
                             })
-                            .collect();
-                        LspReadPayloadDto::SemanticTokens { tokens, truncated }
-                    }
+                            .collect(),
+                    ),
                     Err(err) => return Self::read_operation_error(operation, &err),
                 }
             }

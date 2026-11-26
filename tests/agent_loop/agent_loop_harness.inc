@@ -2039,10 +2039,13 @@ async fn repeated_unknown_outcomes_remain_bounded_by_the_hard_turn_limit() {
         .run(make_chat_request("Repeat a build observation"))
         .await
         .expect("hard turn exhaustion is a normal bounded completion");
+    // Three bounded provider iterations, then exactly one tool-stripped
+    // summary call (C001). The fourth scripted response itself offers a tool
+    // call; it is not dispatched, which is why there is no fifth request.
     assert_eq!(
         provider.request_count().await,
-        3,
-        "unknown repeated outcomes must reach, then stop at, the hard turn cap"
+        4,
+        "the hard turn cap allows only the summary call beyond its three iterations"
     );
 }
 
@@ -6565,7 +6568,14 @@ async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
 
     let request = make_chat_request("analyze this repository");
     let result = agent_loop.run(request).await;
-    assert!(result.is_ok(), "run should succeed: {:?}", result.err());
+    // C003: the model asked to call tools and none could be parsed, so the
+    // turn failed. It used to publish `TurnCompleted` with the `tool_calls`
+    // finish reason and only an error toast.
+    let error = result.expect_err("an unparseable tool-call stop must fail the turn");
+    assert!(
+        error.to_string().contains("stop_reason=tool_calls"),
+        "the failure keeps the bounded diagnostic: {error}"
+    );
 
     let requests = scripted_provider.get_requests().await;
     assert_eq!(
@@ -6577,7 +6587,7 @@ async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
     let mut saw_diagnostic = false;
     loop {
         match rx.try_recv() {
-            Ok(AppEvent::Error { message }) => {
+            Ok(AppEvent::Error { message, .. }) => {
                 if message
                     .contains("stop_reason=tool_calls without parseable structured tool calls")
                 {

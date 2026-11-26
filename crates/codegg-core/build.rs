@@ -42,6 +42,7 @@ struct Match {
     model_suffix: Option<String>,
     model_regex: Option<String>,
     exclude_regex: Option<String>,
+    reasoning_capability: Option<ReasoningCapability>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -404,6 +405,12 @@ fn main() {
         );
         if let Some(capability) = &parsed.profile.reasoning_capability {
             validate_reasoning_capability(capability, &path);
+        }
+        // Per-model records are validated like the family record.
+        for m in &parsed.r#match {
+            if let Some(capability) = &m.reasoning_capability {
+                validate_reasoning_capability(capability, &path);
+            }
         }
         let mut transform_keys = std::collections::HashSet::new();
         for t in &parsed.transforms {

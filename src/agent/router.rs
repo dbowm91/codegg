@@ -18,13 +18,7 @@ impl TaskComplexity {
     }
 }
 
-/// The live half of the routing abstraction.
-///
-/// The turn's request preparation classifies the prompt and picks the model
-/// through this router (`src/agent/request_preparation.rs`). The envelope
-/// half that used to sit beside it — `TaskEnvelope`, `classify_envelope` and
-/// `route_from_envelope` — had no production caller and was removed; see
-/// `plans/closure/repository-audit-corrective/005-status.md`.
+/// Classifies tasks and selects a configured model by complexity.
 pub struct ModelRouter {
     enabled: bool,
     simple_model: Option<String>,

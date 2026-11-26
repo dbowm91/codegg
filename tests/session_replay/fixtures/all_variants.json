@@ -1,0 +1,55 @@
+{
+  "format": 1,
+  "id": "all_variants",
+  "kind": "decode",
+  "notes": "decode fixture: exercises every supported event variant; not a scenario",
+  "session_id": "all_variants",
+  "user_input": "Decode every supported event variant.",
+  "profile": "plain",
+  "responses": [
+    [
+      {
+        "type": "text_delta",
+        "text": "first "
+      },
+      {
+        "type": "reasoning_delta",
+        "text": "considering the target"
+      },
+      {
+        "type": "tool_call",
+        "id": "call_declared",
+        "name": "read",
+        "arguments": {
+          "path": "inline.txt"
+        }
+      },
+      {
+        "type": "tool_result",
+        "tool_call_id": "call_declared",
+        "content": "declared output"
+      },
+      {
+        "type": "text_delta",
+        "text": "second"
+      },
+      {
+        "type": "finish",
+        "stop_reason": "stop"
+      }
+    ]
+  ],
+  "expect": {
+    "assistant_text": "first second",
+    "tool_calls": [],
+    "tool_results": [],
+    "terminal": "completed",
+    "request_count": 1,
+    "request_roles": [
+      [
+        "user"
+      ]
+    ],
+    "tools_declared": []
+  }
+}

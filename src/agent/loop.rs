@@ -52,6 +52,26 @@ pub(super) use super::tool_inspect::{
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
 
+fn cancellation_token_from_turn_receiver(
+    mut receiver: tokio::sync::watch::Receiver<bool>,
+) -> tokio_util::sync::CancellationToken {
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let watcher = cancellation.clone();
+    tokio::spawn(async move {
+        if *receiver.borrow() {
+            watcher.cancel();
+            return;
+        }
+        while receiver.changed().await.is_ok() {
+            if *receiver.borrow_and_update() {
+                watcher.cancel();
+                return;
+            }
+        }
+    });
+    cancellation
+}
+
 /// The most tool outcomes one run retains.
 ///
 /// A memory bound, not a transcript bound: the durable store applies its own
@@ -223,11 +243,29 @@ pub struct AgentLoop {
     pub(super) lifecycle: TurnLifecycle,
     pub(super) state: AgentLoopState,
     pub(super) limits: ExecutionLimits,
+    /// The reason this run stopped when that reason is not the provider's own
+    /// finish reason.
+    ///
+    /// `check_limits` used to log and drop its reason at the loop `break`, so
+    /// a spent turn budget was published as whatever the previous provider
+    /// response said — including `completed`. The publication owners
+    /// (`publish_agent_finished`, `turn_usage`) read this instead of inventing
+    /// a second stop vocabulary. `None` means the provider finish is still the
+    /// authority.
+    pub(super) retained_stop_reason: Option<String>,
     pub(super) steering: Arc<AtomicBool>,
     pub(super) follow_up_tx: mpsc::Sender<String>,
     pub(super) follow_up_rx: mpsc::Receiver<String>,
     pub(super) question_tx: Option<tokio::sync::oneshot::Sender<String>>,
     pub(super) question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+    /// One pending `question` tool call per entry: the registry question id,
+    /// the model's tool-call id, and the receiver that carries only that
+    /// question's answer.
+    ///
+    /// The single `question_rx` slot above cannot hold a batch: a second
+    /// question replaced the first receiver (dropping it) and the consume path
+    /// then copied one answer into every pending result.
+    pub(super) pending_questions: Vec<(String, String, tokio::sync::oneshot::Receiver<String>)>,
     pub(super) plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
     pub(super) session_id: String,
     pub(super) usage_session_id: String,
@@ -235,6 +273,11 @@ pub struct AgentLoop {
     /// Durable child loops retain the originating turn for provenance while
     /// their run ID remains the invocation owner scope.
     pub(super) turn_id: Option<String>,
+    /// The section digests of the prompt this loop dispatches, when its
+    /// caller compiled one. The request ledger records these instead of
+    /// rebuilding the prompt at the dispatch seam. `None` means the loop was
+    /// built without a compiled-prompt identity.
+    pub(super) prompt_section_digests: Option<std::collections::BTreeMap<String, String>>,
     /// M005 corrective C009: the actor this loop's writes run on behalf of,
     /// when the loop has no turn of its own.
     ///
@@ -282,6 +325,9 @@ pub struct AgentLoop {
     pub(super) max_tool_calls: Option<usize>,
     pub(super) goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
     pub(super) cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Cancellation token passed into brokered tools so an ACP turn cancel
+    /// reaches an in-flight managed process or foreground scheduler wait.
+    pub(super) tool_cancellation: tokio_util::sync::CancellationToken,
     pub(super) steer_rx: Option<mpsc::Receiver<String>>,
     pub(super) pending_steer: Option<String>,
     pub(super) local_paths: (Option<String>, Option<String>),
@@ -594,15 +640,18 @@ impl AgentLoop {
                 executed_tool_outcomes: ExecutedToolOutcomes::default(),
             },
             limits: ExecutionLimits::default(),
+            retained_stop_reason: None,
             steering: Arc::new(AtomicBool::new(false)),
             follow_up_tx,
             follow_up_rx,
             question_tx: None,
             question_rx: None,
+            pending_questions: Vec::new(),
             plugin_service: None,
             usage_session_id: session_id.clone(),
             session_id,
             turn_id: None,
+            prompt_section_digests: None,
             inherited_execution_audit: None,
             workspace_id: None,
             workspace_locks: None,
@@ -624,6 +673,7 @@ impl AgentLoop {
             reviewer_denial_counts: HashMap::new(),
             goal_wall_clock: std::sync::Mutex::new(crate::goal::runtime::GoalWallClock::default()),
             cancel_rx: None,
+            tool_cancellation: tokio_util::sync::CancellationToken::new(),
             steer_rx: None,
             local_paths,
             pending_steer: None,
@@ -655,7 +705,10 @@ impl AgentLoop {
         &mut self,
         request: &mut ChatRequest,
     ) -> Result<crate::context::ContextPlan, AppError> {
-        let adapter = crate::model_profile::resolve_adapter(None, &request.model);
+        let adapter = crate::model_profile::resolve_adapter(
+            Some(self.services.provider.id()),
+            &request.model,
+        );
         let compiler = self
             .services
             .prompt_compiler_fingerprint
@@ -704,6 +757,18 @@ impl AgentLoop {
 
     pub fn set_prompt_compiler_fingerprint(&mut self, fingerprint: String) {
         self.services.prompt_compiler_fingerprint = Some(fingerprint);
+    }
+
+    /// Retain the section digests of the compiled prompt this loop dispatches.
+    pub fn set_prompt_section_digests(
+        &mut self,
+        digests: std::collections::BTreeMap<String, String>,
+    ) {
+        self.prompt_section_digests = Some(digests);
+    }
+
+    pub fn prompt_section_digests(&self) -> Option<&std::collections::BTreeMap<String, String>> {
+        self.prompt_section_digests.as_ref()
     }
 
     pub fn runtime_asset_pin(
@@ -1216,6 +1281,7 @@ impl AgentLoop {
     }
 
     pub fn set_cancel_receiver(&mut self, rx: tokio::sync::watch::Receiver<bool>) {
+        self.tool_cancellation = cancellation_token_from_turn_receiver(rx.clone());
         self.cancel_rx = Some(rx);
     }
 
@@ -1255,6 +1321,11 @@ impl AgentLoop {
         self.state.run_provider_responses = 0;
         self.state.run_input_tokens = 0;
         self.state.run_output_tokens = 0;
+        // The hard token cap reads `total_tokens`, which mirrors the run
+        // accumulator. Reset it with the accumulator so a previous run's
+        // spend cannot stop the next one.
+        self.state.total_tokens = 0;
+        self.retained_stop_reason = None;
         self.state.run_cached_tokens = None;
         self.state.run_reasoning_tokens = None;
         self.state.run_provider_allowance_micros = None;
@@ -1345,7 +1416,7 @@ impl AgentLoop {
         self.apply_agent_config(&mut request);
         self.apply_semantic_routing(&mut request).await?;
         let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
-            .resolve(&request.model);
+            .resolve_for_provider(Some(self.services.provider.id()), &request.model);
 
         let exec_policy = crate::agent::policy::ExecutionPolicy::from_profile(
             &model_profile,
@@ -1464,6 +1535,25 @@ impl AgentLoop {
         loop {
             if let Some(reason) = self.check_limits() {
                 tracing::info!("Agent loop stopping: {}", reason);
+                // The reason used to be logged and dropped here, which let the
+                // previous provider finish (or the literal `completed`) speak
+                // for a turn that had actually run out of budget. Retain it so
+                // publication reports the stop that happened.
+                let interrupted = self.steering.load(Ordering::SeqCst)
+                    || self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow());
+                let summarize = !interrupted
+                    && crate::agent::turn_completion::limit_stop_allows_summary(&reason);
+                self.record_stop_reason(reason.clone());
+                if summarize {
+                    self.summarize_budget_stop(
+                        &mut request,
+                        &mut all_events,
+                        &mut processor,
+                        &model_profile,
+                        &reason,
+                    )
+                    .await?;
+                }
                 break;
             }
 
@@ -1585,8 +1675,7 @@ impl AgentLoop {
                 }
             }
 
-            self.compact_if_needed(&mut request.messages, &model_profile)
-                .await;
+            self.compact_if_needed(&mut request, &model_profile).await;
             // Phase 5: observe after compaction opportunity and immediately before provider call.
             self.observe_context_pack(
                 &request,
@@ -1822,7 +1911,7 @@ impl AgentLoop {
             let events =
                 match crate::agent::provider_turn::ProviderTurnAdapter::receive_with_retry_context(
                     self,
-                    &request,
+                    &mut request,
                     Some(turn_retry),
                 )
                 .await
@@ -1864,7 +1953,7 @@ impl AgentLoop {
                 }
                 let adapter =
                     crate::model_profile::ModelProfileResolver::new(&self.services.config)
-                        .resolve_adapter(None, &request.model);
+                        .resolve_adapter(Some(self.services.provider.id()), &request.model);
                 if let Some(profile) = adapter.text_tool_repair.as_deref() {
                     if !autonomy.adapter_repair_allowed() {
                         // Repair budget exhausted: M002 permits at most one
@@ -1907,10 +1996,7 @@ impl AgentLoop {
             self.capture_accepted_tool_calls(&tool_calls).await;
 
             if tool_calls.is_empty() {
-                // NOTE: Narration-based recovery (detecting "let me", "I'll", etc.
-                // without structured tool calls) was removed in ea4136ff because
-                // modern models produce structured tool calls reliably. The
-                // recovery system now relies on tool execution outcomes only.
+                // Recovery for an empty tool-call response relies on execution outcomes, not narration.
                 if just_executed_tools
                     && is_soft_stop_reason(processor.stop_reason())
                     && autonomy.continuation_allowed()
@@ -1935,16 +2021,26 @@ impl AgentLoop {
                     } else {
                         preview
                     };
+                    let message = format!(
+                        "Model returned stop_reason=tool_calls without parseable structured tool calls after retries. Raw text: {}",
+                        preview
+                    );
                     tracing::warn!(
                         "Model returned stop_reason=tool_calls without parseable structured tool calls after retries; raw_text={}",
                         preview
                     );
                     crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                        message: format!(
-                            "Model returned stop_reason=tool_calls without parseable structured tool calls after retries. Raw text: {}",
-                            preview
-                        ),
+                        session_id: Some(self.session_id.clone()),
+                        message: message.clone(),
                     });
+                    // The model asked to call tools and the loop could honour
+                    // none of them: that is a failed turn, not a finished one.
+                    // Persist what the turn produced first, so the failure
+                    // path does not also discard the evidence the next user
+                    // message needs.
+                    self.persist_turn_transcript(&all_events).await;
+                    processor.reset();
+                    return Err(AppError::Agent(crate::error::AgentError::Invalid(message)));
                 }
                 // M003 WorkPlan completion arbiter: before accepting a terminal
                 // answer, check the active plan. Required actionable work
@@ -2038,6 +2134,7 @@ impl AgentLoop {
                                     "work plan arbiter inconclusive; not marking complete"
                                 );
                                 crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                                    session_id: Some(self.session_id.clone()),
                                     message: format!("WorkPlan arbiter inconclusive: {reason}"),
                                 });
                             }
@@ -2403,8 +2500,7 @@ impl AgentLoop {
             }
 
             // Compact after tool results to prevent context overflow from large outputs
-            self.compact_if_needed(&mut request.messages, &model_profile)
-                .await;
+            self.compact_if_needed(&mut request, &model_profile).await;
             // Phase 5: observe after tool results + post-tool compaction.
             self.observe_context_pack(
                 &request,
@@ -2467,8 +2563,13 @@ impl AgentLoop {
             }
         }
 
+        // Close live-turn intake before the final drain. A prompt accepted
+        // after that drain has no later drain in this run, so it would be
+        // accepted and then destroyed with the loop; unregistering first makes
+        // a late follow-up an explicit rejection instead of a silent drop.
+        self.close_follow_up_intake().await;
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
-            .await;
+            .await?;
         // M003 ordinary turn-scoped WorkPlan close: only after the host
         // arbiter passes, never on budget expiry. Goal-bound plans close
         // through Goal verification, not here. Remaining state is preserved
@@ -2556,14 +2657,14 @@ impl AgentLoop {
                 }
             }
         }
-        self.publish_agent_finished(&all_events);
         self.account_goal_for_turn().await;
         // After draining queued follow-ups and accounting, decide
         // whether to autonomously continue the active goal (long-
         // horizon continuation loop). Mirrors codex's
         // `maybe_start_goal_continuation_turn`.
         self.maybe_continue_goal(&mut request, &mut all_events, &mut processor)
-            .await;
+            .await?;
+        self.publish_agent_finished(&all_events);
         // After continuation, so the stored reply is the whole turn rather
         // than its first provider pass.
         self.persist_turn_transcript(&all_events).await;
@@ -2678,6 +2779,21 @@ impl AgentLoop {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn turn_cancel_receiver_cancels_tool_execution_token() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let cancellation = super::cancellation_token_from_turn_receiver(receiver);
+        assert!(!cancellation.is_cancelled());
+
+        sender
+            .send(true)
+            .expect("turn cancellation receiver remains open");
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancellation.cancelled())
+            .await
+            .expect("tool cancellation token follows the turn cancel");
+        assert!(cancellation.is_cancelled());
+    }
+
     #[test]
     fn delegated_usage_attribution_preserves_private_session_identity() {
         let workspace = tempfile::tempdir().expect("temporary workspace");

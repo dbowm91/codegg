@@ -1330,20 +1330,7 @@ fn event_matches_raw_filter(
     event: &EventEnvelope<CoreEvent>,
     filter: &crate::core::event_log::EventFilter,
 ) -> bool {
-    crate::core::event_log::event_matches_filter(filter, event)
-        && match event.session_id.as_deref() {
-            Some(_) => true,
-            None => matches!(
-                &event.payload,
-                CoreEvent::SnapshotModels { .. }
-                    | CoreEvent::ProjectRegistered { .. }
-                    | CoreEvent::ProjectArchived { .. }
-                    | CoreEvent::ProjectRestored { .. }
-                    | CoreEvent::ProjectDeleted { .. }
-                    | CoreEvent::ProjectUpdated { .. }
-                    | CoreEvent::ProjectHealthChanged { .. }
-            ),
-        }
+    crate::core::event_log::event_matches_raw_filter(filter, event)
 }
 
 fn rpc_error(req: &RpcRequest, code: i64, message: impl Into<String>) -> RpcResponse {
@@ -2561,7 +2548,9 @@ async fn handle_tui_message_with_observer(
                     include_global: false,
                 };
                 let events = daemon.replay_from(from_event_seq, &filter).await;
-                for event in events {
+                for event in events.into_iter().filter(|event| {
+                    crate::core::event_log::event_matches_raw_filter(&filter, event)
+                }) {
                     if let Some(tui_msg) = convert_core_event_to_tui(event.payload) {
                         let envelope = TuiMessage::EventEnvelope {
                             event_seq: event.event_seq,
@@ -2675,7 +2664,9 @@ async fn handle_tui_message_with_observer(
                     include_global: false,
                 };
                 let events = daemon.replay_from(0, &filter).await;
-                for event in events {
+                for event in events.into_iter().filter(|event| {
+                    crate::core::event_log::event_matches_raw_filter(&filter, event)
+                }) {
                     if let Some(tui_msg) = convert_core_event_to_tui(event.payload) {
                         let envelope = TuiMessage::EventEnvelope {
                             event_seq: event.event_seq,
@@ -3934,7 +3925,6 @@ async fn event_matches_filters(
         .any(|filter| event_matches_raw_filter(event, filter))
 }
 
-/// Convert a CoreEvent back to a TuiMessage for legacy /tui clients replaying from EventLog.
 fn convert_core_event_to_tui(event: crate::protocol::core::CoreEvent) -> Option<TuiMessage> {
     use crate::protocol::core::CoreEvent;
     match event {
@@ -4596,7 +4586,10 @@ async fn handle_core_frame(
             filters.write().await.push(filter.clone());
             let from = from_event_seq.unwrap_or(1);
             let events = daemon.replay_from(from, &filter).await;
-            for event in events {
+            for event in events
+                .into_iter()
+                .filter(|event| crate::core::event_log::event_matches_raw_filter(&filter, event))
+            {
                 if !matches!(
                     event.payload,
                     crate::protocol::core::CoreEvent::ProjectionStreamEvent { .. }

@@ -4,6 +4,7 @@ use chrono::Utc;
 use rand::RngCore;
 use sqlx::{query_builder::QueryBuilder, SqlitePool};
 use std::collections::HashMap;
+use std::fmt::Display;
 use uuid::Uuid;
 
 use super::import::{validate_import_size, SessionImport};
@@ -17,6 +18,7 @@ use super::{
     parse_json_field, MESSAGE_QUERY, PART_QUERY, SESSION_COLUMNS, SESSION_COLUMNS_QUALIFIED,
 };
 use crate::error::StorageError;
+use crate::storage::immediate::begin_immediate;
 use codegg_config::schema::SessionTemplate;
 
 /// Row type returned by usage queries (id, session_id, provider, model,
@@ -59,6 +61,11 @@ pub const DEFAULT_SESSION_QUERY_LIMIT: i64 = 200;
 /// Bound for per-session scans (children, events, tags) where a single
 /// session/project is the scope.
 pub const DEFAULT_PER_SESSION_LIMIT: i64 = 500;
+
+/// Wrap a driver or codec failure as a database storage error.
+fn db_error(error: impl Display) -> StorageError {
+    StorageError::Database(error.to_string())
+}
 
 pub struct SessionStore {
     pool: SqlitePool,
@@ -106,7 +113,7 @@ impl SessionStore {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         sqlx::query(
             r#"
@@ -139,7 +146,7 @@ impl SessionStore {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(Session {
             id: id.to_string(),
@@ -188,11 +195,7 @@ impl SessionStore {
                 "invalid session binding source".to_string(),
             ));
         }
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         let binding: Option<(String, String)> = sqlx::query_as(
             "SELECT project_id, status FROM workspace_project_binding WHERE workspace_id = ?",
@@ -200,7 +203,7 @@ impl SessionStore {
         .bind(workspace_id.as_str())
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         match binding {
             Some((bound_project, status))
@@ -236,7 +239,7 @@ impl SessionStore {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
         sqlx::query(
             r#"INSERT INTO session (
                 id, project_id, workspace_id, parent_id, slug, directory,
@@ -264,7 +267,7 @@ impl SessionStore {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
         sqlx::query(
             r#"INSERT INTO session_project_binding
                (session_id, project_id, workspace_id, status, source, revision,
@@ -279,10 +282,8 @@ impl SessionStore {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
 
         Ok(Session {
             id,
@@ -346,7 +347,7 @@ impl SessionStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|row| row.map(|r| r.into()))
     }
 
@@ -379,7 +380,7 @@ impl SessionStore {
         } else {
             query.fetch_all(&self.pool).await
         }
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
         Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
@@ -398,7 +399,7 @@ impl SessionStore {
         .bind(offset as i64)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -409,7 +410,7 @@ impl SessionStore {
         .bind(project_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
         Ok(count as usize)
     }
 
@@ -418,7 +419,7 @@ impl SessionStore {
             .bind(session_id)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
         Ok(count as usize)
     }
 
@@ -441,7 +442,7 @@ impl SessionStore {
         let rows: Vec<(String, i64)> = query_builder
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
         let mut result = HashMap::new();
         for (session_id, count) in rows {
             result.insert(session_id, count as usize);
@@ -475,7 +476,7 @@ impl SessionStore {
             .bind(capped)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
         Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
@@ -498,7 +499,7 @@ impl SessionStore {
             .bind(offset as i64)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))
+            .map_err(db_error)
             .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -520,7 +521,7 @@ impl SessionStore {
         .bind(DEFAULT_SESSION_QUERY_LIMIT)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -543,7 +544,7 @@ impl SessionStore {
         .bind(DEFAULT_SESSION_QUERY_LIMIT)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -563,7 +564,7 @@ impl SessionStore {
         .bind(DEFAULT_SESSION_QUERY_LIMIT)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -574,7 +575,7 @@ impl SessionStore {
         .bind(project_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
         let mut tag_counts: HashMap<String, usize> = HashMap::new();
         for row in sessions {
             if let Some(tags_json) = row.tags {
@@ -609,7 +610,7 @@ impl SessionStore {
         .bind(session_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let parts = sqlx::query_as::<_, PartRow>(
             r#"
@@ -621,7 +622,7 @@ impl SessionStore {
         .bind(session_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let todos = sqlx::query_as::<_, TodoRow>(
             r#"
@@ -634,7 +635,7 @@ impl SessionStore {
         .bind(session_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(serde_json::json!({
             "session": session,
@@ -730,11 +731,7 @@ impl SessionStore {
         let version = import.session.version.unwrap_or_else(|| "1".to_string());
         let now = chrono::Utc::now().timestamp_millis();
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         sqlx::query(
             r#"
@@ -756,7 +753,7 @@ impl SessionStore {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let mut id_map: HashMap<String, String> = HashMap::new();
 
@@ -768,8 +765,7 @@ impl SessionStore {
                 if let Some(ref old_id) = msg.id {
                     id_map.insert(old_id.clone(), new_msg_id.clone());
                 }
-                let msg_data = serde_json::to_string(&msg.data)
-                    .map_err(|e| StorageError::Database(e.to_string()))?;
+                let msg_data = serde_json::to_string(&msg.data).map_err(db_error)?;
                 Ok::<_, StorageError>((
                     new_msg_id,
                     id.clone(),
@@ -795,7 +791,7 @@ impl SessionStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
         let part_values: Vec<(String, String, String, i64, i64, String)> = import
@@ -808,8 +804,7 @@ impl SessionStore {
                     .get(old_msg_id)
                     .map(|s| s.as_str())
                     .unwrap_or(old_msg_id);
-                let part_data = serde_json::to_string(&part.data)
-                    .map_err(|e| StorageError::Database(e.to_string()))?;
+                let part_data = serde_json::to_string(&part.data).map_err(db_error)?;
                 Ok::<_, StorageError>((
                     new_part_id,
                     new_msg_id.to_string(),
@@ -837,7 +832,7 @@ impl SessionStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
         let todo_values: Vec<(String, String, String, String, i64, i64, i64)> = import
@@ -874,7 +869,7 @@ impl SessionStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
         if let Some((canonical_project_id, canonical_workspace_id, source)) = binding {
@@ -884,7 +879,7 @@ impl SessionStore {
             .bind(canonical_workspace_id.as_str())
             .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
             match workspace_binding {
                 Some((bound_project, status))
                     if bound_project == canonical_project_id.as_str() && status == "resolved" => {}
@@ -914,12 +909,10 @@ impl SessionStore {
             .bind(now)
             .execute(&mut *tx)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
 
         Ok(Session {
             id,
@@ -955,10 +948,9 @@ impl SessionStore {
     pub async fn update(&self, id: &str, input: UpdateSession) -> Result<Session, StorageError> {
         let now = Utc::now().timestamp_millis();
 
-        // Provider Connections Milestone 3: selection columns use a
-        // double-Option encoding so callers can explicitly clear them.
-        // `None` outer = no change; `Some(None)` = clear; `Some(Some(v))`
-        // = set.
+        // Selection columns use a double-Option encoding so callers can
+        // explicitly clear them: `None` = no change, `Some(None)` = clear,
+        // `Some(Some(v))` = set.
         let conn_id = input
             .provider_connection_id
             .as_ref()
@@ -1039,7 +1031,7 @@ impl SessionStore {
         .bind(id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(result.into())
     }
@@ -1060,7 +1052,7 @@ impl SessionStore {
         .bind(id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(result.into())
     }
@@ -1075,7 +1067,7 @@ impl SessionStore {
         .bind(id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(result.into())
     }
@@ -1088,7 +1080,7 @@ impl SessionStore {
         .bind(project_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -1105,7 +1097,7 @@ impl SessionStore {
         .bind(id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(result.into())
     }
@@ -1152,20 +1144,18 @@ impl SessionStore {
         }
         let mut tx = crate::storage::immediate::ImmediateWrite::begin(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
         let existing: Option<(String, String)> =
             sqlx::query_as("SELECT project_id, workspace_id FROM session WHERE id = ?")
                 .bind(session_id)
                 .fetch_optional(&mut **tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         let Some((previous_project, previous_workspace)) = existing else {
             return Err(StorageError::NotFound(format!("session {session_id}")));
         };
         if previous_workspace == workspace_id.as_str() && previous_project == project_id.as_str() {
-            tx.commit()
-                .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+            tx.commit().await.map_err(db_error)?;
             return Ok(());
         }
         let now = Utc::now().timestamp_millis();
@@ -1179,10 +1169,8 @@ impl SessionStore {
         .bind(session_id)
         .execute(&mut **tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
         Ok(())
     }
 
@@ -1225,11 +1213,7 @@ impl SessionStore {
         let version = "1".to_string();
         let now = Utc::now().timestamp_millis();
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         sqlx::query(
             r#"
@@ -1252,7 +1236,7 @@ impl SessionStore {
         .bind(serde_json::to_string(&parent.tags).unwrap_or_else(|_| "[]".to_string()))
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let msgs = sqlx::query_as::<_, MessageRow>(
             r#"
@@ -1269,7 +1253,7 @@ impl SessionStore {
         .bind(i64::from(FORK_MESSAGE_LIMIT))
         .fetch_all(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let mut id_map: HashMap<String, String> = HashMap::new();
         let mut msg_values: Vec<(String, String, i64, i64, String)> = Vec::new();
@@ -1304,7 +1288,7 @@ impl SessionStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
         let parts = sqlx::query_as::<_, PartRow>(
@@ -1317,7 +1301,7 @@ impl SessionStore {
         .bind(id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let mut part_values: Vec<(String, String, String, i64, i64, String)> = Vec::new();
         for part in &parts {
@@ -1356,7 +1340,7 @@ impl SessionStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
         let todos = sqlx::query_as::<_, TodoRow>(
@@ -1370,7 +1354,7 @@ impl SessionStore {
         .bind(id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let mut todo_values: Vec<(String, String, String, String, i64, i64, i64)> = Vec::new();
         for todo in &todos {
@@ -1402,12 +1386,10 @@ impl SessionStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
 
         Ok(Session {
             id: child_id.clone(),
@@ -1451,7 +1433,7 @@ impl SessionStore {
         .bind(id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(result.into())
     }
@@ -1466,7 +1448,7 @@ impl SessionStore {
         .bind(id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(result.into())
     }
@@ -1482,7 +1464,7 @@ impl SessionStore {
         .bind(id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(result.into())
     }
@@ -1496,7 +1478,7 @@ impl SessionStore {
         .bind(DEFAULT_PER_SESSION_LIMIT)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -1505,11 +1487,7 @@ impl SessionStore {
         session_id: &str,
         message_id: &str,
     ) -> Result<Session, StorageError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         let msgs = sqlx::query_as::<_, MessageRow>(
             r#"
@@ -1521,7 +1499,7 @@ impl SessionStore {
         .bind(session_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let pivot = msgs
             .iter()
@@ -1547,10 +1525,7 @@ impl SessionStore {
             for id in &msg_ids {
                 query_builder = query_builder.bind(id);
             }
-            let all_parts = query_builder
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+            let all_parts = query_builder.fetch_all(&mut *tx).await.map_err(db_error)?;
 
             let mut parts_by_msg: std::collections::HashMap<String, Vec<PartRow>> =
                 std::collections::HashMap::new();
@@ -1595,10 +1570,7 @@ impl SessionStore {
             for id in &msg_ids {
                 query_builder = query_builder.bind(id);
             }
-            query_builder
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+            query_builder.execute(&mut *tx).await.map_err(db_error)?;
         }
 
         if !to_delete.is_empty() {
@@ -1610,10 +1582,7 @@ impl SessionStore {
             for msg_row in &to_delete {
                 query_builder = query_builder.bind(&msg_row.id);
             }
-            query_builder
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+            query_builder.execute(&mut *tx).await.map_err(db_error)?;
         }
 
         let revert_info = serde_json::json!({
@@ -1640,11 +1609,9 @@ impl SessionStore {
         .bind(session_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
 
         self.get(session_id)
             .await?
@@ -1734,7 +1701,7 @@ impl SessionStore {
         .bind(session_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let mut result = String::new();
         for msg in &msgs {
@@ -1779,11 +1746,7 @@ impl SessionStore {
         let share_id = uuid::Uuid::new_v4().to_string();
         let url = format!("codegg://share/{token}");
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         sqlx::query(
             r#"
@@ -1806,7 +1769,7 @@ impl SessionStore {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let result = sqlx::query_as::<_, SessionRow>(
             "UPDATE session SET share_url = ?, time_updated = ? WHERE id = ? RETURNING *",
@@ -1816,11 +1779,9 @@ impl SessionStore {
         .bind(session_id)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
 
         Ok(result.into())
     }
@@ -1828,11 +1789,7 @@ impl SessionStore {
     pub async fn unshare_session(&self, session_id: &str) -> Result<Session, StorageError> {
         let now = Utc::now().timestamp_millis();
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         let result = sqlx::query_as::<_, SessionRow>(
             "UPDATE session SET share_url = NULL, time_updated = ? WHERE id = ? RETURNING *",
@@ -1841,27 +1798,21 @@ impl SessionStore {
         .bind(session_id)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         sqlx::query("DELETE FROM session_share WHERE session_id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
 
         Ok(result.into())
     }
 
     pub async fn unrevert_session(&self, session_id: &str) -> Result<Session, StorageError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         let session_row: Option<SessionRow> = sqlx::query_as::<_, SessionRow>(&format!(
             "SELECT {} FROM session WHERE id = ?",
@@ -1870,7 +1821,7 @@ impl SessionStore {
         .bind(session_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let revert_info: Session = session_row
             .map(|r| r.into())
@@ -1895,8 +1846,7 @@ impl SessionStore {
             let data = &msg_json["data"];
             let created = msg_json["time_created"].as_i64().unwrap_or(now);
             let updated = msg_json["time_updated"].as_i64().unwrap_or(now);
-            let data_str =
-                serde_json::to_string(data).map_err(|e| StorageError::Database(e.to_string()))?;
+            let data_str = serde_json::to_string(data).map_err(db_error)?;
 
             msgs.push((
                 msg_id.clone(),
@@ -1916,8 +1866,7 @@ impl SessionStore {
                         .to_string();
                     let p_created = part_json["time_created"].as_i64().unwrap_or(now);
                     let p_updated = part_json["time_updated"].as_i64().unwrap_or(now);
-                    let part_data_str = serde_json::to_string(part_data)
-                        .map_err(|e| StorageError::Database(e.to_string()))?;
+                    let part_data_str = serde_json::to_string(part_data).map_err(db_error)?;
 
                     parts.push((
                         part_id,
@@ -1946,7 +1895,7 @@ impl SessionStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
         if !parts.is_empty() {
@@ -1968,7 +1917,7 @@ impl SessionStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
         sqlx::query("UPDATE session SET time_updated = ?, revert = NULL WHERE id = ?")
@@ -1976,11 +1925,9 @@ impl SessionStore {
             .bind(session_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
 
         let mut session = revert_info;
         session.time_updated = now;
@@ -1995,7 +1942,7 @@ impl SessionStore {
         .bind(project_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let total_messages: i64 = sqlx::query_scalar(
             r#"
@@ -2007,7 +1954,7 @@ impl SessionStore {
         .bind(project_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let total_tools: i64 = sqlx::query_scalar(
             r#"
@@ -2021,7 +1968,7 @@ impl SessionStore {
         .bind(project_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let avg_duration_ms: Option<i64> = sqlx::query_scalar(
             r#"
@@ -2032,7 +1979,7 @@ impl SessionStore {
         .bind(project_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(SessionAnalytics {
             total_sessions: total_sessions as u64,
@@ -2064,7 +2011,7 @@ impl TodoStore {
         .bind(session_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -2075,17 +2022,13 @@ impl TodoStore {
     ) -> Result<Vec<TodoItem>, StorageError> {
         let now = Utc::now().timestamp_millis();
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         sqlx::query("DELETE FROM todo WHERE session_id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
         if !items.is_empty() {
             let todo_values: Vec<(String, String, String, String, i64, i64, i64)> = items
@@ -2120,12 +2063,10 @@ impl TodoStore {
                 .build()
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
 
         Ok(items
             .into_iter()
@@ -2149,11 +2090,7 @@ impl TodoStore {
     ) -> Result<TodoItem, StorageError> {
         let now = Utc::now().timestamp_millis();
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
 
         let position: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(position) + 1, 0) FROM todo WHERE session_id = ?",
@@ -2161,7 +2098,7 @@ impl TodoStore {
         .bind(session_id)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         sqlx::query(
             r#"
@@ -2178,11 +2115,9 @@ impl TodoStore {
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
 
         Ok(TodoItem {
             session_id: session_id.to_string(),
@@ -2217,7 +2152,7 @@ impl TodoStore {
         .bind(position)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         self.list(session_id).await
     }
@@ -2232,7 +2167,7 @@ impl TodoStore {
             .bind(position)
             .execute(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
         self.list(session_id).await
     }
@@ -2242,7 +2177,7 @@ impl TodoStore {
             .bind(session_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
         Ok(())
     }
@@ -2275,8 +2210,7 @@ impl MessageStore {
         data: serde_json::Value,
     ) -> Result<message::Message, StorageError> {
         let now = Utc::now().timestamp_millis();
-        let data_str =
-            serde_json::to_string(&data).map_err(|e| StorageError::Database(e.to_string()))?;
+        let data_str = serde_json::to_string(&data).map_err(db_error)?;
 
         sqlx::query(
             r#"
@@ -2291,10 +2225,9 @@ impl MessageStore {
         .bind(&data_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
-        let message_data: message::MessageData =
-            serde_json::from_value(data).map_err(|e| StorageError::Database(e.to_string()))?;
+        let message_data: message::MessageData = serde_json::from_value(data).map_err(db_error)?;
         Ok(message::Message {
             id: id.to_string(),
             session_id: session_id.to_string(),
@@ -2334,17 +2267,13 @@ impl MessageStore {
             return Ok(None);
         }
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut tx = begin_immediate(&self.pool).await.map_err(db_error)?;
 
         let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM session WHERE id = ?")
             .bind(session_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
         if exists.is_none() {
             return Ok(None);
         }
@@ -2352,17 +2281,16 @@ impl MessageStore {
         let last: Option<i64> =
             sqlx::query_scalar("SELECT MAX(time_created) FROM message WHERE session_id = ?")
                 .bind(session_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
 
         let now = Utc::now().timestamp_millis();
         let base = now.max(last.unwrap_or(0).saturating_add(1));
 
         let mut written = 0usize;
         for (offset, (id, data)) in entries.iter().enumerate() {
-            let data_str =
-                serde_json::to_string(data).map_err(|e| StorageError::Database(e.to_string()))?;
+            let data_str = serde_json::to_string(data).map_err(db_error)?;
             let time_created = base.saturating_add(offset as i64);
             let result = sqlx::query(
                 r#"
@@ -2376,15 +2304,13 @@ impl MessageStore {
             .bind(time_created)
             .bind(time_created)
             .bind(&data_str)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
             written += result.rows_affected() as usize;
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit().await.map_err(db_error)?;
         Ok(Some(written))
     }
 
@@ -2403,7 +2329,7 @@ impl MessageStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?
+        .map_err(db_error)?
         .map(|r| r.try_into())
         .transpose()
         .map_err(|e: StorageError| e)
@@ -2414,7 +2340,7 @@ impl MessageStore {
             .bind(session_id)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?
+            .map_err(db_error)?
             .into_iter()
             .map(|r| r.try_into())
             .collect::<Result<Vec<_>, _>>()
@@ -2426,7 +2352,7 @@ impl MessageStore {
             .bind(session_id)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
         Ok(count as usize)
     }
 
@@ -2437,8 +2363,7 @@ impl MessageStore {
         data: serde_json::Value,
     ) -> Result<message::Message, StorageError> {
         let now = Utc::now().timestamp_millis();
-        let data_str =
-            serde_json::to_string(&data).map_err(|e| StorageError::Database(e.to_string()))?;
+        let data_str = serde_json::to_string(&data).map_err(db_error)?;
 
         sqlx::query(
             "UPDATE message SET data = ?, time_updated = ? WHERE session_id = ? AND id = ?",
@@ -2449,7 +2374,7 @@ impl MessageStore {
         .bind(id)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         self.get(session_id, id)
             .await?
@@ -2462,7 +2387,7 @@ impl MessageStore {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
         Ok(())
     }
@@ -2485,8 +2410,7 @@ impl PartStore {
     ) -> Result<message::Part, StorageError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().timestamp_millis();
-        let data_str =
-            serde_json::to_string(&data).map_err(|e| StorageError::Database(e.to_string()))?;
+        let data_str = serde_json::to_string(&data).map_err(db_error)?;
 
         sqlx::query(
             r#"
@@ -2502,7 +2426,7 @@ impl PartStore {
         .bind(&data_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         self.get(&id)
             .await?
@@ -2519,7 +2443,7 @@ impl PartStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|row| row.map(|r| r.into()))
     }
 
@@ -2537,7 +2461,7 @@ impl PartStore {
         .bind(message_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -2549,7 +2473,7 @@ impl PartStore {
             .bind(session_id)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))
+            .map_err(db_error)
             .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
@@ -2559,8 +2483,7 @@ impl PartStore {
         data: serde_json::Value,
     ) -> Result<message::Part, StorageError> {
         let now = Utc::now().timestamp_millis();
-        let data_str =
-            serde_json::to_string(&data).map_err(|e| StorageError::Database(e.to_string()))?;
+        let data_str = serde_json::to_string(&data).map_err(db_error)?;
 
         sqlx::query("UPDATE part SET data = ?, time_updated = ? WHERE id = ?")
             .bind(&data_str)
@@ -2568,7 +2491,7 @@ impl PartStore {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
         self.get(id)
             .await?
@@ -2580,7 +2503,7 @@ impl PartStore {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
         Ok(())
     }
@@ -2605,7 +2528,7 @@ impl PermissionStore {
         .bind(project_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))
+        .map_err(db_error)
         .map(|row| row.map(|r| r.into()))
     }
 
@@ -2615,8 +2538,7 @@ impl PermissionStore {
         data: serde_json::Value,
     ) -> Result<PermissionEntry, StorageError> {
         let now = Utc::now().timestamp_millis();
-        let data_str =
-            serde_json::to_string(&data).map_err(|e| StorageError::Database(e.to_string()))?;
+        let data_str = serde_json::to_string(&data).map_err(db_error)?;
 
         sqlx::query(
             r#"
@@ -2633,7 +2555,7 @@ impl PermissionStore {
         .bind(&data_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         self.get(project_id)
             .await?
@@ -2645,7 +2567,7 @@ impl PermissionStore {
             .bind(project_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+            .map_err(db_error)?;
 
         Ok(())
     }
@@ -2678,7 +2600,7 @@ impl UsageStore {
         .bind(record.timestamp)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(())
     }
@@ -2697,7 +2619,7 @@ impl UsageStore {
         .bind(session_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(rows
             .into_iter()
@@ -2745,7 +2667,7 @@ impl UsageStore {
             .bind(limit as i64)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?
+            .map_err(db_error)?
         } else {
             sqlx::query_as(
                 r#"
@@ -2756,7 +2678,7 @@ impl UsageStore {
             )
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StorageError::Database(e.to_string()))?
+            .map_err(db_error)?
         };
 
         Ok(rows
@@ -2802,7 +2724,7 @@ impl UsageStore {
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(row.unwrap_or((0, 0, 0, 0.0)))
     }
@@ -2827,8 +2749,7 @@ impl EventStore {
     pub async fn append(&self, event: &super::events::SessionEvent) -> Result<(), StorageError> {
         let meta = event.meta();
         let event_type = event.event_type_tag();
-        let payload_json =
-            serde_json::to_string(event).map_err(|e| StorageError::Database(e.to_string()))?;
+        let payload_json = serde_json::to_string(event).map_err(db_error)?;
         let created_at = meta.created_at.to_rfc3339();
 
         sqlx::query(
@@ -2844,7 +2765,7 @@ impl EventStore {
         .bind(&payload_json)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         Ok(())
     }
@@ -2860,8 +2781,7 @@ impl EventStore {
     ) -> Result<(), StorageError> {
         let meta = event.meta();
         let event_type = event.event_type_tag();
-        let payload_json =
-            serde_json::to_string(event).map_err(|e| StorageError::Database(e.to_string()))?;
+        let payload_json = serde_json::to_string(event).map_err(db_error)?;
         let created_at = meta.created_at.to_rfc3339();
 
         let result = sqlx::query(
@@ -2878,7 +2798,7 @@ impl EventStore {
         .bind(&payload_json)
         .execute(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         if result.rows_affected() == 1 {
             return Ok(());
@@ -2890,7 +2810,7 @@ impl EventStore {
         .bind(&meta.id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
         match existing {
             None => Err(StorageError::Database(format!(
                 "session event disappeared after idempotent append: {}",
@@ -2938,8 +2858,7 @@ impl EventStore {
     ) -> Result<(), StorageError> {
         let meta = event.meta();
         let event_type = event.event_type_tag();
-        let payload_json =
-            serde_json::to_string(event).map_err(|e| StorageError::Database(e.to_string()))?;
+        let payload_json = serde_json::to_string(event).map_err(db_error)?;
         let created_at = meta.created_at.to_rfc3339();
 
         let result = sqlx::query(
@@ -2956,7 +2875,7 @@ impl EventStore {
         .bind(&payload_json)
         .execute(&mut **tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         if result.rows_affected() == 1 {
             return Ok(());
@@ -2968,7 +2887,7 @@ impl EventStore {
         .bind(&meta.id)
         .fetch_optional(&mut **tx)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
         match existing {
             None => Err(StorageError::Database(format!(
                 "session event disappeared after idempotent append: {}",
@@ -3010,7 +2929,7 @@ impl EventStore {
         .bind(session_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         rows.into_iter()
             .map(|(payload,)| {
@@ -3033,7 +2952,7 @@ impl EventStore {
                 .bind(event_id)
                 .fetch_optional(&self.pool)
                 .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+                .map_err(db_error)?;
         Ok(row.is_some())
     }
 
@@ -3055,7 +2974,7 @@ impl EventStore {
         .bind(&expected_meta.id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .map_err(db_error)?;
 
         let (stored_session_id, stored_type, stored_payload) = match row {
             Some(r) => r,
@@ -3076,8 +2995,7 @@ impl EventStore {
         }
 
         // Fast path: exact payload match.
-        let expected_payload =
-            serde_json::to_string(expected).map_err(|e| StorageError::Database(e.to_string()))?;
+        let expected_payload = serde_json::to_string(expected).map_err(db_error)?;
         if stored_payload == expected_payload {
             return Ok(ConfirmExistingEvent::SemanticMatch);
         }

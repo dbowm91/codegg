@@ -10,7 +10,7 @@ roadmap's §11 completion definition, whose binding bullet reads:
 
 That sentence names three surfaces, and each name is wrong:
 
-* the **help overlay** it names — `src/tui/components/help_overlay.rs` — is
+* the **help overlay** it names — `crates/codegg-tui/src/components/help_overlay.rs` — is
   unreferenced dead code, with no `mod` declaration and no reference anywhere
   in `src/`. A dead file describes nothing;
 * the **`:` palette** is `EditorCommandName::ALL`, a *command registry*
@@ -27,12 +27,12 @@ adds this guard to make the narrowed bullet checkable.
 
 Three inputs, and no more:
 
-* `src/tui/commands/editor.rs` — through
+* `crates/codegg-tui/src/commands/editor.rs` — through
   `scripts/check_tui_editor_key_authority.py`, for the claimed Normal-mode
   chords, the Insert-mode chords and the guard block. The completion guard
   already reads that guard's *model* rather than its output, and this guard
   does the same: one analysis, no second parser.
-* `src/tui/editor.rs` — through
+* `crates/codegg-tui/src/editor.rs` — through
   `scripts/check_tui_editor_leaf_authority.py`, for the five leaf tables and
   the prefix each one is bound to.
 * `docs/tui.md` — the document under test.
@@ -123,8 +123,8 @@ import check_tui_editor_key_authority as key_authority  # noqa: E402
 import check_tui_editor_leaf_authority as leaf_authority  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EDITOR = REPO_ROOT / "src" / "tui" / "editor.rs"
-COMMANDS = REPO_ROOT / "src" / "tui" / "commands" / "editor.rs"
+EDITOR = REPO_ROOT / "crates" / "codegg-tui" / "src" / "editor.rs"
+COMMANDS = REPO_ROOT / "crates" / "codegg-tui" / "src" / "commands" / "editor.rs"
 DOC = REPO_ROOT / "docs" / "tui.md"
 
 # The marker that says "the keys below are deliberately not bound".

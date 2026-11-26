@@ -107,6 +107,13 @@ impl ClientRegistry {
             .and_then(|client| client.principal.clone())
     }
 
+    /// The conversation the connection is attached to; the editor route has none.
+    pub fn attached_session_for(&self, client_id: &str) -> Option<String> {
+        self.clients
+            .get(client_id)
+            .and_then(|client| client.attached_sessions.first().cloned())
+    }
+
     pub fn unregister(&self, client_id: &str) {
         self.clients.remove(client_id);
     }
@@ -196,6 +203,25 @@ mod tests {
     }
 
     #[test]
+    fn attached_session_for_returns_the_first_session_or_none_for_unknown_clients() {
+        let reg = ClientRegistry::new();
+        reg.register("c1".to_string(), "test".to_string(), None);
+        reg.attach_session("c1", "s1");
+        reg.attach_session("c1", "s2");
+
+        assert_eq!(
+            reg.attached_session_for("c1"),
+            Some("s1".to_owned()),
+            "the first attached conversation is the editor context"
+        );
+        assert_eq!(
+            reg.attached_session_for("missing"),
+            None,
+            "unknown clients have no attached session"
+        );
+    }
+
+    #[test]
     fn set_name_updates_existing_client() {
         let reg = ClientRegistry::new();
         reg.register("c1".to_string(), "placeholder".to_string(), None);
@@ -215,10 +241,8 @@ mod tests {
 
     #[test]
     fn register_preserves_codegg_tui_client_name() {
-        // The `SocketCoreClient::connect` flow registers the client with
-        // `client_name = "codegg-tui"`. Verify that registration round-trips
-        // the name through `list()` so the daemon's snapshot of connected
-        // clients reports the right identity.
+        // The connect flow registers `client_name = "codegg-tui"`; verify it
+        // round-trips through `list()`.
         let reg = ClientRegistry::new();
         reg.register(
             "client-codegg-1".to_string(),

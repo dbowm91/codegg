@@ -25,6 +25,9 @@ This guard exists so the shape cannot come back one `pool.begin()` at a time:
 3. The immediate path must actually be immediate: the shared helper issues
    `BEGIN IMMEDIATE`, and an uncommitted transaction queues a `ROLLBACK` on its
    connection and never closes it.
+4. The scheduler's durable job store takes the write lock before it reads the
+   job row it is about to move, for the same reason: it reads the row inside the
+   transaction and then writes the attempt and the new state.
 
 Run with `--self-test` to prove the guard fails on an injected violation. A
 guard that has never been shown to reject anything is a comment.
@@ -50,9 +53,14 @@ IMMEDIATE_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "storage" / "i
 # The daemon's scratch retention sweep: it reads the durable session set and the
 # live-lease facts before it writes its reclaim decision.
 SWEEP_MODULE = REPO_ROOT / "src" / "core" / "scratch_sweep.rs"
+# The scheduler's durable job store: it reads the job row it is about to move
+# before it writes the attempt and the new state.
+JOB_STORE = REPO_ROOT / "crates" / "codegg-core" / "src" / "jobs" / "store.rs"
 
-# A deferred transaction. Matches both `pool.begin()` and `self.pool.begin()`.
-DEFERRED_BEGIN = re.compile(r"\bpool\.begin\(\)")
+# A deferred transaction. Matches both `pool.begin()` and `self.pool.begin()`,
+# and the multi-line spelling `self\n  .pool\n  .begin()` — a pattern that only
+# matched the single-line form would leave every chained call invisible.
+DEFERRED_BEGIN = re.compile(r"\bpool\s*\.\s*begin\(\)")
 IMMEDIATE_BEGIN = "begin_immediate("
 
 # The only deferred transactions the queue store is allowed to keep, each with the
@@ -77,18 +85,31 @@ WRITE_SQL = re.compile(
     re.IGNORECASE,
 )
 
+# SQL that reads a job row, and SQL that writes one. A job-store transaction
+# that reads before it writes is the same deadlock shape as the queue store's.
+JOB_READ_SQL = re.compile(r"\bSELECT\b|\bWITH\s+RECURSIVE\b", re.IGNORECASE)
+JOB_WRITE_SQL = re.compile(
+    r"\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:job|job_attempt|job_dependency)\b",
+    re.IGNORECASE,
+)
+
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def function_bodies(source: str) -> dict[str, str]:
-    """Map each function name in the module to its body text.
+def function_bodies(source: str) -> dict[str, list[str]]:
+    """Map each function name in the module to the body text of every function
+    that carries it.
 
     Brace-matched from the signature rather than by indentation, so a body
-    containing a nested `fn` or a closure cannot truncate its own span.
+    containing a nested `fn` or a closure cannot truncate its own span. A
+    module may implement the same trait twice — an in-memory store and a
+    SQLite one — so the *first* body under a name is not the only body: a
+    check that only saw the first would pass over the second, which is the
+    one with the pool.
     """
-    bodies: dict[str, str] = {}
+    bodies: dict[str, list[str]] = {}
     for match in re.finditer(r"(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*[<(]", source):
         name = match.group(1)
         depth, index, started = 0, match.end() - 1, False
@@ -102,7 +123,14 @@ def function_bodies(source: str) -> dict[str, str]:
                 if started and depth == 0:
                     break
             index += 1
-        bodies.setdefault(name, source[match.end() : index])
+        body = source[match.end() : index]
+        if ";" in body.split("{", 1)[0]:
+            # A declaration without a body: the signature ends in a semicolon
+            # before any brace. The brace matcher would otherwise pair the name
+            # with the *next* implementation's block, so the function would be
+            # checked against someone else's statements.
+            continue
+        bodies.setdefault(name, []).append(body)
     return bodies
 
 
@@ -110,32 +138,57 @@ def _check_queue_store(source: str) -> list[str]:
     violations: list[str] = []
     bodies = function_bodies(source)
 
-    for name, body in bodies.items():
-        if not DEFERRED_BEGIN.search(body):
-            continue
-        if name not in PERMITTED_DEFERRED:
-            violations.append(
-                f"{name}() opens a deferred transaction. A read-then-write queue "
-                f"transaction cannot upgrade a shared read lock: SQLite returns "
-                f"SQLITE_BUSY (code 6) without waiting. Use {IMMEDIATE_BEGIN}."
-            )
-            continue
-        if WRITE_SQL.search(body) and name != "list_live":
-            violations.append(
-                f"{name}() opens a deferred transaction and writes queue tables. "
-                f"Its allowlist reason says it writes nothing, so that is now false."
-            )
+    deferred: set[str] = set()
+    for name, bodies_for_name in bodies.items():
+        for body in bodies_for_name:
+            if not DEFERRED_BEGIN.search(body):
+                continue
+            deferred.add(name)
+            if name not in PERMITTED_DEFERRED:
+                violations.append(
+                    f"{name}() opens a deferred transaction. A read-then-write queue "
+                    f"transaction cannot upgrade a shared read lock: SQLite returns "
+                    f"SQLITE_BUSY (code 6) without waiting. Use {IMMEDIATE_BEGIN}."
+                )
+                continue
+            if WRITE_SQL.search(body) and name != "list_live":
+                violations.append(
+                    f"{name}() opens a deferred transaction and writes queue tables. "
+                    f"Its allowlist reason says it writes nothing, so that is now false."
+                )
 
     # Every deferred site must be a *named* decision, so a new one fails instead
     # of being silently permitted — and a name that no longer matches a deferred
     # site is stale, which would quietly narrow what the allowlist constrains.
-    deferred = {name for name, body in bodies.items() if DEFERRED_BEGIN.search(body)}
     for missing in sorted(set(PERMITTED_DEFERRED) - deferred):
         violations.append(
             f"{missing}() no longer opens a deferred transaction, but is still on "
             f"the allowlist. An allowlist that lists code which does not exist is "
             f"not a constraint."
         )
+
+    return violations
+
+
+def _check_job_store(source: str) -> list[str]:
+    """The job store reads the row it is about to move, so it must not defer."""
+    violations: list[str] = []
+    bodies = function_bodies(source)
+
+    for name, bodies_for_name in bodies.items():
+        for body in bodies_for_name:
+            if not DEFERRED_BEGIN.search(body):
+                continue
+            read = JOB_READ_SQL.search(body)
+            write = JOB_WRITE_SQL.search(body)
+            if read is None or (write is not None and write.start() < read.start()):
+                continue
+            violations.append(
+                f"{name}() opens a deferred transaction and reads a job row before it "
+                f"writes. A deferred transaction takes no lock: the first SELECT holds a "
+                f"shared read lock and the first write cannot upgrade it, so SQLite "
+                f"returns SQLITE_BUSY without waiting. Use {IMMEDIATE_BEGIN}."
+            )
 
     return violations
 
@@ -216,6 +269,16 @@ def check_queue_store() -> bool:
     return not violations
 
 
+def check_job_store() -> bool:
+    if not JOB_STORE.is_file():
+        print(f"  FAIL: job store not found at {JOB_STORE}")
+        return False
+    violations = _check_job_store(_read(JOB_STORE))
+    for message in violations:
+        print(f"  FAIL: {message}")
+    return not violations
+
+
 def check_immediate_module() -> bool:
     if not IMMEDIATE_MODULE.is_file():
         print(f"  FAIL: the shared immediate module not found at {IMMEDIATE_MODULE}")
@@ -241,6 +304,7 @@ def _self_test() -> int:
     queue_source = _read(QUEUE_STORE)
     immediate_source = _read(IMMEDIATE_MODULE)
     sweep_source = _read(SWEEP_MODULE)
+    job_source = _read(JOB_STORE)
 
     # Violation 1: a read-then-write path back on a deferred transaction.
     injected = queue_source.replace(
@@ -303,9 +367,30 @@ def _self_test() -> int:
         return 1
     print("  ok: injected closing rollback rejected")
 
+    # Violation 5: the job store's read-then-write transaction deferred again.
+    job_injected = job_source.replace(
+        '.begin_with("BEGIN IMMEDIATE")',
+        ".begin()",
+        1,
+    )
+    if job_injected == job_source:
+        print("  FAIL: self-test could not find the job store's immediate begin to replace")
+        return 1
+    violations = _check_job_store(job_injected)
+    if not violations:
+        print(
+            "  FAIL: self-test deferred the job store's read-then-write transaction "
+            "and the guard still passed. The guard is not load-bearing."
+        )
+        return 1
+    print("  ok: injected deferred job-store transaction rejected")
+
     # And the unmodified tree must still pass, so the self-test proves the guard
     # rejects rather than being broken.
     if _check_queue_store(queue_source) or _check_sweep_module(sweep_source):
+        print("  FAIL: self-test passed but the real tree has violations")
+        return 1
+    if _check_job_store(job_source):
         print("  FAIL: self-test passed but the real tree has violations")
         return 1
     if _check_immediate_module(immediate_source):
@@ -322,6 +407,7 @@ def main() -> int:
 
     checks = [
         ("queue write paths take the write lock at BEGIN", check_queue_store),
+        ("job write paths take the write lock before they read a job row", check_job_store),
         ("the shared helper issues BEGIN IMMEDIATE and rolls back safely", check_immediate_module),
         ("the scratch sweep decides each candidate under the writer lock", check_sweep_module),
     ]

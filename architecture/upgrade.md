@@ -14,7 +14,7 @@ separate bootstrap path and is never fetched or executed by `codegg upgrade`.
 
 ## Flow
 
-`cmd_upgrade()` (`src/main.rs:2510`) calls `upgrade::upgrade()`
+`cmd_upgrade()` (`crates/codegg-cli/src/main.rs:2510`) calls `upgrade::upgrade()`
 (`src/upgrade/mod.rs:101`). It checks the latest release with the existing
 Eggfetch client/profile, then for a newer supported release:
 
@@ -140,7 +140,7 @@ installation gain the helper and eggsearch siblings.
 - `src/install.rs` — installation-owned sibling identity and the pinned
   eggsearch version/commit (`PINNED_EGGSEARCH_VERSION`,
   `PINNED_EGGSEARCH_COMMIT`)
-- `src/main.rs` — `cmd_upgrade()`
+- `crates/codegg-cli/src/main.rs` — `cmd_upgrade()`
 - `tests/config_provider/upgrade.inc` and `src/upgrade/managed.rs` — deterministic policy and
   archive fixtures
 
@@ -151,7 +151,7 @@ CodeGG retains its current Eggfetch/Rustls/WebPKI trust and redirect policy.
 
 ## Source verification
 
-Verified 2026-10-06 against `src/upgrade/{mod,managed}.rs`, `src/main.rs`,
+Verified 2026-10-06 against `src/upgrade/{mod,managed}.rs`, `crates/codegg-cli/src/main.rs`,
 `tests/config_provider/upgrade.inc`, `Cargo.toml`, and
 `crates/codegg-config/src/schema.rs`. No stale refs remained from the prior
 pass; the corrections here are additive precision. Confirmed correct as
@@ -160,7 +160,7 @@ written: the Eggup pin `66813b3b94de3a9b2f270e0000dc339ef6f0b478` for both
 `SUPPORTED_TARGETS` entries (`managed.rs:25`) and the exact `supported_target()`
 Linux/macOS x86_64/aarch64 mapping (`managed.rs:31`), the pinned eggsearch
 version (`PINNED_EGGSEARCH_VERSION`, `managed.rs:24`), `cmd_upgrade()` in
-`src/main.rs`, `upgrade()` (`mod.rs:101`), the manual fresh-install guidance
+`crates/codegg-cli/src/main.rs`, `upgrade()` (`mod.rs:101`), the manual fresh-install guidance
 path pointing at `install.sh` on raw.githubusercontent.com (`mod.rs:32,124`),
 and the presence of `tests/config_provider/upgrade.inc` (10 tests).
 Re-verified the dead-config claim: it is still true and is now stated
@@ -197,7 +197,7 @@ Verified 2026-10-06 (third pass) against `src/upgrade/{mod,managed}.rs`,
   and still match source.
 
 Verified 2026-10-23 (deep-dive pass) against `src/upgrade/{mod,managed}.rs`,
-`src/main.rs`, `src/install.rs`, `src/http_client.rs`,
+`crates/codegg-cli/src/main.rs`, `src/install.rs`, `src/http_client.rs`,
 `tests/config_provider/upgrade.inc`, `Cargo.toml`, and
 `crates/codegg-config/src/{schema,paths}.rs`. Line numbers in the earlier
 2026-10-06 entries above are point-in-time; the body above carries the
@@ -233,7 +233,7 @@ probes, and the no-`curl`/no-signature boundaries; and the
 `src/install.rs` entry in `## Source locations` for the installation-owned
 sibling identity and the pinned eggsearch version/commit.
 
-Confirmed correct, no change needed: `cmd_upgrade` at `src/main.rs:2510`;
+Confirmed correct, no change needed: `cmd_upgrade` at `crates/codegg-cli/src/main.rs:2510`;
 `upgrade::upgrade()` at `src/upgrade/mod.rs:101`; `check_for_updates()` at
 `mod.rs:64` with the release API URL at `mod.rs:68`; `VersionInfo` at
 `mod.rs:44`; `INSTALLER_SCRIPT_URL` at `mod.rs:31`; the four installer

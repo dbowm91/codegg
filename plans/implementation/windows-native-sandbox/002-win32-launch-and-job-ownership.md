@@ -111,7 +111,7 @@ No changes to Unix helper. Windows installation still bundles helper as needed b
 
 ## 11. Required verification commands
 
-`cargo check --target x86_64-pc-windows-msvc -p codegg --bin codegg-sandbox-helper` (with target/toolchain)
+`cargo check --target x86_64-pc-windows-msvc -p codegg-sandbox-helper --bin codegg-sandbox-helper` (with target/toolchain)
 `cargo test -p codegg --test managed_process` (where target exists; otherwise narrower test selector)
 `cargo test -p codegg --lib managed_process`
 `python3 scripts/check_execution_ownership.py`

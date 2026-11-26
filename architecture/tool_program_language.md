@@ -108,6 +108,12 @@ tuple       = '(' [expression (',' expression)* [',']] ')'
 dict        = '{' [expression ':' expression (',' expression ':' expression)* [',']] '}'
 ```
 
+### Tool-Call Result Inspection
+
+`call()` and each result in a `parallel()` list expose the called tool structured JSON output directly. JSON objects accept string-key indexing (`result["field"]`), arrays accept integer indexing (`result[index]`), and JSON strings accept integer indexing; nested object/array values can be indexed or length-checked in the same way. `len()` accepts JSON objects, arrays, and strings. Indexing a scalar leaf produces its ordinary program value.
+
+The full result is charged against `max_value_growth` when pushed onto the interpreter stack, and selected values are charged again when pushed. An oversized result therefore fails with the existing budget error rather than bypassing the value limit. This does not change the compiler source nesting, loop, or step bounds.
+
 ### Call Descriptors
 
 ```text

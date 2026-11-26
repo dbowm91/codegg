@@ -2794,18 +2794,8 @@ pub fn plan_effect_path(
     )
 }
 
-/// Registry backing effect-catalog bindings: the explicit historical
-/// FullHost registry plus the session-gated pilot tools (`goal_get`,
-/// `goal_update_progress`,
-/// `work_plan_get`, `work_plan_update_item`, `context_read`,
-/// `lsp_preview_apply`) constructed over lazy handles, mirroring the M001
-/// seam test. Construction performs no I/O: the pool is lazy, the
-/// artifact store is in-memory, and the LSP service is unconnected. FullHost
-/// pins the same model-visible LSP implementation/schema surface that the
-/// frozen M003 receipt used; constrained registries now replace LSP entries
-/// with hidden `DisabledTool` placeholders and must not redefine that
-/// historical baseline. Contract metadata is static (no session dependence),
-/// so bindings are deterministic for a fixed binary.
+/// Builds the deterministic effect-catalog registry without performing I/O.
+/// FullHost keeps the LSP surface; constrained registries use hidden `DisabledTool` placeholders.
 fn effect_binding_registry() -> crate::tool::ToolRegistry {
     // `SqlitePool::connect_lazy` requires a Tokio context even though it
     // performs no I/O. Async callers already provide one; sync callers
@@ -5866,10 +5856,7 @@ mod tests {
         task_properties.remove("scratch_alias");
         task_properties.remove("scratch_id");
         task_properties.remove("shared_scratch");
-        // M005 C006 added the shared-checkout placement parameter after the
-        // M003 receipt was frozen. It is a post-M003 change like the rest, so
-        // it is removed here: the receipt stays immutable and the live schema
-        // keeps the opt-in placement.
+        // Remove the post-M003 shared-checkout fields from this frozen schema.
         assert!(
             task_properties.remove("placement").is_some(),
             "expected post-M003 task input field placement"
@@ -5881,10 +5868,7 @@ mod tests {
         let task_action = task_properties
             .get_mut("action")
             .expect("task action schema");
-        // C004 added the `continue` action after the M003 receipt was frozen.
-        // It is a post-M003 change like the rest, so it is removed here: the
-        // receipt stays immutable and the live schema keeps the continuation
-        // action.
+        // Remove the post-M003 `continue` action from this frozen enum.
         let task_action_enum = task_action["enum"]
             .as_array_mut()
             .expect("task action enum array");
@@ -5921,10 +5905,7 @@ mod tests {
             ]),
             "unexpected post-M003 task action schema"
         );
-        // C004 also extended the action description with the `continue`
-        // sentence. It is a post-M003 edit like the rest, so it is removed
-        // here: the receipt stays immutable and the live schema keeps the
-        // continuation wording.
+        // Remove the post-M003 continuation wording from this frozen description.
         const CONTINUE_SENTENCE: &str =
             "; continue starts one new attempt of a failed durable child through run_id";
         let live_action_description = task_action["description"]
@@ -6500,7 +6481,7 @@ mod tests {
                 .expect("test.command remains declared");
             assert_eq!(
                 entry.get("description").and_then(|d| d.as_str()),
-                Some("Custom test command (required when scope is custom, ignored otherwise). Must pass test command safety checks. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."),
+                Some("Custom supervised test or quality command (required when scope is custom, ignored otherwise). Must pass command safety checks. Allowed prefixes include cargo test, cargo clippy, cargo nextest, pytest, go test, and make check. Example: {\"scope\":\"custom\",\"command\":\"cargo test -p mycrate\"}."),
                 "unexpected post-M003 test.command description"
             );
             entry.insert(

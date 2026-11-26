@@ -1,0 +1,32 @@
+{
+  "attempt": 74,
+  "authorization_grant_id": "s019-supplemental-20261111-04",
+  "billed_usd_treatment": "unknown if unreported",
+  "binary_sha256": "4c689535ba21926acc708944998df4d0c5a6198afadf408308d9cc3738e71431",
+  "credential_value_retained": false,
+  "external_billed_usd": null,
+  "manifest_sha256": "e87faea3f5da93ae300f2ae21ec46e6ff1f899cff0fdf6c1b9e860c97ffe57ee",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "provider_request_count_source": "provider_boundary_safe_aggregate",
+  "provider_requests_observed": 233,
+  "raw_prompt_transcript_tool_arguments_tool_outputs_and_verifier_output_inspected": false,
+  "route": "opencode_go",
+  "runner_failure_class": "unexpected_exception",
+  "runner_failure_context": {
+    "state": "not_collected_before_s056"
+  },
+  "runner_failure_sites": {
+    "sites": [
+      "dev.harness_lab.autonomy_run:run_suite",
+      "dev.harness_lab.autonomy_run:run_case"
+    ],
+    "state": "observed"
+  },
+  "runner_failure_text_retained": false,
+  "safe_completion_projection_available": false,
+  "schema": "s019_campaign_run_diagnostic_v1",
+  "source_head": "e94435fb1ad82c92e6bebd1bd2adcfee178f0e4b",
+  "start_number": 74,
+  "status": "completed_unqualified",
+  "task_and_verifier_outcomes": "unavailable"
+}

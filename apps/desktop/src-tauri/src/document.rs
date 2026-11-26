@@ -1894,6 +1894,7 @@ pub(crate) async fn desktop_document_navigate_with_state(
         query: None,
         server_id: None,
         new_name: None,
+        range: None,
     };
     let (client, _) = state.route_request().await?;
     let coordinator_scope = codegg_client::LspRequestScope {
@@ -2052,6 +2053,7 @@ pub(crate) async fn desktop_document_preview_with_state(
         column: position.map(|position| position.1),
         query: None,
         server_id: None,
+        range: None,
         new_name: if read == LspReadOperation::RenamePreview {
             let value = new_name.unwrap_or_default();
             if value.trim().is_empty() || value.len() > 256 {

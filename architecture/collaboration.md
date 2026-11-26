@@ -58,9 +58,9 @@ crates/codegg-protocol/src/core.rs        # chat.v1 DTOs, 20 Chat CoreRequests,
 src/core/daemon.rs                        # daemon-owned CollaborationService, channel->project
                                           # resolver, privacy denials, dedicated chat handler
 tests/core_daemon/collaboration_m001_chat.inc          # 12 daemon boundary tests
-src/tui/app/state/chat.rs                 # M002: bounded per-project chat reducer (ChatState)
-src/tui/commands/chat.rs                  # M002: async chat commands + observer insert routing
-tests/tui_render/collaboration_m002_chat_tui.inc      # M002: 11 TUI boundary tests
+crates/codegg-tui/src/app/state/chat.rs                 # M002: bounded per-project chat reducer (ChatState)
+crates/codegg-tui/src/commands/chat.rs                  # M002: async chat commands + observer insert routing
+crates/codegg-tui/tests/tui_render/collaboration_m002_chat_tui.inc      # M002: 11 TUI boundary tests
 ```
 
 ## How It Works
@@ -213,9 +213,9 @@ python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops +
 
 ### Workspace selected-project chat view (team-collaboration M005)
 
-Non-modal `Route::Workspace` primary view (`src/tui/route.rs`,
-`src/tui/commands/workspace_dashboard.rs`,
-`src/tui/app/state/workspace_dashboard.rs`): the bottom Session/Task
+Non-modal `Route::Workspace` primary view (`crates/codegg-tui/src/route.rs`,
+`crates/codegg-tui/src/commands/workspace_dashboard.rs`,
+`crates/codegg-tui/src/app/state/workspace_dashboard.rs`): the bottom Session/Task
 composer stays editable for the Workspace-selected project while the
 sidebar region shows project chat for that same selection over the
 existing `ChatState`/daemon `chat.v1` service (no second server/cache).
@@ -443,7 +443,7 @@ Verified 2026-10-23 against `crates/codegg-core/src/collaboration.rs`,
 `crates/codegg-core/src/audit_instrumentation.rs`,
 `crates/codegg-core/src/session/schema.rs`,
 `crates/codegg-core/src/storage/mod.rs`, `src/core/daemon.rs`,
-`src/tui/app/state/chat.rs`, and the 10 collaboration/team/chat integration
+`crates/codegg-tui/src/app/state/chat.rs`, and the 10 collaboration/team/chat integration
 test files.
 - **Corrected the protocol-surface counts**: the doc said 19 Chat
   `CoreRequests` and 12 Chat `CoreResponses`. The live enum has **20**
@@ -457,7 +457,7 @@ test files.
   holds **20** unit tests (the doc said 17) and
   `crates/codegg-core/src/collaboration/policy.rs` holds 2, for **22** in
   total (the doc said 19). The TUI chat reducer
-  (`src/tui/app/state/chat.rs`) holds **23** tests (the doc said 16).
+  (`crates/codegg-tui/src/app/state/chat.rs`) holds **23** tests (the doc said 16).
 - **Corrected `session_family`**: 88 → 91 → **97** tests.
 - **Removed a dead reference**: the doc named a gate function
   `authorize_chat_request`. No such function exists. The gate is the
@@ -503,7 +503,7 @@ test files.
 Verified 2026-10-06 against `crates/codegg-core/src/collaboration.rs`,
 `crates/codegg-core/src/collaboration/{store,validation,policy}.rs`,
 `crates/codegg-protocol/src/core.rs`, `crates/codegg-core/src/authorization/policy.rs`,
-`crates/codegg-core/src/session/schema.rs`, `src/tui/app/state/chat.rs`, and
+`crates/codegg-core/src/session/schema.rs`, `crates/codegg-tui/src/app/state/chat.rs`, and
 the 10 collaboration/team/chat integration test files. Corrected 5 stale
 counts: the protocol surface `18 CoreRequests, 13 CoreResponses` →
 **19 Chat CoreRequests, 12 Chat CoreResponses** (6 Chat CoreEvents was

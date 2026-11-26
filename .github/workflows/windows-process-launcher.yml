@@ -11,7 +11,8 @@ on:
       - 'src/managed_process/**'
       - 'src/scratch.rs'
       - 'src/security/sandbox.rs'
-      - 'src/security/sandbox/**'
+      - 'crates/codegg-sandbox/**'
+      - 'crates/codegg-sandbox-helper/**'
       - 'src/tool/bash/process.rs'
       - 'src/tool/mod.rs'
       - 'src/tool/factory.rs'
@@ -35,7 +36,8 @@ on:
       - 'src/managed_process/**'
       - 'src/scratch.rs'
       - 'src/security/sandbox.rs'
-      - 'src/security/sandbox/**'
+      - 'crates/codegg-sandbox/**'
+      - 'crates/codegg-sandbox-helper/**'
       - 'src/tool/bash/process.rs'
       - 'src/tool/mod.rs'
       - 'src/tool/factory.rs'
@@ -194,7 +196,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: |
           $py = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
-          & $py scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg --lib status_decoder_rejects_malformed_duplicate_and_oversized_frames -- --nocapture
+          & $py scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg-sandbox --lib status_decoder_rejects_malformed_duplicate_and_oversized_frames -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test-only restricted managed process integration
@@ -228,7 +230,9 @@ jobs:
         shell: pwsh
         run: |
           $py = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
-          & $py scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg --lib windows_policy_tests -- --nocapture
+          & $py scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg-sandbox --lib windows_policy_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $py scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg --lib windows_launch_spec_keeps_workspace_write_roots_distinct -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p codegg --lib raw_shell_keeps_command_text_in_one_argument -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

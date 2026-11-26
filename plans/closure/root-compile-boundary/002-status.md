@@ -1,0 +1,158 @@
+# Root Compile Boundary Milestone 002 — Closure Status
+
+Status: closed
+
+Source implementation plan:
+
+- `plans/implementation/root-compile-boundary/002-tui-dependency-inversion.md`
+
+Source subsystem roadmap:
+
+- `plans/subsystems/root-compile-boundary-roadmap.md#milestone-2--tui-dependency-inversion`
+
+Repository baseline reviewed: `d8f1b4a289eaabd91fddcf7aa8d3078891e04e74`
+
+Descendant re-reviewed: `a6fa12efb`, then `e2eb96727`.
+
+Implementation commits:
+
+- `b05ba03a9` — freeze the pre-move theme projection and the 4,596-function scanner inventory
+- `d8f1b4a28` — move the TUI into `codegg-tui` and the product bin into `codegg-cli`
+- `e2eb96727` — keep `cargo build --bin codegg` resolving, and retarget the scoped-selection self-test off the deleted TUI path
+
+## 1. Executive finding
+
+The root library no longer compiles the TUI, and it does not depend on `codegg-tui`. `codegg-tui` depends on the root library. The product bin `codegg` belongs to `codegg-cli`, which may depend on both. There is no `pub mod tui` and no re-export shim. The required local link, the whole `tui_render` family, `cargo build --locked --bin codegg`, and `scripts/verify.sh quick` have now been run on this worktree and passed. The hosted before/after `cfg(test)` observation is recorded below. The after job of that pair failed at a move-caused test. That failure is not a pass, and the local path retarget is not a hosted run id. Hosted run `44940955257` on the retarget passed the named test. That observation is recorded below and is the close. It is not a license to split `agent`, `tool`, `core`, or `scheduler`, and it does not discharge the deferred binary-topology item.
+
+A null effect on the `cfg(test)` compile is not a failure and does not open a further split. This closure does not quote a line count as a minute count, and it does not treat one hosted pair as a precise effect size. The closed throughput roadmap was not amended.
+
+Before, hosted: run [44837892044](https://github.com/dbowm91/codegg/actions/runs/44837892044) on `827141e32`, job `136638744784`. In the workspace-tests step, `Compiling codegg v0.1.0 (/home/runner/work/codegg/codegg)` is at `2026-11-20T23:50:04.5473890Z`. The next log line is at `2026-11-20T23:57:28.4945855Z`, 7m 23.947s later. `Finished test profile [unoptimized + debuginfo] target(s) in 8m 34s` is at `2026-11-20T23:57:28.8539226Z`. That log has no `codegg-tui` compile line. The quiet span is the before unit observation because nothing else logged during it. It is not a TUI share, and it is not a promised saving.
+
+After, hosted: run [44937196668](https://github.com/dbowm91/codegg/actions/runs/44937196668) on `613cecd47`, job `136946316398`. The workspace-tests step compiled package `codegg` at `2026-11-21T18:55:57.1999510Z`, path `/home/runner/work/codegg/codegg`. The next log line is another crate, 1.031s later, so the before method does not isolate this unit. The same step compiled `codegg-tui v0.1.0 (/home/runner/work/codegg/codegg/crates/codegg-tui)` at `2026-11-21T18:58:05.3590760Z` and `codegg-cli` at `2026-11-21T18:59:34.3595419Z`. `Finished test profile [unoptimized + debuginfo] target(s) in 7m 23s` is at `2026-11-21T19:01:52.7158521Z`. That 7m 23s is the whole test profile, not the root unit. One pair is not a precise effect size. This record does not subtract the two profile times and call the difference a saving.
+
+The hosted log shows the root package and the TUI crate as separate compile units. The before job compiled package `codegg` and did not compile package `codegg-tui`. The after job compiled both. The workspace job still builds the TUI crate. The log does not list the root unit's source files, so this statement is the separate-unit observation, not a file inventory.
+
+The after job then failed. `codegg::ide_protocols lsp::callHierarchy_requires_file_path_line_column` panicked at `tests/ide_protocols/lsp.inc:1682`. It expected a line error and got a missing-path error for `src/main.rs`, which the move removed. Fail-fast stopped the suite at 6861 of 17674. Run `44937196668` is not a passing test run. It is the compile observation.
+
+Hosted confirmation of the retarget: run [44940955257](https://github.com/dbowm91/codegg/actions/runs/44940955257) on `1686b9586`, job `136957808956`, conclusion success. The job started at `2026-11-21T19:26:38Z` and completed at `2026-11-21T20:03:08Z`. The workspace-tests step ran `cargo nextest run --workspace --locked --profile ci -E 'not binary(eggwork_remote_execution_live)'`. Live Eggwork was omitted from that routine gate. In that step, `codegg::ide_protocols lsp::callHierarchy_requires_file_path_line_column` is `PASS [   0.009s] ( 6861/17674)` at `2026-11-21T19:55:36.6779996Z`. That is the same index at which run `44937196668` panicked. The step summary at `2026-11-21T20:02:44.1599126Z` is `Summary [ 649.964s] 17674 tests run: 17674 passed (1 leaky), 12 skipped`. The one `LEAK` line is `codegg::security_permission sandbox_landlock::the_default_grant_set_denies_another_processes_proc_entry` at `2026-11-21T19:58:06.3666710Z` (`LEAK [   0.265s] ( 7834/17674)`). Nextest counted it as passed. It is not the path-retarget test, and it is not a failure of this job. This run is the hosted confirmation of the retarget. It is not a new compile-effect measurement, and it is not a precise effect size.
+
+## 2. Requirement-to-evidence matrix
+
+| Requirement | Evidence | Result | Notes |
+|---|---|---|---|
+| Pre-move scanner count and theme projection frozen | `b05ba03a9`; `tests/fixtures/tui-move-inventory/pre-move-tests.txt`; `tests/fixtures/tui-theme-projection/bundled.txt` | pass | Fixtures were not regenerated by the move |
+| Root does not depend on the TUI | `cargo metadata --format-version 1 --locked --no-deps --offline` | pass | Local. `codegg` deps include no `codegg-tui`. Root bin is only `codegg-lsp-test-server` |
+| TUI depends on the service; CLI depends on both | same metadata | pass | `codegg-tui` depends on `codegg`. `codegg-cli` depends on `codegg` and `codegg-tui` and owns bin `codegg` |
+| `cargo check -p codegg --lib --features server` does not build the TUI | local check, 2m 16s, exit 0 | pass | Log has no `Checking codegg-tui`. The only `codegg-tui` hit is a manifest warning |
+| `src/lib.rs` has no TUI export | source review of `d8f1b4a28` | pass | No shim |
+| Direction guard rejects an injected `pub use` and a reverse dependency | `python3 scripts/check_tui_dependency_direction.py --self-test` | pass | Local, re-run after the comment trim |
+| Direction guard passes and is wired into `quick` and CI | guard script; `scripts/verify.sh`; `.github/workflows/ci.yml` | pass | Wiring is the guard addition. Hosted clippy and nextest command lines were not otherwise changed |
+| Transport authority still gates on `is_ws_attach_transport()` | `python3 scripts/check_tui_transport_authority.py` | pass | Local, after the move. The attach tests themselves were not executed |
+| Scanner ground truth | `python3 scripts/rust_test_scan.py --validate` | pass | Local |
+| Moved test functions have no unexplained loss | read-only review against `pre-move-tests.txt` | pass | Pre-move 4,596. The only baseline name absent is `protocol_version_constant_is_five`, the acknowledged duplicate. The protocol crate still asserts `REMOTE_TUI_PROTOCOL_VERSION == 5` |
+| Bundled theme bytes and frozen projection unchanged | review of `d8f1b4a28` | pass | `SemanticTheme` does not reference ratatui |
+| Security-review cancel still uses the moved task id | source review | pass | Receipt no longer stores `TuiTaskId`. Cancel still calls `TuiTaskRegistry::cancel`. The abort test was not executed |
+| Comment-line ceilings do not rise | re-bank after removing three comments this milestone added | pass | Global ceilings fell: 140142 to 140107 lines, 1249885 to 1249581 words, ratio 0.1355 to 0.1354. No predecessor comment-line ceiling rose |
+| Whole `tui_render` family | `CARGO_BUILD_JOBS=2 cargo test -p codegg-tui --test tui_render --locked --offline -- --test-threads=4` on `a6fa12efb` | pass | Local. 1237 passed, 0 failed, 10.68s. The plan's §11 trailing `-- tui_render` selects one member of this family, so it was not used. The family command is the one the plan's §10 requires |
+| `interactive_process_attach_resume` | `cargo test -p codegg-tui --test interactive_process_attach_resume --locked --offline -- --test-threads=4` | pass | Local. 6 passed. Ownership maps moved TUI files here. Additional to the required family, not a substitute |
+| `cargo test -p codegg --lib --features server` | same flags, on `a6fa12efb` | pass | Local. 5174 passed, 0 failed, 5 ignored, 97.89s. An earlier link on a full volume failed with `ld: write() failed, errno=28`. That was not an assertion failure, and it is not the current result |
+| `cargo build --locked --bin codegg` | first attempt on `a6fa12efb` failed; re-run on `e2eb96727` | pass | The first attempt exited 101: no bin named `codegg` in the default-run packages. `e2eb96727` adds `crates/codegg-cli` to `default-members` and does not restore a root shim. The re-run, `cargo build --locked --offline --bin codegg`, exited 0. `target/debug/codegg` is present (454053072 bytes). The re-run was warm (0.53s) and did not rewrite those bytes. `cargo build --locked --offline -p codegg --bin codegg` still exits 101 |
+| `scripts/verify.sh quick` | first attempt on `a6fa12efb` failed; re-run on `e2eb96727` | pass | The first attempt failed in `scripts/scoped_selection.py --self-test`: it still named deleted `src/tui/app/mod.rs` and selected 0 targets. `e2eb96727` retargets that self-test to `src/server/mod.rs`. The re-run printed `Quick verification passed.` and exited 0. Its cargo step is `cargo check --workspace --all-targets --locked`, which selects `codegg-tui` and `codegg-cli`. This invocation finished warm in 0.97s and did not reprint unit names, so it is not a log of those crates compiling |
+| Hosted before/after `codegg` `cfg(test)` compile | runs `44837892044` and `44937196668` | recorded | Hosted. Before quiet span 7m 23.947s inside an 8m 34s test profile. After profile finished in 7m 23s; the root unit is not isolated by the before method. One pair is not a precise effect size. The after job failed afterwards. Run `44940955257` is not this row |
+| Hosted confirmation that the path retarget no longer fails | run `44940955257`, job `136957808956` | pass | Hosted. `lsp::callHierarchy_requires_file_path_line_column` passed at index 6861/17674. Suite summary: 17674 passed, 1 leaky, 12 skipped. Job conclusion success. Not a compile-effect measurement |
+
+## 3. Production implementation evidence
+
+`crates/codegg-tui` holds the former `src/tui` tree, the ratatui projection, and `SecurityReviewTaskState`. It depends on the root library, including through the empty `tui-test-support` feature for test-only bridges that stayed in the service. `crates/codegg-cli` holds `src/main.rs` and attach. The root package has no `src/main.rs`. `codegg-lsp-test-server` stayed a root bin.
+
+`SemanticTheme` stayed service-side. The receipt module no longer names `TuiTaskId`. No service-side copy of that id was added.
+
+## 4. Verification executed
+
+### Commands run
+
+```bash
+# local, after the comment trim, on the tree committed as d8f1b4a28
+cargo metadata --format-version 1 --locked --no-deps --offline
+CARGO_BUILD_JOBS=2 cargo check -p codegg --lib --features server --locked --offline
+python3 scripts/check_tui_dependency_direction.py --self-test
+python3 scripts/check_tui_dependency_direction.py
+python3 scripts/check_tui_transport_authority.py
+python3 scripts/check_comment_budget.py
+python3 scripts/rust_test_scan.py --validate
+```
+
+The library check finished in 2m 16s and did not compile `codegg-tui`. These commands are local. They are not hosted CI.
+
+### Descendant re-run
+
+Local. The family and library tests ran on `a6fa12efb`. The bin command and `quick` first failed there, then passed on `e2eb96727`. `CARGO_BUILD_JOBS=2`. Cargo tests and the bin build used `--locked --offline` and `--test-threads=4`. `scripts/verify.sh quick` is the script as written: it runs `cargo check --workspace --all-targets --locked` and does not pass `--offline`.
+
+```bash
+cargo test -p codegg-tui --test tui_render --locked --offline -- --test-threads=4
+cargo test -p codegg-tui --test interactive_process_attach_resume --locked --offline -- --test-threads=4
+cargo test -p codegg --lib --features server --locked --offline -- --test-threads=4
+cargo build --locked --offline --bin codegg
+cargo build --locked --offline -p codegg --bin codegg
+scripts/verify.sh quick
+```
+
+Results, all local:
+
+- `tui_render` family: 1237 passed, 0 failed. The trailing `-- tui_render` in the plan's §11 selects one member, so it was not used.
+- `interactive_process_attach_resume`: 6 passed.
+- Root library with `server`: 5174 passed, 0 failed, 5 ignored. An earlier link on a full volume failed with `ld: write() failed, errno=28`. That was not an assertion failure. It is not this result.
+- Workspace `cargo build --locked --offline --bin codegg`: the `a6fa12efb` attempt exited 101 because `codegg-cli` was not a default member. After `e2eb96727`, the same command exited 0. `target/debug/codegg` is present (454053072 bytes). The passing invocation was warm (0.53s) and did not rewrite those bytes. No root shim was added.
+- `cargo build --locked --offline -p codegg --bin codegg`: exit 101, `no bin target named codegg in codegg package`. That failure is intended.
+- `scripts/verify.sh quick`: the `a6fa12efb` attempt failed because the scoped-selection self-test still named deleted `src/tui/app/mod.rs` and selected 0 targets. After `e2eb96727`, the re-run printed `Quick verification passed.` and exited 0. The cargo step finished warm in 0.97s and did not reprint unit names. The command still selects every workspace member, including `codegg-tui` and `codegg-cli`. This log does not show those crates compiling.
+
+Hosted before/after compile observation is in §1. Run `44837892044` is the before measurement. Run `44937196668` is the after compile observation and a failed test run, not a passing suite. None of the local commands above is that hosted pair.
+
+Local, after the hosted failure: the 17 checkout `file_path` arguments in `tests/ide_protocols/lsp.inc` that still named deleted `src/main.rs` now name `src/lib.rs`. Synthetic `src/main.rs` strings, including patch headers, were left. `CARGO_BUILD_JOBS=2 cargo test -p codegg --test ide_protocols --locked --offline -- lsp:: -- --test-threads=4` exited 0: 158 passed, 0 failed. That is local. It is not a hosted run id.
+
+Hosted, on `1686b9586`: run `44940955257`, job `136957808956`, conclusion success. The workspace-tests step passed `lsp::callHierarchy_requires_file_path_line_column` at `2026-11-21T19:55:36.6779996Z` and finished `17674` passed, `1` leaky, `12` skipped. The leaky test is `sandbox_landlock::the_default_grant_set_denies_another_processes_proc_entry`. It is not this milestone's path check. This run is not a new before/after compile pair.
+
+## 5. Invariant review
+
+The one-way edge holds: the root library does not depend on the TUI under the features metadata reported, and `cargo check -p codegg --lib --features server` did not build `codegg-tui`. No compatibility shim restores `codegg::tui`. Frontends were not given provider credentials, the command catalog, or durable session state by this move. Writer-fence, hostile-Git, and queue-transaction tests were not edited to go green. The queue-delivery comment that changed is a path retarget to the moved daemon-authorization fixture.
+
+Forty-nine per-file `max_ratio` ceilings are higher than their predecessor files. Each of those files has the same `max_comment_lines` as its predecessor. The ratio rose because code lines left the file, and the bank script cannot record a ratio below the measurement. That is recorded here. It is not hidden, and it is not new comment mass. Two comment-line increases found in review (`crates/codegg-cli/src/main.rs` 595 to 597, `crates/codegg-tui/src/task_lifecycle.rs` 112 to 113) were removed before the commit, and the new `commands/mod.rs` doc comment that crossed the listing floor was removed with them. The `#[allow(unsafe_code)]` on the Unix `kill` wrapper remains, because the CLI package inherits the workspace `unsafe_code = deny` lint and the old root package did not.
+
+## 6. Failure and recovery review
+
+No new restart or reconnect protocol. Attach moved with the bin package. The transport-authority guard passes at the new path. The security-review abort path still cancels the moved task id. The abort test was not executed.
+
+## 7. Migration and compatibility review
+
+`codegg::tui` is not a supported path. `cargo build -p codegg --bin codegg` no longer resolves; the bin name `codegg` is owned by `codegg-cli`. `cargo build --bin codegg` from the workspace resolves because `e2eb96727` puts `crates/codegg-cli` in `default-members`. That is not a root bin, and the negative `-p codegg --bin codegg` check still exits 101. Bundled theme files were not changed. No schema, protocol, or config migration. No separate daemon/TUI distribution.
+
+## 8. Security review
+
+No authorization change. The TUI crate did not gain a path that answers a permission, steers an agent, or mutates a workspace except by the daemon calls it already made. The Unix signal helper is the same `libc::kill` call, now behind an explicit unsafe allow because the new package inherits the workspace deny. Sandbox fail-closed behavior was not edited to go green. The containment fixture that named deleted `src/main.rs` now names existing `src/lib.rs`; the assertion was kept.
+
+## 9. Documentation and operations
+
+Architecture notes that called the TUI a root module were corrected to the one-way dependency and the bin package. `docs/test-ownership.toml` follows the moved families. `AGENTS.md` and the testing skill were corrected only where a moved target or path made the baseline sentence false. The unrelated iter/junit drafts were not staged. Guard headers that named `src/main.rs` as the CLI bootstrap follow the file.
+
+## 10. Unresolved findings
+
+The local link, family, bin, and `quick` condition in the previous revision of this record was discharged on `e2eb96727`. The earlier disk-full linker error was not an assertion failure. The first bin attempt and the first `quick` attempt failed for the reasons in §4, and those failures were fixed rather than recorded as passes.
+
+The hosted path-retarget condition is discharged by run `44940955257`. The named test passed. The suite summary's one leaky test is a different test and was counted as passed. It does not reopen this milestone.
+
+| Severity | Finding | Future evidence |
+|---|---|---|
+| low | Forty-nine ratio ceilings rose with unchanged comment-line counts | No further action unless a later edit adds comment lines. Do not raise a comment-line ceiling to absorb it |
+
+No high-severity or medium product defect remains. The leaky sandbox test in run `44940955257` is recorded in §1. It is not a defect of this split.
+
+## 11. Roadmap disposition
+
+Milestone 002 is closed. The hosted compile pair is recorded. The root package and `codegg-tui` are separate units in the after log, and the workspace job still builds the TUI crate. Run `44937196668` is not a passing test run. Run `44940955257` is the hosted confirmation that the path retarget no longer fails. Milestone 001 is closed on run `44937196668`'s helper step. A null or unisolated compile effect does not add a third milestone. The deferred binary-topology item stays deferred. The roadmap completion definition is met: both milestones have accepted closure records, ADR-0064's verification section is satisfied by the recorded hosted pair and the already-wired guards, and the registry says so.
+
+## 12. Registry updates
+
+- The active implementation-plan row for 002 stays removed.
+- 002 is closed. Its note records the hosted compile pair and run `44940955257` as the path-retarget confirmation.
+- The subsystem row names 001 closed and 002 closed. The roadmap status is closed. That does not discharge the deferred binary-topology item.
+- Unblock audit, repeated against the current registry: no registered plan in Blocked work listed 001 or 002 as a hard or interface dependency. Nothing was moved to `ready`. The deferred binary-topology item is not discharged. This record unblocks nothing.

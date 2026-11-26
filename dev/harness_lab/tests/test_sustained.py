@@ -18,7 +18,23 @@ import unittest
 from pathlib import Path
 
 from dev.harness_lab import budget, long_horizon_report, recovery_controls_v2, sustained
-from dev.harness_lab.supervisor import HarnessError, run_tool_trial
+from dev.harness_lab.supervisor import (
+    HarnessError,
+    _h006_compiler_diagnostics,
+    _h006_failure_log_category,
+    _H006_SYSCALL_TRACE_MAX_BYTES,
+    _h006_managed_test_diagnostics,
+    _h006_syscall_trace_diagnostics,
+    _h006_path_mount_relationship_from_mountinfo,
+    _h006_path_mount_filesystem_pair_from_mountinfo,
+    _h006_mount_id_from_fdinfo,
+    _h006_mount_identity_pairs,
+    _h006_mount_table_evidence,
+    _h006_process_identity,
+    _h006_mount_relationship_from_ids,
+    _h006_pid_path_mount_id,
+    run_tool_trial,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -234,6 +250,494 @@ class TypedRecoveryControlTest(unittest.TestCase):
         self.assertTrue(control["control_exercised"])
 
 
+class H006FailureDiagnosticTest(unittest.TestCase):
+    def test_report_projection_is_bounded_and_does_not_retain_raw_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            run_dir = workspace / "job-check" / ".codegg" / "test-runs" / "run-1"
+            run_dir.mkdir(parents=True)
+            stdout_path = run_dir / "stdout.log"
+            stdout_path.write_text(
+                json.dumps({
+                    "reason": "compiler-message",
+                    "message": {
+                        "level": "error",
+                        "code": {"code": "E0425"},
+                        "message": "cannot find value PRIVATE_EXECUTOR_TEXT in this scope",
+                    },
+                }) + "\n" + ("padding\n" * 3000) + "error: could not compile\n",
+                encoding="utf-8")
+            stderr_path = run_dir / "stderr.log"
+            stderr_path.write_text(
+                "error: permission denied; PRIVATE_EXECUTOR_TEXT\n", encoding="utf-8")
+            stdout_bytes = stdout_path.stat().st_size
+            stderr_bytes = stderr_path.stat().st_size
+            (run_dir / "report.json").write_text(json.dumps({
+                "status": "Failed",
+                "exit_code": 101,
+                "duration_ms": 17,
+                "output_truncated": True,
+                "failures": [{
+                    "failure_class": "NonzeroExit",
+                    "message": "PRIVATE_EXECUTOR_TEXT",
+                }],
+                "stdout_log": str(stdout_path),
+                "stderr_log": str(stderr_path),
+                "argv": ["cargo", "test"],
+                "cwd": str(run_dir),
+            }), encoding="utf-8")
+
+            diagnostic = _h006_managed_test_diagnostics(workspace)
+
+        self.assertEqual(diagnostic, [{
+            "status": "failed",
+            "exit_code": 101,
+            "duration_ms": 17,
+            "cwd_scope": "job_check_subpath",
+            "output_truncated": True,
+            "stdout_log_bytes": stdout_bytes,
+            "stderr_log_bytes": stderr_bytes,
+            "failure_classes": ["nonzero_exit"],
+            "stdout_category": "compilation_failure",
+            "stderr_category": "filesystem_permission",
+            "compiler_error_codes": ["E0425"],
+            "compiler_error_families": ["unresolved_name", "cargo_compile_summary"],
+            "cargo_json_compiler_messages": 1,
+            "cargo_json_error_messages": 1,
+            "cargo_json_error_source_span_count": 0,
+            "cargo_json_error_without_source_span_count": 1,
+            "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": [],
+            "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
+            "cargo_json_write_error_artifact_kinds": [],
+            "cargo_json_write_error_os_numbers": [],
+            "cargo_json_build_finished_events": 0,
+        }])
+        self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
+
+    def test_syscall_trace_projection_exposes_only_allowlisted_path_roles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "syscalls.trace"
+            trace_path.write_text(
+                '[pid 120] renameat(AT_FDCWD, "/home/runner/private/.cargo-target/debug/rmeta.tmp/full.rmeta", '
+                'AT_FDCWD, "/home/runner/private/.cargo-target/debug/deps/libjob_core.rmeta") '
+                '= -1 EXDEV (Invalid cross-device link)\n'
+                '121 linkat(AT_FDCWD, "/tmp/private-cache/full.rmeta", AT_FDCWD, '
+                '"/home/runner/private/.cargo-target/debug/deps/libjob_core.rmeta", 0) '
+                '= -1 EXDEV (Invalid cross-device link)\n',
+                encoding="utf-8")
+            diagnostic = _h006_syscall_trace_diagnostics(
+                trace_path, ("same_mount",), (("overlay", "overlay"),),
+                ("same_resolved_mount",),
+                (("exact_path", "nearest_existing_parent"),))
+
+        self.assertEqual(diagnostic, {
+            "state": "exdev_observed",
+            "errno": "EXDEV",
+            "operations": ["linkat", "renameat"],
+            "path_role_pairs": [
+                ["cargo_target", "cargo_target"],
+                ["system_temp", "cargo_target"],
+            ],
+            "path_subrole_pairs": [
+                ["cargo_target_debug_rmeta_temp", "cargo_target_debug_deps"],
+                ["system_temp", "cargo_target_debug_deps"],
+            ],
+            "path_relationships": [
+                "different_areas_same_profile",
+                "different_roots",
+            ],
+            "path_mount_relationships": ["same_mount"],
+            "path_mount_filesystem_pairs": [["overlay", "overlay"]],
+            "path_resolved_mount_relationships": ["same_resolved_mount"],
+            "path_resolved_mount_path_states": [
+                ["exact_path", "nearest_existing_parent"]
+            ],
+            "path_mount_id_pairs": [],
+            "path_mount_device_pairs": [],
+            "path_mount_root_component_pairs": [],
+            "mount_table_state": "not_observed",
+            "mount_table_entry_count": 0,
+            "mount_table_root_filesystem": "absent",
+            "mount_table_temp_filesystem": "absent",
+            "artifact_kinds": ["rmeta"],
+        })
+        serialized = json.dumps(diagnostic)
+        self.assertNotIn("/home/runner", serialized)
+        self.assertNotIn("libjob_core", serialized)
+        self.assertNotIn("full.rmeta", serialized)
+        self.assertNotIn("12345", serialized)
+
+    def test_syscall_mount_relationship_projection_uses_bounded_labels(self):
+        mountinfo = (
+            "31 25 0:31 / / rw - overlay overlay rw,lowerdir=/PRIVATE_MOUNT_SOURCE/lower,upperdir=/PRIVATE_MOUNT_SOURCE/upper\n"
+            "32 31 0:32 / /checkout/.cargo-target/debug/build rw - tmpfs tmpfs rw\n"
+        )
+        build_left = "/checkout/.cargo-target/debug/build/pkg-a/out/input.rmeta"
+        build_right = "/checkout/.cargo-target/debug/build/pkg-b/out/output.rmeta"
+        deps_path = "/checkout/.cargo-target/debug/deps/library.rmeta"
+
+        self.assertEqual(
+            _h006_path_mount_relationship_from_mountinfo(
+                build_left, build_right, mountinfo),
+            "same_mount",
+        )
+        self.assertEqual(
+            _h006_path_mount_relationship_from_mountinfo(
+                build_left, deps_path, mountinfo),
+            "different_mounts",
+        )
+        self.assertEqual(
+            _h006_path_mount_filesystem_pair_from_mountinfo(
+                build_left, build_right, mountinfo),
+            ("tmpfs", "tmpfs"),
+        )
+        filesystem_pair = _h006_path_mount_filesystem_pair_from_mountinfo(
+            build_left, deps_path, mountinfo)
+        self.assertEqual(filesystem_pair, ("tmpfs", "overlay"))
+        self.assertNotIn("PRIVATE_MOUNT_SOURCE", json.dumps(filesystem_pair))
+        unknown_mountinfo = "40 25 0:40 / /opaque rw - private-fs source rw\n"
+        self.assertEqual(
+            _h006_path_mount_filesystem_pair_from_mountinfo(
+                "/opaque/source", "/opaque/destination", unknown_mountinfo),
+            ("other", "other"),
+        )
+
+    def test_mount_identity_projection_separates_bind_mounts_of_one_filesystem(self):
+        # Two bind mounts of one ext4 filesystem: the device and the mount root
+        # agree, and only the mount id tells them apart. A rename between them
+        # fails with EXDEV even though every device-based check says "same".
+        mountinfo = (
+            "31 25 8:1 / / rw - ext4 /dev/sda1 rw\n"
+            "32 31 8:1 / /checkout rw - ext4 /dev/sda1 rw\n"
+            "33 31 8:1 / /scratch rw - ext4 /dev/sda1 rw\n"
+            "34 32 8:1 /sub /checkout/sub rw - ext4 /dev/sda1 rw\n"
+        )
+        build_left = "/checkout/.cargo-target/debug/build/pkg-a/out/full.rmeta"
+        build_right = "/checkout/.cargo-target/debug/build/pkg-b/out/full.rmeta"
+        scratch_right = "/scratch/.cargo-target/debug/build/pkg-b/out/full.rmeta"
+
+        self.assertEqual(
+            _h006_mount_identity_pairs(build_left, build_right, mountinfo),
+            (("32", "32"), ("8:1", "8:1"), (0, 0)),
+        )
+        self.assertEqual(
+            _h006_mount_identity_pairs(build_left, scratch_right, mountinfo),
+            (("32", "33"), ("8:1", "8:1"), (0, 0)),
+            "a bind mount of one filesystem must be distinguishable by mount id",
+        )
+        self.assertEqual(
+            _h006_mount_identity_pairs(
+                "/checkout/sub/inner.rmeta", build_left, mountinfo),
+            (("34", "32"), ("8:1", "8:1"), (1, 0)),
+            "a nested mount reports its own id and a non-empty root",
+        )
+        self.assertEqual(
+            _h006_mount_identity_pairs("relative.rmeta", build_left, mountinfo),
+            (None, None, None),
+        )
+        self.assertNotIn("/checkout", json.dumps(
+            _h006_mount_identity_pairs(build_left, scratch_right, mountinfo)))
+
+    def test_mount_table_evidence_separates_a_protected_view_from_the_host(self):
+        # The protected mount view builds its child from a tmpfs root, so a
+        # root on another filesystem is a host table, and no mount attribution
+        # taken from it can describe a view.
+        sandboxed = (
+            "20 1 0:20 / / rw - tmpfs tmpfs rw\n"
+            "21 20 0:21 / /tmp rw - tmpfs tmpfs rw\n"
+            "22 20 8:1 / /checkout rw - ext4 /dev/sda1 rw\n"
+        )
+        self.assertEqual(
+            _h006_mount_table_evidence(sandboxed),
+            ("sandboxed_view", 3, "tmpfs", "tmpfs"),
+        )
+        host = (
+            "28 1 259:1 / / rw - ext4 /dev/root rw\n"
+            "29 28 259:1 / /checkout rw - ext4 /dev/root rw\n"
+        )
+        self.assertEqual(
+            _h006_mount_table_evidence(host),
+            ("host_view", 2, "ext4", "absent"),
+        )
+        self.assertEqual(
+            _h006_mount_table_evidence(""),
+            ("mount_table_unavailable", 0, "absent", "absent"),
+        )
+        self.assertNotIn("/checkout", json.dumps(_h006_mount_table_evidence(host)))
+
+    @unittest.skipUnless(Path("/proc/self/stat").exists(), "requires a Linux /proc identity probe")
+    def test_process_identity_refuses_a_process_it_cannot_pin(self):
+        identity = _h006_process_identity(os.getpid())
+        self.assertIsNotNone(identity, "a live process must be pinnable")
+        self.assertEqual(identity[0], os.getpid())
+        self.assertGreater(identity[1], 0)
+        self.assertIsNone(
+            _h006_process_identity(2 ** 22 + 12345),
+            "a pid that names no process must not yield an identity",
+        )
+
+    def test_resolved_mount_ids_are_reduced_to_fixed_relationship_labels(self):
+        fdinfo = "pos:\t0\nflags:\t0100000\nmnt_id:\t12345\nino:\t9876\n"
+        self.assertEqual(_h006_mount_id_from_fdinfo(fdinfo), "12345")
+        self.assertIsNone(_h006_mount_id_from_fdinfo(fdinfo + "x" * 4096))
+        self.assertEqual(
+            _h006_mount_relationship_from_ids("12345", "12345"),
+            "same_resolved_mount",
+        )
+        self.assertEqual(
+            _h006_mount_relationship_from_ids("12345", "67890"),
+            "different_resolved_mounts",
+        )
+        self.assertEqual(
+            _h006_mount_relationship_from_ids(None, "67890"),
+            "resolved_mount_unavailable",
+        )
+
+    @unittest.skipUnless(hasattr(os, "O_PATH"), "Linux path-mount probe requires O_PATH")
+    def test_resolved_mount_probe_matches_rename_symlink_and_missing_leaf_semantics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target_root = Path(directory) / "target"
+            target_root.mkdir()
+            pid = os.getpid()
+
+            root_mount, root_state = _h006_pid_path_mount_id(
+                pid, str(target_root), target_root)
+            self.assertTrue(root_mount and root_mount.isdigit())
+            self.assertEqual(root_state, "exact_path")
+
+            missing_mount, missing_state = _h006_pid_path_mount_id(
+                pid, str(target_root / "not-yet-created.rmeta"), target_root)
+            self.assertEqual(missing_mount, root_mount)
+            self.assertEqual(missing_state, "nearest_existing_parent")
+
+            link = target_root / "linked.rmeta"
+            link.symlink_to("/proc/1/stat")
+            link_mount, link_state = _h006_pid_path_mount_id(pid, str(link), target_root)
+            proc_mount, proc_state = _h006_pid_path_mount_id(
+                pid, "/proc/1/stat", Path("/"))
+            self.assertEqual(link_state, "exact_path")
+            self.assertEqual(proc_state, "exact_path")
+            self.assertEqual(link_mount, root_mount)
+            self.assertNotEqual(link_mount, proc_mount)
+
+            escape = target_root / "escape"
+            escape.symlink_to("/proc", target_is_directory=True)
+            escaped_mount, escaped_state = _h006_pid_path_mount_id(
+                pid, str(escape / "1" / "stat"), target_root)
+            self.assertIsNone(escaped_mount)
+            self.assertEqual(escaped_state, "path_open_unavailable")
+
+    def test_syscall_trace_projection_rejects_oversize_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "syscalls.trace"
+            trace_path.write_bytes(b"PRIVATE_TRACE" + b"x" * _H006_SYSCALL_TRACE_MAX_BYTES)
+            diagnostic = _h006_syscall_trace_diagnostics(trace_path)
+
+        self.assertEqual(diagnostic, {
+            "state": "oversize",
+            "errno": None,
+            "operations": [],
+            "path_role_pairs": [],
+            "path_subrole_pairs": [],
+            "path_relationships": [],
+            "path_mount_relationships": [],
+            "path_mount_filesystem_pairs": [],
+            "path_resolved_mount_relationships": [],
+            "path_resolved_mount_path_states": [],
+            "path_mount_id_pairs": [],
+            "path_mount_device_pairs": [],
+            "path_mount_root_component_pairs": [],
+            "mount_table_state": "not_observed",
+            "mount_table_entry_count": 0,
+            "mount_table_root_filesystem": "absent",
+            "mount_table_temp_filesystem": "absent",
+            "artifact_kinds": [],
+        })
+        self.assertNotIn("PRIVATE_TRACE", json.dumps(diagnostic))
+
+    def test_unknown_h006_output_maps_to_a_closed_category(self):
+        self.assertEqual(
+            _h006_failure_log_category("PRIVATE_EXECUTOR_TEXT"), "unclassified")
+
+    def test_compiler_diagnostics_project_only_allowlisted_codes_and_families(self):
+        diagnostic = _h006_compiler_diagnostics(
+            "error[E0425]: cannot find value PRIVATE_EXECUTOR_TEXT in this scope\n"
+            "error[E0308]: mismatched types PRIVATE_EXECUTOR_TEXT\n")
+
+        expected = {
+            "compiler_error_codes": ["E0308", "E0425"],
+            "compiler_error_families": ["unresolved_name", "type_mismatch"],
+            "cargo_json_compiler_messages": 0,
+            "cargo_json_error_messages": 0,
+            "cargo_json_error_source_span_count": 0,
+            "cargo_json_error_without_source_span_count": 0,
+            "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": [],
+            "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
+            "cargo_json_write_error_artifact_kinds": [],
+            "cargo_json_write_error_os_numbers": [],
+            "cargo_json_build_finished_events": 0,
+        }
+        self.assertEqual(diagnostic, expected)
+        self.assertNotIn("PRIVATE_EXECUTOR_TEXT", json.dumps(diagnostic))
+
+        cargo_event = json.dumps({
+            "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
+            "message": {
+                "level": "error",
+                "code": {"code": "E0425"},
+                "message": "cannot find value PRIVATE_EXECUTOR_TEXT in this scope",
+            },
+        })
+        self.assertEqual(_h006_compiler_diagnostics(cargo_event), {
+            "compiler_error_codes": ["E0425"],
+            "compiler_error_families": ["unresolved_name"],
+            "cargo_json_compiler_messages": 1,
+            "cargo_json_error_messages": 1,
+            "cargo_json_error_source_span_count": 0,
+            "cargo_json_error_without_source_span_count": 1,
+            "cargo_json_os_error_kinds": [],
+            "cargo_json_error_origins": ["core:lib"],
+            "cargo_json_error_message_kinds": [],
+            "cargo_json_error_path_roles": [],
+            "cargo_json_error_path_subroles": [],
+            "cargo_json_write_error_artifact_kinds": [],
+            "cargo_json_write_error_os_numbers": [],
+            "cargo_json_build_finished_events": 0,
+        })
+        os_error_event = json.dumps({
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "message": "failed to open PRIVATE_EXECUTOR_PATH (os error 13)",
+                "spans": [],
+            },
+        })
+        os_error_diagnostic = _h006_compiler_diagnostics(os_error_event)
+        self.assertEqual(os_error_diagnostic["cargo_json_os_error_kinds"], ["permission_denied"])
+        self.assertEqual(os_error_diagnostic["cargo_json_error_without_source_span_count"], 1)
+        self.assertNotIn("PRIVATE_EXECUTOR_PATH", json.dumps(os_error_diagnostic))
+
+        driver_error_event = json.dumps({
+            "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
+            "message": {
+                "level": "error",
+                "message": "unknown option PRIVATE_EXECUTOR_FLAG",
+            },
+        })
+        driver_error_diagnostic = _h006_compiler_diagnostics(driver_error_event)
+        self.assertEqual(
+            driver_error_diagnostic["cargo_json_error_message_kinds"],
+            ["invalid_compiler_argument"],
+        )
+        self.assertEqual(driver_error_diagnostic["cargo_json_error_origins"], ["core:lib"])
+        self.assertNotIn("PRIVATE_EXECUTOR_FLAG", json.dumps(driver_error_diagnostic))
+
+        filesystem_event = json.dumps({
+            "reason": "compiler-message",
+            "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+            "target": {"kind": ["lib"]},
+            "message": {
+                "level": "error",
+                "message": "failed to write PRIVATE_EXECUTOR_PATH: permission denied",
+                "spans": [],
+            },
+        })
+        filesystem_diagnostic = _h006_compiler_diagnostics(filesystem_event)
+        self.assertEqual(
+            filesystem_diagnostic["cargo_json_error_message_kinds"],
+            ["filesystem_permission_denied", "filesystem_write_failure"],
+        )
+        self.assertEqual(filesystem_diagnostic["cargo_json_error_origins"], ["core:lib"])
+        self.assertNotIn("PRIVATE_EXECUTOR_PATH", json.dumps(filesystem_diagnostic))
+
+        environment_event = json.dumps({
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "message": "environment variable PRIVATE_ENV is not set",
+                "spans": [],
+            },
+        })
+        environment_diagnostic = _h006_compiler_diagnostics(environment_event)
+        self.assertEqual(
+            environment_diagnostic["cargo_json_error_message_kinds"], ["environment_configuration"])
+        self.assertNotIn("PRIVATE_ENV", json.dumps(environment_diagnostic))
+
+    def test_write_path_diagnostic_emits_only_the_contained_path_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            target = (workspace / "job-check" / ".cargo-target" / "debug"
+                      / "incremental" / "query-cache")
+            event = json.dumps({
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "message": f"failed to write {target}: permission denied",
+                },
+            })
+            diagnostic = _h006_compiler_diagnostics(event, workspace=workspace)
+
+        self.assertEqual(
+            diagnostic["cargo_json_error_path_roles"], ["cargo_target_or_temp"])
+        self.assertEqual(
+            diagnostic["cargo_json_error_path_subroles"], ["cargo_incremental_state"])
+        self.assertNotIn(str(workspace), json.dumps(diagnostic))
+
+    def test_unmapped_write_errno_and_artifact_kind_stay_visible(self):
+        """An errno outside the named map must not vanish from the projection.
+
+        `cargo_json_os_error_kinds` only names eight numbers, so a hosted
+        write failure on any other one previously reported no syscall at all
+        and could not be diagnosed from the sanitized receipt. Cargo 1.100
+        also compiles every target under `debug/build/<pkg>/<META>/out/`, so
+        the subrole alone cannot say which artifact the write targeted.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            artifact = (workspace / "job-check" / ".cargo-target" / "debug"
+                        / "build" / "job-core" / "607f04dd27ba51d5" / "out"
+                        / "libjob_core-607f04dd27ba51d5.rlib")
+            event = json.dumps({
+                "reason": "compiler-message",
+                "package_id": "path+file:///workspace/job-check/core#job-core@0.1.0",
+                "target": {"kind": ["lib"]},
+                "message": {
+                    "level": "error",
+                    "message": (
+                        f"failed to write {artifact}: "
+                        "invalid cross-device link (os error 18)"),
+                    "spans": [],
+                },
+            })
+            diagnostic = _h006_compiler_diagnostics(event, workspace=workspace)
+
+        self.assertEqual(
+            diagnostic["cargo_json_error_path_subroles"], ["cargo_build_script_artifact"])
+        self.assertEqual(diagnostic["cargo_json_write_error_artifact_kinds"], ["rlib"])
+        self.assertEqual(diagnostic["cargo_json_write_error_os_numbers"], [18])
+        # The number is named, so it is not duplicated as an unmapped one.
+        self.assertEqual(diagnostic["cargo_json_os_error_kinds"], [])
+        self.assertNotIn("607f04dd27ba51d5", json.dumps(diagnostic))
+
+        mapped = _h006_compiler_diagnostics(json.dumps({
+            "reason": "compiler-message",
+            "message": {"level": "error", "message": "failed to write out/x.rmeta: "
+                        "permission denied (os error 13)"},
+        }), workspace=workspace)
+        self.assertEqual(mapped["cargo_json_write_error_os_numbers"], [])
+        self.assertEqual(mapped["cargo_json_os_error_kinds"], ["permission_denied"])
+
+
 class LongHorizonNativeJobTest(unittest.TestCase):
     fixture = REPO_ROOT / "dev" / "harness_lab" / "fixtures" / "long_horizon_rust_job"
     verifier = fixture / "verifier" / "verify.py"
@@ -384,7 +888,9 @@ class LongHorizonNativeJobTest(unittest.TestCase):
         self.assertTrue(Path(rustc).is_file(), "rustup must resolve a real rustc executable")
         sequence = [
             {"name": "test", "arguments": {
-                "scope": "custom", "command": f"{shlex.quote(cargo)} test --offline --workspace",
+                "scope": "custom", "command": (
+                    f"{shlex.quote(cargo)} test --offline --workspace "
+                    "--message-format=json"),
                 "workdir": "job-check", "execution_mode": "background"}},
             # This is a bounded wait on the actual submitted job, not a fixture
             # delay. It gives the scheduler time to admit the real Cargo work
@@ -399,6 +905,17 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             {"name": "write", "arguments": {
                 "path": "src/lib.rs", "content": "mod normalize;\nmod parser;\n\npub fn parse_version(input: &str) -> Option<(u32, u32, u32)> {\n    let parts = parser::split_version(input)?;\n    normalize::normalize(parts)\n}\n"}},
             {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
+            # A third write and a third observation. `job wait` reports a
+            # status only when the job reaches a terminal state inside its
+            # window, so a bounded wait that times out contributes no
+            # `running` sample: the assertion below had exactly two chances
+            # and both had to land while the job was still live. Every pair
+            # of adjacent observations keeps a write between them, so the
+            # intervening-write check holds for whichever pair reports
+            # `running`.
+            {"name": "write", "arguments": {
+                "path": "src/lib.rs", "content": "mod normalize;\nmod parser;\n\npub fn parse_version(input: &str) -> Option<(u32, u32, u32)> {\n    let parts = parser::split_version(input)?;\n    normalize::normalize(parts)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn version_round_trips() {\n        assert_eq!(super::parse_version(\"v1.2.3\"), Some((1, 2, 3)));\n    }\n}\n"}},
+            {"name": "job", "arguments": {"action": "status", "job_id": "{job_id}"}},
             {"name": "job", "arguments": {
                 "action": "wait", "job_id": "{job_id}", "timeout_ms": 300000}},
         ]
@@ -407,7 +924,9 @@ class LongHorizonNativeJobTest(unittest.TestCase):
             task_id="h006-real-job-observation", tool_sequence=sequence,
             expected_file="never-created", expected_text=None, expected_exists=False,
             workspace_snapshot=self.fixture, rustc_executable=Path(rustc),
+            cargo_home_under_test_workdir=True, trace_h006_syscalls=True,
             initial_files={
+                "job-check/.cargo/config.toml": "[build]\ntarget-dir = \".cargo-target\"\n",
                 "job-check/Cargo.toml": "[workspace]\nmembers = [\"core\", \"index\", \"store\", \"cli\"]\nresolver = \"2\"\n",
                 "job-check/core/Cargo.toml": "[package]\nname = \"job-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
                 "job-check/core/src/lib.rs": """#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -565,24 +1084,11 @@ mod tests {
             })
         self.addCleanup(shutil.rmtree, Path(trial["workspace"]).parent, ignore_errors=True)
         calls = trial["tool_calls"]
-        submissions = [call for call in calls if call.get("job", {}).get("action") == "submit"]
-        observations = [call for call in calls if call.get("tool") == "job"]
-        self.assertEqual(len(submissions), 1)
-        job_id = submissions[0]["job"]["job_id"]
-        self.assertTrue(job_id)
-        exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
-        running = [call for call in exact if call.get("job", {}).get("status") == "running"]
-        self.assertGreaterEqual(len(running), 2, calls)
-        self.assertTrue(_observed_completed_job(exact, job_id), calls)
-        first_running_at = running[0]["finished_elapsed_ms"]
-        second_running_at = running[1]["finished_elapsed_ms"]
-        intervening = [call for call in calls
-                       if first_running_at < call.get("started_elapsed_ms", 0) < second_running_at
-                       and call.get("tool") in {"write", "edit", "apply_patch"}]
-        self.assertGreaterEqual(len(intervening), 1, calls)
-        self.assertEqual(trial["event_observation_state"], "measured_no_gap")
+        test_diagnostics = trial.get("managed_test_diagnostics", [])
         receipt_path = os.environ.get("CODEGG_H006_JOB_RECEIPT")
         if receipt_path:
+            # Preserve the bounded receipt before assertions so failed lifecycle
+            # checks still leave enough sanitized evidence to diagnose the job.
             receipt = {
                 "schema_version": 1,
                 "provider": "local-openai-fixture",
@@ -591,6 +1097,8 @@ mod tests {
                 "event_gap_count": trial["event_gap_count"],
                 "provider_calls": trial["provider_calls"],
                 "wall_time_ms": trial["wall_time_ms"],
+                "managed_test_diagnostics": test_diagnostics,
+                "syscall_diagnostics": trial.get("syscall_diagnostics"),
                 "tool_calls": [{
                     "tool": call["tool"],
                     "status": call["status"],
@@ -602,6 +1110,30 @@ mod tests {
             path = Path(receipt_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
+        submissions = [call for call in calls if call.get("job", {}).get("action") == "submit"]
+        observations = [call for call in calls if call.get("tool") == "job"]
+        self.assertEqual(len(submissions), 1)
+        job_id = submissions[0]["job"]["job_id"]
+        self.assertTrue(job_id)
+        exact = [call for call in observations if call.get("job", {}).get("job_id") == job_id]
+        running = [call for call in exact if call.get("job", {}).get("status") == "running"]
+        self.assertGreaterEqual(
+            len(running), 2,
+            {
+                "calls": calls,
+                "managed_test_diagnostics": test_diagnostics,
+                "syscall_diagnostics": trial.get("syscall_diagnostics"),
+            },
+        )
+        self.assertTrue(_observed_completed_job(exact, job_id), calls)
+        first_running_at = running[0]["finished_elapsed_ms"]
+        second_running_at = running[1]["finished_elapsed_ms"]
+        intervening = [call for call in calls
+                       if first_running_at < call.get("started_elapsed_ms", 0) < second_running_at
+                       and call.get("tool") in {"write", "edit", "apply_patch"}]
+        self.assertGreaterEqual(len(intervening), 1, calls)
+        self.assertEqual(trial["event_observation_state"], "measured_no_gap")
 
     def test_failed_background_job_cannot_satisfy_h006_completion(self):
         calls = [{"tool": "job", "job": {"job_id": "job-123", "status": "failed"}}]

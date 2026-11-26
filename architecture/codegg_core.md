@@ -350,9 +350,10 @@ callers via `codegg-config::schema::Config`.
 - Unsafe code is denied for this crate, but **not** by a crate-level
   attribute: `crates/codegg-core/Cargo.toml` carries `[lints] workspace = true`
   and the root `Cargo.toml` sets `[workspace.lints.rust] unsafe_code = "deny"`.
-  The root `codegg` package deliberately does **not** inherit that table
-  (`src/bin/codegg-sandbox-helper.rs` has reviewed `unsafe`); it keeps
-  `#![deny(unsafe_code)]` in `src/lib.rs` instead. Do not add a duplicate
+  The root `codegg` package deliberately does **not** inherit that table;
+  `src/lib.rs` keeps `#![deny(unsafe_code)]`. The helper bin's reviewed
+  `unsafe` lives in `crates/codegg-sandbox-helper`, which does not inherit
+  the workspace lint table. `crates/codegg-sandbox` does inherit the deny. Do not add a duplicate
   `#![deny(unsafe_code)]` to `codegg-core/src/lib.rs` — the crate root is
   exactly the 54 `pub mod` lines.
 - `codegg-core` must NOT gain UI, server, plugin, or auth dependencies.

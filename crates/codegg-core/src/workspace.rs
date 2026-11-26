@@ -1,13 +1,6 @@
-//! Workspace identity, registry, path policy, and immutable execution context.
-//!
-//! Phase 2 of the single-daemon multi-project orchestration roadmap makes
-//! workspace identity a first-class concept. A `WorkspaceId` is a stable,
-//! opaque identifier for a canonical project root. Every persisted session is
-//! bound to exactly one workspace. The daemon's [`WorkspaceRegistry`]
-//! deduplicates canonical roots (rejecting symlink/relative aliases) and
-//! keeps active workspace state. An [`ExecutionContext`] is passed by `Arc`
-//! through every daemon-owned execution path so that commands, tools, and
-//! subagents never infer their working directory from process-global cwd.
+//! Workspace IDs are stable opaque keys; each persisted session binds to one canonical workspace.
+//! The registry rejects path aliases; execution uses `ExecutionContext`, never process-global cwd.
+//! See `architecture/workspace.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -175,12 +168,7 @@ pub trait WorkspaceStore: Send + Sync {
 }
 
 /// SQLite-backed implementation of [`WorkspaceStore`].
-///
-/// The table layout is created by schema migration v22. The store uses the
-/// existing session database (`SqlitePool`) so workspace and session rows
-/// share a single canonical database file per workspace root. Phase 3 will
-/// migrate to a user-scoped catalog; this trait abstraction lets us swap
-/// the implementation without touching the registry.
+/// Workspace and session rows share one canonical database file per workspace root.
 pub struct SqliteWorkspaceStore {
     pool: sqlx::SqlitePool,
 }

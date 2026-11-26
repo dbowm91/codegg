@@ -29,10 +29,11 @@ verifier evolves with the workspace.
   a workflow) widens the scope to the whole workspace, and a changed file in
   a crate that **another crate depends on** widens every transitive dependent
   to its full surface. That last rule is the one people are surprised by:
-  the root package depends on all eleven other workspace crates and re-exports
-  several of them, so a change to a leaf crate reaches the root package's
-  tests through the root's own source — a path rule cannot see it, and the
-  manifest's `[[dependencies]]` section is what closes the gap. It prints the
+  the root package depends on 13 workspace crates and re-exports several,
+  while `codegg-tui` and `codegg-cli` depend on the root and the CLI depends
+  on the TUI. The manifest's `[[dependencies]]` section records these edges,
+  so the selector widens changes through actual dependents without inventing
+  a root-to-TUI dependency. It prints the
   scope it selected and why, including any cargo features the selected
   targets are gated on. The hosted CI job's scope is unaffected by it.
 - Run `scripts/verify.sh full` for broad handoff qualification when the change
@@ -48,11 +49,13 @@ installed servers. Use the feature set documented in `AGENTS.md`.
 
 ## Test targets are families
 
-The root package's integration tests are **families**: one cargo executable
-per subject area, under `tests/<family>/`. `cargo test --test <member>` does
-not select a single member any more — the unit of selection is the family.
-Use `cargo test --test <family> -- <member>` to narrow to one member, and
-remember that a test's full path is now `family::member::test_name`, which is
+Integration tests are **families**: one cargo executable per subject area,
+owned by a package. The TUI families live under
+`crates/codegg-tui/tests/<family>/`; root-package families remain under
+`tests/<family>/`. `cargo test --test <member>` does not select one member —
+use `cargo test -p <package> --test <family> -- <member>`. For example,
+`cargo test -p codegg-tui --test tui_render -- tui_render` selects that TUI
+family member. A test's full path is `family::member::test_name`, which is
 what `--exact` matches against. `scripts/check_test_target_references.py`
 fails if a nextest or CI filter names a target that does not exist.
 

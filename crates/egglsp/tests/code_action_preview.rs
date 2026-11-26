@@ -246,6 +246,175 @@ fn scenario_with_two_actions(source_uri: &str) -> serde_json::Value {
     })
 }
 
+fn semantic_tokens_scenario(source_uri: &str, supports_range: bool) -> serde_json::Value {
+    let mut steps = vec![
+        json!({
+            "type": "ExpectRequest",
+            "method": "initialize",
+            "then": [{
+                "type": "RespondResult",
+                "result": {
+                    "capabilities": {
+                        "semanticTokensProvider": {
+                            "legend": {
+                                "tokenTypes": ["variable"],
+                                "tokenModifiers": []
+                            },
+                            "full": true,
+                            "range": supports_range
+                        }
+                    }
+                }
+            }]
+        }),
+        json!({"type": "ExpectNotification", "method": "initialized", "then": []}),
+        json!({
+            "type": "ExpectNotification",
+            "method": "textDocument/didOpen",
+            "params": {
+                "type": "ObjectContains",
+                "value": {"textDocument": {"type": "ObjectContains", "value": {"uri": source_uri}}}
+            },
+            "then": []
+        }),
+    ];
+    if supports_range {
+        steps.push(json!({
+            "type": "ExpectRequest",
+            "method": "textDocument/semanticTokens/range",
+            "params": {
+                "type": "ObjectContains",
+                "value": {
+                    "textDocument": {"type": "ObjectContains", "value": {"uri": source_uri}},
+                    "range": {
+                        "type": "ObjectContains",
+                        "value": {
+                            "start": {"line": 4, "character": 0},
+                            "end": {"line": 12, "character": 0}
+                        }
+                    }
+                }
+            },
+            "then": [{"type": "RespondResult", "result": {"data": [4, 0, 5, 0, 0]}}]
+        }));
+    }
+    steps.extend([
+        json!({
+            "type": "ExpectRequest",
+            "method": "shutdown",
+            "then": [{"type": "RespondResult", "result": null}]
+        }),
+        json!({"type": "ExpectNotification", "method": "exit", "then": []}),
+    ]);
+    json!({
+        "name": "semantic_tokens_range_uses_advertised_range_support",
+        "steps": steps,
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    })
+}
+
+#[tokio::test]
+async fn semantic_tokens_range_uses_range_operation_when_advertised() {
+    let harness = CodeActionHarness::start(|source_uri| semantic_tokens_scenario(source_uri, true))
+        .expect("harness");
+    let (key, _root) = harness
+        .service
+        .get_or_create_client_for_file(&harness.source_path)
+        .await
+        .expect("the client starts");
+    harness
+        .service
+        .ensure_file_open_from_disk_for_key(&key, &harness.source_path)
+        .await
+        .expect("the document opens");
+
+    let operations = LspOperations::new(harness.service.clone());
+    let tokens = operations
+        .semantic_tokens_for_warm_client_in_range(
+            &key,
+            &harness.source_path,
+            Range {
+                start: Position {
+                    line: 4,
+                    character: 0,
+                },
+                end: Position {
+                    line: 12,
+                    character: 0,
+                },
+            },
+            1000,
+        )
+        .await
+        .expect("the advertised range read succeeds");
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0].line, 4);
+    assert!(
+        harness
+            .transcript()
+            .contains("textDocument/semanticTokens/range"),
+        "the scripted server must observe the range method
+{}",
+        harness.transcript()
+    );
+    harness.service.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn unsupported_range_does_not_fall_back_to_a_full_read_for_an_over_cap_document() {
+    let harness =
+        CodeActionHarness::start(|source_uri| semantic_tokens_scenario(source_uri, false))
+            .expect("harness");
+    let large_source: String = (0..1100)
+        .map(|index| format!("pub const TOKEN_{index}: u32 = {index};\n"))
+        .collect();
+    std::fs::write(&harness.source_path, large_source).expect("write over-cap fixture");
+    let (key, _root) = harness
+        .service
+        .get_or_create_client_for_file(&harness.source_path)
+        .await
+        .expect("the client starts");
+    harness
+        .service
+        .ensure_file_open_from_disk_for_key(&key, &harness.source_path)
+        .await
+        .expect("the document opens");
+
+    let operations = LspOperations::new(harness.service.clone());
+    let result = operations
+        .semantic_tokens_for_warm_client_in_range(
+            &key,
+            &harness.source_path,
+            Range {
+                start: Position {
+                    line: 10,
+                    character: 0,
+                },
+                end: Position {
+                    line: 30,
+                    character: 0,
+                },
+            },
+            1000,
+        )
+        .await;
+    assert!(
+        matches!(result, Err(LspError::Unavailable(_))),
+        "unsupported viewport range stays unsupported, not a full-file fallback: {result:?}"
+    );
+    let transcript = harness.transcript();
+    assert!(
+        !transcript.contains("textDocument/semanticTokens/full"),
+        "{transcript}"
+    );
+    assert!(
+        !transcript.contains("textDocument/semanticTokens/range"),
+        "{transcript}"
+    );
+    harness.service.shutdown_all().await;
+}
+
 #[tokio::test]
 async fn one_request_yields_many_previews_and_a_command_only_action_yields_none() {
     let harness = CodeActionHarness::start(scenario_with_two_actions).expect("harness");

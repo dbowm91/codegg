@@ -72,7 +72,10 @@ instructions into the candidate. See `architecture/agent.md`.
    `src/agent/team.rs` inbox is removed; the `task` tool's board/claim/release/
    handoff-request actions expose bounded same-group coordination facts and
    advisory intent only. They cannot message, cancel, interrupt, or reassign
-   another run. Derive the action set from `src/tool/task.rs`.
+   another run. Read-only `status`/bounded `wait` on a root child are owned by
+   the originating session across turns; a delegated caller must be that run's
+   direct parent. Mutating controls remain turn-scoped for root runs. Derive
+   the action set from `src/tool/task.rs`.
 8. **Peer hints stay untrusted and push-only.** Deliver only allowlisted,
    bounded host observations at provider boundaries; recheck after provider
    completion and refuse a returned tool batch when new peer facts or a gap

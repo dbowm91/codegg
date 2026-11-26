@@ -761,17 +761,38 @@ pub fn evaluate_reasoning_selection(
         ReasoningOverride::Off => {}
     }
 
+    // A dimension the record declares `Unsupported` is a fact, whatever
+    // the model's overall reasoning status says. The kernel's decision
+    // function consults the overall status first, so a partial record
+    // (effort `unsupported`, every other dimension `unknown`) reaches the
+    // `unknown` disposition and loses the one fact the record declares —
+    // exactly the case an operator override creates. The disposition still
+    // comes from `policy.unsupported`, so this is not a second policy.
+    let dimension = match selection {
+        ReasoningOverride::Effort { .. } => dimension::EFFORT,
+        ReasoningOverride::Budget { .. } => dimension::BUDGET,
+        ReasoningOverride::Off => dimension::DISABLE,
+    };
+    let declared = match selection {
+        ReasoningOverride::Effort { .. } => capability.effort_status,
+        ReasoningOverride::Budget { .. } => capability.budget_status,
+        ReasoningOverride::Off => capability.disable_status,
+    };
+    if declared == ReasoningCapabilityStatus::Unsupported {
+        return apply_disposition(
+            policy.unsupported,
+            model,
+            dimension,
+            format!("the model declares the reasoning {dimension} dimension unsupported"),
+        );
+    }
+
     let kernel_selection = match selection {
         ReasoningOverride::Effort { level } => ReasoningCapabilitySelection::Effort(level),
         ReasoningOverride::Budget { tokens } => {
             ReasoningCapabilitySelection::Budget(*tokens as u64)
         }
         ReasoningOverride::Off => ReasoningCapabilitySelection::Off,
-    };
-    let dimension = match selection {
-        ReasoningOverride::Effort { .. } => dimension::EFFORT,
-        ReasoningOverride::Budget { .. } => dimension::BUDGET,
-        ReasoningOverride::Off => dimension::DISABLE,
     };
 
     let facts = to_neutral_thinking_capability(capability);
@@ -815,6 +836,46 @@ pub fn evaluate_reasoning_selection(
                 ),
             },
         }),
+    }
+}
+
+/// The admission policy CodeGG ships for a reasoning selection.
+///
+/// The kernel's [`ReasoningCapabilityPolicy::default`] is fail-closed:
+/// `unsupported → Reject`, `unknown → Reject`, `mixed → WarnDrop`.
+/// That default is correct only where capability facts exist. CodeGG
+/// publishes a baseline for three adapter families (`anthropic`,
+/// `openai`, `minimax`); every other family — and every model the
+/// discovery overlay does not describe, which at this baseline is all of
+/// them, because the pinned upstream publishes no capability block —
+/// resolves to an all-`Unknown` record.
+///
+/// A fail-closed default over that vacuum turned a *preference* into an
+/// admission condition: a persisted `Off` selection refused every turn on
+/// every model outside those three families, and an `Off` on MiniMax
+/// refused the turn because the model always reasons. Neither model saw a
+/// request, so the core product did not work at all.
+///
+/// The shipped policy separates the two questions the kernel asks:
+///
+/// - **`unknown → Allow`.** No contract is not evidence of unsupported.
+///   The selection is forwarded verbatim and the provider is the
+///   authority, exactly as an absent capability record means everywhere
+///   else in this workspace. Refusing here invents a fact nobody
+///   published.
+/// - **`unsupported → WarnDrop`.** A declared `Unsupported` dimension is
+///   a fact, so the preference is dropped — with a notice naming what was
+///   dropped — and the turn still runs. Asking to think harder must not
+///   make the model unreachable.
+/// - **`mixed → WarnDrop`.** The kernel's own disposition, retained.
+///
+/// `Reject` stays in the vocabulary for a caller holding facts that
+/// warrant it; nothing on the daemon's shipped path produces it.
+pub fn local_admission_policy() -> ReasoningCapabilityPolicy {
+    ReasoningCapabilityPolicy {
+        unsupported: CapabilityDisposition::WarnDrop,
+        unknown: CapabilityDisposition::Allow,
+        mixed: CapabilityDisposition::WarnDrop,
     }
 }
 
@@ -1056,19 +1117,33 @@ mod tests {
             ReasoningCapabilityStatus::Unknown
         );
 
-        // The fail-closed policy is what turns "unknown" into a refusal
-        // rather than an optimistic forward.
-        let decision = evaluate(
+        // The kernel's own default would turn "unknown" into a refusal.
+        // The shipped policy must not: no contract is evidence of
+        // unsupported, so the selection is forwarded and the provider is
+        // the authority.
+        let selection = ReasoningOverride::Effort {
+            level: "high".to_string(),
+        };
+        let kernel_default = evaluate(
             "some-model",
-            Some(&ReasoningOverride::Effort {
-                level: "high".to_string(),
-            }),
+            Some(&selection),
             &resolution.effective,
             &ReasoningCapabilityPolicy::default(),
         );
         assert!(
-            decision.is_rejection(),
-            "an unknown dimension must be refused, not forwarded: {decision:?}"
+            kernel_default.is_rejection(),
+            "the kernel default refuses an unknown dimension: {kernel_default:?}"
+        );
+        let shipped = evaluate(
+            "some-model",
+            Some(&selection),
+            &resolution.effective,
+            &local_admission_policy(),
+        );
+        assert_eq!(
+            shipped,
+            ReasoningCapabilityDecision::Allow,
+            "the shipped policy must forward an unknown dimension: {shipped:?}"
         );
     }
 
@@ -1172,10 +1247,65 @@ mod tests {
             "{decision:?}"
         );
 
-        // The default this milestone relies on is the fail-closed one.
+        // These are the kernel's own defaults. The daemon does not use
+        // them; see `the_shipped_policy_never_refuses_a_preference`.
         assert_eq!(default_policy.unsupported, CapabilityDisposition::Reject);
         assert_eq!(default_policy.unknown, CapabilityDisposition::Reject);
         assert_eq!(default_policy.mixed, CapabilityDisposition::WarnDrop);
+    }
+
+    /// The shipped admission policy: a reasoning preference never prevents
+    /// a model call.
+    ///
+    /// Both failure modes it removes were live. A family with no
+    /// capability baseline (four of the seven adapter families) resolved
+    /// to all-`Unknown`, so `Off` — the selection most people leave
+    /// behind — refused every turn. A declared `Unsupported` dimension
+    /// (MiniMax's disable, Anthropic's effort, OpenAI's budget) refused
+    /// the turn too, so the model that could have answered never saw a
+    /// request.
+    #[test]
+    fn the_shipped_policy_never_refuses_a_preference() {
+        let policy = local_admission_policy();
+        assert_eq!(policy.unknown, CapabilityDisposition::Allow);
+        assert_eq!(policy.unsupported, CapabilityDisposition::WarnDrop);
+        assert_eq!(policy.mixed, CapabilityDisposition::WarnDrop);
+
+        let unknown = ReasoningCapabilityRecord::default();
+        for selection in [
+            ReasoningOverride::Off,
+            ReasoningOverride::Effort {
+                level: "xhigh".to_string(),
+            },
+            ReasoningOverride::Budget { tokens: 2048 },
+        ] {
+            let decision = evaluate("m", Some(&selection), &unknown, &policy);
+            assert_eq!(
+                decision,
+                ReasoningCapabilityDecision::Allow,
+                "an unknown capability must forward {selection:?}: {decision:?}"
+            );
+            assert_eq!(
+                decision.effective_selection(Some(&selection)),
+                Some(selection.clone()),
+                "a forwarded selection must survive admission unchanged"
+            );
+        }
+
+        let unsupported = effort_record(ReasoningCapabilityStatus::Unsupported, None);
+        let effort = ReasoningOverride::Effort {
+            level: "high".to_string(),
+        };
+        let decision = evaluate("m", Some(&effort), &unsupported, &policy);
+        assert!(
+            matches!(decision, ReasoningCapabilityDecision::WarnDrop { .. }),
+            "a declared-unsupported dimension must be dropped, not refused: {decision:?}"
+        );
+        assert_eq!(
+            decision.effective_selection(Some(&effort)),
+            None,
+            "a dropped dimension must not reach the request"
+        );
     }
 
     #[test]

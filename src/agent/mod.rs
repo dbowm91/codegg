@@ -51,7 +51,7 @@ mod transcript;
 pub mod transcript_capture;
 
 pub mod transcript_publisher;
-mod turn_completion;
+pub(crate) mod turn_completion;
 pub mod turn_runtime;
 pub mod worker;
 

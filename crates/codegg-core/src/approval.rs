@@ -1,15 +1,5 @@
-//! Approval routing domain and durable runtime preferences (M003).
-//!
-//! This module owns the frontend-neutral approval/sandbox vocabulary and the
-//! daemon-owned principal-scoped preference store. It is deliberately
-//! UI/server/plugin/auth-free: it stores only non-secret preference strings
-//! (`interactive`/`automatic`/`yolo`, sandbox profile names, connection and
-//! model identity) plus revision/timestamp metadata. Credentials, prompts,
-//! tool output, and filesystem secrets never enter this store.
-//!
-//! Long-term references: `plans/000-long-term-specification.md`,
-//! ADR-0004 (`plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`),
-//! and the execution-reliability roadmap M003.
+//! Frontend-neutral approval/sandbox types and daemon-owned principal preferences.
+//! Preferences store no credentials or execution data; see `architecture/permission.md`.
 
 use codegg_protocol::core::{
     ReasoningOverride, MAX_REASONING_BUDGET_TOKENS, MAX_REASONING_LABEL_BYTES,
@@ -22,8 +12,7 @@ use crate::error::StorageError;
 /// User-facing approval mode. Closed enum per ADR-0004.
 ///
 /// - `Interactive`: escalations go to the human/frontend.
-/// - `Automatic`: escalations are reviewed by the dedicated bounded reviewer
-///   (M006). Until M006 lands, callers must defer to the human.
+/// - `Automatic`: escalations are reviewed by the bounded reviewer.
 /// - `Yolo`: escalations are accepted automatically within the already
 ///   resolved authority/sandbox ceiling. Never overrides an explicit deny.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -1,10 +1,10 @@
 //! Semantic, frontend-neutral theme schema.
 //!
 //! This schema is the canonical, in-memory representation of a codegg theme.
-//! It is the source of truth that gets projected into ratatui [`Theme`](crate::tui::theme::Theme)
-//! values (and, eventually, into iced style catalogs). Importer formats
-//! (native codegg TOML, Halloy TOML, future Base16) all decode into
-//! [`SemanticTheme`]; importers must not project into ratatui directly.
+//! It is the source of truth that frontend adapters project into their own
+//! style catalogs. Importer formats (native codegg TOML, Halloy TOML, future
+//! Base16) all decode into [`SemanticTheme`]; importers do not depend on a
+//! frontend rendering library.
 
 use std::path::PathBuf;
 

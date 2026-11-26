@@ -594,8 +594,12 @@ cargo install codegg --version <VERSION>
 Source/development installation remains:
 
 ```bash
-cargo install --path .
+cargo install --locked --path crates/codegg-cli
 ```
+
+The workspace root is not an installable target: the root package carries no
+binary of its own, so `cargo install --path .` installs nothing. The product
+binary lives in the `codegg-cli` package.
 
 #### Post-publication installer smoke (M002)
 

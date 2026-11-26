@@ -1,9 +1,8 @@
 # Configuration
 
-CodeGG configuration is JSON with JSONC support, so `//` and `/* */` comments
-are allowed. A fully commented example lives at
-[`codegg.example.jsonc`](../codegg.example.jsonc) in the repository root —
-copy it as a starting point and edit down.
+CodeGG configuration uses JSON with JSONC support, so `//` and `/* */`
+comments are allowed. The repository-root `codegg.example.jsonc` file is a
+fully commented starting point that you can edit down.
 
 Check a config before relying on it:
 
@@ -22,27 +21,24 @@ codegg edit --editor hx                # override $VISUAL/$EDITOR
 ```
 
 `edit` resolves the editor from `--editor`, then `$VISUAL`, then `$EDITOR`,
-then the first of `hx`, `vim`, `vi`, `nano` on `PATH`, and re-checks the file
-once the editor exits. See [`cli.md`](cli.md#edit) for the full contract.
+then the first of `hx`, `vim`, `vi`, or `nano` on `PATH`. It re-checks the file
+when the editor exits. See `docs/cli.md` for details.
 
-`validate` exits 0 and prints `Configuration is valid: <path>` for the file you
-passed to `--config`, and exits 1 with a message otherwise. With no `--config`
-it validates the auto-detected config and prints `Configuration is valid.`
-without naming a path.
+`validate` exits 0 when the config is valid and exits 1 with an error message
+otherwise. With `--config`, it names the file; without it, CodeGG validates the
+auto-detected config.
 
-Scheduler build admission always has a per-workspace limit of one by default.
-To additionally limit concurrent Build and Format jobs across linked
-workspaces in the same repository, set
-`scheduler.quota.max_concurrent_builds_per_repository` to a positive integer.
-This repository-wide limit is opt-in; a workspace without a resolved
-repository binding is refused when the option is enabled. The quota does not
-classify arbitrary Bash, tests, or other external processes as builds. See
-[`build_admission.md`](../architecture/build_admission.md).
+Build jobs are limited to one per workspace by default. An optional
+repository-wide limit is available through
+`scheduler.quota.max_concurrent_builds_per_repository`. It applies only when a
+workspace has a repository binding and does not classify arbitrary Bash, tests,
+or other processes as builds. See `architecture/build_admission.md`.
 
 ## Where configuration is read from
 
-All of these layers are loaded and **merged** — this is not first-match-wins.
-They are collected in this order, and a later layer overrides an earlier one:
+All of these layers are loaded and **merged**, rather than using only the first
+matching file. They are collected in this order, and a later layer overrides an
+earlier one:
 
 | Order | Location | Notes |
 |---|---|---|
@@ -61,8 +57,8 @@ whose fields are all non-`Option` (`security`, `provider_connections`,
 `deterministic_tools`) is replaced wholesale rather than merged. Within a
 key-by-key section, a nested block you specify replaces that whole block.
 
-`<config_dir>` is the platform config directory — `~/.config` on Linux,
-`~/Library/Application Support` on macOS.
+`<config_dir>` is the platform config directory. It is `~/.config` on Linux
+and `~/Library/Application Support` on macOS.
 
 Project discovery checks these four paths in each ancestor directory,
 starting at the working directory and walking up:
@@ -77,39 +73,38 @@ starting at the working directory and walking up:
 Because the walk goes upward, a config at the repository root applies to every
 subdirectory beneath it.
 
-## The three gotchas that break configs silently
+## Three config mistakes to avoid
 
 ### 1. Unknown keys are ignored, not rejected
 
 The top-level schema does not use `deny_unknown_fields` (the single use in
 the schema is on a nested record, `ReasoningCapabilityRecord`). A misspelled
 key parses cleanly and does nothing. If a setting appears to be ignored, check the
-spelling against [`architecture/config.md`](../architecture/config.md).
+spelling against `architecture/config.md`.
 
-### 2. Several keys are untagged enums with no "object" variant
+### 2. Some settings accept only specific shapes
 
-These accept a specific set of shapes. Passing the wrong one is a hard parse
-error, and because the whole file fails to parse, CodeGG falls back to
-defaults — so a single bad value discards your entire configuration.
+These accept specific shapes. A wrong value is a parse error and can prevent
+the file from loading. Validate changes before relying on them.
 
 | Key | Accepted shapes |
 |---|---|
-| `autoupdate` | `true` / `false`, or a string. **Not** an object. (Also inert — `codegg upgrade` only runs when you invoke it.) |
+| `autoupdate` | `true` / `false`, or a string. **Not** an object. This setting is inert; run `codegg upgrade` explicitly. |
 | `provider.<id>.timeout` | An integer number of **milliseconds**, or a boolean. `"60s"` is rejected. |
 | `lsp` | `false`, or a map keyed by **server id**. |
 | `formatter` | `false`, or a map keyed by **file extension**. |
-| `plugin` | An array of **path strings**. |
+| `plugin` | An array of path strings or `[path, options]` entries. |
 | `permission.<tool>` | An action string (`"allow"` / `"ask"` / `"deny"`), or an object whose values are all strings. |
 
-### 3. Several maps are keyed directly — there is no wrapper level
+### 3. Some maps are keyed directly, with no wrapper object
 
-A nested wrapper silently registers the wrong thing instead of failing:
+A nested wrapper can silently register the wrong thing instead of failing:
 
-- `mcp` — servers are keyed directly. `"mcp": {"servers": {...}}` registers a
+- `mcp` servers are keyed directly. `"mcp": {"servers": {...}}` registers a
   server literally named `servers`.
-- `lsp` — keyed directly by server id (`rust-analyzer`, `pyright`,
-  `typescript-language-server`, …), not by language name.
-- `formatter` — keyed directly by extension, so `{"rules": {...}}` is wrong.
+- `lsp` is keyed directly by server id, such as `rust-analyzer` or `pyright`,
+  not by language name.
+- `formatter` is keyed directly by file extension. Do not add a `rules` wrapper.
 
 ## A minimal working config
 
@@ -169,23 +164,11 @@ routing entirely.
 
 Then select it with `codegg -m virtual:code` or `/model virtual:code`.
 
-How it behaves:
-
-- CodeGG first settles the **provider connection** selected for the turn or
-  session, then applies only a route whose model is compatible with that
-  connection. A route can never migrate a turn to a different provider.
-- If the selected connection is EggPool, EggPool remains responsible for
-  account and provider routing behind its endpoint.
-- If the selector fails or emits invalid output, CodeGG uses the configured
-  `default_model` when that is compatible with the connection.
-- Caller cancellation propagates.
-
-Routing is model selection, not provider failover. CodeGG performs selection
-per turn and keeps no local sticky affinity cache; the `sticky` and
-`affinity_ttl_s` fields exist for shared policy and fingerprint compatibility
-and do not pin a session to a route.
-
-See `architecture/config.md` and `README.md` for the full contract.
+CodeGG chooses among configured routes for each turn. It keeps the provider
+connection already selected for that turn and will not switch providers. If
+selection fails or returns an invalid route, CodeGG uses the compatible
+`default_model`. Routing does not pin a session to one route. See
+`architecture/config.md` for the full contract.
 
 ## Environment variable interpolation
 
@@ -206,13 +189,15 @@ variable's value before parsing, anywhere in the file:
 An unterminated `${` is emitted literally rather than swallowing the rest of
 the file, and a variable that is not set expands to an empty string. Note that
 the config file is read fresh on each load, so this is the supported way to
-keep secrets out of the file itself — but prefer a provider's `auth.env` field,
-which keeps the lookup explicit and avoids writing an expanded secret to disk.
+keep secrets out of the file itself. Prefer a provider's `auth.env` field,
+which makes the lookup explicit and avoids writing the expanded secret to disk.
 
 
 ## What else configuration controls
 
-`codegg.example.jsonc` annotates each block. The main groups are:
+`codegg.example.jsonc` annotates each block. The generated config catalog at
+`architecture/config-catalog.md` lists every section and its merge behavior.
+This page provides the narrative guide. The main groups are:
 
 | Group | Key | Guide |
 |---|---|---|
@@ -230,73 +215,16 @@ which keeps the lookup explicit and avoids writing an expanded secret to disk.
 | HTTP server | `server` | `architecture/server.md` |
 | Remote execution | `eggwork` | `architecture/jobs.md`, `architecture/config.md` |
 
-Note that the `skills` block adds two extra roots and a kill switch on top of
-those fixed directories: `skills.paths` adds skills directories, each used
-**directly** rather than as a parent that gets `<vendor>/skills` appended, and
-`skills.enabled = false` disables discovery everywhere. See
-`architecture/skills.md`.
+The `skills.paths` entries are used as skills directories directly, without
+appending a vendor subdirectory. Set `skills.enabled` to `false` to disable
+skill discovery. See `docs/agents-skills.md` and `architecture/skills.md`.
 
-The `eggwork` block names the remote execution nodes. Two of its keys decide
-whether a client may *ask* for a node: `eggwork.allowed_target_nodes` is the
-approved-node allowlist (absent means nothing is targetable), and
-`eggwork.required_isolation_policy` / `eggwork.required_network_policy` are the
-posture ceiling a targetable node must declare. Naming a node also requires the
-caller to hold the project-owner node-target capability, so a contributor cannot
-reach a remote node even on a daemon that allows it.
-
-A node profile may also carry `resource_limits` — the operator's ceiling on the
-physical limits a job may ask that node to enforce — and
-`max_concurrent_executions`, which bounds how many remote executions the daemon
-runs against that node at once. Both are absent by default, so an unconfigured
-daemon behaves exactly as it did before remote limits existed. A limit is
-expressed in the node's own units: `memory_bytes` in bytes,
-`cpu_quota_milli_percent` in milli-percent of one CPU (`1000` means one full
-CPU, not a CPU-time budget), and `pids` as a task count. Each dimension says
-whether it is `required` (the daemon refuses to submit when the node cannot
-enforce it) or `best_effort` (the node may decline, and the result says so).
-A job may ask for less than the ceiling, never more, and may never weaken a
-`required` limit — such a request is refused before the job is created.
+Remote execution settings are under `eggwork`. For node targeting, isolation,
+network policy, and resource limits, see `architecture/jobs.md` and
+`architecture/config.md`.
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
+Checked 2026-11-23 against `crates/codegg-config/src/paths.rs`, `crates/codegg-config/src/schema.rs`, `src/agent/semantic_router.rs`, and `src/scheduler/config.rs`. Confirmed config precedence, the documented key shapes, model-router behavior, skill paths, and scheduler quota settings.
 
-- Config layers and their order: `crates/codegg-config/src/paths.rs`
-  (`CODEGG_TUI_CONFIG`, `system_config_path`, `global_config_path`,
-  `find_project_config`).
-- System paths: macOS `/Library/Application Support/codegg/codegg.json`, other
-  Unix `/etc/codegg/codegg.json`, Windows `%ProgramData%\codegg\codegg.json`
-  (`crates/codegg-config/src/paths.rs`).
-- Global file candidates `codegg.jsonc`, `codegg.json`, `config.json`:
-  `crates/codegg-config/src/paths.rs`.
-- Project discovery (walk upward; `.codegg/codegg.jsonc`,
-  `.codegg/codegg.json`, `codegg/codegg.jsonc`, `codegg/codegg.json`):
-  `crates/codegg-config/src/paths.rs`.
-- The untagged-enum table: the seven `#[serde(untagged)]` sites in
-  `crates/codegg-config/src/schema.rs` — `autoupdate`, provider `timeout`,
-  `lsp`, `formatter`, `plugin`, and `PermissionRule` (action string or
-  all-string object).
-- The schema does not use `deny_unknown_fields`: no occurrence in
-  `crates/codegg-config/src/schema.rs`.
-- `shell.windows_shell` accepts `powershell`, `cmd`, `git-bash`, `wsl` and
-  rejects `bash`: `crates/codegg-config/src/schema.rs` (`WindowsShellKind`).
-- `model_routers` fields (`selector_model`, `default_model`, `routes`,
-  `sticky`, `affinity_ttl_s`, `selector_timeout_s`, `max_input_bytes`,
-  `repair_attempts`): `crates/codegg-config/src/schema.rs`.
-- `skills.paths` / `skills.enabled`: `crates/codegg-config/src/schema.rs`
-  (`SkillsConfig`).
-- `eggwork` node fields (`node_id`, `endpoint`, `ca_cert_path`,
-  `client_cert_path`, `client_key_path`, `required_capabilities`,
-  `isolation_policy`, `network_policy`, `resource_limits`,
-  `max_concurrent_executions`) and the daemon-level
-  `allowed_target_nodes` / `required_isolation_policy` /
-  `required_network_policy`: `crates/codegg-config/src/schema.rs`.
-- Remote resource limit dimensions and the `required` / `best_effort`
-  distinction: `crates/codegg-config/src/schema.rs`.
-- `${VAR}` interpolation and the JSON/JSONC/TOML/YAML frontmatter handling:
-  `crates/codegg-config/src/`.
-
-- Corrected 2026-10-27: the top-level `Config` carries only
-  `#[serde(default)]` (`crates/codegg-config/src/schema.rs:404-406`); the
-  schema's single `deny_unknown_fields` is on the nested
-  `ReasoningCapabilityRecord` (`:152`).
+Corrected: `deny_unknown_fields` applies to the nested `ReasoningCapabilityRecord`, not to the top-level config.

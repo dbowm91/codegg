@@ -1,0 +1,1328 @@
+//! Synchronous component and user-intent routing.
+//!
+//! process_msg is the adapter from component/user intent (TuiMsg) to
+//! immediate UI state changes or explicit runtime effects (TuiCommand).
+//! Async completions never enter through this path; they are applied by the
+//! runtime dispatch boundary.
+
+use super::*;
+
+impl App {
+    pub fn process_msg(&mut self, msg: TuiMsg) {
+        tracing::debug!(target: "codegg::tui::app", "process_msg: {:?}", msg);
+        match msg {
+            TuiMsg::SubmitPrompt => self.send_prompt(),
+            TuiMsg::NavigateUp => self.navigate_up(),
+            TuiMsg::NavigateDown => self.navigate_down(),
+            TuiMsg::CycleAgent => self.cycle_agent(),
+            TuiMsg::OpenModelDialog => self.open_dialog(Dialog::Model),
+            TuiMsg::OpenAgentDialog => self.open_dialog(Dialog::Agent),
+            TuiMsg::OpenSessionDialog => self.open_dialog(Dialog::Session),
+            // The composer's help chord. ADR-0042 part 7: the box this opens
+            // owns the copy gesture, and the route is what says so — the mode
+            // cannot, because `Esc` and `Enter` move a box between modes.
+            TuiMsg::OpenHelpDialog => self.open_dialog(Dialog::Help(HelpRoute::Chord)),
+            TuiMsg::CopyComposerSelection => self.copy_composer_selection(),
+            TuiMsg::OpenTreeDialog => {
+                self.enqueue_tui_command(TuiCommand::OpenTreeDialog);
+            }
+            TuiMsg::OpenThemeDialog => self.open_dialog(Dialog::Theme),
+            TuiMsg::OpenShareDialog => {
+                if let Some(ref session) = self.session_state.session {
+                    let session_id = session.id.clone();
+                    self.enqueue_tui_command(TuiCommand::ShareSession { session_id });
+                }
+            }
+
+            TuiMsg::OpenImportDialog => self.open_dialog(Dialog::Import),
+            TuiMsg::OpenDiffDialog {
+                old_content,
+                new_content,
+                title,
+            } => {
+                self.enqueue_tui_command(TuiCommand::OpenDiffDialog {
+                    old_content,
+                    new_content,
+                    title,
+                });
+            }
+            TuiMsg::SelectModel { model, reasoning } => {
+                self.agent_state.current_model = model.clone();
+                self.dialog_state
+                    .model_dialog
+                    .set_current(&self.agent_state.current_model);
+                if let Some(idx) = self.agent_state.models.iter().position(|m| m == &model) {
+                    self.agent_state.model_idx = idx;
+                }
+                if let Some(tab) = self.project_tabs.active_mut() {
+                    tab.model = model.clone();
+                }
+                // The level picked in the box travels with the selection.
+                if let Some(reasoning) = reasoning {
+                    self.apply_selected_reasoning_level(reasoning);
+                }
+                self.persist_model_selection(&model);
+                // `persist_model_selection` only writes the last-used
+                // *preference*, which the next launch restores. The daemon
+                // resolves every turn from its durable `SessionSelection`,
+                // so without this the status line, the tab and the
+                // preference all showed the newly chosen model while the
+                // next turn still ran whatever the daemon had stored — the
+                // divergence behind "I selected mimo 2.6 flash and it ran
+                // muse-spark 1.3".
+                self.persist_durable_model_selection(model.clone());
+                self.close_dialog();
+            }
+            TuiMsg::SelectAgent { agent_name } => {
+                if let Some(idx) = self
+                    .agent_state
+                    .agents
+                    .iter()
+                    .position(|a| a.name == agent_name)
+                {
+                    self.agent_state.current_agent = idx;
+                }
+                if let Some(tab) = self.project_tabs.active_mut() {
+                    tab.agent = agent_name.clone();
+                }
+                self.close_dialog();
+            }
+            TuiMsg::SelectSession(session) => {
+                // Cancel research and memory tasks from the previous session.
+                use crate::task_lifecycle::TuiTaskKind;
+                self.task_registry.cancel_kind(TuiTaskKind::Research);
+                self.task_registry.cancel_kind(TuiTaskKind::Memory);
+                self.task_registry.cancel_kind(TuiTaskKind::GitStatus);
+                crate::commands::sessions::start_activate_session(self, session.id);
+                self.close_dialog();
+                // Refresh sidebar git status for the new project.
+                crate::commands::git_sidebar::start_refresh_git_sidebar(self);
+            }
+            TuiMsg::SubmitConnect => {
+                self.handle_connect_send();
+            }
+            TuiMsg::CloseDialog => {
+                if self.dialog_state.project_init_draft.take().is_some() {
+                    self.messages_state
+                        .toasts
+                        .info("Initialization preview cancelled; no file was written");
+                }
+                self.close_dialog();
+            }
+            // ── Project chat window intents ──────────────────────────
+            TuiMsg::ChatSend { body, reply_to } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::commands::chat::start_chat_send(self, project_id, body, reply_to);
+                }
+            }
+            TuiMsg::ChatEdit { message_id, body } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::commands::chat::start_chat_edit(self, project_id, message_id, body);
+                }
+            }
+            TuiMsg::ChatRedact { message_id } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::commands::chat::start_chat_redact(self, project_id, message_id, None);
+                }
+            }
+            TuiMsg::ChatMarkRead => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::commands::chat::start_chat_read(self, project_id);
+                }
+            }
+            TuiMsg::ChatLoadOlder => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::commands::chat::start_chat_load_older(self, project_id);
+                }
+            }
+            TuiMsg::ChatRefresh => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::commands::chat::start_chat_history(self, project_id);
+                }
+            }
+            TuiMsg::ChatSwitchChannel { channel_id } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::commands::chat::start_chat_switch_channel(self, project_id, channel_id);
+                }
+            }
+            TuiMsg::ChatPagingUnsupported => {
+                self.messages_state.toasts.warning(
+                    "This daemon does not support loading older chat history — restart or upgrade the daemon",
+                );
+            }
+            TuiMsg::ChatComposerSeed(seed) => {
+                self.arm_chat_composer(seed);
+            }
+            TuiMsg::CancelChatComposer => {
+                // `Esc` inside a panel is the **mode switch**, not a panel
+                // exit: it backs out of the armed compose context and leaves
+                // the keyboard where it was. With no context armed there is
+                // nothing to cancel, so the key is a no-op rather than a
+                // silent focus move.
+                self.cancel_chat_composer();
+            }
+            TuiMsg::AgentPanelAction { selection, name } => {
+                crate::commands::agent_editor::apply_agent_selection(self, selection, &name);
+            }
+            TuiMsg::ProjectInitApprove => {
+                let Some(draft) = self.dialog_state.project_init_draft.take() else {
+                    return;
+                };
+                let context = self.project_execution_context();
+                if let Ok(context) = context {
+                    if context.project_id.as_deref() == Some(draft.project_id.as_str())
+                        && context.workspace_id.as_deref() == Some(draft.workspace_id.as_str())
+                    {
+                        if let Some(token) = draft.draft_token {
+                            self.close_dialog();
+                            self.enqueue_tui_command(TuiCommand::ProjectInitPublish {
+                                project_id: draft.project_id,
+                                workspace_id: draft.workspace_id,
+                                draft_token: token,
+                            });
+                        } else {
+                            self.messages_state
+                                .toasts
+                                .info("AGENTS.md already matches the generated proposal");
+                            self.close_dialog();
+                        }
+                    } else {
+                        self.messages_state
+                            .toasts
+                            .error("Active project changed; preview cancelled without writing");
+                        self.close_dialog();
+                    }
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error("Active project unavailable; preview cancelled without writing");
+                    self.close_dialog();
+                }
+            }
+            TuiMsg::ConfirmResult(confirmed) => {
+                self.close_dialog();
+                if confirmed == Some(true) {
+                    if crate::commands::policy::apply_policy_confirm_result(self, true) {
+                        return;
+                    }
+                    if let Some((action, connection_id, expected_revision)) =
+                        self.dialog_state.pending_connection_lifecycle.take()
+                    {
+                        let _ = self.enqueue_tui_command(TuiCommand::ConnectionLifecycle {
+                            action,
+                            connection_id,
+                            expected_revision,
+                        });
+                    } else if let Some(session_id) = self.dialog_state.pending_delete_session.take()
+                    {
+                        let undo_id = session_id.clone();
+                        if self.enqueue_tui_command(TuiCommand::DeleteSession { session_id }) {
+                            self.undo_session_id = Some(undo_id);
+                            self.undo_until =
+                                Some(Instant::now() + std::time::Duration::from_secs(30));
+                            self.status_bar
+                                .set_undo_message("Session deleted — press U to undo");
+                        }
+                    } else if let Some((session_id, unarchive)) =
+                        self.dialog_state.pending_archive_session.take()
+                    {
+                        self.enqueue_tui_command(TuiCommand::ArchiveSession {
+                            session_id,
+                            unarchive,
+                        });
+                    } else if let Some(_count) = self.dialog_state.pending_bulk_delete.take() {
+                        let ids = self
+                            .dialog_state
+                            .pending_bulk_delete_ids
+                            .take()
+                            .unwrap_or_default();
+                        if self.enqueue_tui_command(TuiCommand::BulkDelete { session_ids: ids }) {
+                            self.dialog_state.session_dialog.toggle_bulk_mode();
+                        }
+                    } else if let Some((_count, unarchive)) =
+                        self.dialog_state.pending_bulk_archive.take()
+                    {
+                        let ids = self
+                            .dialog_state
+                            .pending_bulk_archive_ids
+                            .take()
+                            .unwrap_or_default();
+                        if self.enqueue_tui_command(TuiCommand::BulkArchive {
+                            session_ids: ids,
+                            unarchive,
+                        }) {
+                            self.dialog_state.session_dialog.toggle_bulk_mode();
+                        }
+                    } else if let Some((command, promote_after, cwd)) =
+                        self.dialog_state.pending_shell_command.take()
+                    {
+                        self.enqueue_tui_command(TuiCommand::RunHumanShell {
+                            command,
+                            promote_after,
+                            cwd,
+                            confirmed_dangerous: true,
+                        });
+                    }
+                } else {
+                    self.dialog_state.pending_delete_session = None;
+                    self.dialog_state.pending_archive_session = None;
+                    self.dialog_state.pending_bulk_delete = None;
+                    self.dialog_state.pending_bulk_delete_ids = None;
+                    self.dialog_state.pending_bulk_archive = None;
+                    self.dialog_state.pending_bulk_archive_ids = None;
+                    self.dialog_state.pending_shell_command = None;
+                    self.dialog_state.pending_connection_lifecycle = None;
+                    // M007: cancelling a mode-change dialog changes nothing.
+                    if self.dialog_state.pending_policy_confirm.take().is_some() {
+                        self.messages_state.toasts.info("Runtime policy unchanged.");
+                    }
+                }
+            }
+            TuiMsg::McpAction {
+                server_name,
+                action,
+            } => {
+                match action.as_str() {
+                    "Configure OAuth" => {
+                        self.messages_state.toasts.info(&format!(
+                            "OAuth for {} - configure in .codegg/mcp.json",
+                            server_name
+                        ));
+                    }
+                    "Browse Resources" => {
+                        if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                            mcp.browse_mode = BrowseMode::Resources { selected: 0 };
+                            mcp.action_mode = false;
+                        }
+                        self.close_dialog();
+                        return;
+                    }
+                    "Disconnect" => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Disconnecting {}...", server_name));
+                    }
+                    "Reconnect" => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Reconnecting {}...", server_name));
+                    }
+                    "Connect" => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Connecting {}...", server_name));
+                    }
+                    "Remove" => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Removing {}...", server_name));
+                    }
+                    "Wait" => {
+                        self.messages_state
+                            .toasts
+                            .info("Server is connecting, please wait...");
+                    }
+                    "Configure" => {
+                        self.messages_state.toasts.info(&format!(
+                            "Configure {} - edit .codegg/mcp.json",
+                            server_name
+                        ));
+                    }
+                    _ => {}
+                }
+                self.close_dialog();
+            }
+            TuiMsg::KeybindChanged {
+                action: _,
+                binding: _,
+            } => {
+                if let Some(ref kd) = self.dialog_state.keybind_dialog {
+                    if let Some(keybinds) = &mut self.ui_state.keybinds {
+                        keybinds.bindings = kd.bindings.clone();
+                    } else {
+                        self.ui_state.keybinds = Some(crate::input::KeybindConfig {
+                            bindings: kd.bindings.clone(),
+                        });
+                    }
+                }
+                self.close_dialog();
+            }
+            TuiMsg::ConfirmDeleteSession { session_id } => {
+                let msg = "Delete this session? This cannot be undone.".to_string();
+                self.dialog_state.pending_delete_session = Some(session_id.clone());
+                self.push_dialog(
+                    Dialog::Confirm,
+                    Box::new(ConfirmDialog::new("Delete Session".to_string(), msg)),
+                );
+            }
+            TuiMsg::ConfirmArchiveSession {
+                session_id,
+                unarchive,
+            } => {
+                let (title, msg) = if unarchive {
+                    ("Unarchive Session", "Unarchive this session?")
+                } else {
+                    ("Archive Session", "Archive this session?")
+                };
+                self.dialog_state.pending_archive_session = Some((session_id.clone(), unarchive));
+                self.push_dialog(
+                    Dialog::Confirm,
+                    Box::new(ConfirmDialog::new(title.to_string(), msg.to_string())),
+                );
+            }
+            TuiMsg::ConfirmBulkDelete { count, session_ids } => {
+                let msg = format!("Delete {} selected sessions? This cannot be undone.", count);
+                self.dialog_state.pending_bulk_delete = Some(count);
+                self.dialog_state.pending_bulk_delete_ids = Some(session_ids);
+                self.push_dialog(
+                    Dialog::Confirm,
+                    Box::new(ConfirmDialog::new("Delete Sessions".to_string(), msg)),
+                );
+            }
+            TuiMsg::ConfirmBulkArchive {
+                count,
+                unarchive,
+                session_ids,
+            } => {
+                let (title, msg) = if unarchive {
+                    (
+                        "Unarchive Sessions",
+                        format!("Unarchive {} selected sessions?", count),
+                    )
+                } else {
+                    (
+                        "Archive Sessions",
+                        format!("Archive {} selected sessions?", count),
+                    )
+                };
+                self.dialog_state.pending_bulk_archive = Some((count, unarchive));
+                self.dialog_state.pending_bulk_archive_ids = Some(session_ids);
+                self.push_dialog(
+                    Dialog::Confirm,
+                    Box::new(ConfirmDialog::new(title.to_string(), msg)),
+                );
+            }
+            TuiMsg::SelectTheme { theme_name } => {
+                if let Some(theme) = self.theme_registry.get_tui(&theme_name) {
+                    self.ui_state.theme = Arc::new(theme);
+                    self.persist_theme_selection(&theme_name);
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Theme: {}", theme_name));
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error(&format!("Unknown theme: {}", theme_name));
+                }
+                self.dialog_state.theme_picker = None;
+                self.close_dialog();
+            }
+            TuiMsg::ThemePreviewChanged { theme_id } => {
+                // Live preview only. Don't persist; don't change the
+                // picker's `original_id` (already captured on the first
+                // navigation). Don't close anything.
+                if let Some(theme) = self.theme_registry.get_tui(&theme_id) {
+                    self.ui_state.theme = Arc::new(theme);
+                }
+            }
+            TuiMsg::ThemeCommit { theme_id } => {
+                if let Some(theme) = self.theme_registry.get_tui(&theme_id) {
+                    self.ui_state.theme = Arc::new(theme);
+                    self.persist_theme_selection(&theme_id);
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Theme: {}", theme_id));
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error(&format!("Unknown theme: {}", theme_id));
+                }
+                self.dialog_state.theme_picker = None;
+                self.close_dialog();
+            }
+            TuiMsg::ThemeRevert => {
+                // Revert the live theme to the one that was active when
+                // the picker opened. Falls back to the default id if the
+                // picker's `original_id` is somehow missing.
+                let target = self
+                    .dialog_state
+                    .theme_picker
+                    .as_ref()
+                    .and_then(|p| p.preview_original_id())
+                    .unwrap_or_else(|| codegg::theme::registry::DEFAULT_THEME_ID.to_string());
+                if let Some(theme) = self.theme_registry.get_tui(&target) {
+                    self.ui_state.theme = Arc::new(theme);
+                }
+                self.dialog_state.theme_picker = None;
+                self.close_dialog();
+            }
+            TuiMsg::SelectTreeSession { session_id: _ } => {
+                self.close_dialog();
+            }
+            TuiMsg::ForkTreeSession { session_id } => {
+                self.close_dialog();
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
+                }
+            }
+            TuiMsg::ForkSession { session_id } => {
+                self.close_dialog();
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
+                }
+            }
+            // M006: launch a session into an isolated checkout.
+            TuiMsg::LaunchSession {
+                parent_session_id,
+                worktree_id,
+            } => {
+                let Some(project_id) = self
+                    .active_project_id()
+                    .map(str::to_string)
+                    .or_else(|| self.active_project_key())
+                else {
+                    self.messages_state
+                        .toasts
+                        .warning("No project is active — pick one before launching a session");
+                    return;
+                };
+                let intent = if parent_session_id.is_some() {
+                    codegg::protocol::core::SessionLaunchIntentDto::Fork
+                } else {
+                    codegg::protocol::core::SessionLaunchIntentDto::New
+                };
+                let placement = match worktree_id {
+                    Some(worktree_id) => {
+                        codegg::protocol::core::SessionLaunchPlacementDto::ExistingManagedWorktree {
+                            worktree_id,
+                        }
+                    }
+                    None => codegg::protocol::core::SessionLaunchPlacementDto::NewManagedCheckout {
+                        base_ref: None,
+                        target_branch: None,
+                    },
+                };
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::SessionLaunch {
+                            project_id,
+                            intent,
+                            parent_session_id,
+                            placement,
+                            idempotency_key: format!("tui-launch-{}", uuid::Uuid::new_v4()),
+                        },
+                    );
+                }
+            }
+            TuiMsg::LaunchNeedsCheckout => {
+                self.messages_state.toasts.info(
+                    "This session runs in the project's own root — it has no managed checkout to reuse",
+                );
+            }
+            TuiMsg::SubmitImportPreview => {
+                self.handle_import_send();
+            }
+            TuiMsg::ConfirmImport => {
+                self.handle_import_send();
+            }
+            TuiMsg::SubmitSelectionUpdate {
+                session_id,
+                connection_id,
+                connection_revision,
+                model_id,
+                catalog_revision,
+            } => {
+                crate::commands::session_selection::start_selection_update(
+                    self,
+                    session_id,
+                    connection_id,
+                    model_id,
+                    connection_revision,
+                    catalog_revision,
+                );
+            }
+            TuiMsg::OpenConnectionRotation {
+                connection_id,
+                expected_revision,
+            } => {
+                self.open_connection_rotation_dialog(connection_id, expected_revision);
+            }
+            TuiMsg::ConnectionFocusChanged { connection_id } => {
+                // The model pane is scoped to one connection, so a highlight
+                // move has to refetch that connection's catalog. Dispatching
+                // this as a command (not doing the read inline) keeps the
+                // key handler off the daemon round-trip, which is the same
+                // boundary every other dialog read respects.
+                if let Some(tx) = self.tui_cmd_tx.clone() {
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SessionSelectionRefresh {
+                            focus_connection_id: Some(connection_id),
+                        },
+                    );
+                }
+            }
+            TuiMsg::ConnectionLifecycle {
+                action,
+                connection_id,
+                expected_revision,
+            } => {
+                if matches!(
+                    action,
+                    ConnectionLifecycleAction::Delete | ConnectionLifecycleAction::Purge
+                ) {
+                    let (title, message) = match action {
+                        ConnectionLifecycleAction::Delete => (
+                            "Delete Provider Connection",
+                            "Delete this connection and its history? A row still in use is kept.",
+                        ),
+                        ConnectionLifecycleAction::Purge => (
+                            "Purge Provider Connection",
+                            "Permanently purge this tombstoned connection and its history?",
+                        ),
+                        other => {
+                            tracing::warn!(
+                                ?other,
+                                "unexpected ConnectionLifecycleAction in match arm"
+                            );
+                            return;
+                        }
+                    };
+                    self.dialog_state.pending_connection_lifecycle =
+                        Some((action, connection_id, expected_revision));
+                    self.push_dialog(
+                        Dialog::Confirm,
+                        Box::new(ConfirmDialog::new(title.to_string(), message.to_string())),
+                    );
+                } else {
+                    let _ = self.enqueue_tui_command(TuiCommand::ConnectionLifecycle {
+                        action,
+                        connection_id,
+                        expected_revision,
+                    });
+                }
+            }
+            TuiMsg::SubmitPermission { choice_index } => {
+                let choice = match choice_index {
+                    0 => codegg::permission::PermissionChoice::AllowOnce,
+                    1 => codegg::permission::PermissionChoice::AlwaysAllow,
+                    2 => codegg::permission::PermissionChoice::DenyOnce,
+                    3 => codegg::permission::PermissionChoice::AlwaysDeny,
+                    _ => return,
+                };
+                if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
+                    let perm_id = perm_id.clone();
+                    // Transport selection must follow what the app actually
+                    // holds, not `AppMode` alone — same rule as
+                    // `prompt_turn.rs`. `RemoteCore` covers both the
+                    // WebSocket attach frontend (owns `remote_send_tx`) and
+                    // the socket-daemon frontend (owns only `core_client`,
+                    // `remote_send_tx` is `None`). Gating on the mode alone
+                    // sent the socket-daemon approval into the absent
+                    // channel: `send_remote_message` hit its `None` arm and
+                    // dropped the message after only a `tracing::warn!`. The
+                    // daemon-side waiter stayed parked on an unbounded human
+                    // wait with the dialog already torn down, so approving
+                    // hung the turn forever with no visible error.
+                    if self.is_ws_attach_transport() {
+                        let choice = match choice {
+                            codegg::permission::PermissionChoice::AllowOnce => "allow",
+                            codegg::permission::PermissionChoice::AlwaysAllow => "always_allow",
+                            codegg::permission::PermissionChoice::DenyOnce => "deny",
+                            codegg::permission::PermissionChoice::AlwaysDeny => "always_deny",
+                        };
+                        self.send_remote_message(RemoteTuiMessage::PermissionResponse {
+                            id: perm_id,
+                            choice: choice.to_string(),
+                        });
+                    } else {
+                        self.send_local_permission_response(perm_id, choice);
+                    }
+                }
+                self.dialog_state.permission_dialog = None;
+                self.dialog_state.permission_perm_id = None;
+                self.close_dialog();
+                // A batch can raise several approvals; each one that is
+                // answered hands the screen to the next rather than leaving it
+                // queued with no visible way back to it.
+                self.promote_next_permission();
+            }
+            TuiMsg::PolicyOptionSelected {
+                approval_mode,
+                sandbox_profile,
+            } => {
+                // `resolve_policy_selection` tears the selector down and
+                // returns the parsed target; `request_policy_change` then
+                // owns the warning matrix, any extra confirmation, and the
+                // daemon CAS. Neither step can be skipped from here.
+                if let Some((mode, profile)) = crate::commands::policy::resolve_policy_selection(
+                    self,
+                    approval_mode,
+                    sandbox_profile,
+                ) {
+                    crate::commands::policy::request_policy_change(self, mode, profile);
+                }
+            }
+            TuiMsg::QueueDeleteSelected { entry_id } => {
+                // The box is **not** closed here. Delete is not a commit: the
+                // user is pruning a list, and unmounting the box after each
+                // one would turn "remove these three" into three open/close
+                // cycles. Closing here would also requeue whatever was still
+                // mounted at close time, and the box outlives the keystroke.
+                crate::commands::queue::start_queue_delete(self, entry_id);
+            }
+            TuiMsg::QueueRefreshRequested => {
+                crate::commands::queue::refresh_queue_box(self);
+            }
+            TuiMsg::QueueAddCommitted { text, run_at_ms } => {
+                crate::commands::queue::start_queue_add(self, text, run_at_ms);
+            }
+            TuiMsg::QueueEditCommitted {
+                entry_id,
+                text,
+                run_at_ms,
+            } => {
+                crate::commands::queue::start_queue_edit(self, entry_id, text, run_at_ms);
+            }
+            // M007: refused in the box, so the user is still sitting in the
+            // duration step with their input intact. The message names the
+            // grammar rather than the offending entry, and quotes what they
+            // typed — which is a duration token, never prompt text.
+            TuiMsg::QueueScheduleRejected { input } => {
+                self.messages_state.toasts.error(&format!(
+                    "\"{input}\" is not a delay this queue understands. \
+                     Use a number with a unit: 30s, 5min, 2h, or 1d."
+                ));
+            }
+            TuiMsg::QueueReorderSelected { entry_ids } => {
+                crate::commands::queue::start_queue_reorder(self, entry_ids);
+            }
+            // A refusal the box could not express as a mutation. Surfaced here
+            // rather than inside the widget because a widget cannot show a
+            // toast, and a keypress that does nothing is the one outcome this
+            // milestone must never produce.
+            TuiMsg::QueueReorderUnavailable { reason } => {
+                let message = match reason {
+                    crate::components::dialogs::queue::QueueReorderRefusal::Delivering => {
+                        "That prompt is being delivered right now — move it once its turn finishes."
+                    }
+                    crate::components::dialogs::queue::QueueReorderRefusal::AlreadyEarliest => {
+                        "That prompt is already first in the queue."
+                    }
+                    crate::components::dialogs::queue::QueueReorderRefusal::AlreadyLatest => {
+                        "That prompt is already last in the queue."
+                    }
+                };
+                self.messages_state.toasts.info(message);
+            }
+            // M006. The one refusal this layer makes for itself is "nothing is
+            // running": `active_turn_id` is a snapshot of the session's turn
+            // state, and pressing `s` into a definite no would be a round trip to
+            // learn what the box already knows. A *stale* snapshot is the safe
+            // direction — it sends a request the daemon can refuse truthfully —
+            // so the check is a fast path, never an authority.
+            TuiMsg::QueueSendNowSelected { entry_id } => {
+                if self.session_state.active_turn_id.is_none() {
+                    let message = crate::commands::queue::send_now_refusal_message(
+                        crate::components::dialogs::queue::QueueSendRefusal::NoActiveTurn,
+                    );
+                    self.messages_state.toasts.info(message);
+                } else {
+                    crate::commands::queue::start_queue_send_now(self, entry_id);
+                }
+            }
+            TuiMsg::QueueSendNowUnavailable { reason } => {
+                let message = crate::commands::queue::send_now_refusal_message(reason);
+                self.messages_state.toasts.info(message);
+            }
+            TuiMsg::SubmitQuestionAnswers { answers_json } => {
+                if let Some(session_id) = self.dialog_state.question_session_id.take() {
+                    let answers = answers_json.clone();
+                    // Same transport rule as `SubmitPermission`: the
+                    // socket-daemon frontend is `RemoteCore` with no
+                    // `remote_send_tx`, so a mode-only gate would drop the
+                    // answer into the absent channel and orphan the waiter.
+                    if self.is_ws_attach_transport() {
+                        let answers = serde_json::from_str::<serde_json::Value>(&answers)
+                            .unwrap_or(serde_json::Value::String(answers));
+                        self.send_remote_message(RemoteTuiMessage::QuestionResponse {
+                            id: session_id,
+                            answers,
+                        });
+                    } else {
+                        self.send_local_question_response(session_id, answers);
+                    }
+                }
+                self.dialog_state.question_dialog = None;
+                self.dialog_state.question_session_id = None;
+                self.close_dialog();
+            }
+            TuiMsg::SelectTemplate { key, template } => {
+                self.apply_template(key, *template);
+                self.dialog_state.template_dialog = None;
+                self.close_dialog();
+            }
+            TuiMsg::GotoMessage { index } => {
+                self.messages_state.messages.select_index(index);
+                self.dialog_state.goto_dialog = None;
+                self.close_dialog();
+            }
+            TuiMsg::CopyShareUrl => {
+                if let Some(ref mut share) = self.dialog_state.share_dialog {
+                    if share.copy_url() {
+                        self.messages_state.toasts.info("URL copied to clipboard!");
+                    } else {
+                        self.messages_state.toasts.error("Failed to copy URL");
+                    }
+                }
+                self.dialog_state.share_dialog = None;
+                self.close_dialog();
+            }
+            TuiMsg::ToggleSidebar => self.toggle_sidebar(),
+            TuiMsg::MoveDirection(dir) => crate::commands::panels::move_directionally(self, dir),
+            TuiMsg::FocusPanelAt { placement } => {
+                crate::commands::panels::focus_panel_at(self, placement)
+            }
+            TuiMsg::TerminalPanelFocus { handle } => {
+                crate::commands::interactive_terminal::focus_terminal_panel(self, &handle)
+            }
+            TuiMsg::TerminalPanelBlur { handle } => {
+                crate::commands::interactive_terminal::blur_terminal_panel(self, &handle)
+            }
+            TuiMsg::TerminalPanelInput { handle, bytes } => {
+                crate::commands::interactive_terminal::queue_terminal_input(self, handle, bytes)
+            }
+            TuiMsg::TerminalPanelClear { handle } => {
+                crate::commands::interactive_terminal::clear_terminal(self, &handle)
+            }
+            TuiMsg::StartTerminal => {
+                crate::commands::interactive_terminal::spawn_default_terminal_for_panel(self)
+            }
+            TuiMsg::SelectPanel { panel } => {
+                // Focus follows the pick: the manager exists to get the user
+                // *to* a panel, and landing there without the keyboard would
+                // make the choice look inert.
+                self.close_dialog();
+                if crate::commands::panels::select_panel(self, panel)
+                    == crate::commands::panels::SelectOutcome::Selected
+                {
+                    crate::commands::panels::focus_panel(self);
+                }
+            }
+            TuiMsg::SetPanelPlacement { placement } => {
+                // The manager stays open: moving the panel does not end the
+                // box, and closing it would throw away a half-typed filter
+                // over a change the user may want to undo with the next key.
+                crate::commands::panels::set_panel_placement(self, placement);
+                crate::commands::panels::sync_manager_placement(self);
+            }
+            TuiMsg::CyclePanelPlacement => {
+                crate::commands::panels::cycle_manager_placement(self);
+            }
+            TuiMsg::MovePanelTo { panel, placement } => {
+                crate::commands::panels::move_manager_panel(self, panel, placement);
+            }
+            TuiMsg::SavePanelHotkey { digit, panel } => {
+                crate::commands::panels::save_panel_hotkey(self, digit, panel)
+            }
+            TuiMsg::ToggleTasksList => self.toggle_tasks_list(),
+            TuiMsg::ToggleFullscreen => self.toggle_fullscreen(),
+            TuiMsg::ToggleReasoning => self.toggle_reasoning(),
+            TuiMsg::ToggleTts => self.toggle_tts(),
+            TuiMsg::CycleModelForward => self.cycle_model_forward(),
+            TuiMsg::CycleModelBackward => self.cycle_model_backward(),
+            TuiMsg::ClearSession => self.clear_session(),
+            TuiMsg::NewSession => self.new_session(),
+            TuiMsg::CloseSession => self.close_session(),
+            TuiMsg::CharInput(c) => self.on_char(c),
+            TuiMsg::Backspace => self.prompt_state.prompt.backspace(),
+            TuiMsg::Delete => self.prompt_state.prompt.delete(),
+            TuiMsg::CursorLeft => self.prompt_state.prompt.cursor_left(),
+            TuiMsg::CursorRight => self.prompt_state.prompt.cursor_right(),
+            TuiMsg::CursorHome => self.prompt_state.prompt.cursor_home(),
+            TuiMsg::CursorEnd => self.prompt_state.prompt.cursor_end(),
+            TuiMsg::PageUp => self.messages_state.messages.scroll_page_up(),
+            TuiMsg::PageDown => self.messages_state.messages.scroll_page_down(),
+            TuiMsg::Search => {
+                if self.messages_state.messages.is_searching() {
+                    self.messages_state.messages.clear_search();
+                } else {
+                    self.ui_state.command_mode = true;
+                    self.prompt_state.prompt.insert_char('/');
+                    self.prompt_state.prompt.set_cursor(1);
+                    self.dialog_state.command_palette.set_query("/search ");
+                    self.messages_state.messages.search_visible = true;
+                }
+            }
+            TuiMsg::SearchNext => self.messages_state.messages.search_next(),
+            TuiMsg::SearchPrev => self.messages_state.messages.search_prev(),
+            TuiMsg::ClearSearch => self.messages_state.messages.clear_search(),
+            TuiMsg::StashPrompt => self.stash_prompt(),
+            TuiMsg::RestorePrompt => self.restore_prompt(),
+            TuiMsg::CopyMessage => self.copy_message(),
+            TuiMsg::Quit => self.quit(),
+            TuiMsg::ExternalEditor => self.open_external_editor(),
+            TuiMsg::OpenProjectPicker => self.open_project_picker(),
+            TuiMsg::NextProjectTab => {
+                if let Some(tx) = self.tui_cmd_tx.clone() {
+                    let _ = send_tui(&tx, TuiCommand::NextProjectTab);
+                }
+            }
+            TuiMsg::PreviousProjectTab => {
+                if let Some(tx) = self.tui_cmd_tx.clone() {
+                    let _ = send_tui(&tx, TuiCommand::PreviousProjectTab);
+                }
+            }
+            TuiMsg::CloseProjectTab => {
+                if let Some(tx) = self.tui_cmd_tx.clone() {
+                    let _ = send_tui(&tx, TuiCommand::CloseProjectTab);
+                }
+            }
+            TuiMsg::SelectProjectTabByIndex { index } => {
+                self.select_project_tab_by_visible_index(index);
+            }
+            // Subagent tabs are frontend-local view state over projection
+            // rows, so they dispatch straight to `App` rather than over the
+            // `tui_cmd_tx` command channel the project-tab arms use: there is
+            // no daemon-side tab to keep in step, and routing a pure view
+            // change through the command transport would invent a message the
+            // core has no business handling.
+            TuiMsg::OpenSubagentTab { task_id } => {
+                self.open_subagent_tab(&task_id);
+            }
+            TuiMsg::NextCenterTab => self.next_center_tab(),
+            TuiMsg::PreviousCenterTab => self.previous_center_tab(),
+            TuiMsg::CloseCenterTab => self.close_center_tab(),
+            TuiMsg::ToggleComposerMode => {
+                crate::commands::work_orders::toggle_composer_mode(self);
+            }
+            TuiMsg::TaskScheduleConfirm {
+                delay_text,
+                not_before_text,
+                repeat_text,
+                sequential,
+                lane_id,
+                queue_insert_position,
+                queue_expected_revision,
+                external_trigger,
+                gate_join_all,
+                model,
+            } => {
+                crate::commands::work_orders::confirm_task_schedule(
+                    self,
+                    delay_text,
+                    not_before_text,
+                    repeat_text,
+                    sequential,
+                    lane_id,
+                    queue_insert_position,
+                    queue_expected_revision,
+                    external_trigger,
+                    gate_join_all,
+                    model,
+                );
+            }
+            TuiMsg::TaskScheduleMove { delta } => {
+                crate::commands::work_orders::move_sheet_selection(self, delta);
+            }
+            TuiMsg::TaskViewMove { delta } => {
+                crate::commands::work_orders::move_task_view_selection(self, delta);
+            }
+            TuiMsg::TaskViewReorder { delta } => {
+                crate::commands::work_orders::start_lane_reorder(self, delta);
+            }
+            TuiMsg::TaskViewOpen => {
+                crate::commands::work_orders::open_selected_task(self);
+            }
+            TuiMsg::TaskViewRefresh => {
+                crate::commands::work_orders::refresh_task_view(self);
+            }
+            TuiMsg::TaskViewCancel => {
+                crate::commands::work_orders::cancel_selected_task(self);
+            }
+            TuiMsg::TaskViewResume => {
+                crate::commands::work_orders::resume_selected_task(self);
+            }
+            TuiMsg::TaskViewDetail => {
+                crate::commands::work_orders::fetch_selected_task_detail(self);
+            }
+            TuiMsg::TriggerSecretClose => {
+                crate::commands::work_orders::close_trigger_secret(self);
+            }
+            TuiMsg::TeamTokenSecretClose => {
+                crate::commands::team::close_team_token_secret(self);
+            }
+            TuiMsg::TaskTriggerSetup => {
+                crate::commands::work_orders::setup_trigger_for_selected(self);
+            }
+            TuiMsg::TaskTriggerRevoke => {
+                crate::commands::work_orders::revoke_trigger_for_selected(self);
+            }
+            TuiMsg::TaskTriggerRotate => {
+                crate::commands::work_orders::rotate_trigger_for_selected(self);
+            }
+            TuiMsg::TaskTriggerRefresh => {
+                crate::commands::work_orders::refresh_trigger_for_selected(self);
+            }
+            TuiMsg::OpenWorkspaceDashboard => {
+                crate::commands::workspace_dashboard::open_workspace_dashboard(self);
+            }
+            TuiMsg::WorkspaceDashboardMove { delta } => {
+                crate::commands::workspace_dashboard::move_dashboard_selection(self, delta);
+            }
+            TuiMsg::WorkspaceDashboardOpen => {
+                crate::commands::workspace_dashboard::open_selected_dashboard_project(self);
+            }
+            TuiMsg::WorkspaceDashboardRefresh => {
+                crate::commands::workspace_dashboard::refresh_workspace_dashboard(self);
+            }
+            TuiMsg::WorkspaceDashboardToggleExpand => {
+                crate::commands::workspace_dashboard::toggle_dashboard_expand(self);
+            }
+            TuiMsg::FilesOpenSelected { path } => {
+                // The `/files` box is a navigator: it names a workspace-relative
+                // row and `open_editor` owns everything that must be true
+                // before it becomes an attachment.
+                crate::commands::file_tree::open_file(self, &path);
+            }
+            TuiMsg::FilesClose => {
+                crate::commands::file_tree::close_files_box(self);
+            }
+            TuiMsg::FilesRefresh => {
+                crate::commands::file_tree::rebuild(self);
+            }
+            TuiMsg::FilesToggle { path } => {
+                crate::commands::file_tree::toggle_path(self, &path);
+            }
+            TuiMsg::FilesDescend { path } => {
+                // The pane's root moves and the walk follows: a scope change
+                // without a listing would leave the box showing the directory
+                // the user just walked out of.
+                crate::commands::file_tree::descend_to(self, &path);
+            }
+            TuiMsg::FilesAscend { path } => {
+                // The authority resolves "one level up" against the unfiltered rows.
+                crate::commands::file_tree::ascend_one_level(self, &path);
+            }
+            TuiMsg::FilesSelect { path } => {
+                // The surface names the row; the authority records it.
+                crate::commands::file_tree::select_path(self, &path);
+            }
+            TuiMsg::UndoDelete => {
+                if let Some(session_id) = self.undo_session_id.take() {
+                    if let Some(ref tx) = self.tui_cmd_tx {
+                        let _ = send_tui(tx, TuiCommand::UndoDelete { session_id });
+                    }
+                    self.undo_until = None;
+                }
+            }
+            TuiMsg::ReviewOpenDiff { path } => {
+                // M007-I (work package A): the daemon owns the diff read.
+                crate::commands::diff::start_diff(self, path);
+            }
+            TuiMsg::ResearchOpenRun { run_id } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(tx, TuiCommand::ResearchLoadRun { run_id });
+                }
+            }
+            TuiMsg::ResearchRefreshRuns => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(tx, TuiCommand::ResearchListRuns);
+                }
+            }
+            TuiMsg::ResearchLoadSection { run_id, section } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(tx, TuiCommand::ResearchLoadSection { run_id, section });
+                }
+            }
+            TuiMsg::OpenSourcePreview {
+                path,
+                line,
+                origin_label,
+            } => {
+                use crate::components::dialogs::source_preview::SourcePreviewDialog;
+                let dialog = match origin_label {
+                    Some(label) => SourcePreviewDialog::with_origin(path, line, label),
+                    None => SourcePreviewDialog::new(path, line),
+                };
+                self.push_dialog(Dialog::SourcePreview, Box::new(dialog));
+            }
+            TuiMsg::OpenRunDetail { run_id } => {
+                use crate::components::dialogs::run_detail::RunDetailDialog;
+                use codegg_core::run_store::RunDetailView;
+                if let Some(ref run_store) = self.run_store {
+                    let run_id_val = codegg_core::run_store::RunId(run_id.clone());
+                    let run_store = Arc::clone(run_store);
+                    let tx = self.tui_cmd_tx.clone();
+                    tokio::spawn(async move {
+                        match run_store.get_run(&run_id_val).await {
+                            Ok(Some(manifest)) => {
+                                let detail = RunDetailView::from_manifest(&manifest);
+                                let dialog = RunDetailDialog::new(detail);
+                                if let Some(ref tx) = tx {
+                                    let _ =
+                                        send_tui(tx, TuiCommand::OpenRunDetailLoaded { dialog });
+                                }
+                            }
+                            Ok(None) => {
+                                if let Some(ref tx) = tx {
+                                    let _ = send_tui(
+                                        tx,
+                                        TuiCommand::OpenRunDetailError {
+                                            error: format!("Run not found: {}", run_id),
+                                        },
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(ref tx) = tx {
+                                    let _ = send_tui(
+                                        tx,
+                                        TuiCommand::OpenRunDetailError {
+                                            error: format!("Failed to load run: {}", e),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    self.messages_state.toasts.error("Run store not available");
+                }
+            }
+            TuiMsg::OpenJobDetail { job_id } => {
+                use crate::components::dialogs::job_detail::JobDetailDialog;
+                let Some(tx) = self.tui_cmd_tx.clone() else {
+                    self.messages_state
+                        .toasts
+                        .error("TUI command channel unavailable; job detail was not requested");
+                    return;
+                };
+                let request_id = self.dialog_state.job_detail_request.begin();
+                let core_client = self.core_client.clone();
+                let mut dialog = JobDetailDialog::loading(job_id.clone());
+                dialog.can_cancel = !self.is_observing();
+                self.push_dialog(Dialog::JobDetail, Box::new(dialog));
+                crate::async_cmd::spawn_tui_task(Some(tx), "job_detail_load", async move {
+                    let Some(client) = core_client else {
+                        return Some(TuiCommand::OpenJobDetailLoaded {
+                            request_id,
+                            job_id,
+                            job: None,
+                            attempts: Vec::new(),
+                            error: Some("Core unavailable — reconnect and retry".into()),
+                            notice: None,
+                        });
+                    };
+                    let get = codegg::core::new_request(
+                        format!("job-get-{}", uuid::Uuid::new_v4()),
+                        codegg::protocol::core::CoreRequest::JobGet {
+                            job_id: job_id.clone(),
+                        },
+                    );
+                    let attempts = codegg::core::new_request(
+                        format!("job-attempts-{}", uuid::Uuid::new_v4()),
+                        codegg::protocol::core::CoreRequest::JobAttempts {
+                            job_id: job_id.clone(),
+                        },
+                    );
+                    let (job_result, attempts_result) =
+                        tokio::join!(client.request(get), client.request(attempts));
+                    let mut error = None;
+                    let job = match job_result {
+                        Ok(codegg::protocol::core::CoreResponse::JobGet { job }) => job,
+                        Ok(codegg::protocol::core::CoreResponse::Error { .. }) => {
+                            error = Some("Job unavailable in this session".into());
+                            None
+                        }
+                        Ok(_) => {
+                            error = Some("Unexpected response while loading job".into());
+                            None
+                        }
+                        Err(_) => {
+                            error = Some("Could not reach daemon while loading job".into());
+                            None
+                        }
+                    };
+                    let attempts = match attempts_result {
+                        Ok(codegg::protocol::core::CoreResponse::JobAttempts {
+                            attempts, ..
+                        }) => attempts,
+                        _ => Vec::new(),
+                    };
+                    Some(TuiCommand::OpenJobDetailLoaded {
+                        request_id,
+                        job_id,
+                        job,
+                        attempts,
+                        error,
+                        notice: None,
+                    })
+                });
+            }
+            TuiMsg::CancelJob { job_id } => {
+                let Some(tx) = self.tui_cmd_tx.clone() else {
+                    self.focus_manager.with_dialog_mut::<
+                        crate::components::dialogs::job_detail::JobDetailDialog,
+                        _,
+                    >(
+                        crate::components::component::DialogType::JobDetail,
+                        |dialog| {
+                            dialog.cancel_pending = false;
+                            dialog.error = Some(
+                                "TUI command channel unavailable; cancel was not sent".into(),
+                            );
+                        },
+                    );
+                    return;
+                };
+                let request_id = self.dialog_state.job_detail_request.begin();
+                let core_client = self.core_client.clone();
+                crate::async_cmd::spawn_tui_task(Some(tx), "job_cancel", async move {
+                    let Some(client) = core_client else {
+                        return Some(TuiCommand::OpenJobDetailLoaded {
+                            request_id,
+                            job_id,
+                            job: None,
+                            attempts: Vec::new(),
+                            error: Some("Core unavailable — cancel was not sent".into()),
+                            notice: None,
+                        });
+                    };
+                    let request = codegg::core::new_request(
+                        format!("job-cancel-{}", uuid::Uuid::new_v4()),
+                        codegg::protocol::core::CoreRequest::JobCancel {
+                            job_id: job_id.clone(),
+                            reason: Some("requested from TUI job detail".into()),
+                        },
+                    );
+                    let notice = match client.request(request).await {
+                        Ok(codegg::protocol::core::CoreResponse::JobCancelResult { result }) => {
+                            Some(format!(
+                                "Cancellation {} for job {}",
+                                result.outcome, job_id
+                            ))
+                        }
+                        Ok(codegg::protocol::core::CoreResponse::Error { .. }) => {
+                            Some("The daemon refused the cancellation request".into())
+                        }
+                        _ => Some(
+                            "Cancellation outcome unavailable; refresh to reconcile daemon state"
+                                .into(),
+                        ),
+                    };
+                    let get = codegg::core::new_request(
+                        format!("job-get-{}", uuid::Uuid::new_v4()),
+                        codegg::protocol::core::CoreRequest::JobGet {
+                            job_id: job_id.clone(),
+                        },
+                    );
+                    let attempts = codegg::core::new_request(
+                        format!("job-attempts-{}", uuid::Uuid::new_v4()),
+                        codegg::protocol::core::CoreRequest::JobAttempts {
+                            job_id: job_id.clone(),
+                        },
+                    );
+                    let (job_result, attempts_result) =
+                        tokio::join!(client.request(get), client.request(attempts));
+                    let job = match job_result {
+                        Ok(codegg::protocol::core::CoreResponse::JobGet { job }) => job,
+                        _ => None,
+                    };
+                    let attempts = match attempts_result {
+                        Ok(codegg::protocol::core::CoreResponse::JobAttempts {
+                            attempts, ..
+                        }) => attempts,
+                        _ => Vec::new(),
+                    };
+                    Some(TuiCommand::OpenJobDetailLoaded {
+                        request_id,
+                        job_id,
+                        job,
+                        attempts,
+                        error: None,
+                        notice,
+                    })
+                });
+            }
+            TuiMsg::SecurityReviewJump { path, line } => {
+                // Read-only: copy the file path to the clipboard and
+                // surface a toast. The file is never opened or mutated.
+                let mut text = path.clone();
+                if let Some(l) = line {
+                    text.push_str(&format!(":{l}"));
+                }
+                match codegg::util::clipboard::copy_to_clipboard(&text) {
+                    Ok(()) => self
+                        .messages_state
+                        .toasts
+                        .info(&format!("Copied {text} to clipboard (file not opened)")),
+                    Err(_) => self
+                        .messages_state
+                        .toasts
+                        .info(&format!("Jump: {text} (clipboard unavailable)")),
+                }
+            }
+            TuiMsg::ShellInclude { id, mode } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::ShellInclude {
+                            id: id.parse().unwrap_or(0),
+                            mode,
+                            question: None,
+                        },
+                    );
+                }
+            }
+            TuiMsg::ShellAsk { id } => {
+                self.prompt_state.prompt.clear();
+                self.prompt_state
+                    .prompt
+                    .set_text(format!("/shell-ask {}", id));
+                self.ui_state.command_mode = true;
+            }
+            TuiMsg::ShellRerun { id } => {
+                self.enqueue_tui_command(TuiCommand::ShellRerun {
+                    id: id.parse().unwrap_or(0),
+                });
+            }
+            TuiMsg::ShellKill { id } => {
+                self.enqueue_tui_command(TuiCommand::ShellKill {
+                    id: id.parse().unwrap_or(0),
+                });
+            }
+            TuiMsg::RunRerun { run_id } => {
+                crate::commands::run_rerun::start_run_rerun(self, run_id);
+            }
+            TuiMsg::RunPromote { run_id } => {
+                self.messages_state
+                    .toasts
+                    .info(&format!("Run {} promoted to context", run_id));
+            }
+            TuiMsg::RunCopyId { run_id } => {
+                #[cfg(feature = "arboard")]
+                {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(run_id.clone());
+                        self.messages_state
+                            .toasts
+                            .info("Run ID copied to clipboard");
+                    } else {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Run ID: {}", run_id));
+                    }
+                }
+                #[cfg(not(feature = "arboard"))]
+                {
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Run ID: {}", run_id));
+                }
+            }
+            _ => {}
+        }
+    }
+}

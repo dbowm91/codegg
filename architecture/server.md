@@ -187,7 +187,7 @@ with `#[serde(tag = "type")]` JSON serialization.
 `ProjectionCompatibilityDiagnostic`).
 
 `StateSnapshot` is declared on `TuiMessage` and answered by the TUI's own
-remote-mode handler (`src/tui/app/mod.rs:3591` / `:3601`), but
+remote-mode handler (`crates/codegg-tui/src/app/mod.rs:3591` / `:3601`), but
 `src/server/ws.rs` never emits it — this server does not send state
 snapshots.
 
@@ -219,7 +219,7 @@ Legacy caller matrix:
 | Surface | In-repository callers | Disposition |
 |---|---|---|
 | `/ws` JSON-RPC route/handler and `RpcRequest` types | Server route and handler only; no production/test client | Retain as externally-supported compatibility; bounded/authenticated, no projection authority |
-| `/tui` raw event/state fallback | `src/client/attach.rs`, `src/server/ws.rs`, and TUI projection mode fallback | Retain temporarily; bounded/session-scoped/non-authoritative until a future protocol compatibility decision |
+| `/tui` raw event/state fallback | `crates/codegg-cli/src/client/attach.rs`, `src/server/ws.rs`, and TUI projection mode fallback | Retain temporarily; bounded/session-scoped/non-authoritative until a future protocol compatibility decision |
 | `CoreRequest::ProjectionSnapshotGet` | Daemon decoding/explicit rejection only; no caller | Retain as wire compatibility; reject with `projection_snapshot_requires_subscription` |
 | Projection-private raw event fallback | No caller; filtered by `convert_core_event_to_tui` and raw forwarders | Remove-now behavior already landed: private projection envelopes are discarded |
 
@@ -469,16 +469,16 @@ python3 scripts/check_execution_ownership.py
 Verified 2026-10-23 against `src/server/` (`mod.rs`, `http.rs`, `ws.rs`,
 `state.rs`, `authz.rs`, `scope.rs`, `perm_ids.rs`, `rpc.rs`, `mdns.rs`,
 `middleware/auth.rs`, `routes/`), `src/core/transport/projection.rs`,
-`src/error.rs`, `crates/codegg-core/src/error.rs`, `src/main.rs`,
+`src/error.rs`, `crates/codegg-core/src/error.rs`, `crates/codegg-cli/src/main.rs`,
 `crates/codegg-protocol/src/frames.rs`, and `scripts/verify.sh` +
 `.github/workflows/ci.yml` for the guard set.
 - Corrected three stale line references: the `StateSnapshot` production
-  site `src/tui/app/mod.rs:1855` -> `:3591` / `:3601` (the server emits it
+  site `crates/codegg-tui/src/app/mod.rs:1855` -> `:3591` / `:3601` (the server emits it
   zero times — 0 matches for `TuiMessage::StateSnapshot` in
   `src/server/ws.rs`); the `ServerRuntimeError` reference
   `src/error.rs:179-187` -> `crates/codegg-core/src/error.rs:410` with the
   feature-gated axum wrapper at `src/error.rs:192-211`; and the
-  `--standalone-core` exit path `src/main.rs:3552` -> `:4774-4783`.
+  `--standalone-core` exit path `crates/codegg-cli/src/main.rs:3552` -> `:4774-4783`.
 - Added the three client→server `/tui` variants the server's inbound match
   accepts but the doc omitted: `ProjectionSubscriptionStatus`,
   `ProjectionArtifactListRequest`, `ProjectionArtifactReadRequest`
@@ -535,20 +535,20 @@ limiters at 100 req/60s with a 10,000-key cap
 origins and GET/POST/DELETE method set, the compression skip-status set, and
 the middleware ordering (auth outermost, then rate limit).
 
-Re-verified 2026-10-06 against `src/server/`, `src/main.rs`, and
+Re-verified 2026-10-06 against `src/server/`, `crates/codegg-cli/src/main.rs`, and
 `crates/codegg-protocol/src/tui.rs`. Corrected the Server → Client message
 list, which omitted the 11 projection-family variants
 (`ProjectionCapabilitiesAck` … `ProjectionCompatibilityDiagnostic`), and
 removed `StateSnapshot` from it: `src/server/ws.rs` never constructs that
 variant (0 matches) — it is emitted only by the TUI's remote-mode handler at
-`src/tui/app/mod.rs:3591`. Re-confirmed accurate: every route in the Router
+`crates/codegg-tui/src/app/mod.rs:3591`. Re-confirmed accurate: every route in the Router
 Structure tree is mounted in `http.rs` (the trigger route comes from the
 merged `task_trigger_router`, not an `api_router` `.route()` call);
 `/health` is mounted on the outer router at `http.rs:353` and served by
 `routes::health::health_check` imported at `http.rs:24` (no inline copy);
 `ServerRuntimeError`'s five variants and the `Auth`→401 / rest→500 mapping in
 `crates/codegg-core/src/error.rs:410` and `src/error.rs:204-211`;
-`--standalone-core` exiting 2 at `src/main.rs:4774-4783`;
+`--standalone-core` exiting 2 at `crates/codegg-cli/src/main.rs:4774-4783`;
 the SSE 15s heartbeat and its broadcast-lag-only `resync_required` path; the
 `sanitize_path` ordering and its absolute-root requirement; and
 `auth_disabled_by_env` accepting only `1`/`true`.

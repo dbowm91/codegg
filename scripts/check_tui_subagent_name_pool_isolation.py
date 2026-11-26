@@ -10,7 +10,7 @@ surface downstream reads what the projection said.
 The tempting alternative — and the one this milestone is explicitly written
 against — is for a frontend to look the descriptor up itself:
 
-    // src/tui/components/sidebar.rs
+    // crates/codegg-tui/src/components/sidebar.rs
     use crate::agent::subagent_names::pool_entry;
     let profile = pool_entry(&row.display_name)?.profile;
 
@@ -23,11 +23,11 @@ name can be re-drawn to a different subagent while a stale snapshot is still on
 screen. A frontend that resolves names itself will eventually attribute one
 subagent's personality to another, with nothing failing.
 
-It also breaks the layering. `src/tui` has no curated pool and must not grow
+It also breaks the layering. `crates/codegg-tui/src` has no curated pool and must not grow
 one; the pool is agent-runtime state, and the frontend is presentation over
 projected state.
 
-So: no module under `src/tui/` may name the pool at all. Comments are exempt —
+So: no module under `crates/codegg-tui/src/` may name the pool at all. Comments are exempt —
 a doc comment may *explain* that the frontend deliberately does not resolve
 names — but any `use`, path, or identifier reference is a violation.
 
@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC = REPO_ROOT / "src" / "tui"
+SRC = REPO_ROOT / "crates" / "codegg-tui" / "src"
 
 # Identifiers that only exist to reach the curated pool. Matched as whole
 # words so `subagent_names` does not also fire on prose that happens to

@@ -8,9 +8,10 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 FILES = [
     ROOT / "src/security/sandbox.rs",
+    ROOT / "crates/codegg-sandbox/src/lib.rs",
     ROOT / "src/python_script/executor.rs",
     ROOT / "src/python_script/sandbox.rs",
-    ROOT / "src/bin/codegg-sandbox-helper.rs",
+    ROOT / "crates/codegg-sandbox-helper/src/main.rs",
     ROOT / "src/managed_process.rs",
     ROOT / "src/tool/bash.rs",
     ROOT / "src/tool/bash/process.rs",

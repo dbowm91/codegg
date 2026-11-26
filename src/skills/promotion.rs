@@ -1,15 +1,8 @@
-//! User-authorized, pre-publication skill promotion state.
+//! User-authorized, pre-publication skill promotion domain.
 //!
-//! This module owns the workflow's **domain**: the identity types, the
-//! bounded context, the draft prompt and the proposal validation. It writes
-//! nothing.
-//!
-//! M007-I moved the durable record out of this module and into the daemon's
-//! session storage (`codegg_core::session::skill_promotion`). The workflow
-//! used to be two writers of one JSON file, held together by an `flock`
-//! sidecar; the daemon is now the **one** writer, and the record is keyed on
-//! the canonical `WorkspaceId` rather than on a digest of a path string. The
-//! sidecar is retired with the second writer.
+//! Owns identity types, bounded context, draft prompts, and proposal validation;
+//! it performs no persistence. Durable records are written by daemon session
+//! storage (`codegg_core::session::skill_promotion`) keyed by `WorkspaceId`.
 
 use super::parser::{validate_portable_document, ValidatedSkillDocument};
 use super::{AssetDiscoveryConfig, AssetRegistry, Diagnostic, Severity, SourceKind};

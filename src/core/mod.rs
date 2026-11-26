@@ -17,6 +17,7 @@ pub mod daemon_construct;
 pub mod daemon_continuation;
 pub mod daemon_control;
 pub mod daemon_documents;
+pub mod daemon_editor_inline;
 pub mod daemon_family;
 pub mod daemon_git;
 pub mod daemon_goals;
@@ -174,6 +175,12 @@ impl InprocCoreClient {
         Ok(())
     }
 
+    pub async fn shutdown_jobs(&self) {
+        if let Some(daemon) = &self.daemon {
+            daemon.shutdown_jobs().await;
+        }
+    }
+
     /// Legacy constructor for backward compatibility. Prefer `with_deps`.
     pub fn new(
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
@@ -236,6 +243,7 @@ impl CoreClient for InprocCoreClient {
                 loop {
                     match bus_rx.recv().await {
                         Ok(event) => {
+                            let app_event_session_id = app_event_session_scope(&event);
                             if let Some(core_event) = map_app_event_to_core_event(event) {
                                 let (env_session_id, env_turn_id) = match &core_event {
                                     CoreEvent::TodoListUpdated { session_id, .. } => {
@@ -286,6 +294,7 @@ impl CoreClient for InprocCoreClient {
                                         turn_id,
                                         ..
                                     } => (Some(session_id.clone()), turn_id.clone()),
+                                    CoreEvent::Error { .. } => (app_event_session_id, None),
                                     _ => (None, None),
                                 };
                                 let envelope = EventEnvelope {
@@ -314,6 +323,13 @@ impl CoreClient for InprocCoreClient {
         }
 
         rx
+    }
+}
+
+pub(crate) fn app_event_session_scope(event: &crate::bus::events::AppEvent) -> Option<String> {
+    match event {
+        crate::bus::events::AppEvent::Error { session_id, .. } => session_id.clone(),
+        _ => None,
     }
 }
 
@@ -628,7 +644,7 @@ pub(crate) fn map_app_event_to_core_event(
         // runtime token counts and to emit a notification, neither of
         // which goes through `map_app_event_to_core_event`.
         crate::bus::events::AppEvent::AgentFinished { .. } => None,
-        crate::bus::events::AppEvent::Error { message } => Some(CoreEvent::Error {
+        crate::bus::events::AppEvent::Error { message, .. } => Some(CoreEvent::Error {
             code: "agent_error".to_string(),
             message,
         }),
@@ -1350,6 +1366,22 @@ mod tests {
             }
             other => panic!("expected Some(TestRunCompleted), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn session_scoped_app_errors_keep_their_session_identity() {
+        let event = crate::bus::events::AppEvent::Error {
+            session_id: Some("session-owned".into()),
+            message: "turn failed".into(),
+        };
+        assert_eq!(
+            app_event_session_scope(&event).as_deref(),
+            Some("session-owned")
+        );
+        assert!(matches!(
+            map_app_event_to_core_event(event),
+            Some(CoreEvent::Error { code, .. }) if code == "agent_error"
+        ));
     }
 
     #[test]

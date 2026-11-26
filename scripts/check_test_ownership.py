@@ -147,7 +147,11 @@ def workspace_members() -> dict[str, dict]:
             "integration": integration,
             # Cargo names a library's unit-test harness after the crate, with
             # hyphens turned into underscores.
-            "lib-test-target": package["name"].replace("-", "_"),
+            "lib-test-target": (
+                package["name"].replace("-", "_")
+                if any(target["kind"] == ["lib"] for target in package["targets"])
+                else None
+            ),
         }
     return members
 

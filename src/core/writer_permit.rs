@@ -251,9 +251,7 @@ impl WriterPermitService {
             Err(error) => return Err(error),
         };
 
-        // A wait that was cancelled while the permit was being taken must not
-        // leave a token behind. The permit was taken but nothing was written,
-        // so the honest evidence is "no effect".
+        // The raced permit had no effect; release it with NoEffect evidence.
         if let Some(wait) = request.wait.as_ref() {
             if wait.cancellation.is_cancelled() {
                 let guard = WriterPermitGuard::new(self.clone(), record);
@@ -528,10 +526,8 @@ impl WriterPermitGuard {
             })
             .await;
         self.service.notify_waiters(&begun.worktree_id).await;
-        // A failure on either leg leaves the permit unsettled, and an unsettled
-        // guard is quarantined when it drops. That is the fail-safe direction:
-        // a release that did not complete leaves the checkout's state unknown,
-        // and unknown is not free.
+        // The guard stays unsettled until both release steps succeed; Drop quarantines
+        // it on failure.
         let record = completed?;
         self.settled = true;
         Ok(record)
@@ -577,11 +573,7 @@ impl Drop for WriterPermitGuard {
         if self.settled {
             return;
         }
-        // The guard was dropped without being settled. The checkout's state is
-        // unknown, so the permit is parked rather than freed. `Drop` cannot
-        // await, so the quarantine is spawned on the current runtime; if there
-        // is no runtime, the permit stays held and the next daemon restart
-        // reconciles it into a quarantine.
+        // Without a Tokio runtime, restart reconciliation quarantines the still-held permit.
         let service = self.service.clone();
         let worktree_id = self.record.worktree_id.clone();
         let revision = self.record.revision;
@@ -717,20 +709,12 @@ impl WriterPermitAuthority for WorktreePermitAuthority {
             return Err(WriterPermitAuthorityError::NoActiveLease);
         }
 
-        // The run that holds the lease is the run that may write. A request
-        // without a run has no lease to claim, and a request naming a
-        // different run is not the owner.
+        // Only the lease owner or a run in its live group may acquire this permit.
         let Some(requesting_run) = request.agent_run_id.as_ref() else {
             return Err(WriterPermitAuthorityError::NotLeaseOwner);
         };
         if record.owner_run_id.as_ref() != Some(requesting_run) {
-            // A checkout may be shared by a group of runs under a bounded
-            // reservation: the lease owner is one writer, and a run that
-            // shares a *live* group with the owner is the other. The permit
-            // still records the individual run and the lease generation, so
-            // this widens *who* may write a shared checkout, never *what* a
-            // writer may do. Without the live group there is no
-            // reservation, and the lease owner is the only writer.
+            // A live group widens writer membership, not the per-run, generation-bound permit.
             if !self
                 .shares_live_group(requesting_run, record.owner_run_id.as_ref())
                 .await?
@@ -739,9 +723,7 @@ impl WriterPermitAuthority for WorktreePermitAuthority {
             }
         }
 
-        // The group reservation must still be live. A group that has finished
-        // no longer covers this checkout, so its reservation is not a
-        // justification to write.
+        // A terminal group no longer reserves this checkout.
         if let (Some(groups), Some(group_id)) = (self.groups.as_ref(), request.group_id.as_ref()) {
             let member_groups = groups
                 .groups_for_member(requesting_run)

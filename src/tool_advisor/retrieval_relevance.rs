@@ -291,12 +291,10 @@ fn excerpt_around(haystack: &str, cue: &str) -> String {
     truncate_utf8(haystack[start..end].trim(), 160)
 }
 
-/// Deterministic adjudication of one positive label from allowed evidence.
+/// Classify one positive label from allowed evidence.
 ///
-/// Frozen benchmark cases populate only `current_objective`, so inferable
-/// labels are `CurrentStep` and `ExplicitNextStep` never fires here. The
-/// `ExplicitNextStep` arm is implemented for future corpora with populated
-/// structured `next_steps` fields.
+/// Frozen benchmark cases populate only `current_objective`; `ExplicitNextStep` requires
+/// future corpora with structured `next_steps`.
 pub fn classify_tool(
     case: &ToolAdvisorCase,
     candidate: &str,
@@ -463,7 +461,6 @@ pub fn validate_derived_view(
     if view.fingerprint != recomputed {
         return Err(anyhow!("derived view fingerprint mismatch"));
     }
-    // Deterministic stable ordering.
     let mut sorted = view.entries.clone();
     sorted.sort_by(|left, right| {
         left.case_id

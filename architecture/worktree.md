@@ -230,9 +230,9 @@ pub use egggit::process::{
 | Location | How Used |
 |----------|----------|
 | `src/core/daemon_projects.rs:71` (`handle_projects_request`) | `find_git_root` + `list_worktrees` for workspace/project discovery |
-| `src/tui/app/mod.rs:6612` | `/worktree` command handler (`B::Worktree`) |
-| `src/tui/commands/git_sidebar.rs:143` | Git sidebar worktree listing |
-| `src/tui/commands/tasks.rs:550` | `start_worktree_list` async task |
+| `crates/codegg-tui/src/app/mod.rs:6612` | `/worktree` command handler (`B::Worktree`) |
+| `crates/codegg-tui/src/commands/git_sidebar.rs:143` | Git sidebar worktree listing |
+| `crates/codegg-tui/src/commands/tasks.rs:550` | `start_worktree_list` async task |
 | `src/git_service.rs:1124` (`execute_worktrees`) | Git tool `worktree` subcommand (read-only dispatch; rendered at `src/tool/git_read.rs:336`) |
 | `src/agent/turn_runtime.rs:1272` | `egggit::worktree::find_git_root` for workspace root resolution |
 
@@ -311,13 +311,13 @@ performed; every count is a source-level measurement.
   `worktree_uses_canonical_policy` `worktree.rs:142` → `:188`;
   `migrate_v39` `schema.rs:2036` → `:2113`.
 - **Re-anchored every consumer ref**: `src/core/daemon_projects.rs:13` → `:71`;
-  `src/tui/app/mod.rs:4282` → `:6612`;
-  `src/tui/commands/git_sidebar.rs:113` → `:143`;
+  `crates/codegg-tui/src/app/mod.rs:4282` → `:6612`;
+  `crates/codegg-tui/src/commands/git_sidebar.rs:113` → `:143`;
   `src/git_service.rs:721` → `:1124` (`execute_worktrees`; the read-only
   dispatch is `GitOperation::WorktreeList` at `:346`);
   `src/tool/git_read.rs:335` → `:336`;
   `src/agent/turn_runtime.rs:984` → `:1272`.
-  `src/tui/commands/tasks.rs:550` was already accurate.
+  `crates/codegg-tui/src/commands/tasks.rs:550` was already accurate.
 - **Added a missing public API.** `git_dir_for` (`:152`) resolves the Git
   *directory* (objects, refs, index, and the `worktrees/` administration
   directory) through a `.git` pointer file, and is what a contained child
@@ -341,7 +341,7 @@ review's function-line corrections as already applied and accurate
 Further corrections made here: `into_legacy()` `codegg-core:24` → `:22`, the
 policy re-export range `codegg-core:11-14` → `:9-11`, the previously
 line-less `create_worktree_at` filled in at `:51`, and four consumer refs
-(`src/core/daemon_projects.rs` → `:13`, `src/tui/app/mod.rs:5880` → `:4282`,
+(`src/core/daemon_projects.rs` → `:13`, `crates/codegg-tui/src/app/mod.rs:5880` → `:4282`,
 `src/tool/git.rs:964` → `src/git_service.rs:721` because the read-only
 `worktree` subcommand dispatches through `git_service`, and
 `src/agent/turn_runtime.rs:782` → `:984`, which resolves through

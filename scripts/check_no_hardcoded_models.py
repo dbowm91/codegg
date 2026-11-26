@@ -23,6 +23,11 @@ What is allowed:
   * `vec![ModelInfo { .. }]` inside `#[cfg(test)]` modules
   * `ModelInfo` values synthesized from a real discovery response
   * config-declared models threaded through as additive seeds
+
+Every file is scanned through `rust_test_scan.production_view`, never through
+a regex over raw source: a `#[cfg(test)]` module is removed by the scanner's
+literal-aware brace matching, so a fixture's `{` cannot decide where the
+module ends.
 """
 
 from pathlib import Path
@@ -30,6 +35,10 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rust_test_scan  # noqa: E402  (path is set above)
+
 PROVIDERS = ROOT / "crates" / "codegg-providers" / "src"
 TUI = ROOT / "src" / "tui"
 
@@ -82,37 +91,22 @@ TUI_MODEL_SEEDS = (
 
 
 def strip_test_modules(src: str) -> str:
-    """Blank out `#[cfg(test)] mod tests { ... }` bodies.
+    """The file's production view: its `#[cfg(test)]` modules removed.
 
-    Test fixtures legitimately construct `ModelInfo` literals; this is
-    the only place we are allowed to.
+    Test fixtures legitimately construct `ModelInfo` literals; this is the
+    only place we are allowed to. The view is `rust_test_scan.production_view`
+    rather than a hand-rolled brace counter.
+
+    The counter this replaced treated *any* `#[cfg(test)]` as a module gate
+    and blanked forward to the next `{`, so a `#[cfg(test)] use` erased the
+    production item that followed it. Measured on this tree, before the fix:
+    44 production lines erased in `crates/codegg-providers/src/opencode_go.rs`
+    (the `#[cfg(test)] use std::time::Duration;` at line 30 made the next `{`
+    the provider struct's), and 67 production lines across 4 files. A
+    compiled-in catalogue declared in one of those regions would have been
+    invisible to this guard.
     """
-    out = []
-    i = 0
-    n = len(src)
-    while i < n:
-        m = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]").search(src, i)
-        if not m:
-            out.append(src[i:])
-            break
-        out.append(src[i : m.start()])
-        brace = src.find("{", m.end())
-        if brace == -1:
-            out.append(src[m.start() :])
-            break
-        depth = 0
-        j = brace
-        while j < n:
-            if src[j] == "{":
-                depth += 1
-            elif src[j] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            j += 1
-        out.append(re.sub(r"[^\n]", "", src[m.start() : j + 1]))
-        i = j + 1
-    return "".join(out)
+    return rust_test_scan.production_view(src)
 
 
 def scan_models_impls(src: str) -> list[str]:
@@ -143,6 +137,31 @@ def scan_models_impls(src: str) -> list[str]:
     return hits
 
 
+def check_provider_source(rel: str, src: str, filename: str = "") -> list[str]:
+    """The provider-side rules, over one file's production view."""
+    failures: list[str] = []
+    for fn in FORBIDDEN_FNS:
+        if re.search(rf"fn\s+{fn}\s*\(", src):
+            failures.append(f"{rel}: defines {fn}(); shipped model catalogs are forbidden")
+    if filename in FORBIDDEN_MODULES:
+        return failures
+    for hit in scan_models_impls(src):
+        failures.append(f"{rel}: {hit}")
+    for pattern, what in SEED_LIST_PATTERNS:
+        if re.search(pattern, src, re.DOTALL):
+            failures.append(f"{rel}: {what} (use discovery or additive config instead)")
+    return failures
+
+
+def check_tui_source(rel: str, src: str) -> list[str]:
+    """The frontend rules, over one file's production view."""
+    failures: list[str] = []
+    for pattern, msg in TUI_MODEL_SEEDS:
+        if re.search(pattern, src):
+            failures.append(f"{rel}: {msg}")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
 
@@ -154,26 +173,14 @@ def main() -> int:
             )
 
     for rs in sorted(PROVIDERS.rglob("*.rs")):
-        raw = rs.read_text()
-        src = strip_test_modules(raw)
         rel = rs.relative_to(ROOT)
-        for fn in FORBIDDEN_FNS:
-            if re.search(rf"fn\s+{fn}\s*\(", src):
-                failures.append(f"{rel}: defines {fn}(); shipped model catalogs are forbidden")
-        if rs.name in FORBIDDEN_MODULES:
-            continue
-        for hit in scan_models_impls(src):
-            failures.append(f"{rel}: {hit}")
-        for pattern, what in SEED_LIST_PATTERNS:
-            if re.search(pattern, src, re.DOTALL):
-                failures.append(f"{rel}: {what} (use discovery or additive config instead)")
+        src = strip_test_modules(rs.read_text())
+        failures.extend(check_provider_source(rel, src, rs.name))
 
     for rs in sorted(TUI.rglob("*.rs")):
-        src = strip_test_modules(rs.read_text())
         rel = rs.relative_to(ROOT)
-        for pattern, msg in TUI_MODEL_SEEDS:
-            if re.search(pattern, src):
-                failures.append(f"{rel}: {msg}")
+        src = strip_test_modules(rs.read_text())
+        failures.extend(check_tui_source(rel, src))
 
     if failures:
         sys.stderr.write(

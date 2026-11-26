@@ -201,9 +201,9 @@ projection" below); the only production caller is the scheduler
 
 | Location | How Used |
 |----------|----------|
-| `src/tui/app/mod.rs:360` | `App.run_store: Option<Arc<dyn RunStore>>` |
-| `src/tui/app/mod.rs:925-930` | Initializes `FsRunStore` at `<project_dir>/.codegg/runs` |
-| `src/tui/components/dialogs/run_detail.rs` | `RunDetailDialog` — 7-tab detail view |
+| `crates/codegg-tui/src/app/mod.rs:360` | `App.run_store: Option<Arc<dyn RunStore>>` |
+| `crates/codegg-tui/src/app/mod.rs:925-930` | Initializes `FsRunStore` at `<project_dir>/.codegg/runs` |
+| `crates/codegg-tui/src/components/dialogs/run_detail.rs` | `RunDetailDialog` — 7-tab detail view |
 
 ### Durable rerun
 
@@ -310,7 +310,7 @@ Run with `--test-threads=1` to avoid spurious hangs under concurrent load.
 Re-verified against `crates/codegg-core/src/run_store.rs` (2714 lines),
 `crates/codegg-core/src/error.rs`, `src/lib.rs`, `src/tool/{mod,factory,bash}.rs`,
 `src/tool/bash/output.rs`, `src/python_script/tool.rs`, `src/git_run_store.rs`,
-`src/test_runner/runner.rs`, and `src/tui/app/mod.rs`. No build or test run
+`src/test_runner/runner.rs`, and `crates/codegg-tui/src/app/mod.rs`. No build or test run
 was performed; every count is a source-level measurement.
 
 - **Corrected a wrong count.** `ActualBackend` has **9** variants, not 10 —
@@ -363,7 +363,7 @@ was performed; every count is a source-level measurement.
 Verified against `crates/codegg-core/src/run_store.rs` (2612
 lines), `crates/codegg-core/src/error.rs`, `src/lib.rs`,
 `src/tool/{mod,factory,bash}.rs`, `src/tool/bash/output.rs`,
-`src/python_script/tool.rs`, and `src/tui/app/mod.rs`. Confirmed and
+`src/python_script/tool.rs`, and `crates/codegg-tui/src/app/mod.rs`. Confirmed and
 extended the prior review's finding that the view-model refs were
 systematically stale: they were off by 15-22 lines, and the *entire*
 type table was stale too. Corrected all 34 type/enum/impl/constant refs

@@ -65,6 +65,12 @@ run_guards() {
 
     echo "==> ./scripts/check-core-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-core-boundary.sh)
+
+    echo "==> python3 scripts/check_tui_dependency_direction.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_dependency_direction.py --self-test)
+    echo "==> python3 scripts/check_tui_dependency_direction.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_dependency_direction.py)
+
     echo "==> ./scripts/check-client-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-client-boundary.sh)
 
@@ -125,8 +131,31 @@ run_guards() {
     echo "==> python3 scripts/check_desktop_editor_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_desktop_editor_authority.py)
 
+    # The sandbox guards protect the silent containment defects: a dropped
+    # sandbox profile thread, a widened child ceiling, a degraded
+    # uncontained launch, an unregistered backend, a Seatbelt deny emitted
+    # before its re-allow, a hardlinked deny that is not refused, and a
+    # scheduler path that rebuilds containment without the durable-payload
+    # tier request. Both run with their self-tests, because a guard that
+    # cannot be shown to fail on an injected defect is not evidence — and
+    # because this one was invoked by nothing until those self-tests existed.
+    echo "==> python3 scripts/check_sandbox_helper_package_cut.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_helper_package_cut.py --self-test)
+
+    echo "==> python3 scripts/check_sandbox_helper_package_cut.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_helper_package_cut.py)
+
+    echo "==> python3 scripts/check_sandbox_contract.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py --self-test)
+
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
+
+    echo "==> python3 scripts/check_sandbox_policy_wiring.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_policy_wiring.py --self-test)
+
+    echo "==> python3 scripts/check_sandbox_policy_wiring.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_policy_wiring.py)
 
     echo "==> python3 scripts/check_adr_integrity.py"
     (cd "$REPO_ROOT" && python3 scripts/check_adr_integrity.py)
@@ -294,11 +323,20 @@ run_guards() {
     echo "==> python3 scripts/check_tui_project_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_project_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_text_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_text_authority.py --self-test)
+
     echo "==> python3 scripts/check_tui_editor_text_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_text_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_key_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_key_authority.py --self-test)
+
     echo "==> python3 scripts/check_tui_editor_key_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_key_authority.py)
+
+    echo "==> python3 scripts/check_tui_editor_leaf_authority.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_leaf_authority.py --self-test)
 
     echo "==> python3 scripts/check_tui_editor_leaf_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_leaf_authority.py)
@@ -306,11 +344,20 @@ run_guards() {
     echo "==> python3 scripts/check_tui_editor_completion_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_completion_authority.py)
 
+    echo "==> python3 scripts/check_tui_editor_apply_path.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_apply_path.py --self-test)
+
     echo "==> python3 scripts/check_tui_editor_apply_path.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_apply_path.py)
 
+    echo "==> python3 scripts/check_tui_editor_prefix_state.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_prefix_state.py --self-test)
+
     echo "==> python3 scripts/check_tui_editor_prefix_state.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_prefix_state.py)
+
+    echo "==> python3 scripts/check_tui_editor_doc_drift.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py --self-test)
 
     echo "==> python3 scripts/check_tui_editor_doc_drift.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_doc_drift.py)
@@ -419,6 +466,15 @@ run_guards() {
 
     echo "==> python3 scripts/check_config_merge_coverage.py"
     (cd "$REPO_ROOT" && python3 scripts/check_config_merge_coverage.py)
+
+    echo "==> python3 scripts/check_config_merge_coverage.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_config_merge_coverage.py --self-test)
+
+    echo "==> python3 scripts/check_config_provenance.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_config_provenance.py --self-test)
+
+    echo "==> python3 scripts/check_config_provenance.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_config_provenance.py)
 
     echo "==> python3 scripts/check_provider_wire_boundary.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_wire_boundary.py)
@@ -578,6 +634,57 @@ run_guards() {
 
     echo "==> python3 scripts/check_test_common_binding.py"
     (cd "$REPO_ROOT" && python3 scripts/check_test_common_binding.py)
+
+    # The TUI render-invariant baseline is a ratchet: I4, I5 and I6 record the
+    # failures that exist today, and the set may shrink and may not grow. The
+    # harness is the measurement; this guard is the cheap static gate on the
+    # record's shape, its banked totals, its surface inventory and the contrast
+    # arithmetic. It runs in CI too, because a baseline only one lane checks is
+    # a baseline the other lane can grow.
+    echo "==> python3 scripts/check_tui_render_invariant_baseline.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_render_invariant_baseline.py --self-test)
+
+    echo "==> python3 scripts/check_tui_render_invariant_baseline.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_render_invariant_baseline.py)
+
+    echo "==> python3 scripts/check_session_replay_fixtures.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_session_replay_fixtures.py --self-test)
+
+    echo "==> python3 scripts/check_session_replay_fixtures.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_session_replay_fixtures.py)
+
+    echo "==> python3 scripts/check_request_ledger_writers.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_request_ledger_writers.py --self-test)
+
+    echo "==> python3 scripts/check_request_ledger_writers.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_request_ledger_writers.py)
+
+    echo "==> python3 scripts/check_storage_catalog.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_storage_catalog.py --self-test)
+
+    echo "==> python3 scripts/check_storage_catalog.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_storage_catalog.py)
+
+    echo "==> python3 scripts/check_tool_catalog.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_catalog.py --self-test)
+
+    echo "==> python3 scripts/check_tool_catalog.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_catalog.py)
+
+    echo "==> python3 scripts/check_project_catalog_invariants.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_project_catalog_invariants.py)
+
+    # An escaped defect gets a dated postmortem naming the guard that now
+    # prevents it. This guard fails when a record names a guard that does not
+    # exist, when that guard never mentions the defect, when a required section
+    # is missing, and when a number is duplicated or skipped — none of which any
+    # other check can see, and all of which fail silently. It is documentation,
+    # so it adds no compilation: a record must not cost a build.
+    echo "==> python3 scripts/check_postmortems.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_postmortems.py --self-test)
+
+    echo "==> python3 scripts/check_postmortems.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_postmortems.py)
 }
 
 # ── Quick tier ──────────────────────────────────────────────────────────────
@@ -586,8 +693,8 @@ run_quick() {
 
     run_guards
 
-    echo "==> python3 -m unittest discover -s dev/harness_lab/tests"
-    (cd "$REPO_ROOT" && python3 -m unittest discover -s dev/harness_lab/tests)
+    # Harness Lab remains a local development suite. Run it explicitly; it is
+    # not part of this gate or of release builds.
 
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
@@ -621,6 +728,19 @@ run_full() {
 
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo clippy --workspace --all-targets --locked -- -D warnings"
     (cd "$REPO_ROOT" && cargo clippy --workspace --all-targets --locked -- -D warnings)
+
+    # The sandboxed integration tests load the trusted helper from the
+    # Cargo profile directory. `cargo nextest` builds test targets, not
+    # bins, so the helper is absent and every sandboxed launch fails
+    # instantly — the sweep then reports a product defect that is only a
+    # missing build artifact. CI builds it explicitly; a local sweep that
+    # does not build it is not the same sweep.
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper"
+    (cd "$REPO_ROOT" && cargo build --locked -p codegg-sandbox-helper --bin codegg-sandbox-helper)
+    # A restored or pruned cache can leave the binary without the `deps`
+    # directory the integration tests load it from.
+    mkdir -p "$REPO_ROOT/target/debug/deps"
+    cp "$REPO_ROOT/target/debug/codegg-sandbox-helper" "$REPO_ROOT/target/debug/deps/codegg-sandbox-helper"
 
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run --workspace --locked --profile ci"
     (cd "$REPO_ROOT" && cargo nextest run --workspace --locked --profile ci)
@@ -695,10 +815,13 @@ run_scoped() {
     fi
 
     echo "==> Scope"
-    printf '%s\n' "$selection" | python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format text
+    # Here-string, not a pipe: the formatter stops reading once it has parsed
+    # the selection, and with `pipefail` a large selection made `printf` take
+    # SIGPIPE (141) before the widened pass could start.
+    python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format text <<< "$selection"
 
     # The workspace-wide widening case: run the ordinary workspace test pass.
-    if printf '%s' "$selection" | grep -q '"widen_workspace": true'; then
+    if grep -q '"widen_workspace": true' <<< "$selection"; then
         echo "==> Scope widened to the whole workspace; running the workspace-wide pass"
         echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run --workspace --locked --profile ci"
         (cd "$REPO_ROOT" && cargo nextest run --workspace --locked --profile ci)
@@ -708,17 +831,20 @@ run_scoped() {
 
     # Otherwise: one Nextest invocation per affected member, so that a
     # `--test` name is only ever resolved against the package that owns it.
-    # The member's library test target is always included — an affected
-    # member contributes it even when no integration target matched.
+    # A member's library test target is included when it has one. A bin-only
+    # member gets no --lib selector, so Nextest uses its default test targets.
     #
     # A target gated behind `required-features` cannot be built without its
     # features, so the features the selected targets are gated on are
     # enabled for that member's invocation. Naming a gated target without
     # enabling its feature is a cargo error, not a silent skip.
-    local member_line name targets features
-    while IFS=$'\t' read -r name targets features; do
+    local member_line name targets features has_lib
+    while IFS=$'\t' read -r name targets features has_lib; do
         [ -n "$name" ] || continue
-        local -a args=(--lib)
+        local -a args=()
+        if [ "$has_lib" = "true" ]; then
+            args+=(--lib)
+        fi
         local -a feature_args=()
         local target
         for target in $targets; do
@@ -735,8 +861,8 @@ run_scoped() {
         # whenever the selected targets need no cargo feature, which is the
         # common case, so the plain expansion would break the scoped mode on
         # every unfeatured selection.
-        echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run -p $name --locked --profile ci ${feature_args[*]+"${feature_args[*]}"} ${args[*]}"
-        (cd "$REPO_ROOT" && cargo nextest run -p "$name" --locked --profile ci "${feature_args[@]+"${feature_args[@]}"}" "${args[@]}")
+        echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run -p $name --locked --profile ci ${feature_args[*]+"${feature_args[*]}"} ${args[*]+\"${args[*]}\"}"
+        (cd "$REPO_ROOT" && cargo nextest run -p "$name" --locked --profile ci "${feature_args[@]+"${feature_args[@]}"}" "${args[@]+\"${args[@]}\"}")
     done < <(python3 "$REPO_ROOT/scripts/scoped_selection.py" --base "$base" --format members)
 
     echo "==> Scoped verification passed."

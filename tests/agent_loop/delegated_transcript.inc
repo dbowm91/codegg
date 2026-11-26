@@ -265,6 +265,7 @@ fn request(run_id: AgentRunId, prompt: &str) -> SubAgentRequest {
         description: "a delegated task".to_string(),
         depth: 0,
         max_tool_calls: None,
+        max_wall_clock_secs: None,
         parent_model: None,
         workspace_root: Some(std::env::current_dir().expect("workspace root")),
         default_working_directory: None,
@@ -663,7 +664,10 @@ async fn a_delegated_run_records_a_bounded_tool_result_with_truncation_marked() 
     // row bounds (INLINE_BYTE_BUDGET). Use `grep` against a many-line file
     // so the tool can still emit more than those bounds and this test keeps
     // covering the layered truncation markers it owns.
-    let oversized = "match-line\n".repeat(MAX_TRANSCRIPT_ROW_BYTES);
+    // The lines must stay long after path redaction. A bare "match-line" line
+    // is mostly the workspace path, so redacting that path shrinks a capped
+    // tool result below the row bound and the layered markers never engage.
+    let oversized = format!("match-line {}\n", "x".repeat(160)).repeat(MAX_TRANSCRIPT_ROW_BYTES);
     let workspace = ChildWorkspace::new("big.txt", &oversized);
     let mut registry = ProviderRegistry::new();
     registry.register(ScriptedProvider::new(

@@ -1,0 +1,1560 @@
+//! Project picker and tab navigation commands (Milestone 2).
+//!
+//! Handles the project picker dialog, tab switching, session listing,
+//! and one-off registration workflows. All async operations use the
+//! `start_*/apply_*` pattern with `spawn_registered_tui_task`.
+
+use crate::app::state::project_picker::MAX_OPEN_PROJECT_TABS;
+use crate::app::state::project_tabs::ProjectTabState;
+use crate::app::App;
+use crate::app::TuiCommand;
+use crate::async_cmd::spawn_registered_tui_task;
+use crate::task_lifecycle::TuiTaskKind;
+use codegg::protocol::core::{CoreRequest, CoreResponse};
+
+/// Resolve a frontend-owned directory to its idempotent workspace/project
+/// pair. Both startup and picker opens use this path so a known root always
+/// returns its existing project and an unseen root is named for its directory.
+pub(crate) async fn ensure_bound_project_context(
+    core_client: &dyn codegg::core::CoreClient,
+    directory: &std::path::Path,
+    source: &str,
+) -> Result<(String, String, String), String> {
+    let directory = directory
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve directory: {error}"))?;
+    let root = directory.to_string_lossy().into_owned();
+    let workspace_id = match core_client
+        .request(codegg::core::new_request(
+            format!("workspace-open-{}", uuid::Uuid::new_v4()),
+            CoreRequest::WorkspaceRegister { root: root.clone() },
+        ))
+        .await
+    {
+        Ok(CoreResponse::WorkspaceSnapshot { workspace }) => workspace.workspace_id,
+        Ok(CoreResponse::Error { code, message }) => {
+            return Err(format!("workspace registration failed ({code}): {message}"))
+        }
+        Ok(other) => return Err(format!("unexpected workspace response: {other:?}")),
+        Err(error) => return Err(format!("workspace registration request failed: {error}")),
+    };
+    let display_name = directory
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| root.clone());
+    let project_id = match core_client
+        .request(codegg::core::new_request(
+            format!("project-open-{}", uuid::Uuid::new_v4()),
+            CoreRequest::ProjectRegister {
+                request: codegg::protocol::dto::ProjectRegisterRequestDto {
+                    workspace_id: workspace_id.clone(),
+                    display_name,
+                    description: None,
+                    tags: Vec::new(),
+                    repository_id: None,
+                    source: source.to_string(),
+                },
+            },
+        ))
+        .await
+    {
+        Ok(CoreResponse::ProjectRegistered { project }) => project.project_id,
+        Ok(CoreResponse::Error { code, message }) => {
+            return Err(format!("project registration failed ({code}): {message}"))
+        }
+        Ok(other) => return Err(format!("unexpected project response: {other:?}")),
+        Err(error) => return Err(format!("project registration request failed: {error}")),
+    };
+    Ok((project_id, workspace_id, root))
+}
+
+/// Open or focus a project tab. If the project is already open,
+/// switches to that tab. Otherwise creates a new tab after validating
+/// capacity.
+pub(crate) fn open_or_focus_project(
+    app: &mut App,
+    project_id: String,
+    workspace_hint: Option<String>,
+    display_name: Option<String>,
+    workspace_root: Option<std::path::PathBuf>,
+) {
+    // Check if already open
+    if let Some(existing) = app.project_tabs.find_by_project(&project_id) {
+        let tab_id = existing.tab_id.clone();
+        if workspace_root.is_some() {
+            if let Some(tab) = app.project_tabs.get_mut(&tab_id) {
+                tab.workspace_root = workspace_root;
+            }
+        }
+        switch_active_tab(app, &tab_id);
+        return;
+    }
+
+    // Check capacity
+    if app.project_tabs.is_at_capacity() {
+        app.messages_state.toasts.error(&format!(
+            "Project tab limit reached ({}). Close another tab to open this project.",
+            MAX_OPEN_PROJECT_TABS
+        ));
+        return;
+    }
+
+    // Create a new tab
+    let label = display_name.unwrap_or_else(|| "Loading...".to_string());
+    let label = crate::app::state::project_picker::truncate_tab_label(&label);
+    let tab_id = crate::app::state::ProjectTabId::new();
+    let mut tab = ProjectTabState::empty(tab_id.clone(), label);
+    tab.project_id = Some(project_id.clone());
+    tab.workspace_id = workspace_hint;
+    tab.workspace_root = workspace_root;
+
+    app.project_tabs.add_and_activate(tab);
+    switch_active_tab(app, &tab_id);
+    app.schedule_manifest_save();
+}
+
+/// Switch the active tab, using the controlled switch coordinator.
+pub(crate) fn switch_active_tab(app: &mut App, target_tab_id: &crate::app::state::ProjectTabId) {
+    let current_tab_id = app.project_tabs.active_tab_id().cloned();
+
+    // If already the active tab, nothing to do
+    if current_tab_id.as_ref() == Some(target_tab_id) {
+        return;
+    }
+
+    // Capture outgoing tab's lightweight selection
+    if let Some(ref outgoing_id) = current_tab_id {
+        if let Some(outgoing) = app.project_tabs.get_mut(outgoing_id) {
+            outgoing.model = app.agent_state.current_model.clone();
+            // current_agent is a usize index into agent_state.agents;
+            // resolve to the agent name for the per-tab snapshot.
+            let agent_name = app
+                .agent_state
+                .agents
+                .get(app.agent_state.current_agent)
+                .map(|a| a.name.clone())
+                .unwrap_or_default();
+            outgoing.agent = agent_name;
+        }
+    }
+
+    // Begin the switch transaction
+    app.invalidate_pending_session_submit(false);
+    let from_tab = current_tab_id.unwrap_or_else(crate::app::state::ProjectTabId::new);
+    let _epoch = app
+        .view_switch
+        .begin_switch(from_tab, target_tab_id.clone());
+
+    // Set the tab active
+    app.project_tabs.set_active(target_tab_id);
+    let project_scope = app.active_project_id().map(str::to_string);
+    app.sidebar.set_project_scope(project_scope.as_deref());
+    // Project-local command discovery follows the newly active tab. This
+    // refresh is synchronous and uses the captured tab root; no process
+    // directory mutation is involved.
+    app.refresh_project_command_registry();
+
+    // Check if the target has a session to load
+    let target_session = app
+        .project_tabs
+        .get(target_tab_id)
+        .and_then(|t| t.session_id.clone());
+    let target_project = app
+        .project_tabs
+        .get(target_tab_id)
+        .and_then(|t| t.project_id.clone());
+    let target_workspace = app
+        .project_tabs
+        .get(target_tab_id)
+        .and_then(|t| t.workspace_id.clone());
+
+    if let (Some(session_id), Some(project_id), _workspace_id) =
+        (target_session, target_project, target_workspace)
+    {
+        // Start loading the session
+        let request_id = app
+            .project_tabs
+            .get_mut(target_tab_id)
+            .map(|t| t.request_state.begin())
+            .unwrap_or(0);
+
+        let core_client = app.core_client.clone();
+        let tx = app.tui_cmd_tx.clone();
+        let _tab_id = target_tab_id.clone();
+
+        spawn_registered_tui_task(
+            tx,
+            &mut app.task_registry,
+            TuiTaskKind::Command,
+            "load_tab_session",
+            async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::ProjectGetLoaded {
+                        request_id,
+                        target_project_id: project_id,
+                        picker_generation: 0,
+                        picker_request_id: 0,
+                        result: None,
+                        error: Some("Core unavailable".to_string()),
+                    });
+                };
+
+                let req = codegg::core::new_request(
+                    format!("snapshot-session-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::SnapshotSession {
+                        session_id: session_id.clone(),
+                    },
+                );
+
+                match core_client.request(req).await {
+                    Ok(CoreResponse::SnapshotSession { .. }) => {
+                        // We have the session data; construct a minimal
+                        // details-like result and apply it. For now, we
+                        // apply the snapshot directly.
+                        Some(TuiCommand::ProjectGetLoaded {
+                            request_id,
+                            target_project_id: project_id,
+                            picker_generation: 0,
+                            picker_request_id: 0,
+                            result: None,
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::ProjectGetLoaded {
+                            request_id,
+                            target_project_id: project_id,
+                            picker_generation: 0,
+                            picker_request_id: 0,
+                            result: None,
+                            error: Some(format!("{}: {}", code, message)),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::ProjectGetLoaded {
+                        request_id,
+                        target_project_id: project_id,
+                        picker_generation: 0,
+                        picker_request_id: 0,
+                        result: None,
+                        error: Some("Unexpected response".to_string()),
+                    }),
+                    Err(e) => Some(TuiCommand::ProjectGetLoaded {
+                        request_id,
+                        target_project_id: project_id,
+                        picker_generation: 0,
+                        picker_request_id: 0,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            },
+        );
+    } else {
+        // No session — mark idle and set the tab active
+        app.view_switch.cancel();
+    }
+
+    // Presence M002: rapid switching must not leak one project's
+    // collaborators into another. Trigger a bounded refresh for the new
+    // active project; the reducer keys by project_id and drops stale
+    // completions from the previous tab.
+    if let Some(new_project) = app
+        .project_tabs
+        .get(target_tab_id)
+        .and_then(|t| t.project_id.clone())
+    {
+        if app.presence.needs_refresh(&new_project) {
+            super::presence::start_refresh_presence(
+                app,
+                new_project,
+                super::presence::PresenceRefresh::User,
+            );
+        }
+    }
+
+    // Persist the new active-tab intent.
+    app.schedule_manifest_save();
+}
+
+/// Start loading project detail via ProjectGet.
+pub(crate) fn start_get_project(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    picker_generation: u64,
+    picker_request_id: u64,
+) {
+    if app.core_client.is_none() {
+        if let Some(picker) = &mut app.dialog_state.project_picker {
+            picker.last_error = Some("Core unavailable — check daemon status".to_string());
+            picker.phase = crate::app::state::PickerPhase::Error;
+        }
+        return;
+    }
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_get",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+
+            let req = codegg::core::new_request(
+                format!("project-get-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectGet {
+                    project_id: project_id.clone(),
+                },
+            );
+
+            match core_client.request(req).await {
+                Ok(CoreResponse::ProjectGet { project }) => Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: Some(project),
+                    error: None,
+                }),
+                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: None,
+                    error: Some(format!("{}: {}", code, message)),
+                }),
+                Ok(_) => Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: None,
+                    error: Some("Unexpected response".to_string()),
+                }),
+                Err(e) => Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: None,
+                    error: Some(e.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+/// Apply the ProjectGet completion. Handles workspace selection and
+/// tab creation.
+pub(crate) fn apply_project_get_loaded(
+    app: &mut App,
+    request_id: u64,
+    target_project_id: String,
+    picker_generation: u64,
+    picker_request_id: u64,
+    result: Option<codegg::protocol::dto::ProjectDetailsDto>,
+    error: Option<String>,
+) {
+    // Validate picker staleness
+    let picker = match &mut app.dialog_state.project_picker {
+        Some(p) => p,
+        None => return,
+    };
+
+    if !picker.is_request_current(picker_request_id) {
+        return;
+    }
+    let _ = picker_generation;
+    let _ = request_id;
+
+    if let Some(err) = error {
+        picker.last_error = Some(err);
+        picker.phase = crate::app::state::PickerPhase::Error;
+        return;
+    }
+
+    let Some(details) = result else {
+        picker.last_error = Some("No project details returned".to_string());
+        picker.phase = crate::app::state::PickerPhase::Error;
+        return;
+    };
+
+    let workspaces = &details.workspaces;
+
+    match workspaces.len() {
+        0 => {
+            // No workspaces — create a compat tab with project_id only
+            app.messages_state
+                .toasts
+                .info("Project has no workspaces — using compat fallback");
+            open_or_focus_project(
+                app,
+                target_project_id,
+                None,
+                Some(details.project.display_name.clone()),
+                None,
+            );
+            app.ui_state.dialog = crate::Dialog::None;
+            app.focus_manager.pop();
+            app.dialog_state.project_picker = None;
+        }
+        1 => {
+            // One workspace — select it automatically
+            let ws = &workspaces[0];
+            let ws_id = ws.workspace_id.clone();
+            let _ws_display = ws.display_name.clone();
+
+            // Validate workspace id
+            if ws_id.is_empty() {
+                picker.last_error = Some("Workspace has empty id".to_string());
+                picker.phase = crate::app::state::PickerPhase::Error;
+                return;
+            }
+
+            open_or_focus_project(
+                app,
+                target_project_id.clone(),
+                Some(ws_id.clone()),
+                Some(details.project.display_name.clone()),
+                ws.canonical_root.clone().map(std::path::PathBuf::from),
+            );
+
+            // Start loading sessions for the new tab
+            if let Some(tab_id) = app.project_tabs.active_tab_id().cloned() {
+                let req_id = app
+                    .project_tabs
+                    .get_mut(&tab_id)
+                    .map(|t| t.request_state.begin())
+                    .unwrap_or(0);
+
+                let core_client = app.core_client.clone();
+                let tx = app.tui_cmd_tx.clone();
+
+                spawn_registered_tui_task(
+                    tx,
+                    &mut app.task_registry,
+                    TuiTaskKind::Command,
+                    "project_sessions",
+                    async move {
+                        let Some(core_client) = core_client else {
+                            return Some(TuiCommand::ProjectSessionsLoaded {
+                                request_id: req_id,
+                                tab_id,
+                                project_id: target_project_id,
+                                workspace_id: ws_id,
+                                sessions: Vec::new(),
+                                error: Some("Core unavailable".to_string()),
+                            });
+                        };
+
+                        let req = codegg::core::new_request(
+                            format!("session-list-{}", uuid::Uuid::new_v4()),
+                            CoreRequest::SessionList {
+                                project_id: target_project_id.clone(),
+                                show_archived: false,
+                                limit: 256,
+                            },
+                        );
+
+                        match core_client.request(req).await {
+                            Ok(CoreResponse::SessionList { sessions, .. }) => {
+                                Some(TuiCommand::ProjectSessionsLoaded {
+                                    request_id: req_id,
+                                    tab_id,
+                                    project_id: target_project_id,
+                                    workspace_id: ws_id,
+                                    sessions,
+                                    error: None,
+                                })
+                            }
+                            Ok(CoreResponse::Error { code, message }) => {
+                                Some(TuiCommand::ProjectSessionsLoaded {
+                                    request_id: req_id,
+                                    tab_id,
+                                    project_id: target_project_id,
+                                    workspace_id: ws_id,
+                                    sessions: Vec::new(),
+                                    error: Some(format!("{}: {}", code, message)),
+                                })
+                            }
+                            Ok(_) => Some(TuiCommand::ProjectSessionsLoaded {
+                                request_id: req_id,
+                                tab_id,
+                                project_id: target_project_id,
+                                workspace_id: ws_id,
+                                sessions: Vec::new(),
+                                error: Some("Unexpected response".to_string()),
+                            }),
+                            Err(e) => Some(TuiCommand::ProjectSessionsLoaded {
+                                request_id: req_id,
+                                tab_id,
+                                project_id: target_project_id,
+                                workspace_id: ws_id,
+                                sessions: Vec::new(),
+                                error: Some(e.to_string()),
+                            }),
+                        }
+                    },
+                );
+            }
+
+            // Close picker
+            app.ui_state.dialog = crate::Dialog::None;
+            app.focus_manager.pop();
+            app.dialog_state.project_picker = None;
+        }
+        _ => {
+            // Multiple workspaces — enter workspace selection phase
+            picker.cached_detail = Some(details);
+            picker.phase = crate::app::state::PickerPhase::WorkspaceSelection;
+            picker.selected_row = 0;
+        }
+    }
+}
+
+/// Apply the project sessions list completion.
+pub(crate) fn apply_project_sessions_loaded(
+    app: &mut App,
+    request_id: u64,
+    tab_id: crate::app::state::ProjectTabId,
+    project_id: String,
+    workspace_id: String,
+    sessions: Vec<codegg::protocol::dto::Session>,
+    error: Option<String>,
+) {
+    let tab = match app.project_tabs.get_mut(&tab_id) {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Validate staleness
+    if !tab.request_state.is_current(request_id) {
+        return;
+    }
+    if tab.project_id.as_deref() != Some(&project_id) {
+        return;
+    }
+    if tab.workspace_id.as_deref() != Some(&workspace_id) {
+        return;
+    }
+
+    if let Some(err) = error {
+        tab.last_session_load_error = Some(err);
+        tab.pending_session_load = false;
+        return;
+    }
+
+    // Filter to only sessions whose binding matches
+    let filtered: Vec<_> = sessions
+        .into_iter()
+        .filter(|s| {
+            if let Some(ref binding) = s.binding {
+                binding.project_id == project_id && binding.workspace_id == workspace_id
+            } else {
+                // Legacy sessions: accept if project_id matches
+                s.project_id == project_id
+            }
+        })
+        .collect();
+
+    tab.session_summaries = filtered
+        .into_iter()
+        .take(256)
+        .map(
+            |s| crate::app::state::project_picker::SessionSummaryCacheEntry {
+                session_id: s.id.clone(),
+                title: s.title.clone(),
+                time_updated: 0,
+                archived: false,
+            },
+        )
+        .collect();
+    tab.pending_session_load = false;
+}
+
+/// Fetch the current session count before opening the permanent-destroy
+/// confirmation. The picker generation fences stale detail responses.
+pub(crate) fn start_project_destroy_confirmation(
+    app: &mut App,
+    project_id: String,
+    picker_request_id: u64,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_destroy_confirmation",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    session_count: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let request = codegg::core::new_request(
+                format!("project-destroy-detail-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectGet {
+                    project_id: project_id.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::ProjectGet { project })
+                    if project.project.archived_at.is_some() =>
+                {
+                    Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                        picker_request_id,
+                        project_id,
+                        display_name: Some(project.project.display_name),
+                        session_count: Some(project.session_count),
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::ProjectGet { .. }) => {
+                    Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                        picker_request_id,
+                        project_id,
+                        display_name: None,
+                        session_count: None,
+                        error: Some(
+                            "Project is no longer inactive; refresh and try again".to_string(),
+                        ),
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                        picker_request_id,
+                        project_id,
+                        display_name: None,
+                        session_count: None,
+                        error: Some(format!("{code}: {message}")),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    session_count: None,
+                    error: Some("Unexpected project detail response".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    session_count: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_project_destroy_confirmation_loaded(
+    app: &mut App,
+    picker_request_id: u64,
+    project_id: String,
+    display_name: Option<String>,
+    session_count: Option<usize>,
+    error: Option<String>,
+) {
+    let Some(picker) = app.dialog_state.project_picker.as_mut() else {
+        return;
+    };
+    if !picker.is_request_current(picker_request_id)
+        || picker.pinned_project_id.as_deref() != Some(project_id.as_str())
+        || picker.phase != crate::app::state::PickerPhase::DestroyLoading
+    {
+        return;
+    }
+    if let Some(error) = error {
+        picker.last_error = Some(error);
+        picker.phase = crate::app::state::PickerPhase::Error;
+        return;
+    }
+    let (Some(display_name), Some(session_count)) = (display_name, session_count) else {
+        picker.last_error = Some("Project confirmation data was incomplete".to_string());
+        picker.phase = crate::app::state::PickerPhase::Error;
+        return;
+    };
+    picker.destroy_confirmation = Some(
+        crate::app::state::project_picker::ProjectDestroyConfirmation {
+            display_name,
+            session_count,
+        },
+    );
+    picker.phase = crate::app::state::PickerPhase::DestroyConfirm;
+}
+
+/// Load the current project name, primary bound root, and optimistic token
+/// before showing the rename/repath editor.
+pub(crate) fn start_project_edit(app: &mut App, project_id: String, picker_request_id: u64) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_edit_detail",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectEditLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    root: None,
+                    expected_updated_at: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let request = codegg::core::new_request(
+                format!("project-edit-detail-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectGet {
+                    project_id: project_id.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::ProjectGet { project }) => {
+                    let root = project
+                        .workspaces
+                        .first()
+                        .and_then(|workspace| workspace.canonical_root.clone());
+                    if root.is_none() {
+                        return Some(TuiCommand::ProjectEditLoaded {
+                            picker_request_id,
+                            project_id,
+                            display_name: None,
+                            root: None,
+                            expected_updated_at: None,
+                            error: Some("Project has no bound local directory".to_string()),
+                        });
+                    }
+                    Some(TuiCommand::ProjectEditLoaded {
+                        picker_request_id,
+                        project_id,
+                        display_name: Some(project.project.display_name),
+                        root,
+                        expected_updated_at: Some(project.project.updated_at),
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ProjectEditLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    root: None,
+                    expected_updated_at: None,
+                    error: Some(format!("{code}: {message}")),
+                }),
+                Ok(_) => Some(TuiCommand::ProjectEditLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    root: None,
+                    expected_updated_at: None,
+                    error: Some("Unexpected project detail response".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::ProjectEditLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    root: None,
+                    expected_updated_at: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_project_edit_loaded(
+    app: &mut App,
+    picker_request_id: u64,
+    project_id: String,
+    display_name: Option<String>,
+    root: Option<String>,
+    expected_updated_at: Option<i64>,
+    error: Option<String>,
+) {
+    let Some(picker) = app.dialog_state.project_picker.as_mut() else {
+        return;
+    };
+    if !picker.is_request_current(picker_request_id)
+        || picker.pinned_project_id.as_deref() != Some(project_id.as_str())
+        || picker.phase != crate::app::state::PickerPhase::ProjectEditLoading
+    {
+        return;
+    }
+    if let Some(error) = error {
+        picker.last_error = Some(error);
+        picker.phase = crate::app::state::PickerPhase::Error;
+        return;
+    }
+    let (Some(display_name), Some(root), Some(expected_updated_at)) =
+        (display_name, root, expected_updated_at)
+    else {
+        picker.last_error = Some("Project edit data was incomplete".to_string());
+        picker.phase = crate::app::state::PickerPhase::Error;
+        return;
+    };
+    picker.project_edit = Some(crate::app::state::project_picker::ProjectEditDraft {
+        display_name,
+        root,
+        expected_updated_at,
+        editing_root: false,
+    });
+    picker.last_error = None;
+    picker.phase = crate::app::state::PickerPhase::ProjectEdit;
+}
+
+pub(crate) fn start_project_update(
+    app: &mut App,
+    project_id: String,
+    display_name: String,
+    root: String,
+    expected_updated_at: i64,
+    picker_request_id: u64,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_update",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectUpdateFinished {
+                    picker_request_id,
+                    project: None,
+                    workspace: None,
+                    previous_display_name: None,
+                    previous_root: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let request = codegg::core::new_request(
+                format!("project-update-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectUpdate {
+                    request: codegg::protocol::dto::ProjectUpdateRequestDto {
+                        project_id,
+                        display_name,
+                        root,
+                        expected_updated_at,
+                    },
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::ProjectUpdated {
+                    project,
+                    workspace,
+                    previous_display_name,
+                    previous_root,
+                }) => Some(TuiCommand::ProjectUpdateFinished {
+                    picker_request_id,
+                    project: Some(project),
+                    workspace: Some(workspace),
+                    previous_display_name: Some(previous_display_name),
+                    previous_root: Some(previous_root),
+                    error: None,
+                }),
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ProjectUpdateFinished {
+                        picker_request_id,
+                        project: None,
+                        workspace: None,
+                        previous_display_name: None,
+                        previous_root: None,
+                        error: Some(format!("{code}: {message}")),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::ProjectUpdateFinished {
+                    picker_request_id,
+                    project: None,
+                    workspace: None,
+                    previous_display_name: None,
+                    previous_root: None,
+                    error: Some("Unexpected project update response".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::ProjectUpdateFinished {
+                    picker_request_id,
+                    project: None,
+                    workspace: None,
+                    previous_display_name: None,
+                    previous_root: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_project_update_finished(
+    app: &mut App,
+    picker_request_id: u64,
+    project: Option<codegg::protocol::dto::ProjectSummaryDto>,
+    workspace: Option<codegg::protocol::dto::ProjectWorkspaceSummaryDto>,
+    previous_display_name: Option<String>,
+    previous_root: Option<String>,
+    error: Option<String>,
+) {
+    if let Some(error) = error {
+        if let Some(picker) = app.dialog_state.project_picker.as_mut() {
+            if picker.is_request_current(picker_request_id)
+                && picker.phase == crate::app::state::PickerPhase::ProjectUpdating
+            {
+                picker.last_error = Some(error);
+                picker.phase = crate::app::state::PickerPhase::ProjectEdit;
+                return;
+            }
+        }
+        return;
+    }
+    let (Some(project), Some(workspace)) = (project, workspace) else {
+        return;
+    };
+    if let Some(picker) = app.dialog_state.project_picker.as_mut() {
+        if !picker.is_request_current(picker_request_id)
+            || picker.phase != crate::app::state::PickerPhase::ProjectUpdating
+        {
+            return;
+        }
+        picker.reset_to_catalog();
+        picker.begin_request();
+    }
+    apply_project_updated(
+        app,
+        project,
+        workspace,
+        previous_display_name.unwrap_or_default(),
+        previous_root.unwrap_or_default(),
+    );
+    app.messages_state
+        .toasts
+        .info("Project renamed and directory rebound");
+    app.refresh_project_catalog();
+}
+
+pub(crate) fn apply_project_updated(
+    app: &mut App,
+    project: codegg::protocol::dto::ProjectSummaryDto,
+    workspace: codegg::protocol::dto::ProjectWorkspaceSummaryDto,
+    _previous_display_name: String,
+    _previous_root: String,
+) {
+    let root = workspace
+        .canonical_root
+        .as_deref()
+        .map(std::path::PathBuf::from);
+    let mut refresh_sessions = Vec::new();
+    if let Some(entry) = app
+        .project_catalog
+        .entries
+        .iter_mut()
+        .find(|entry| entry.project_id == project.project_id)
+    {
+        *entry = project.clone();
+    }
+    for tab in app.project_tabs.values_mut() {
+        if tab.project_id.as_deref() != Some(project.project_id.as_str()) {
+            continue;
+        }
+        tab.label = crate::app::state::project_picker::truncate_tab_label(&project.display_name);
+        tab.workspace_id = Some(workspace.workspace_id.clone());
+        tab.workspace_root = root.clone();
+        if let Some(details) = tab.project_details.as_mut() {
+            details.project = project.clone();
+            details.workspaces = vec![workspace.clone()];
+        }
+        if let Some(workspace_id) = tab.workspace_id.clone() {
+            refresh_sessions.push((tab.tab_id.clone(), project.project_id.clone(), workspace_id));
+        }
+    }
+    app.refresh_project_command_registry();
+    app.schedule_manifest_save();
+    for (tab_id, project_id, workspace_id) in refresh_sessions {
+        start_list_project_sessions(app, tab_id, project_id, workspace_id);
+    }
+}
+
+pub(crate) fn start_project_lifecycle(
+    app: &mut App,
+    project_id: String,
+    restore: bool,
+    picker_request_id: u64,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        if restore {
+            "project_restore"
+        } else {
+            "project_archive"
+        },
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectLifecycleFinished {
+                    picker_request_id,
+                    project_id,
+                    restored: restore,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let payload = if restore {
+                CoreRequest::ProjectRestore {
+                    project_id: project_id.clone(),
+                }
+            } else {
+                CoreRequest::ProjectArchive {
+                    project_id: project_id.clone(),
+                }
+            };
+            let request = codegg::core::new_request(
+                format!("project-lifecycle-{}", uuid::Uuid::new_v4()),
+                payload,
+            );
+            let error = match core_client.request(request).await {
+                Ok(CoreResponse::ProjectArchived { .. }) if !restore => None,
+                Ok(CoreResponse::ProjectRestored { .. }) if restore => None,
+                Ok(CoreResponse::Error { code, message }) => Some(format!("{code}: {message}")),
+                Ok(_) => Some("Unexpected project lifecycle response".to_string()),
+                Err(error) => Some(error.to_string()),
+            };
+            Some(TuiCommand::ProjectLifecycleFinished {
+                picker_request_id,
+                project_id,
+                restored: restore,
+                error,
+            })
+        },
+    );
+}
+
+pub(crate) fn apply_project_lifecycle_finished(
+    app: &mut App,
+    picker_request_id: u64,
+    project_id: String,
+    restored: bool,
+    error: Option<String>,
+) {
+    let Some(picker) = app.dialog_state.project_picker.as_mut() else {
+        return;
+    };
+    if !picker.is_request_current(picker_request_id)
+        || picker.pinned_project_id.as_deref() != Some(project_id.as_str())
+        || picker.phase != crate::app::state::PickerPhase::LifecycleChanging
+    {
+        return;
+    }
+    if let Some(error) = error {
+        picker.last_error = Some(error);
+        picker.phase = crate::app::state::PickerPhase::Error;
+    } else {
+        picker.reset_to_catalog();
+        app.messages_state.toasts.info(if restored {
+            "Project reactivated"
+        } else {
+            "Project deactivated"
+        });
+    }
+    app.refresh_project_catalog();
+}
+
+pub(crate) fn start_project_delete(
+    app: &mut App,
+    project_id: String,
+    expected_session_count: usize,
+    picker_request_id: u64,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_delete",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectDeleteFinished {
+                    picker_request_id,
+                    project_id,
+                    deleted_session_count: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let request = codegg::core::new_request(
+                format!("project-delete-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectDelete {
+                    request: codegg::protocol::dto::ProjectDeleteRequestDto {
+                        project_id: project_id.clone(),
+                        expected_session_count,
+                    },
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::ProjectDeleted {
+                    project_id,
+                    deleted_session_count,
+                }) => Some(TuiCommand::ProjectDeleteFinished {
+                    picker_request_id,
+                    project_id,
+                    deleted_session_count: Some(deleted_session_count),
+                    error: None,
+                }),
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ProjectDeleteFinished {
+                        picker_request_id,
+                        project_id,
+                        deleted_session_count: None,
+                        error: Some(format!("{code}: {message}")),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::ProjectDeleteFinished {
+                    picker_request_id,
+                    project_id,
+                    deleted_session_count: None,
+                    error: Some("Unexpected project deletion response".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::ProjectDeleteFinished {
+                    picker_request_id,
+                    project_id,
+                    deleted_session_count: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_project_delete_finished(
+    app: &mut App,
+    picker_request_id: u64,
+    project_id: String,
+    deleted_session_count: Option<usize>,
+    error: Option<String>,
+) {
+    let current = app
+        .dialog_state
+        .project_picker
+        .as_ref()
+        .is_some_and(|picker| {
+            picker.is_request_current(picker_request_id)
+                && picker.pinned_project_id.as_deref() == Some(project_id.as_str())
+                && picker.phase == crate::app::state::PickerPhase::Destroying
+        });
+    if !current {
+        return;
+    }
+    if let Some(error) = error {
+        if let Some(picker) = app.dialog_state.project_picker.as_mut() {
+            picker.last_error = Some(error);
+            picker.phase = crate::app::state::PickerPhase::Error;
+        }
+        app.refresh_project_catalog();
+        return;
+    }
+    apply_project_deleted(app, &project_id, deleted_session_count.unwrap_or(0));
+}
+
+/// Apply the durable deletion event/response idempotently to open tabs and
+/// the local catalog projection.
+pub(crate) fn apply_project_deleted(app: &mut App, project_id: &str, deleted_session_count: usize) {
+    let known = app
+        .project_catalog
+        .entries
+        .iter()
+        .any(|entry| entry.project_id == project_id)
+        || app
+            .project_tabs
+            .ordered()
+            .iter()
+            .any(|tab| tab.project_id.as_deref() == Some(project_id));
+    if !known {
+        return;
+    }
+    app.project_catalog
+        .entries
+        .retain(|entry| entry.project_id != project_id);
+    let retained_target = app
+        .project_tabs
+        .ordered()
+        .into_iter()
+        .find(|tab| tab.project_id.as_deref() != Some(project_id))
+        .map(|tab| tab.tab_id.clone());
+    if let Some(target) = retained_target.as_ref() {
+        switch_active_tab(app, target);
+    } else if !app.project_tabs.is_empty() {
+        app.invalidate_pending_session_submit(false);
+        app.view_switch.bump_epoch();
+    }
+    let removed: Vec<_> = app
+        .project_tabs
+        .ordered()
+        .into_iter()
+        .filter(|tab| tab.project_id.as_deref() == Some(project_id))
+        .map(|tab| tab.tab_id.clone())
+        .collect();
+    for tab_id in removed {
+        app.project_tabs.remove_tab(&tab_id);
+        app.routing_registry.drop_tab(&tab_id);
+        let _ = app.task_registry.cancel_for_tab(tab_id.as_str());
+    }
+    if app.project_tabs.is_empty() {
+        app.project_tabs.close_fallback_tab();
+        app.session_state.session = None;
+        app.session_state.session_status = crate::app::SessionStatus::Idle;
+        app.session_state.active_turn_id = None;
+        app.session_state.running_tool = None;
+        app.messages_state.messages.clear();
+    }
+    if let Some(picker) = app.dialog_state.project_picker.as_mut() {
+        if picker.pinned_project_id.as_deref() == Some(project_id) {
+            picker.reset_to_catalog();
+        }
+    }
+    app.presence.clear_project(project_id);
+    app.messages_state.toasts.info(&format!(
+        "Project destroyed; {deleted_session_count} session{} permanently deleted",
+        if deleted_session_count == 1 { "" } else { "s" }
+    ));
+    app.schedule_manifest_save();
+    app.refresh_project_catalog();
+}
+
+/// Start listing sessions for a project tab.
+pub(crate) fn start_list_project_sessions(
+    app: &mut App,
+    tab_id: crate::app::state::ProjectTabId,
+    project_id: String,
+    workspace_id: String,
+) {
+    let request_id = match app.project_tabs.get_mut(&tab_id) {
+        Some(t) => {
+            t.pending_session_load = true;
+            t.request_state.begin()
+        }
+        None => return,
+    };
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_sessions",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectSessionsLoaded {
+                    request_id,
+                    tab_id,
+                    project_id,
+                    workspace_id,
+                    sessions: Vec::new(),
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+
+            let req = codegg::core::new_request(
+                format!("session-list-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionList {
+                    project_id: project_id.clone(),
+                    show_archived: false,
+                    limit: 256,
+                },
+            );
+
+            match core_client.request(req).await {
+                Ok(CoreResponse::SessionList { sessions, .. }) => {
+                    Some(TuiCommand::ProjectSessionsLoaded {
+                        request_id,
+                        tab_id,
+                        project_id,
+                        workspace_id,
+                        sessions,
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ProjectSessionsLoaded {
+                        request_id,
+                        tab_id,
+                        project_id,
+                        workspace_id,
+                        sessions: Vec::new(),
+                        error: Some(format!("{}: {}", code, message)),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::ProjectSessionsLoaded {
+                    request_id,
+                    tab_id,
+                    project_id,
+                    workspace_id,
+                    sessions: Vec::new(),
+                    error: Some("Unexpected response".to_string()),
+                }),
+                Err(e) => Some(TuiCommand::ProjectSessionsLoaded {
+                    request_id,
+                    tab_id,
+                    project_id,
+                    workspace_id,
+                    sessions: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+/// Switch to the next project tab.
+pub(crate) fn next_project_tab(app: &mut App) {
+    let ordered = app.project_tabs.ordered();
+    if ordered.len() <= 1 {
+        return;
+    }
+    let current_id = app.project_tabs.active_tab_id().cloned();
+    let current_idx = ordered
+        .iter()
+        .position(|t| Some(&t.tab_id) == current_id.as_ref())
+        .unwrap_or(0);
+    let next_idx = (current_idx + 1) % ordered.len();
+    let next_id = ordered[next_idx].tab_id.clone();
+    switch_active_tab(app, &next_id);
+}
+
+/// Switch to the previous project tab.
+pub(crate) fn previous_project_tab(app: &mut App) {
+    let ordered = app.project_tabs.ordered();
+    if ordered.len() <= 1 {
+        return;
+    }
+    let current_id = app.project_tabs.active_tab_id().cloned();
+    let current_idx = ordered
+        .iter()
+        .position(|t| Some(&t.tab_id) == current_id.as_ref())
+        .unwrap_or(0);
+    let prev_idx = if current_idx == 0 {
+        ordered.len() - 1
+    } else {
+        current_idx - 1
+    };
+    let prev_id = ordered[prev_idx].tab_id.clone();
+    switch_active_tab(app, &prev_id);
+}
+
+/// Close the active project tab. If the last tab is closed, creates
+/// a fallback tab. Never sends daemon-side delete/archive requests.
+///
+/// Milestone 3: also drops the routing registry entries for the
+/// closed tab and cancels any tasks scoped to that tab.
+pub(crate) fn close_active_project_tab(app: &mut App) {
+    let current_id = match app.project_tabs.active_tab_id().cloned() {
+        Some(id) => id,
+        None => return,
+    };
+
+    app.invalidate_pending_session_submit(false);
+    // Bump epoch to invalidate pending loads for the removed tab
+    app.view_switch.bump_epoch();
+
+    // Cancel any in-flight switch targeting this tab
+    if app.view_switch.is_switching_to(&current_id) {
+        app.view_switch.cancel();
+    }
+
+    // Capture the closing tab's project so presence can be dropped
+    // when no remaining tab holds it (never render hidden data from a
+    // local cache after the tab is gone).
+    let closing_project = app
+        .project_tabs
+        .get(&current_id)
+        .and_then(|t| t.project_id.clone());
+
+    // Remove the tab
+    let was_last = app.project_tabs.len() == 1;
+    app.project_tabs.remove_tab(&current_id);
+
+    // Drop routing-registry entries (session_index + activity summary)
+    // for the closed tab so future events do not mutate a stale tab.
+    app.routing_registry.drop_tab(&current_id);
+
+    // Cancel any tasks scoped to the closed tab.
+    let _ = app.task_registry.cancel_for_tab(current_id.as_str());
+
+    // If it was the last tab, create a fallback
+    if was_last {
+        app.project_tabs.close_fallback_tab();
+    }
+
+    // Presence M002: drop the cached presence when no remaining tab
+    // holds the closed project. Inactive-tab state stays bounded and
+    // closed projects never leak into the new active tab.
+    if let Some(pid) = closing_project {
+        let still_open = app
+            .project_tabs
+            .ordered()
+            .iter()
+            .any(|t| t.project_id.as_deref() == Some(pid.as_str()));
+        if !still_open {
+            app.presence.clear_project(&pid);
+        }
+    }
+
+    // Persist the new tab order/active intent.
+    app.schedule_manifest_save();
+
+    // Bump the removed tab's request generation to invalidate stale completions
+    // (already done by remove_tab which bumps via AsyncUiRequestState)
+}
+
+/// Start registering a workspace by path (local only).
+pub(crate) fn start_register_workspace(app: &mut App, path: String) {
+    // Gate: only Embedded (in-process) TUI mode is trusted for raw
+    // path registration. RemoteCore (TUI talking to a daemon over
+    // socket/WebSocket) must not be able to register raw paths because
+    // the daemon may be on a different filesystem.
+    if !matches!(app.ui_state.mode, crate::app::state::AppMode::Embedded) {
+        app.messages_state
+            .toasts
+            .error("Raw path registration requires a local TUI context");
+        return;
+    }
+
+    if path.is_empty() {
+        app.messages_state.toasts.error("Path cannot be empty");
+        return;
+    }
+
+    // Check directory exists (display-only, no mkdir)
+    if !std::path::Path::new(&path).exists() {
+        app.messages_state.toasts.error("Directory does not exist");
+        return;
+    }
+
+    // Capture picker request generation for stale-completion rejection.
+    let picker_request_id = app
+        .dialog_state
+        .project_picker
+        .as_ref()
+        .map(|p| p.picker_request.request_id())
+        .unwrap_or(0);
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    let request_id = 0; // Will be assigned by the picker on apply
+    let workspace_root = path.clone();
+
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "open_project_directory",
+        async move {
+            let result = match core_client {
+                Some(core_client) => {
+                    ensure_bound_project_context(
+                        core_client.as_ref(),
+                        std::path::Path::new(&path),
+                        "tui-picker-open",
+                    )
+                    .await
+                }
+                None => Err("Core unavailable".to_string()),
+            };
+            let (workspace_id, workspace_root, project_id, error) = match result {
+                Ok((project_id, workspace_id, workspace_root)) => {
+                    (workspace_id, workspace_root, Some(project_id), None)
+                }
+                Err(error) => (String::new(), workspace_root, None, Some(error)),
+            };
+            Some(TuiCommand::ProjectRegistered {
+                request_id,
+                picker_request_id,
+                workspace_id,
+                workspace_root,
+                project_id,
+                error,
+            })
+        },
+    );
+}
+
+/// Apply project registration completion.
+pub(crate) fn apply_project_registered(
+    app: &mut App,
+    request_id: u64,
+    picker_request_id: u64,
+    workspace_id: String,
+    workspace_root: String,
+    project_id: Option<String>,
+    error: Option<String>,
+) {
+    // Reject stale completion if the picker has moved on.
+    let picker = match &mut app.dialog_state.project_picker {
+        Some(p) => p,
+        None => return,
+    };
+    if !picker.is_request_current(picker_request_id) {
+        return;
+    }
+    let _ = request_id;
+    let _ = project_id;
+
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        picker.last_error = Some(err);
+        picker.phase = crate::app::state::PickerPhase::Error;
+        return;
+    }
+
+    let proj_id = match project_id {
+        Some(id) => id,
+        None => return,
+    };
+
+    // Close picker and open the new project
+    app.ui_state.dialog = crate::Dialog::None;
+    app.focus_manager.pop();
+    app.dialog_state.project_picker = None;
+
+    // Refresh catalog and open the project
+    super::project_catalog::start_refresh_project_catalog(app);
+    open_or_focus_project(
+        app,
+        proj_id,
+        Some(workspace_id),
+        Some(
+            std::path::Path::new(&workspace_root)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| workspace_root.clone()),
+        ),
+        Some(std::path::PathBuf::from(workspace_root)),
+    );
+}
+
+pub(crate) fn dispatch_projects(app: &mut App) {
+    app.open_project_picker();
+}

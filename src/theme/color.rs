@@ -116,12 +116,6 @@ impl fmt::Display for Rgb {
     }
 }
 
-impl From<Rgb> for ratatui::style::Color {
-    fn from(rgb: Rgb) -> Self {
-        ratatui::style::Color::Rgb(rgb.r, rgb.g, rgb.b)
-    }
-}
-
 /// Color slot in a theme. Most slots resolve to a concrete RGB; a small number
 /// of fallback slots use [`ThemeColor::Inherit`] to defer to a sibling color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

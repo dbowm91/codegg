@@ -135,7 +135,7 @@ impl SearchRuntimeContext {
         root: Option<&std::path::Path>,
     ) -> Result<StructuredSearchResult, ToolError> {
         if !matches!(self.config.backend(), SearchBackendConfig::Eggsearch) {
-            return Err(ToolError::Execution(
+            return Err(ToolError::BackendUnavailable(
                 "repo_search requires the eggsearch backend".into(),
             ));
         }
@@ -185,7 +185,7 @@ impl SearchRuntimeContext {
         root: Option<&std::path::Path>,
     ) -> Result<StructuredSearchResult, ToolError> {
         if !matches!(self.config.backend(), SearchBackendConfig::Eggsearch) {
-            return Err(ToolError::Execution(
+            return Err(ToolError::BackendUnavailable(
                 "repo_fetch requires the eggsearch backend".into(),
             ));
         }
@@ -220,7 +220,7 @@ impl SearchRuntimeContext {
         root: Option<&std::path::Path>,
     ) -> Result<StructuredSearchResult, ToolError> {
         if !matches!(self.config.backend(), SearchBackendConfig::Eggsearch) {
-            return Err(ToolError::Execution(
+            return Err(ToolError::BackendUnavailable(
                 "repo_map requires the eggsearch backend".into(),
             ));
         }

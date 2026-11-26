@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::config::schema::ThemeConfig;
 use crate::theme::error::ThemeError;
@@ -17,7 +16,6 @@ use crate::theme::halloy::parse_halloy_theme;
 use crate::theme::native::parse_native_theme;
 use crate::theme::schema::{SemanticTheme, ThemeSource};
 use crate::theme::validate::{validate_theme, ThemeDiagnostic};
-use crate::tui::theme::Theme;
 
 /// One bundled theme. The id is the slugified stem (kebab-case). The name
 /// is the case-preserved display name (matches the original Halloy file
@@ -342,8 +340,8 @@ impl ThemeResolutionConfig {
 
 pub struct ThemeRegistry {
     /// Keyed by theme id. `BTreeMap` (not `HashMap`) so iteration order is
-    /// the id order: `names()`, `all_tui_themes()` and the display-name
-    /// fallback in `lookup` are all deterministic.
+    /// the id order: `names()` and the display-name fallback in `lookup`
+    /// are deterministic.
     themes: BTreeMap<String, SemanticTheme>,
     diagnostics: Vec<ThemeDiagnostic>,
 }
@@ -592,28 +590,10 @@ impl ThemeRegistry {
         self.lookup(name)
     }
 
-    /// Convenience: project to the ratatui-facing `Theme` type.
-    pub fn get_tui(&self, name: &str) -> Option<Theme> {
-        self.lookup(name).map(Theme::from)
-    }
-
-    /// Convenience: project to `Arc<Theme>` for `UiState::theme`.
-    pub fn get_tui_arc(&self, name: &str) -> Option<Arc<Theme>> {
-        self.get_tui(name).map(Arc::new)
-    }
-
     pub fn names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.themes.keys().cloned().collect();
         names.sort();
         names
-    }
-
-    /// Project every theme into a ratatui `Theme`. Sorted by id.
-    pub fn all_tui_themes(&self) -> Vec<Theme> {
-        self.names()
-            .into_iter()
-            .filter_map(|n| self.get_tui(&n))
-            .collect()
     }
 
     pub fn diagnostics(&self) -> &[ThemeDiagnostic] {
@@ -643,15 +623,6 @@ impl ThemeRegistry {
             .next()
             .cloned()
             .unwrap_or_else(builtin_fallback)
-    }
-
-    /// Resolve a name to a ratatui `Theme`, honoring fallback.
-    pub fn resolve_tui(&self, cfg: &ThemeResolutionConfig) -> Theme {
-        Theme::from(&self.resolve(cfg))
-    }
-
-    pub fn resolve_tui_arc(&self, cfg: &ThemeResolutionConfig) -> Arc<Theme> {
-        Arc::new(self.resolve_tui(cfg))
     }
 
     fn fallback_theme(&self) -> SemanticTheme {
@@ -763,25 +734,6 @@ fn placeholder_fallback() -> SemanticTheme {
     }
 }
 
-/// Resolve a theme by name from the registry and return a ratatui projection.
-pub fn resolve_theme_for_app(
-    registry: &ThemeRegistry,
-    name: Option<&str>,
-    fallback: Option<&str>,
-) -> Theme {
-    if let Some(name) = name {
-        if let Some(theme) = registry.get_tui(name) {
-            return theme;
-        }
-    }
-    if let Some(name) = fallback {
-        if let Some(theme) = registry.get_tui(name) {
-            return theme;
-        }
-    }
-    registry.get_tui("dark").unwrap_or_else(Theme::dark)
-}
-
 #[allow(dead_code)]
 pub(crate) fn _re_exports_for_out_of_crate() {
     let _: Option<&Path> = None;
@@ -840,20 +792,6 @@ mod tests {
                 "{:?} resolved to the wrong theme",
                 entry.name
             );
-        }
-    }
-
-    #[test]
-    fn get_tui_accepts_display_names_for_every_builtin() {
-        // Regression: `get_tui` used to hit `self.themes` directly instead of
-        // going through `get`, so the tolerant lookup never applied on the
-        // one path the picker and `/theme use` actually take.
-        let registry = ThemeRegistry::load_builtins();
-        for entry in BUILTIN_THEME_FILES {
-            let theme = registry
-                .get_tui(entry.name)
-                .unwrap_or_else(|| panic!("get_tui({:?}) must resolve", entry.name));
-            assert_eq!(theme.id, entry.id);
         }
     }
 
@@ -1006,17 +944,6 @@ mod tests {
         let path = expand_home("~/themes");
         let home = dirs::home_dir().unwrap();
         assert_eq!(path, home.join("themes"));
-    }
-
-    #[test]
-    fn get_tui_projects_semantic_theme() {
-        let registry = ThemeRegistry::load_builtins();
-        let theme = registry.get_tui("cyber-red").unwrap();
-        assert_eq!(theme.name, "Cyber Red");
-        // Project a SemanticTheme manually and compare.
-        let semantic = registry.get("cyber-red").unwrap();
-        let projected: Theme = semantic.into();
-        assert_eq!(projected.name, theme.name);
     }
 
     #[test]

@@ -91,7 +91,8 @@ impl DaemonRequestFamily {
             | CoreRequest::DocumentSave { .. }
             | CoreRequest::DocumentReload { .. }
             | CoreRequest::DocumentClose { .. }
-            | CoreRequest::WorkspaceDirectoryList { .. } => Self::Documents,
+            | CoreRequest::WorkspaceDirectoryList { .. }
+            | CoreRequest::EditorInlineGenerate { .. } => Self::Documents,
             CoreRequest::ProjectInitDraftGet { .. } | CoreRequest::ProjectInitPublish { .. } => {
                 Self::ProjectInitialization
             }

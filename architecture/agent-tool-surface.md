@@ -9,14 +9,22 @@ exposure filtering and before provider deferral. It makes the
 advertised surface deterministic and provides one auditable input for
 prompt and schema construction.
 
+**Which tools exist is not enumerated here.** That enumeration is generated
+from the registry into [tool-catalog.md](tool-catalog.md) — four declared
+surfaces, one row per tool, with each hidden row carrying the reason its own
+stub or gate states. This page keeps the *why*: how a surface is narrowed, what
+each narrowing means, and which module owns it. A tool added to the registry
+changes the catalog, not this page, and `cargo test --test tool_catalog` fails when
+the catalog is stale.
+
 ## Where It Lives
 
 | File | Role |
 |------|------|
 | `src/agent/tool_surface.rs` | `ResolvedToolSurface`, `Capability`, `AgentCapabilitySet`, resolver logic |
 | `src/agent/policy.rs` | `ToolExposureMode`, `ExecutionPolicy` — drives which tools enter the surface |
-| `src/agent/request_preparation.rs` | `apply_tool_exposure_filter()` — applies mode + disabled_tools (palettes owned by disclosure) |
-| `src/tool/disclosure.rs` | **Canonical disclosure source (M002)**: `ToolDisclosure`, `CORE/CURATED/MINIMAL/PLAN` palettes, role overrides |
+| `src/agent/request_preparation.rs` | `apply_tool_exposure_filter()` — applies the exposure mode and the model profile's disabled-tool list (palettes owned by disclosure) |
+| `src/tool/disclosure.rs` | **Canonical disclosure source (M002)**: `ToolDisclosure`, the palettes, and the plan-mode allowlist |
 | `src/tool/mod.rs` | `ToolRegistry` — canonical tool definitions |
 | `src/tool/catalog.rs` | Live shared registration metadata, including native category/disclosure semantics |
 | `src/permission/mod.rs` | Conservative name fallback for permission checks when no native tool instance exists |
@@ -51,35 +59,33 @@ ToolRegistry::list()
 - **Canonical name**: Stable identity used by permission checks, broker
   execution, and prompt construction (e.g., `bash`).
 - **Wire name**: Provider-facing name sent in the API request. May differ
-  from canonical via adapter aliases (e.g., MiniMax renames `bash` → `shell`).
+  from canonical via adapter aliases (e.g., MiniMax sends `bash` under a different
+  wire name).
 - The resolver keeps both directions. Aliases are applied before omission
   and capability checks.
 
 ### Capability System
 
-15 capability kinds model the execution authorities a tool grants:
+`Capability` names the execution authorities a tool can grant:
 
-```
-FilesystemRead, FilesystemWrite, ShellReadonly, ShellMutating,
-GitRead, GitWrite, NetworkResearch, Delegate, ManageTodos,
-ManageGoals, ManageWorkOrders, Terminal, Image, MemoryRead,
-PluginExecute
+```rust
+pub enum Capability {
+    FilesystemRead, FilesystemWrite, ShellReadonly, ShellMutating,
+    GitRead, GitWrite, NetworkResearch, Delegate, ManageTodos,
+    ManageGoals, ManageWorkOrders, Terminal, Image, MemoryRead,
+    PluginExecute,
+}
 ```
 
-Each tool maps to one or more capabilities:
-- `read` → `FilesystemRead`
-- `write`/`edit`/`apply_patch` → `FilesystemWrite`
-- `bash` → `ShellReadonly` + `ShellMutating`
-- `git` → `GitRead` + `GitWrite`
-- `task` → `Delegate` (its own authority, not filesystem mutation)
-- `websearch`/`webfetch` → `NetworkResearch`
-- `terminal` → `Terminal`
-- `image` → `Image`
-- `todowrite`/`todoread` → `ManageTodos`
-- Goal/WorkPlan state tools → `ManageGoals`
-- `work_order` → `ManageWorkOrders` (not filesystem write)
-- `memory_search`/`memory_get` → `MemoryRead`
-- plugin-executing tools → `PluginExecute`
+`tool_capabilities()` (`src/agent/tool_surface.rs`) derives the set from the
+tool's name and safety category. A few families carry an authority of their own
+because their category cannot express it — delegation, work-order management,
+memory reads, plugin execution, and goal/work-plan state. Everything else falls
+back to its category: a read-only tool reads the filesystem, a mutating one
+writes it, and a shell tool carries both shell authorities. Network research,
+terminal, image and git authorities are attached by name where they exceed the
+category. The mapping is the source, not this page: read `tool_capabilities()` for
+the authority of a specific tool.
 
 ### Parent Ceiling
 
@@ -90,15 +96,12 @@ subagents from gaining capabilities the parent does not have.
 
 ### Plan Mode Filtering
 
-Plan-mode surface is owned by `src/tool/disclosure.rs::PLAN_ALLOWED`
-(single source consumed by both `filter_tools_for_model` and the resolved
-surface). When plan mode is active, only these 17 tools are allowed
-(`PLAN_ALLOWED`, `src/tool/disclosure.rs:262-280`): `read`, `glob`, `grep`,
-`list`, `codesearch`, `repo_search`, `webfetch`, `lsp`, `skill`, `todoread`,
-`todowrite`, `bash`, `plan_enter`, `plan_exit`, `tool_search`,
-`mcp_resource_search`, `mcp_resource_read`.
-
-All other tools are omitted with `ToolOmissionReason::PlanMode`.
+Plan-mode surface is owned by `src/tool/disclosure.rs::PLAN_ALLOWED`, the single
+allowlist consumed by both the disclosure filter and the resolved surface. When
+plan mode is active only the tools on that list survive; every other tool is
+omitted with `ToolOmissionReason::PlanMode`. The list is not repeated here — the
+generated catalog's `plan-mode` section *is* the list, rendered by building the
+registry and applying the same constant.
 
 ### Disclosure States (M002 Progressive Disclosure)
 
@@ -114,43 +117,56 @@ callable     — broker + permission + contract allow this caller/input
 ```
 
 `ToolCatalog::clone()` is a shared live view, not a snapshot. Session-late
-registrations such as `context_read`, Goal, WorkPlan, and WorkOrder therefore
-enter discovery as soon as the registry admits them. Curated and Minimal
-palettes only change initial advertisement; policy-allowed omissions are
+registrations such as context artifact recovery, Goal, WorkPlan, and WorkOrder
+therefore enter discovery as soon as the registry admits them. Curated and
+Minimal palettes only change initial advertisement; policy-allowed omissions are
 marked deferred and remain in the discovery universe. Denied, hidden,
 disabled, unavailable, plan-excluded, and parent-ceiling-ineligible tools are
 removed before this projection.
 
 | State | Meaning | Mechanism |
 |---|---|---|
-| `Core` | Ordinary coding immediate | `defer_loading=false`, in `CORE_PALETTE` |
-| `Deferred` | Registered, deferred initially, discoverable | `defer_loading=true`, in catalog + `tool_search` |
-| `ProfileSpecific` | Deferred by default; immediate for named roles | `deferred` + `immediate_for_agent(name, role)` |
-| `Hidden` | Never model-visible (e.g. `invalid`, M003 `git_read`/`lsp_read` program-only adapters) | `expose_in_definitions=false` |
+| `Core` | Ordinary coding immediate | defer-loading off, in the core palette |
+| `Deferred` | Registered, deferred initially, discoverable | defer-loading on, in the catalog + `tool_search` |
+| `ProfileSpecific` | Deferred by default; immediate for named roles | deferred + `immediate_for_agent(name, role)` |
+| `Hidden` | Never model-visible (internal diagnostics, program-only adapters, compat aliases) | hidden from the model's definitions |
 
-Runtime-unavailable (disabled backend, task without spawner) is separate:
-omitted as `MissingBackend`/`NonCallable`, never advertised as merely
-deferred. Specialist roles (`research`, `security-review`, `verifier`)
-receive their small role-appropriate immediate palette; ordinary coding
-keeps the core edit-loop primitives plus `tool_search`.
+Two hiding causes are separate from those states and are worth naming because a
+reader of the catalog will meet them as `hidden (<reason>)` rows:
+
+- **A disabled backend domain keeps its stable tool name.** `DisabledTool`
+  registers under the name of the tool it replaces and reports the tool as
+  unexposed, so `/tool-backends` and the catalog can name the domain while the
+  model is never offered a tool whose every call is a guaranteed failure. The
+  stub advertises its configured reason in the schema it hands the model, and
+  that is the reason the catalog prints.
+- **A program-only adapter declares it in its own contract.** The operation-
+  scoped read adapters over canonical Git and LSP are broker-callable by Tool
+  Programs and declare a programmatic-only caller policy; being unexposed is
+  their contract, not a per-turn decision.
+
+Runtime-unavailable (a disabled backend, a task without a spawner) is omitted as
+`MissingBackend`/`NonCallable`, never advertised as merely deferred. Specialist
+roles — research, security review, verifier — receive their small
+role-appropriate immediate palette; ordinary coding keeps the core edit-loop
+primitives plus `tool_search`.
 
 Contextual disclosure is host-derived during request preparation. An active
-Goal promotes `goal_get`, `goal_update_progress`, and
-`goal_request_completion`; an active WorkPlan promotes `work_plan_get` and
-`work_plan_update_item`. WorkOrder remains separately registered and
+Goal promotes the goal reads and progress updates, an active WorkPlan promotes
+the plan reads and item updates. WorkOrder remains separately registered and
 discoverable, but is not guessed from prompt wording or conflated with
-live-child `task` delegation. Context artifact recovery is actionable only
-when the session has a registered `context_read` path.
+live-child `task` delegation. Context artifact recovery is actionable only when
+the session registry has admitted the recovery tool.
 
 `tool_search` is a two-stage discovery contract. Broad queries return compact
-selection descriptors (`canonical_name`, purpose, category, risk, disclosure,
-and `schema_available`) rather than embedding every matching input schema.
+selection descriptors (canonical name, purpose, category, risk, disclosure, and
+whether a schema is available) rather than embedding every matching input schema.
 After selection, the model requests an exact current schema with
 `{query, name, detail: "schema"}`. Both stages use the live catalog and the
 same policy allow-list and hidden-tool filter, so discovery does not grant
 authority or replace broker invocation.
 
-M003 adds deferred `git_query` for bounded status, diff, log, and branch
+M003 adds the deferred `git_query` for bounded status, diff, log, and branch
 inspection. It delegates to the existing Git reader and cannot name mutation,
 recovery, network, or raw-subcommand operations. LSP and task remain their
 canonical multiplexed surfaces because the census did not justify new names
@@ -158,26 +174,27 @@ without duplicating their operation-family routing and authority.
 
 The coding profile also exposes `verify` in Curated profiles and keeps it
 discoverable for Minimal profiles. `verify` is a structured projection over
-the configured Bash/command-intent path, not a second process executor; its
-schema cannot express arbitrary shell syntax or mutation.
+the configured command-intent path, not a second process executor; its schema
+cannot express arbitrary shell syntax or mutation.
 
-The deferred `lsp_preview_apply` tool is a direct-only, mutating exception to
-the read-oriented LSP surface. It is advertised only when LSP is enabled and
-the session registry has the daemon-owned checked-apply dependencies. Its
-schema accepts only an opaque preview ID; host-owned registry data constructs
+The LSP preview-apply tool (`src/tool/lsp_preview_apply.rs`) is a direct-only,
+mutating exception to the read-oriented LSP surface. It is advertised only when
+LSP is enabled and the session registry has the daemon-owned checked-apply
+dependencies — which is why it is not in the catalog's options-only sections.
+Its schema accepts only an opaque preview ID; host-owned registry data constructs
 the canonical apply DTO. Plan, exploration, research, security-review, and
 verifier agents explicitly deny it, and Tool Programs cannot invoke it.
 
 ### Context Palette Reduction
 
 `ResolvedToolSurface::reduce(max)` narrows the unreduced surface to at
-most `max` tools, always keeping `required` and `never_reduce` tools
-(currently: `read`, `tool_search`). A failed or empty reduction can
-restore `definitions()` without reconstructing registry state.
+most the limit it is given, always keeping the required and never-reduced set (`read` and
+`tool_search` today). A failed or empty reduction can restore the registry's
+definitions without reconstructing registry state.
 
 ### MCP Tools
 
-MCP tool names are namespaced (`mcp__server__tool`) and therefore cannot
+MCP tool names are namespaced (`mcp__<server>__<tool>`) and therefore cannot
 shadow native tools. They are added by `AgentLoop` after the native
 surface is resolved, before provider dispatch.
 
@@ -205,21 +222,14 @@ pub struct ResolvedTool {
     pub backend: ToolBackendKind,   // Native | Mcp | Shell
     pub category: ToolCategory,     // ReadOnly | SafeMutating | Mutating | ShellExec
     pub definition: ToolDefinition,
-    pub required: bool,             // read, tool_search
-    pub never_reduce: bool,         // read, tool_search
+    pub required: bool,
+    pub never_reduce: bool,
 }
 ```
 
 ### Capability (`src/agent/tool_surface.rs:15`)
 
-```rust
-pub enum Capability {
-    FilesystemRead, FilesystemWrite, ShellReadonly, ShellMutating,
-    GitRead, GitWrite, NetworkResearch, Delegate, ManageTodos,
-    ManageGoals, ManageWorkOrders, Terminal, Image, MemoryRead,
-    PluginExecute,
-}
-```
+The enum is reproduced above, under [Capability System](#capability-system).
 
 ### AgentCapabilitySet (`src/agent/tool_surface.rs:36`)
 
@@ -271,7 +281,7 @@ pub enum SurfaceError {
 
 | Config Key | Effect |
 |------------|--------|
-| `[model_profile.<model>]` | `disabled_tools` removes tools from the surface |
+| `[model_profile.<model>].disabled_tools` | Removes tools from the surface |
 | `compaction.*` | Affects context budget which triggers `reduce()` |
 | Adapter `tools.rename` | Maps canonical→wire names in the surface |
 | Adapter `tools.arguments` | Maps argument names per tool |
@@ -288,20 +298,26 @@ pub enum SurfaceError {
   prompts or tool execution.
 - **Roles and agent names are prompt metadata only**: They never grant
   execution authority.
-- **`Delegate` is its own authority**: The task tool does not grant
+- **Delegation is its own authority**: The task tool does not grant
   filesystem mutation merely because its implementation is conservatively
   categorized as mutating.
 - **Alias collisions are errors**: If two wire names map to the same
   canonical name, resolution fails with `AliasCollision`.
-- **MCP names are namespaced**: `mcp__` prefix ensures no shadow of
-  native tools.
+- **MCP names are namespaced**: an MCP tool's wire name is namespaced, so it
+  cannot shadow a native name.
 - **Fingerprint is deterministic**: SHA-256 over sorted tool names,
   wire names, parameters, aliases, and capabilities. Order-independent.
 
 ## Testing
 
 - Unit tests in `src/agent/tool_surface.rs::tests`
-- Narrowest run:
+- The generated catalog and its freshness gate:
+  ```bash
+  cargo test --test tool_catalog
+  ```
+  and the structural half that runs without tests,
+  `python3 scripts/check_tool_catalog.py`.
+- Narrowest run for this page's subject:
   ```bash
   cargo test -p codegg --lib tool_surface
   ```
@@ -317,6 +333,8 @@ failure, abstention, and budget overflow preserve the existing palette.
 
 ## Related Docs
 
+- [tool-catalog.md](tool-catalog.md) — the generated enumeration of the
+  registry's surface, per declared option set
 - [agent.md](agent.md) — AgentLoop, execution policy, tool exposure
 - [model-adapters.md](model-adapters.md) — adapter tool aliases
 - [permission.md](permission.md) — permission system
@@ -324,33 +342,9 @@ failure, abstention, and budget overflow preserve the existing palette.
 
 ## Source Verification
 
-Verified 2026-10-06 against source. Corrected: capability count 13 → 15
-(`MemoryRead` and `PluginExecute` were missing from the prose list, and
-`ManageWorkOrders` was missing from the enum code block — the enum block now
-matches the source verbatim); plan-mode allowlist 15 → 17 names
-(`mcp_resource_search`/`mcp_resource_read` were missing; the count was
-mis-stated as 18 and is corrected on 2026-10-23). Line refs:
-`ResolvedToolSurface` `:131` → `:147`, `ResolvedTool` `:120` → `:136`,
-`AgentCapabilitySet` `:32` → `:36`, `ToolOmission` `:114` → `:130`
-(reason enum `:120`), `SurfaceError` `:141` → `:157`, and all seven Key
-Functions rows (`:151/168/207/228/335/342/360` →
-`:166/183/228/250/385/392/410`). Verified accurate: `ResolvedToolSurface`
-6 fields, `ResolvedTool` 7 fields, `ToolOmission` 2 fields,
-6 `ToolOmissionReason` variants, 3 `SurfaceError` variants, 15
-`AgentCapabilitySet` bool fields, `PLAN_ALLOWED` ordering, and the
-four disclosure states with `ProfileSpecific`.
-
-Re-verified 2026-10-23 against tree `12999178a` (static grep and file reads
-only; no build or test run):
-- **Corrected**: the plan-mode allowlist is **17** names, not 18. The
-  enumeration in the prose already listed exactly the 17 entries
-  `PLAN_ALLOWED` declares; only the count was wrong.
-  `PLAN_ALLOWED` is at `src/tool/disclosure.rs:262` and spans `262-280`.
-- **Verified accurate**: every `src/agent/tool_surface.rs` line anchor
-  (`Capability`:15, `AgentCapabilitySet`:36, `ToolOmissionReason`:120,
-  `ToolOmission`:130, `ResolvedTool`:136, `ResolvedToolSurface`:147,
-  `SurfaceError`:157, `from_registry`:166, `from_registry_with_aliases`:183,
-  `resolve`:228, `resolve_with_aliases`:250, `definitions`:385, `reduce`:392,
-  `canonical_name_for_wire`:410); the 15 `Capability` variants and their
-  order; the 6 `ToolOmissionReason` variants (`Denied`, `PlanMode`,
-  `DisabledByModel`, `MissingBackend`, `NonCallable`, `ParentCeiling`).
+The per-tool enumeration and every count this page used to carry are gone: they
+were hand-maintained, they drifted, and they now live in the generated
+[tool-catalog.md](tool-catalog.md), which `cargo test --test tool_catalog` compares against
+the registry. What remains is prose, and the anchors in the code blocks above
+were last checked statically against `src/agent/tool_surface.rs`; a moved anchor
+is a stale pointer, not a stale fact.

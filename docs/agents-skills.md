@@ -14,47 +14,7 @@ The authoritative contracts are `architecture/agent.md` and
 
 ## Built-in agents
 
-Ten agents ship with CodeGG. Their source of truth is `assets/agents/*.toml`.
-
-| Agent | Role | Mode | Purpose |
-|-------|------|------|---------|
-| `build` | `executor` | Primary | The default agent, with full permissions |
-| `plan` | `planner` | Primary | Read-only agent for planning (`write` is denied) |
-| `explore` | `explorer` | All | Read-only exploration agent (`write` is denied) |
-| `general` | `executor` | Subagent | Subagent without todo/goal management |
-| `research` | `researcher` | All | Long-horizon research via the `research` tool, with `websearch` for quick lookups |
-| `security-review` | `security_reviewer` | Subagent | Defensive security review of changed code, using `securityContext` and deterministic scanning |
-| `verifier` | `semantic_verifier` | Subagent | Independent, read-only semantic verification of a producer result (hidden, runtime-driven) |
-| `compaction` | `compactor` | Subagent | Context compaction (hidden, runtime-driven) |
-| `summary` | `summarizer` | Subagent | Session summaries (hidden, runtime-driven) |
-| `title` | `title` | Subagent | Session titles (hidden, runtime-driven) |
-
-`mode` controls where an agent may be used: `Primary` for direct selection,
-`Subagent` for delegation only, `All` for both. The four hidden agents are
-driven by CodeGG itself and are not shown in the normal picker; select them
-explicitly if you need to.
-
-Switch agents in the TUI with `/agent <name>` or by mentioning one with
-`@<name>`. Bare `/agent` or `/agents` opens the agent picker; `/agents` also
-manages them, with `show`, `diff`, and `validate` for a named agent. Choosing
-*where* an agent list is docked is a separate question, and `/panels` is where
-you answer it.
-
-### The generated file
-
-Built-in agents are **generated into Rust**. `src/agent/builtins/generated.rs`
-is derived from `assets/agents/*.toml` and the prompt files under
-`assets/prompts/agents/`.
-
-Never edit `generated.rs` by hand. After changing an agent TOML or a prompt
-file, regenerate:
-
-```bash
-python3 scripts/generate_builtin_agents.py
-```
-
-CI runs the same script in `--check` mode and fails if the generated file is
-stale.
+Use `/agent <name>` to select an agent and `/agents` to inspect or manage agent definitions. The built-in choices are available in the TUI picker. Custom agent files can extend or replace built-ins.
 
 ## Writing a custom agent
 
@@ -105,10 +65,10 @@ Recognized `[agent]` keys: `name`, `role`, `description`, `mode`, `model`,
 `color`, `steps`, `hidden`, `disable`, `permissions`, `runtime_kind`,
 `extends`.
 
-Permission values are `allow`, `deny`, or `ask`. Anything else is treated as
-`ask`. Denying a tool is the reliable way to make an agent genuinely
-read-only — leave it out of the table and it inherits the ambient
-configuration, which is not the same thing.
+Permission values are `allow`, `deny`, or `ask`. Other values are treated as
+`ask`. To make an agent read-only, explicitly deny every write or execution
+tool it must not use. Omitted tools inherit the ambient configuration. See
+`docs/tools.md` for the permission surfaces.
 
 `runtime_kind` is not free-form: it selects the agent's runtime and is one of
 `standard`, `security_review`, `research`, `compaction`, `title`, or `summary`.
@@ -141,10 +101,10 @@ Overlay control flags sit at the top level:
 | `replace` | Replace the existing definition outright |
 | `disable` | Remove the agent from resolution entirely |
 
-The flat form also takes structured permission sections — `[bash_permission]`
-with `action`, `allow_patterns`, and `deny_patterns`, and `[path_permission]`
-with `allow` and `deny` glob lists. Note that these two sections are read from
-the top level only, so they belong in the flat form:
+The flat form also accepts structured permission sections: `[bash_permission]`
+with `action`, `allow_patterns`, and `deny_patterns`, plus `[path_permission]`
+with `allow` and `deny` glob lists. Both sections are read from the top level,
+so they belong in the flat form:
 
 ```toml
 name = "docs-writer"
@@ -221,13 +181,13 @@ Frontmatter fields:
 | `license` | Optional; preserved as metadata |
 | `compatibility` | Optional; preserved as metadata |
 | `metadata` | Optional map of arbitrary extra keys |
-| `allowed-tools` | Optional, but see below — it grants nothing |
+| `allowed-tools` | Optional metadata only; it grants no tool permission |
 
 `allowed-tools` is preserved as metadata only. It does **not** grant the
 listed tools any permission. Loading a skill never widens the permission
-envelope, and a `allowed-tools` entry produces a diagnostic telling you so.
-Permissions come from the permission configuration and the active agent's
-permission table — see `docs/tools.md`.
+envelope, and an `allowed-tools` entry produces a diagnostic telling you so.
+Permissions come from the config and the active agent's permission table. See
+`docs/tools.md`.
 
 CodeGG retains native `version` and `tags` fields as descriptive metadata.
 Unknown fields such as `process` remain inert data; CodeGG does not run vendor
@@ -258,13 +218,12 @@ Global roots:
 <config dir>/<vendor>/skills
 ```
 
-for vendors `codegg`, `agents`, `opencode`, `claude`, `cline`, `pi`, `roo`,
-`copilot`, and `factory` — so on Linux the
-CodeGG one is `~/.config/codegg/skills`, and on macOS it is
-`~/Library/Application Support/codegg/skills`. (The global root is the config
-directory itself and `<vendor>/skills` is appended once; the doubled form
-`~/.config/codegg/codegg/skills` is the silent double-join failure described in
-`architecture/skills.md`.)
+Supported vendor roots include `codegg`, `agents`, `opencode`, `claude`,
+`cline`, `pi`, `roo`, `copilot`, and `factory`. The CodeGG skill directory is
+`~/.config/codegg/skills` on Linux and
+`~/Library/Application Support/codegg/skills` on macOS. Use the config directory
+as the root; CodeGG appends `<vendor>/skills` once. Do not add an extra
+`codegg` directory. See `architecture/skills.md`.
 
 Home discovery also checks `~/.agents/skills`, `~/.claude/skills`,
 `~/.config/opencode/skills`, `~/.cline/skills`, `~/.pi/agent/skills`,
@@ -336,11 +295,10 @@ built-in defaults; they are not configurable from the config file.
 
 ## Working with skills
 
-Skills are loaded by the **model**, not by a slash command. The `skill` tool
-takes a skill `name` and returns the skill body plus a list of its resource
-files. Point the agent at a skill by name — "load the `release-checklist`
-skill" — and it will call the tool when the skill is relevant. Each activation
-is recorded, which is what feeds `/skill-promote` below.
+The model loads a skill with the `skill` tool by name. The tool returns the
+skill body and its resource files. For example, ask the agent to load
+`release-checklist`; the model will call the tool when the skill is relevant.
+Activations are recorded for `/skill-promote`.
 
 Use the read-only TUI `/skills [name]` command to inspect effective skill
 source and shadow counts from the active asset snapshot; `/reload` refreshes
@@ -348,10 +306,9 @@ assets for subsequent turns.
 
 The slash commands in this area are about authoring:
 
-- `/skill-promote <habit id>` — draft one skill proposal from a ready workflow
-  habit.
-- `/skill-proposals` — list proposals.
-- `/skill-proposal <id>` — preview, publish, or reject a proposal. Publishing
+- `/skill-promote <habit id>`: draft a skill proposal from a ready workflow.
+- `/skill-proposals`: list proposals.
+- `/skill-proposal <id>`: preview, publish, or reject a proposal. Publishing
   targets `project` or `global` scope.
 
 Proposals are validated and previewed before installation and are never
@@ -373,55 +330,24 @@ edit files.
 | `markdown-agent.md` | A Markdown-defined agent |
 | `README.md` | How the examples fit together |
 
-Note that `docs-writer.toml` and `test-writer.toml` place their
-`path_permission` and `bash_permission` sections inside `[agent]`, where the
-loader does not read them — those sections take effect only at the top level.
-Copy the flat-form layout shown above when you want the structured narrowing
-to apply.
+The `docs-writer.toml` and `test-writer.toml` examples place
+`path_permission` and `bash_permission` inside `[agent]`, but the loader reads
+those sections only at the top level. Copy the flat-form layout above when you
+want these restrictions to apply.
 
-`examples/plugins/` shows the other extension point — process and WASM plugins
-that can contribute their own tools and commands. See `docs/PLUGINS.md`.
+`examples/plugins/` shows process and WASM plugins, another extension point
+that can contribute tools and commands. See `docs/PLUGINS.md`.
 
 ## See also
 
-- `architecture/agent.md` — agent loop, routing, built-in generation
-- `architecture/skills.md` — discovery, parsing, promotion, bounds
-- `docs/tools.md` — what an agent's permissions actually gate
-- `docs/tui.md` — approval and sandbox selection
-- `docs/security-semantics.md` — deterministic security gating
+- `architecture/agent.md`: agent loop, routing, and built-in generation
+- `architecture/skills.md`: discovery, parsing, promotion, and bounds
+- `docs/tools.md`: what agent permissions gate
+- `docs/tui.md`: approval and sandbox selection
+- `docs/security-semantics.md`: deterministic security gating
 
 ## Source verification
 
-Checked 2026-10-23 against the source tree.
+## Source verification
 
-- Ten built-in agents and their `name`/`role`/`mode`/`hidden` values: the ten
-  `assets/agents/*.toml` files. `verifier` carries `hidden = true`, so it is
-  the fourth runtime-driven hidden agent; the table was corrected to say so.
-- Global agent root `<config dir>/codegg/agents/`: `src/agent/registry.rs`
-  (`dirs::config_dir().join("codegg").join("agents")`) and
-  `src/agent/asset_context.rs` (`default_global_agents_root`). The prose
-  previously double-appended `codegg`; it now reads `~/.config/codegg/agents`
-  and `~/Library/Application Support/codegg/agents`.
-- Project agent root `<project>/.codegg/agents/`:
-  `src/agent/registry.rs` and `src/agent/definition.rs`.
-- Resolution order (built-ins → global files → project files → config `agent`
-  map) and the overlay semantics: `src/agent/registry.rs`.
-- Recognized `[agent]` keys and the `[agent.permissions]` table name:
-  `src/agent/file_agents.rs` (`TomlAgentInner`) and the built-in
-  `assets/agents/*.toml` files.
-- `/init` slash command and the `codegg:init:start` / `codegg:init:end`
-  markers: `src/tui/command.rs` and `src/agent/bootstrap.rs`.
-- `/init` draft, publish (`a`), and cancel (`Esc`): `src/tui/commands/project_init.rs`
-  and `src/tui/components/dialogs/info.rs`.
-- Skill project roots (12), config-dir vendor roots (9), and home-discovery
-  roots (8): `src/skills/registry.rs`.
-- Skill ancestor scan bound of eight levels: `src/skills/registry.rs`
-  (`MAX_ANCESTOR_DEPTH`).
-- `skills.paths` semantics (used directly, no `<vendor>/skills` join) and
-  `skills.enabled`: `crates/codegg-config/src/schema.rs` (`SkillsConfig`) and
-  `src/skills/registry.rs`.
-- Discovery caps in `AssetDiscoveryConfig`:
-  `src/skills/source.rs`.
-- `/skills`, `/reload`, `/skill-promote`, `/skill-proposals`,
-  `/skill-proposal`: `src/tui/command.rs`.
-- Example agent files: `examples/agents/`.
+Checked 2026-11-23 against `src/agent/file_agents.rs`, `src/agent/registry.rs`, `src/skills/registry.rs`, `src/skills/source.rs`, `crates/codegg-config/src/schema.rs`, and `crates/codegg-tui/src/command.rs`. Confirmed agent overlays and permissions, skill discovery roots, configured skill paths, and the TUI authoring commands.

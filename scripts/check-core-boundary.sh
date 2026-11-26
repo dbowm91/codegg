@@ -21,7 +21,13 @@ match_boundary() {
 }
 
 bad_imports=""
-if bad_imports=$(match_boundary "crate::(agent|tool[^_]|permission|mcp|plugin|tui|server|client|auth([^a-z]|$)|crypto|search|search_backend|research|theme|tts|upgrade)" crates/codegg-core/src); then
+# Each module name is followed by an identifier boundary. Without it the rule
+# misfires on a core-local module whose name merely starts with a forbidden
+# prefix: `crate::agent_run_transcript` is a `codegg-core` module, not the root
+# crate's `agent` module. `tool` already carried this treatment; the rest did
+# not, so the same false positive was latent for any `theme_*`/`search_*`/…
+# core module.
+if bad_imports=$(match_boundary "crate::(agent|tool|permission|mcp|plugin|tui|server|client|auth|crypto|search_backend|search|research|theme|tts|upgrade)([^A-Za-z0-9_]|$)" crates/codegg-core/src); then
   :
 else
   status=$?

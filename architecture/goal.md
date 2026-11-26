@@ -17,7 +17,7 @@ work until the goal is complete or budget is exhausted.
 |-----------|----------|
 | Core types, store, runtime | `crates/codegg-core/src/goal/` |
 | Model-facing tools | `src/tool/goal.rs` |
-| TUI slash commands | `src/tui/commands/` (`/goal *`) |
+| TUI slash commands | `crates/codegg-tui/src/commands/` (`/goal *`) |
 | DB schema | `crates/codegg-core/src/session/schema.rs` (migration v16; revision CAS added in v45) |
 
 ### Module Structure
@@ -305,6 +305,13 @@ pub struct GoalUsageUpdate {
 
 **Note**: There is no `goal_set` tool. Goals are created via TUI
 `/goal set` commands which call `GoalStore::create_active()` directly.
+
+A continuation frame can show an objective even without a durable active Goal
+(the objective then falls back to the immutable session-origin prompt). It
+therefore includes `Goal tools: active` or `Goal tools: inactive`, derived from
+the snapshot's host-owned active-goal state rather than from objective text.
+This status prevents the model from inferring tool availability from an
+objective; resolved tool schemas and policy remain authoritative.
 
 ### Checkpoint System (`crates/codegg-core/src/goal/checkpoint.rs`)
 

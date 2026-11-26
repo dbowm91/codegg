@@ -1,15 +1,5 @@
-//! Bridge between the existing human-shell event stream and the
-//! Phase 1 [`crate::shell::CommandOutputStore`].
-//!
-//! The bridge is intentionally additive: it does NOT modify the
-//! existing human-shell `ShellOutputStore`, the `ShellEvent` enum, or
-//! the runtime. It is a sidecar that watches events and finalizes a
-//! `CommandRun` when the command reaches a terminal state.
-//!
-//! Phase 1 does not stream bytes into the bridge in real time — it
-//! buffers stdout/stderr per command id and finalizes the run on
-//! Exited/TimedOut/FailedToStart. Later phases can stream chunks into
-//! the store incrementally without changing the public API.
+//! Captures human-shell events in bounded command runs for output projection.
+//! Streams are buffered per command and finalized on terminal events.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

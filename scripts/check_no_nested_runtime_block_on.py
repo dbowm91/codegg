@@ -9,10 +9,10 @@ flag is set only by `context::enter_runtime` — that is, by a real
 current *handle*.
 
 CodeGG's TUI event loop is awaited inside `#[tokio::main(flavor =
-"multi_thread")]` (`src/main.rs`), so the whole event loop runs with the
+"multi_thread")]` (`crates/codegg-cli/src/main.rs`), so the whole event loop runs with the
 runtime context entered. A synchronous command handler that then calls
 `Handle::block_on` therefore terminates the process. Eighteen such call sites
-existed in `src/tui/app/mod.rs` (the `/lsp-*` arms and the `/worktree` arm)
+existed in `crates/codegg-tui/src/app/mod.rs` (the `/lsp-*` arms and the `/worktree` arm)
 and three in `src/mcp/cli.rs` (the `McpCommand::Debug` arm).
 
 The fix is `tokio::task::block_in_place`, which leaves the runtime context
@@ -43,7 +43,7 @@ Scope, stated explicitly
     the `#[cfg(test)]` modules inside them. There is no file exemption and
     no line-pattern allowlist: a `Handle::block_on` in a test module is the
     same defect, because a `#[tokio::test]` body runs with the runtime
-    context entered. The `lsp_doctor` tests in `src/tui/app/mod.rs` reach the
+    context entered. The `lsp_doctor` tests in `crates/codegg-tui/src/app/mod.rs` reach the
     production handler and therefore travel this path; after the fix they
     contain no `Handle::block_on` of their own.
   * **Not scanned:** the root `tests/` tree. Those are the integration-test
@@ -286,7 +286,7 @@ def collect_findings(root: Path = REPO_ROOT) -> list[Finding]:
 SELF_TEST_CASES: list[tuple[str, str, int]] = [
     (
         "a bare Handle::current().block_on is caught",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let v = tokio::runtime::Handle::current().block_on(work());\n"
         "    let _ = v;\n"
@@ -295,7 +295,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "a Handle binding's .block_on is caught",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let handle = tokio::runtime::Handle::current();\n"
         "    let v = handle.block_on(work());\n"
@@ -305,7 +305,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "the same call inside block_in_place is accepted",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let v = tokio::task::block_in_place(|| {\n"
         "        tokio::runtime::Handle::current().block_on(work())\n"
@@ -316,7 +316,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "a Handle binding inside block_in_place is accepted",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let handle = tokio::runtime::Handle::current();\n"
         "    let v = tokio::task::block_in_place(|| handle.block_on(work()));\n"
@@ -326,7 +326,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "one legal and one illegal call in the same file: only the illegal one is reported",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let a = tokio::task::block_in_place(|| {\n"
         "        tokio::runtime::Handle::current().block_on(work())\n"
@@ -338,7 +338,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "a Runtime's block_on is not this rule's subject",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let rt = tokio::runtime::Runtime::new().unwrap();\n"
         "    let v = rt.block_on(work());\n"
@@ -348,14 +348,14 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "a comment that names Handle::block_on is not a violation",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "/// The render pass runs where `Handle::block_on` panics.\n"
         "pub fn draw() {}\n",
         0,
     ),
     (
         "a string literal that names block_in_place does not protect a call",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let label = \"block_in_place\";\n"
         "    let v = tokio::runtime::Handle::current().block_on(work());\n"
@@ -365,7 +365,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "a lifetime is not read as a character literal",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go<'a>(name: &'a str) {\n"
         "    let v = tokio::runtime::Handle::current().block_on(work());\n"
         "    let _ = (name, v);\n"
@@ -374,7 +374,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "a nested block_in_place around a nested block_in_place is accepted",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let v = tokio::task::block_in_place(|| {\n"
         "        tokio::task::block_in_place(|| {\n"
@@ -387,7 +387,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "a call after a completed block_in_place is still reported",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "fn go() {\n"
         "    let a = tokio::task::block_in_place(|| {\n"
         "        tokio::runtime::Handle::current().block_on(work())\n"
@@ -399,7 +399,7 @@ SELF_TEST_CASES: list[tuple[str, str, int]] = [
     ),
     (
         "a test module's Handle::block_on is caught too",
-        "src/tui/hypothetical.rs",
+        "crates/codegg-tui/src/hypothetical.rs",
         "#[cfg(test)]\n"
         "mod tests {\n"
         "    #[tokio::test]\n"

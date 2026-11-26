@@ -852,10 +852,12 @@ impl JobScheduler {
                     };
                     return Ok(ExecutorCompletion {
                         status,
-                        summary: job
-                            .cancel_reason
-                            .clone()
-                            .unwrap_or_else(|| format!("job finished in {:?}", job.state)),
+                        summary: format!(
+                            "result summary unavailable: {}",
+                            job.cancel_reason
+                                .clone()
+                                .unwrap_or_else(|| format!("job finished in {:?}", job.state))
+                        ),
                         run_id: None,
                         metrics: ExecutorMetrics::default(),
                     });

@@ -1,0 +1,154 @@
+# OpenCode Go — the per-model reasoning contract this gateway publishes.
+#
+# Source: the gateway's own model catalog, `GET https://opencode.ai/zen/go/v1/models`,
+# read on 2026-11-24. Each model publishes its own reasoning capability block:
+#
+#   "capabilities": { "reasoning": { "supported": true, "effort": ["low", "high", "max"] } }
+#
+# Before this asset, every OpenCode Go model resolved to the known-label
+# fallback ladder (minimal/low/medium/high), so the model's own ladder was never
+# offered and a label the model accepts could not be selected.
+#
+# Three rules turn the published block into a record:
+#
+# * The **effort** dimension carries the published labels, in the published
+#   order. A model that publishes no effort list publishes no effort control, so
+#   the dimension is `unsupported` rather than a fallback ladder it would refuse.
+# * The **disable** dimension is `supported` when the model publishes a toggle or
+#   when its effort list carries "none" — on the OpenAI-shaped surfaces "none" *is*
+#   the disable. Otherwise the dimension is left `unknown`: nobody published whether
+#   the model can be turned off, and that is not the same claim as "it cannot".
+# * The **budget** dimension follows the **wire surface**, not the model. The
+#   OpenAI-shaped surfaces carry no thinking budget, and the Anthropic Messages
+#   surface carries no effort label. A dimension the surface cannot express is
+#   `unsupported` here, so the frontend never offers a selection that would go
+#   nowhere.
+#
+# The wire surface each model uses is the shared provider profile's reviewed
+# model-to-wire hint (`eggpool-provider-profile`), not this file.
+schema_version = 1
+
+[adapter]
+id = "opencode-go"
+version = 1
+priority = 10
+description = "OpenCode Go models, with the per-model reasoning contract the gateway publishes"
+
+# ── OpenAI Responses surface ──────────────────────────────────────────
+# Effort: `reasoning: {"effort": "<label>"}`. Disable: `reasoning: {"effort": "none"}`.
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["gpt-6-luna", "gpt-5.6-luna"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["low", "medium", "high", "xhigh", "max"]
+disable_status = "supported"
+budget_status = "unsupported"
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["muse-spark-1.3-contributor", "muse-spark-1.2-contributor"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["minimal", "low", "medium", "high", "xhigh"]
+disable_status = "unknown"
+budget_status = "unsupported"
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["grok-4.7"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["low", "medium", "high", "xhigh"]
+disable_status = "unknown"
+budget_status = "unsupported"
+
+# ── OpenAI Chat Completions surface ────────────────────────────────────
+# Effort: `reasoning_effort: "<label>"`. Disable: `reasoning_effort: "none"`.
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["glm-5.3", "glm-5.3-flash"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["low", "high", "max"]
+disable_status = "unknown"
+budget_status = "unsupported"
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["kimi-k3"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["max"]
+disable_status = "unknown"
+budget_status = "unsupported"
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["hy3"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["low", "high"]
+disable_status = "supported"
+budget_status = "unsupported"
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["hy4-preview"]
+
+[match.reasoning_capability]
+effort_status = "supported"
+accepted_effort_labels = ["high"]
+disable_status = "supported"
+budget_status = "unsupported"
+
+# These models publish reasoning support but no effort control and no toggle,
+# so neither dimension is established.
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["kimi-k2.7-code", "mimo-v2.6-flash", "mimo-v2.6-pro"]
+
+[match.reasoning_capability]
+effort_status = "unsupported"
+disable_status = "unknown"
+budget_status = "unsupported"
+
+# ── Anthropic Messages surface ─────────────────────────────────────────
+# Effort: — (the surface carries no effort label). Disable: `thinking: {"type": "disabled"}`.
+# Budget: `thinking: {"type": "enabled", "budget_tokens": N}`.
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["minimax-m3"]
+
+[match.reasoning_capability]
+effort_status = "unsupported"
+disable_status = "supported"
+budget_status = "unknown"
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["qwen3.8-max", "qwen3.7-plus"]
+
+[match.reasoning_capability]
+effort_status = "unsupported"
+disable_status = "supported"
+budget_status = "supported"
+max_thinking_budget = 262144
+
+[[match]]
+provider = ["opencode_go"]
+exact_model = ["qwen3.8-flash"]
+
+[match.reasoning_capability]
+effort_status = "unsupported"
+disable_status = "supported"
+budget_status = "supported"

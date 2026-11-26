@@ -133,6 +133,19 @@ pub struct DocumentService {
     /// saw exactly this snapshot, anything else is `Unsynced`. The map holds
     /// revisions only, never text.
     lsp_synced_revision: DashMap<String, u64>,
+    /// M006: the newest revision scheduled to reach the warm language server,
+    /// per document id. Ordering metadata only — it is never a claim that a
+    /// push happened, and it holds no text. A push that finishes late for an
+    /// older revision compares against this so it cannot record itself over a
+    /// newer one.
+    publication_revision: DashMap<String, u64>,
+    /// M006: one publication lock per document id.
+    ///
+    /// Serializes a document's full-text managed pushes, so an interactive
+    /// open, a debounced change, and a save cannot interleave
+    /// `textDocument/didChange` notifications for the same file. In memory
+    /// only; a new document id starts with a new lock.
+    publication_locks: DashMap<String, Arc<Mutex<()>>>,
 }
 
 /// M003: the daemon-side binding one completion read validates against.
@@ -342,15 +355,62 @@ impl DocumentService {
 
     /// M003: record that `revision` of `id` was delivered to the language
     /// server. Called only from the managed-document push path on success.
+    ///
+    /// M006: raise-only. A push that finishes late for an older revision must
+    /// not lower a witness a newer push already recorded; the witness is the
+    /// newest revision the server provably has.
     pub fn record_lsp_synced(&self, id: &str, revision: u64) {
-        self.lsp_synced_revision.insert(id.to_owned(), revision);
+        self.lsp_synced_revision
+            .entry(id.to_owned())
+            .and_modify(|current| *current = (*current).max(revision))
+            .or_insert(revision);
     }
 
     /// M003: forget the sync witness for `id`. Called when a push fails and
     /// when the document is evicted, so a stale revision can never later
     /// read as synchronized.
+    ///
+    /// A failed publication guards this with
+    /// [`Self::is_lsp_publication_revision_current`]: a late failure for an
+    /// older revision must not clear a newer revision's witness.
     pub fn clear_lsp_synced(&self, id: &str) {
         self.lsp_synced_revision.remove(id);
+    }
+
+    /// Record `revision` as the newest one scheduled for language-server
+    /// publication on `id`.
+    ///
+    /// Monotonic: a superseded revision cannot lower it. This is ordering
+    /// metadata, never a witness that a push happened.
+    pub fn note_lsp_publication_revision(&self, id: &str, revision: u64) {
+        self.publication_revision
+            .entry(id.to_owned())
+            .and_modify(|current| *current = (*current).max(revision))
+            .or_insert(revision);
+    }
+
+    /// Whether `revision` is still the newest one scheduled for `id`.
+    ///
+    /// `false` means a newer revision superseded it, so its success must not
+    /// be recorded as the document's synced revision and its failure must not
+    /// clear a newer witness.
+    pub fn is_lsp_publication_revision_current(&self, id: &str, revision: u64) -> bool {
+        self.publication_revision
+            .get(id)
+            .is_some_and(|current| *current == revision)
+    }
+
+    /// The per-document publication lock.
+    ///
+    /// Held across a managed push so two full-text notifications for one file
+    /// cannot interleave. Infallible: the lock exists for the document's
+    /// lifetime and carries no authority of its own — the writer lease does
+    /// that.
+    pub fn lsp_publication_lock(&self, id: &str) -> Arc<Mutex<()>> {
+        self.publication_locks
+            .entry(id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     pub async fn status(

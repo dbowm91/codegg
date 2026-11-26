@@ -369,19 +369,6 @@ fn finding_location(file_path: &Path, line: Option<u32>) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Task state — used by the TUI to track the running background review
-// ---------------------------------------------------------------------------
-
-/// State for a single in-flight `/security-review` invocation. The
-/// `App` stores one of these while a background review is running so
-/// the TUI can abort it on user request and guard against reentrancy.
-#[derive(Debug)]
-pub struct SecurityReviewTaskState {
-    pub id: String,
-    pub task_id: crate::tui::task_lifecycle::TuiTaskId,
-}
-
-// ---------------------------------------------------------------------------
 // Root-aware path resolution
 // ---------------------------------------------------------------------------
 

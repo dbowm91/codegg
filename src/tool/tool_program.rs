@@ -157,20 +157,23 @@ impl Tool for ToolProgramTool {
     }
 
     fn description(&self) -> &str {
-        "Submit a read-only program that calls tools. The program is compiled to a safe IR, \
-         validated against the tool manifest, and executed in a sandboxed interpreter. \
-         Only tools whose contract is DirectOrProgrammatic or ProgrammaticOnly with a \
-         read-only effect class (ReadOnly, ReadValidate) and an output schema may be called; \
-         DirectOnly and mutating tools are rejected. \
-         Intermediate tool call outputs stay in the program artifact ledger and do not \
-         enter the parent transcript. \
-         emit is the program's return value (first call wins, the program ends); emit a small \
-         record once at the end. A second emit is rejected with `program already emitted`. \
-         Example: result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}). \
-         Extra tool args may be extra dict keys or trailing k=v pairs, and parallel \
-         takes the same dicts (canonical parallel(d1, d2), e.g. \
-         parallel({\"tool\": \"read\", \"path\": \"a\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"}); \
-         single-list parallel([d1, d2]) normalizes to the same list, each dict must carry a `tool` key)."
+        concat!(
+            r#"Submit a read-only restricted-Python program compiled to safe IR and checked against a frozen tool manifest. "#,
+            r#"Statements: assignment, if/elif/else, bounded for/range, assert, call, parallel, submit_job, emit, fail, pass. "#,
+            r#"Expressions: boolean, comparison, bitwise and arithmetic operators; literals; indexing/slicing; len, str, int, bool; "#,
+            r#"and allow-listed method calls. No imports, while, def, try/except, arbitrary attributes, or type(). "#,
+            r#"call() returns a tool's structured JSON result directly: inspect objects with result["field"], arrays with result[index], "#,
+            r#"and use len() on strings, arrays, or objects. Results remain metered by max_value_growth. "#,
+            r#"Only requested tools with DirectOrProgrammatic or ProgrammaticOnly caller policy, a ReadOnly or ReadValidate effect, and an output schema are callable; "#,
+            r#"DirectOnly and mutating tools are rejected. Program-callable reads include read, glob, grep, list, diff, repo_search, git_read, lsp_read, "#,
+            r#"and approved deterministic validators; use git_read for Git reads (git_query is DirectOnly). "#,
+            r#"emit(value) is the output; the first emit ends the program and another is rejected. "#,
+            r#"Foreground results expose status, output, steps_used, calls_completed, program_id, error, and program_artifacts; "#,
+            r#"background submission also returns a handle. Intermediate calls do not enter the parent transcript. "#,
+            r#"Example: result = call({"tool": "read", "path": "src/main.rs"}). "#,
+            r#"Extra tool args may be dict keys or trailing k=v pairs. parallel accepts call dicts, "#,
+            r#"e.g. parallel({"tool": "read", "path": "a"}, {"tool": "grep", "pattern": "TODO"}); a list of dicts also works."#
+        )
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -179,17 +182,15 @@ impl Tool for ToolProgramTool {
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "Restricted Python source code (no while loops, imports, \
-                        or defs). Supports: variables, assignments, if/elif/else, \
-                        for loops (with range()), call(descriptor_dict[, k=v...]) e.g. \
-                        result = call({\"tool\": \"read\", \"path\": \"src/main.rs\"}), \
-                        parallel groups canonical parallel(d1, d2) e.g. \
-                        parallel({\"tool\": \"read\", \"path\": \"a\"}, {\"tool\": \"grep\", \"pattern\": \"TODO\"}) \
-                        (single-list parallel([d1, d2]) normalizes; each dict needs a `tool` key), \
-                        bare parallel(...) as a statement with discarded target, emit() as the program's \
-                        return value (first call wins, the program ends; emit a small record once at the end; \
-                        a second emit fails with `program already emitted`), fail(), \
-                        basic arithmetic, string operations, list/dict literals, and indexing."
+                    "description": concat!(
+                        r#"Restricted Python subset: assignments, if/elif/else, bounded for/range, assert, call, parallel, submit_job, emit, fail, pass; "#,
+                        r#"boolean/comparison/bitwise/arithmetic expressions; strings, numbers, booleans, None, and list/tuple/dict literals; "#,
+                        r#"indexing/slicing, len/str/int/bool, and allow-listed method calls. No imports, while, defs, try/except, "#,
+                        r#"comprehensions, type(), or arbitrary attribute access. call() results are structured JSON, "#,
+                        r#"inspectable with len(result), result["field"], result[index], and nested indexing. "#,
+                        r#"Each call dict needs a tool key; extra args may be dict keys or trailing k=v pairs. "#,
+                        r#"Example: result = call({"tool": "read", "path": "src/main.rs"})."#
+                    )
                 },
                 "tools": {
                     "type": "array",
@@ -770,6 +771,17 @@ mod tests {
             .collect();
         assert!(names.contains(&"source"));
         assert!(names.contains(&"tools"));
+    }
+
+    #[test]
+    fn tool_program_description_documents_results_and_program_tools() {
+        let tool = ToolProgramTool::new();
+        let description = tool.description();
+        assert!(description.contains("structured JSON"));
+        assert!(description.contains("result["));
+        assert!(description.contains("git_read"));
+        assert!(description.contains("git_query is DirectOnly"));
+        assert!(description.len() <= 16 * 1024);
     }
 
     #[test]

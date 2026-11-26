@@ -1,0 +1,2577 @@
+//! Project chat commands (Project Collaboration M002).
+//!
+//! The TUI owns no chat truth. Every operation performs an explicit
+//! `chat.v1` round-trip through the daemon-owned `CoreClient` (M001
+//! contract): capability negotiation, then channel ensure / history /
+//! sync / send / edit / redact / read-marker / composing. Results land
+//! back on the event loop as `TuiCommand::Chat*` completions guarded by
+//! per-project request id + reconnect epoch, so stale completions (after
+//! a tab switch, stop, or reconnect) are dropped at apply time.
+//!
+//! Concurrency: `start_*` bumps the reducer generation via
+//! `ChatState::begin_ensure` / `begin_history` and `apply_*` drops stale
+//! completions. Sends carry an idempotency key and merge by `message_id`,
+//! so duplicate deliveries converge without duplication. Hints
+//! (`ChatMessageCommitted` / `ChatComposingUpdated`) only flag
+//! `needs_resync`; they never spawn a task per update — the next explicit
+//! refresh (panel open, user action, or reconnect) performs the single
+//! re-fetch. Live full-message events apply directly when they target the
+//! cached active channel.
+//!
+//! Security: principals come from transport authority daemon-side; this
+//! module never invents authorship and never infers permission
+//! client-side. Daemon denials (`project_not_found`) render cleanly as
+//! the generic unavailable panel. Free text sent here has no execution
+//! semantics (M003 owns structured actions separately).
+
+use crate::app::state::chat::extract_mentions;
+use crate::app::App;
+use crate::app::TuiCommand;
+use crate::async_cmd::spawn_registered_tui_task;
+use crate::commands::close_command_mode;
+use crate::task_lifecycle::TuiTaskKind;
+use codegg::protocol::core::{ChatChannelDto, ChatMessageDto, CoreRequest, CoreResponse};
+use std::sync::Arc;
+
+/// Maximum body bytes accepted by the composer (matches the daemon
+/// bound; oversized input fails fast with a typed error and the draft
+/// retained instead of a wasted round-trip).
+pub const CHAT_COMPOSER_MAX_BYTES: usize = 8192;
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn unauthorized_of(code: &str) -> bool {
+    code == "project_not_found"
+}
+
+/// Capability negotiation shared by every chat task. Returns `true` when
+/// the daemon advertises `chat.v1`.
+async fn negotiate_chat(core_client: &std::sync::Arc<dyn codegg::core::CoreClient>) -> bool {
+    let cap_request = codegg::core::new_request(
+        format!("chat-capabilities-{}", uuid::Uuid::new_v4()),
+        CoreRequest::ChatCapabilities,
+    );
+    match core_client.request(cap_request).await {
+        Ok(CoreResponse::ChatCapabilities { capabilities }) => capabilities.supported,
+        _ => false,
+    }
+}
+
+async fn ensure_default_channel(
+    core_client: &std::sync::Arc<dyn codegg::core::CoreClient>,
+    project_id: &str,
+) -> Result<ChatChannelDto, (Option<String>, bool)> {
+    let req = codegg::core::new_request(
+        format!("chat-ensure-{}", uuid::Uuid::new_v4()),
+        CoreRequest::ChatChannelEnsure {
+            project_id: project_id.to_string(),
+            name: None,
+        },
+    );
+    match core_client.request(req).await {
+        Ok(CoreResponse::ChatChannel { channel }) => Ok(channel),
+        Ok(CoreResponse::Error { code, message }) => {
+            Err((Some(format!("{code}: {message}")), unauthorized_of(&code)))
+        }
+        Ok(other) => Err((Some(format!("Unexpected core response: {other:?}")), false)),
+        Err(e) => Err((Some(format!("Chat channel ensure failed: {e}")), false)),
+    }
+}
+
+/// Resolve the send/history channel for `project_id`: the cached active
+/// channel when present.
+fn active_channel_for(app: &App, project_id: &str) -> Option<String> {
+    app.chat
+        .get(project_id)
+        .and_then(|e| e.active_channel_id.clone())
+}
+
+// Refresh the open chat panel (when one is showing) from the reducer so
+// completions and live events update the visible window without a new
+// fetch. Defined next to the window lifecycle helpers below.
+
+// ── History / sync ───────────────────────────────────────────────────────
+
+/// Fetch the bounded history window for `project_id`. Resolves the
+/// channel from the cache, ensuring the default channel first when none
+/// is known (single task, no polling loop).
+pub(crate) fn start_chat_history(app: &mut App, project_id: String) {
+    if project_id.is_empty() {
+        return;
+    }
+    if app.core_client.is_none() {
+        let Some(request_id) = app.chat.begin_ensure(&project_id) else {
+            return;
+        };
+        let epoch = app.chat.reconnect_epoch;
+        apply_chat_history_loaded(
+            app,
+            request_id,
+            project_id,
+            String::new(),
+            Vec::new(),
+            0,
+            false,
+            0,
+            Some("Core unavailable — check daemon status with /doctor".to_string()),
+            false,
+            true,
+            epoch,
+        );
+        return;
+    }
+    // begin_history needs a channel; use a placeholder binding when the
+    // channel is not cached yet — the task ensures the channel first and
+    // the completion carries the real channel id. Bind the request to a
+    // dummy channel only to mark loading; the apply path re-keys on the
+    // completion's channel id.
+    let known_channel = active_channel_for(app, &project_id);
+    let bind_channel = known_channel.clone().unwrap_or_default();
+    let request_id = if bind_channel.is_empty() {
+        app.chat.begin_ensure(&project_id)
+    } else {
+        app.chat.begin_history(&project_id, &bind_channel)
+    };
+    let Some(request_id) = request_id else {
+        app.messages_state
+            .toasts
+            .warning("Invalid project locator — chat history not loaded");
+        return;
+    };
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let backward_paging = app.chat.backward_paging;
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::command_route::scope_for(app);
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_history",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ChatHistoryLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id: String::new(),
+                    messages: Vec::new(),
+                    next_cursor: 0,
+                    truncated: false,
+                    retention_floor_seq: 0,
+                    error: Some("Core unavailable".to_string()),
+                    unauthorized: false,
+                    unsupported: true,
+                    reconnect_epoch,
+                });
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(TuiCommand::ChatHistoryLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id: String::new(),
+                    messages: Vec::new(),
+                    next_cursor: 0,
+                    truncated: false,
+                    retention_floor_seq: 0,
+                    error: None,
+                    unauthorized: false,
+                    unsupported: true,
+                    reconnect_epoch,
+                });
+            }
+            let channel_id = match known_channel {
+                Some(id) => id,
+                None => match ensure_default_channel(&core_client, &pid).await {
+                    Ok(channel) => channel.channel_id,
+                    Err((error, unauthorized)) => {
+                        return Some(TuiCommand::ChatHistoryLoaded {
+                            request_id,
+                            project_id: pid,
+                            channel_id: String::new(),
+                            messages: Vec::new(),
+                            next_cursor: 0,
+                            truncated: false,
+                            retention_floor_seq: 0,
+                            error,
+                            unauthorized,
+                            unsupported: false,
+                            reconnect_epoch,
+                        });
+                    }
+                },
+            };
+            // Prefer the newest window. `ChatHistory` only pages forward
+            // from `seq >= from_seq`, so an unanchored forward request
+            // returns the OLDEST page — which meant opening `/chat` on a
+            // busy channel showed ancient messages and the newest ones
+            // were unreachable without a manual `/chat-sync`. Backward
+            // paging with no anchor is the "newest N" query the window
+            // actually wants. Older daemons keep the forward path.
+            if backward_paging {
+                // M007-D: the daemon owns the effect. The channel travels
+                // as the command's argument and the newest window is an
+                // unanchored cursor.
+                let argument = channel_id.clone();
+                return match crate::command_route::send_command(
+                    &core_client,
+                    scope,
+                    "chat_history",
+                    "",
+                    &argument,
+                )
+                .await
+                {
+                    Ok(CoreResponse::ChatHistoryOlder {
+                        messages,
+                        has_older,
+                        retention_floor_seq,
+                        ..
+                    }) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                        request_id,
+                        project_id: pid,
+                        channel_id,
+                        messages,
+                        has_older,
+                        retention_floor_seq,
+                        error: None,
+                        reconnect_epoch,
+                    }),
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::ChatHistoryOlderLoaded {
+                            request_id,
+                            project_id: pid,
+                            channel_id,
+                            messages: Vec::new(),
+                            has_older: false,
+                            retention_floor_seq: 0,
+                            error: Some(format!("{code}: {message}")),
+                            reconnect_epoch,
+                        })
+                    }
+                    Err(e) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                        request_id,
+                        project_id: pid,
+                        channel_id,
+                        messages: Vec::new(),
+                        has_older: false,
+                        retention_floor_seq: 0,
+                        error: Some(format!("Chat history request failed: {e}")),
+                        reconnect_epoch,
+                    }),
+                    Ok(other) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                        request_id,
+                        project_id: pid,
+                        channel_id,
+                        messages: Vec::new(),
+                        has_older: false,
+                        retention_floor_seq: 0,
+                        error: Some(format!("Unexpected core response: {other:?}")),
+                        reconnect_epoch,
+                    }),
+                };
+            }
+            let req = codegg::core::new_request(
+                format!("chat-history-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatHistory {
+                    channel_id: channel_id.clone(),
+                    from_seq: None,
+                    limit: None,
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatHistory {
+                    messages,
+                    next_cursor,
+                    truncated,
+                    retention_floor_seq,
+                    ..
+                }) => Some(TuiCommand::ChatHistoryLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages,
+                    next_cursor,
+                    truncated,
+                    retention_floor_seq,
+                    error: None,
+                    unauthorized: false,
+                    unsupported: false,
+                    reconnect_epoch,
+                }),
+                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ChatHistoryLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages: Vec::new(),
+                    next_cursor: 0,
+                    truncated: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("{code}: {message}")),
+                    unauthorized: unauthorized_of(&code),
+                    unsupported: false,
+                    reconnect_epoch,
+                }),
+                Ok(other) => Some(TuiCommand::ChatHistoryLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages: Vec::new(),
+                    next_cursor: 0,
+                    truncated: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("Unexpected core response: {other:?}")),
+                    unauthorized: false,
+                    unsupported: false,
+                    reconnect_epoch,
+                }),
+                Err(e) => Some(TuiCommand::ChatHistoryLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages: Vec::new(),
+                    next_cursor: 0,
+                    truncated: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("Chat history request failed: {e}")),
+                    unauthorized: false,
+                    unsupported: false,
+                    reconnect_epoch,
+                }),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatHistoryLoaded` completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_history_loaded(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    channel_id: String,
+    messages: Vec<ChatMessageDto>,
+    next_cursor: u64,
+    truncated: bool,
+    retention_floor_seq: u64,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    reconnect_epoch: u64,
+) {
+    if unsupported {
+        app.chat.set_capability(false);
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            String::new(),
+            false,
+            true,
+            reconnect_epoch,
+        );
+        refresh_chat_panel(app);
+        return;
+    }
+    if unauthorized {
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            "project_not_found: denied".to_string(),
+            true,
+            false,
+            reconnect_epoch,
+        );
+        // M005: Workspace revocation is fail-closed across both surfaces:
+        // drop the dashboard row/expansion so denied projects vanish from
+        // the list and never linger under another selection.
+        if crate::commands::workspace_dashboard::is_workspace_view_active(app) {
+            crate::commands::workspace_dashboard::clear_workspace_revoked(app, &project_id);
+        }
+        refresh_chat_panel(app);
+        return;
+    }
+    if !channel_id.is_empty() && error.is_none() {
+        if app.chat.capability_supported.is_none() {
+            app.chat.set_capability(true);
+        }
+        let _ = app.chat.apply_history(
+            request_id,
+            &project_id,
+            &channel_id,
+            messages,
+            next_cursor,
+            truncated,
+            retention_floor_seq,
+            reconnect_epoch,
+        );
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(err) = error {
+        // Empty-channel ensure failures carry the channel error already.
+        if !channel_id.is_empty() || !err.is_empty() {
+            let _ = app.chat.apply_error(
+                request_id,
+                &project_id,
+                err.clone(),
+                false,
+                false,
+                reconnect_epoch,
+            );
+            app.messages_state
+                .toasts
+                .warning(&format!("Chat history failed: {err}"));
+        }
+        refresh_chat_panel(app);
+    }
+}
+
+/// Incremental sync from the cached cursor (`next_cursor`). Resumes the
+/// M001 cursor on reconnect; an expired cursor receives a bounded resync
+/// page with `resync_required` set.
+pub(crate) fn start_chat_sync(app: &mut App, project_id: String) {
+    let Some(channel_id) = active_channel_for(app, &project_id) else {
+        // No channel cached yet: a full history fetch (with ensure)
+        // converges instead of failing.
+        start_chat_history(app, project_id);
+        return;
+    };
+    let from_seq = app
+        .chat
+        .get(&project_id)
+        .map(|e| e.next_cursor)
+        .unwrap_or(0);
+    if app.core_client.is_none() {
+        return;
+    }
+    // Coalesce while a fetch is in flight.
+    if !app.chat.needs_refresh(&project_id) {
+        // Explicit user sync still proceeds: bump a fresh request.
+        let _ = from_seq;
+    }
+    let Some(request_id) = app.chat.begin_history(&project_id, &channel_id) else {
+        return;
+    };
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::command_route::scope_for(app);
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_sync",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ChatSyncLoaded {
+                    request_id,
+                    project_id,
+                    channel_id,
+                    messages: Vec::new(),
+                    next_cursor: from_seq,
+                    resync_required: false,
+                    retention_floor_seq: 0,
+                    error: Some("Core unavailable".to_string()),
+                    unauthorized: false,
+                    unsupported: true,
+                    reconnect_epoch,
+                });
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(TuiCommand::ChatSyncLoaded {
+                    request_id,
+                    project_id,
+                    channel_id,
+                    messages: Vec::new(),
+                    next_cursor: from_seq,
+                    resync_required: false,
+                    retention_floor_seq: 0,
+                    error: None,
+                    unauthorized: false,
+                    unsupported: true,
+                    reconnect_epoch,
+                });
+            }
+            // M007-D: the daemon owns the effect. The argument carries the
+            // channel and the cursor the frontend holds.
+            let argument = format!("{channel_id} {from_seq}");
+            match crate::command_route::send_command(
+                &core_client,
+                scope,
+                "chat_sync",
+                "",
+                &argument,
+            )
+            .await
+            {
+                Ok(CoreResponse::ChatSync {
+                    messages,
+                    next_cursor,
+                    resync_required,
+                    retention_floor_seq,
+                    ..
+                }) => Some(TuiCommand::ChatSyncLoaded {
+                    request_id,
+                    project_id,
+                    channel_id,
+                    messages,
+                    next_cursor,
+                    resync_required,
+                    retention_floor_seq,
+                    error: None,
+                    unauthorized: false,
+                    unsupported: false,
+                    reconnect_epoch,
+                }),
+                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ChatSyncLoaded {
+                    request_id,
+                    project_id,
+                    channel_id,
+                    messages: Vec::new(),
+                    next_cursor: from_seq,
+                    resync_required: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("{code}: {message}")),
+                    unauthorized: unauthorized_of(&code),
+                    unsupported: false,
+                    reconnect_epoch,
+                }),
+                Ok(other) => Some(TuiCommand::ChatSyncLoaded {
+                    request_id,
+                    project_id,
+                    channel_id,
+                    messages: Vec::new(),
+                    next_cursor: from_seq,
+                    resync_required: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("Unexpected core response: {other:?}")),
+                    unauthorized: false,
+                    unsupported: false,
+                    reconnect_epoch,
+                }),
+                Err(e) => Some(TuiCommand::ChatSyncLoaded {
+                    request_id,
+                    project_id,
+                    channel_id,
+                    messages: Vec::new(),
+                    next_cursor: from_seq,
+                    resync_required: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("Chat sync request failed: {e}")),
+                    unauthorized: false,
+                    unsupported: false,
+                    reconnect_epoch,
+                }),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatSyncLoaded` completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_sync_loaded(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    channel_id: String,
+    messages: Vec<ChatMessageDto>,
+    next_cursor: u64,
+    resync_required: bool,
+    retention_floor_seq: u64,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    reconnect_epoch: u64,
+) {
+    if unsupported {
+        app.chat.set_capability(false);
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            String::new(),
+            false,
+            true,
+            reconnect_epoch,
+        );
+        refresh_chat_panel(app);
+        return;
+    }
+    if unauthorized {
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            "project_not_found: denied".to_string(),
+            true,
+            false,
+            reconnect_epoch,
+        );
+        if crate::commands::workspace_dashboard::is_workspace_view_active(app) {
+            crate::commands::workspace_dashboard::clear_workspace_revoked(app, &project_id);
+        }
+        refresh_chat_panel(app);
+        return;
+    }
+    if error.is_none() {
+        if app.chat.capability_supported.is_none() {
+            app.chat.set_capability(true);
+        }
+        let _ = app.chat.apply_sync(
+            request_id,
+            &project_id,
+            &channel_id,
+            messages,
+            next_cursor,
+            resync_required,
+            retention_floor_seq,
+            reconnect_epoch,
+        );
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(err) = error {
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            err.clone(),
+            false,
+            false,
+            reconnect_epoch,
+        );
+        app.messages_state
+            .toasts
+            .warning(&format!("Chat sync failed: {err}"));
+        refresh_chat_panel(app);
+    }
+}
+
+// ── Send ─────────────────────────────────────────────────────────────────
+
+/// Send one message to the project's active channel (ensuring the default
+/// channel first when none is cached). Mentions are extracted from the
+/// body as a client-side convenience; the daemon re-validates. Free text
+/// has no execution semantics — this issues only `Chat*` requests.
+pub(crate) fn start_chat_send(
+    app: &mut App,
+    project_id: String,
+    body: String,
+    reply_to: Option<String>,
+) {
+    let trimmed = body.trim().to_string();
+    if trimmed.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-send <text> — message body is empty");
+        return;
+    }
+    if trimmed.len() > CHAT_COMPOSER_MAX_BYTES {
+        app.chat.note_failed_send(
+            &project_id,
+            trimmed.clone(),
+            "chat_body_too_large: message exceeds 8 KiB".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Message exceeds 8 KiB and was not sent — draft retained; shorten and retry");
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(reply) = reply_to.as_deref() {
+        if reply.is_empty()
+            || reply.len() > crate::app::state::chat::MAX_CHAT_LOCATOR_LEN
+            || reply.bytes().any(|b| b == 0 || b.is_ascii_control())
+        {
+            app.messages_state
+                .toasts
+                .warning("Invalid reply target — message not sent");
+            return;
+        }
+    }
+    let mentions = extract_mentions(&trimmed);
+    let known_channel = active_channel_for(app, &project_id);
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    // Sends do not mark the window loading (no task-per-message spinner);
+    // stale protection comes from the reconnect epoch plus idempotent
+    // merge by message id. Use a request id only for tracing.
+    let request_id = reconnect_epoch.saturating_add(1);
+    let idempotency_key = uuid::Uuid::new_v4().to_string();
+    if app.core_client.is_none() {
+        app.chat.note_failed_send(
+            &project_id,
+            trimmed.clone(),
+            "Core unavailable — check daemon status with /doctor".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Chat send failed: core unavailable — draft retained");
+        refresh_chat_panel(app);
+        return;
+    }
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    let draft = trimmed.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_send",
+        async move {
+            let finish = |message: Option<ChatMessageDto>,
+                          duplicate: bool,
+                          channel_id: String,
+                          error: Option<String>,
+                          unauthorized: bool,
+                          unsupported: bool| {
+                TuiCommand::ChatMessageSent {
+                    request_id,
+                    project_id: pid.clone(),
+                    channel_id,
+                    message,
+                    duplicate,
+                    draft: draft.clone(),
+                    error,
+                    unauthorized,
+                    unsupported,
+                    reconnect_epoch,
+                }
+            };
+            let Some(core_client) = core_client else {
+                return Some(finish(
+                    None,
+                    false,
+                    String::new(),
+                    Some("Core unavailable".to_string()),
+                    false,
+                    true,
+                ));
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(finish(None, false, String::new(), None, false, true));
+            }
+            let channel_id = match known_channel {
+                Some(id) => id,
+                None => match ensure_default_channel(&core_client, &pid).await {
+                    Ok(channel) => channel.channel_id,
+                    Err((error, unauthorized)) => {
+                        return Some(finish(
+                            None,
+                            false,
+                            String::new(),
+                            error,
+                            unauthorized,
+                            false,
+                        ));
+                    }
+                },
+            };
+            let req = codegg::core::new_request(
+                format!("chat-send-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatSend {
+                    channel_id: channel_id.clone(),
+                    body: trimmed.clone(),
+                    reply_to: reply_to.clone(),
+                    thread_root: None,
+                    mentions,
+                    references: Vec::new(),
+                    idempotency_key: Some(idempotency_key),
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatMessage { message, duplicate }) => Some(finish(
+                    Some(message),
+                    duplicate,
+                    channel_id,
+                    None,
+                    false,
+                    false,
+                )),
+                Ok(CoreResponse::Error { code, message }) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("{code}: {message}")),
+                    unauthorized_of(&code),
+                    false,
+                )),
+                Ok(other) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("Unexpected core response: {other:?}")),
+                    false,
+                    false,
+                )),
+                Err(e) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("Chat send failed: {e}")),
+                    false,
+                    false,
+                )),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatMessageSent` completion. Failed sends retain the editable
+/// draft with the typed error and fabricate nothing.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_message_sent(
+    app: &mut App,
+    project_id: String,
+    channel_id: String,
+    message: Option<ChatMessageDto>,
+    duplicate: bool,
+    draft: String,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    reconnect_epoch: u64,
+) {
+    if unsupported {
+        app.chat.set_capability(false);
+        app.chat.note_failed_send(
+            &project_id,
+            draft,
+            "Chat unavailable — daemon does not support project chat".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Chat unavailable — daemon does not support project chat; draft retained");
+        refresh_chat_panel(app);
+        return;
+    }
+    if unauthorized {
+        app.chat.note_failed_send(
+            &project_id,
+            draft,
+            "project_not_found: not authorized for project chat".to_string(),
+        );
+        // Privacy-preserving: identical message for denied vs absent.
+        app.messages_state
+            .toasts
+            .warning("Chat unavailable for this project — draft retained");
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(message) = message {
+        if app.chat.capability_supported.is_none() {
+            app.chat.set_capability(true);
+        }
+        let channel = if channel_id.is_empty() {
+            message.channel_id.clone()
+        } else {
+            channel_id.clone()
+        };
+        if app
+            .chat
+            .apply_sent(&project_id, &channel, &message, reconnect_epoch)
+            && !duplicate
+        {
+            app.messages_state
+                .toasts
+                .info(&format!("Sent to chat (#{})", message.seq));
+        }
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(err) = error {
+        app.chat.note_failed_send(&project_id, draft, err.clone());
+        app.messages_state
+            .toasts
+            .warning(&format!("Chat send failed: {err} — draft retained"));
+        refresh_chat_panel(app);
+    }
+}
+
+// ── Edit / redact ────────────────────────────────────────────────────────
+
+/// Edit one message body. The expected revision comes from the local
+/// window (authoritative conflict detection stays daemon-side); unknown
+/// messages fail fast with guidance instead of guessing a revision.
+pub(crate) fn start_chat_edit(
+    app: &mut App,
+    project_id: String,
+    message_id: String,
+    new_body: String,
+) {
+    let trimmed = new_body.trim().to_string();
+    if trimmed.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-edit <message-id> <new-text>");
+        return;
+    }
+    if trimmed.len() > CHAT_COMPOSER_MAX_BYTES {
+        app.messages_state
+            .toasts
+            .warning("Edited body exceeds 8 KiB — edit not sent");
+        return;
+    }
+    let Some(channel_id) = active_channel_for(app, &project_id) else {
+        app.messages_state
+            .toasts
+            .warning("No chat channel cached — open /chat first so the message window loads");
+        return;
+    };
+    let Some(expected_revision) = app.chat.get(&project_id).and_then(|e| {
+        e.messages
+            .iter()
+            .find(|m| m.message_id == message_id)
+            .map(|m| m.revision)
+    }) else {
+        app.messages_state
+            .toasts
+            .warning("Message not in the local window — run /chat-history first, then retry");
+        return;
+    };
+    if app.core_client.is_none() {
+        app.messages_state
+            .toasts
+            .warning("Chat edit failed: core unavailable");
+        return;
+    }
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let request_id = reconnect_epoch.saturating_add(1);
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_edit",
+        async move {
+            let finish = |message: Option<ChatMessageDto>,
+                          error: Option<String>,
+                          unauthorized: bool,
+                          unsupported: bool| {
+                TuiCommand::ChatEditFinished {
+                    request_id,
+                    project_id: project_id.clone(),
+                    channel_id: channel_id.clone(),
+                    message,
+                    message_id: message_id.clone(),
+                    error,
+                    unauthorized,
+                    unsupported,
+                    reconnect_epoch,
+                }
+            };
+            let Some(core_client) = core_client else {
+                return Some(finish(
+                    None,
+                    Some("Core unavailable".to_string()),
+                    false,
+                    true,
+                ));
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(finish(None, None, false, true));
+            }
+            let req = codegg::core::new_request(
+                format!("chat-edit-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatEdit {
+                    channel_id: channel_id.clone(),
+                    message_id: message_id.clone(),
+                    expected_revision,
+                    new_body: trimmed.clone(),
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatMessage { message, .. }) => {
+                    Some(finish(Some(message), None, false, false))
+                }
+                Ok(CoreResponse::Error { code, message }) => Some(finish(
+                    None,
+                    Some(format!("{code}: {message}")),
+                    unauthorized_of(&code),
+                    false,
+                )),
+                Ok(other) => Some(finish(
+                    None,
+                    Some(format!("Unexpected core response: {other:?}")),
+                    false,
+                    false,
+                )),
+                Err(e) => Some(finish(
+                    None,
+                    Some(format!("Chat edit failed: {e}")),
+                    false,
+                    false,
+                )),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatEditFinished` completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_edit_finished(
+    app: &mut App,
+    project_id: String,
+    channel_id: String,
+    message: Option<ChatMessageDto>,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    _reconnect_epoch: u64,
+) {
+    if unsupported || unauthorized {
+        app.messages_state
+            .toasts
+            .warning("Chat edit unavailable for this project");
+        return;
+    }
+    if let Some(message) = message {
+        if app.chat.apply_event_edited(&message) {
+            app.messages_state
+                .toasts
+                .info(&format!("Edited message (r{})", message.revision));
+        }
+        refresh_chat_panel(app);
+        let _ = (project_id, channel_id);
+        return;
+    }
+    if let Some(err) = error {
+        app.messages_state
+            .toasts
+            .warning(&format!("Chat edit failed: {err}"));
+    }
+}
+
+/// Redact one message body to `[REDACTED]` (author-only daemon-side;
+/// prior revisions survive as append-only history).
+pub(crate) fn start_chat_redact(
+    app: &mut App,
+    project_id: String,
+    message_id: String,
+    reason: Option<String>,
+) {
+    let Some(channel_id) = active_channel_for(app, &project_id) else {
+        app.messages_state
+            .toasts
+            .warning("No chat channel cached — open /chat first so the message window loads");
+        return;
+    };
+    let expected_revision = app.chat.get(&project_id).and_then(|e| {
+        e.messages
+            .iter()
+            .find(|m| m.message_id == message_id)
+            .map(|m| m.revision)
+    });
+    if app.core_client.is_none() {
+        app.messages_state
+            .toasts
+            .warning("Chat redact failed: core unavailable");
+        return;
+    }
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let request_id = reconnect_epoch.saturating_add(1);
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_redact",
+        async move {
+            let finish =
+                |revision: u64, error: Option<String>, unauthorized: bool, unsupported: bool| {
+                    TuiCommand::ChatRedactFinished {
+                        request_id,
+                        project_id: project_id.clone(),
+                        channel_id: channel_id.clone(),
+                        message_id: message_id.clone(),
+                        revision,
+                        error,
+                        unauthorized,
+                        unsupported,
+                        reconnect_epoch,
+                    }
+                };
+            let Some(core_client) = core_client else {
+                return Some(finish(0, Some("Core unavailable".to_string()), false, true));
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(finish(0, None, false, true));
+            }
+            let req = codegg::core::new_request(
+                format!("chat-redact-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatRedact {
+                    channel_id: channel_id.clone(),
+                    message_id: message_id.clone(),
+                    expected_revision,
+                    reason: reason.clone(),
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatMessage { message, .. }) => {
+                    Some(finish(message.revision, None, false, false))
+                }
+                Ok(CoreResponse::Error { code, message }) => Some(finish(
+                    0,
+                    Some(format!("{code}: {message}")),
+                    unauthorized_of(&code),
+                    false,
+                )),
+                Ok(other) => Some(finish(
+                    0,
+                    Some(format!("Unexpected core response: {other:?}")),
+                    false,
+                    false,
+                )),
+                Err(e) => Some(finish(
+                    0,
+                    Some(format!("Chat redact failed: {e}")),
+                    false,
+                    false,
+                )),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatRedactFinished` completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_redact_finished(
+    app: &mut App,
+    project_id: String,
+    channel_id: String,
+    message_id: String,
+    revision: u64,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    _reconnect_epoch: u64,
+) {
+    if unsupported || unauthorized {
+        app.messages_state
+            .toasts
+            .warning("Chat redact unavailable for this project");
+        return;
+    }
+    if error.is_none() {
+        if app
+            .chat
+            .apply_event_redacted(&project_id, &channel_id, &message_id, revision)
+        {
+            app.messages_state.toasts.info("Message redacted");
+        }
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(err) = error {
+        app.messages_state
+            .toasts
+            .warning(&format!("Chat redact failed: {err}"));
+    }
+}
+
+// ── Read markers / composing ─────────────────────────────────────────────
+
+/// Advance the caller's read marker to the newest retained message
+/// (forward-only daemon-side).
+pub(crate) fn start_chat_read(app: &mut App, project_id: String) {
+    let (channel_id, last_seq) = match app.chat.get(&project_id) {
+        Some(entry) => match entry.active_channel_id.clone() {
+            Some(channel) => {
+                let newest = entry.messages.back().map(|m| m.seq).unwrap_or(0);
+                (channel, newest)
+            }
+            None => {
+                app.messages_state
+                    .toasts
+                    .info("No chat channel cached — open /chat first");
+                return;
+            }
+        },
+        None => {
+            app.messages_state
+                .toasts
+                .info("No chat loaded for this project — open /chat first");
+            return;
+        }
+    };
+    if app.core_client.is_none() {
+        // Local-only fallback still clears the badge optimistically;
+        // the daemon marker converges on the next authorized fetch.
+        app.chat
+            .apply_read_marker(&project_id, &channel_id, last_seq);
+        refresh_chat_panel(app);
+        return;
+    }
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    let cid = channel_id.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::command_route::scope_for(app);
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_read",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ChatReadMarkerSet {
+                    project_id: pid,
+                    channel_id: cid,
+                    last_read_seq: last_seq,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            // M007-D: the argument carries the channel and the sequence the
+            // frontend marked.
+            let argument = format!("{cid} {last_seq}");
+            match crate::command_route::send_command(
+                &core_client,
+                scope,
+                "chat_read",
+                "",
+                &argument,
+            )
+            .await
+            {
+                Ok(CoreResponse::ChatReadMarker { last_read_seq, .. }) => {
+                    Some(TuiCommand::ChatReadMarkerSet {
+                        project_id: pid,
+                        channel_id: cid,
+                        last_read_seq,
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ChatReadMarkerSet {
+                    project_id: pid,
+                    channel_id: cid,
+                    last_read_seq: last_seq,
+                    error: Some(format!("{code}: {message}")),
+                }),
+                Ok(_) => None,
+                Err(e) => Some(TuiCommand::ChatReadMarkerSet {
+                    project_id: pid,
+                    channel_id: cid,
+                    last_read_seq: last_seq,
+                    error: Some(format!("Chat read marker failed: {e}")),
+                }),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatReadMarkerSet` completion (forward-only; failures keep
+/// the local badge so unread state never silently clears).
+pub(crate) fn apply_chat_read_marker_set(
+    app: &mut App,
+    project_id: String,
+    channel_id: String,
+    last_read_seq: u64,
+    error: Option<String>,
+) {
+    if error.is_none() {
+        app.chat
+            .apply_read_marker(&project_id, &channel_id, last_read_seq);
+        refresh_chat_panel(app);
+    } else if let Some(err) = error {
+        // Privacy-preserving: denials and transport errors share one
+        // shape; the badge is retained either way.
+        app.messages_state
+            .toasts
+            .warning(&format!("Chat read marker not saved: {err}"));
+    }
+}
+
+/// Set or clear the caller's ephemeral composing lease (content-free).
+pub(crate) fn start_chat_composing(app: &mut App, project_id: String, composing: bool) {
+    let Some(channel_id) = active_channel_for(app, &project_id) else {
+        app.messages_state
+            .toasts
+            .warning("No chat channel cached — open /chat first so the channel resolves");
+        return;
+    };
+    if app.core_client.is_none() {
+        app.messages_state
+            .toasts
+            .warning("Chat composing failed: core unavailable");
+        return;
+    }
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_composing",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ChatComposingLoaded {
+                    request_id: 0,
+                    project_id: project_id.clone(),
+                    channel_id: channel_id.clone(),
+                    composing: Vec::new(),
+                    error: Some("Core unavailable".to_string()),
+                    unauthorized: false,
+                    unsupported: true,
+                    reconnect_epoch: 0,
+                });
+            };
+            let set_req = codegg::core::new_request(
+                format!("chat-composing-set-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatComposingSet {
+                    channel_id: channel_id.clone(),
+                    composing,
+                },
+            );
+            if let Ok(CoreResponse::Error { code, message }) = core_client.request(set_req).await {
+                let unauthorized = unauthorized_of(&code);
+                return Some(TuiCommand::ChatComposingLoaded {
+                    request_id: 0,
+                    project_id: project_id.clone(),
+                    channel_id: channel_id.clone(),
+                    composing: Vec::new(),
+                    error: Some(format!("{code}: {message}")),
+                    unauthorized,
+                    unsupported: false,
+                    reconnect_epoch: 0,
+                });
+            }
+            let list_req = codegg::core::new_request(
+                format!("chat-composing-list-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatComposingList {
+                    channel_id: channel_id.clone(),
+                },
+            );
+            match core_client.request(list_req).await {
+                Ok(CoreResponse::ChatComposing { composing, .. }) => {
+                    Some(TuiCommand::ChatComposingLoaded {
+                        request_id: 0,
+                        project_id: project_id.clone(),
+                        channel_id: channel_id.clone(),
+                        composing,
+                        error: None,
+                        unauthorized: false,
+                        unsupported: false,
+                        reconnect_epoch: 0,
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ChatComposingLoaded {
+                        request_id: 0,
+                        project_id: project_id.clone(),
+                        channel_id: channel_id.clone(),
+                        composing: Vec::new(),
+                        error: Some(format!("{code}: {message}")),
+                        unauthorized: unauthorized_of(&code),
+                        unsupported: false,
+                        reconnect_epoch: 0,
+                    })
+                }
+                Ok(_) => None,
+                Err(e) => Some(TuiCommand::ChatComposingLoaded {
+                    request_id: 0,
+                    project_id: project_id.clone(),
+                    channel_id: channel_id.clone(),
+                    composing: Vec::new(),
+                    error: Some(format!("Chat composing request failed: {e}")),
+                    unauthorized: false,
+                    unsupported: false,
+                    reconnect_epoch: 0,
+                }),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatComposingLoaded` completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_composing_loaded(
+    app: &mut App,
+    project_id: String,
+    channel_id: String,
+    composing: Vec<codegg::protocol::core::ChatComposingDto>,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    _reconnect_epoch: u64,
+) {
+    if unsupported || unauthorized || error.is_some() {
+        return;
+    }
+    app.chat
+        .apply_composing(&project_id, &channel_id, composing);
+    refresh_chat_panel(app);
+}
+
+// ── Panel ────────────────────────────────────────────────────────────────
+
+/// Render the project chat panel for the active project. Fetches on
+/// demand when the entry is missing or stale, then opens the scrollable
+/// dialog with the current (possibly loading) lines. Focus/key behavior
+/// follows the standard info-dialog convention (`j`/`k` scroll,
+/// `Esc`/`Enter` close); no session state is mutated.
+pub(crate) fn show_chat(app: &mut App) {
+    let Some(project_id) = app.active_project_id().map(str::to_string) else {
+        app.messages_state
+            .toasts
+            .info("No active project — open a project tab first");
+        return;
+    };
+    if app.chat.needs_refresh(&project_id) {
+        start_chat_history(app, project_id.clone());
+    }
+    app.chat_panel_project = Some(project_id.clone());
+    open_chat_window(app, &project_id);
+}
+
+/// Mount (or refresh) the interactive chat window for `project_id`.
+///
+/// The window owns browsing, composing, and editing; this only hands it a
+/// bounded snapshot and records which project it shows. Re-opening an
+/// already-mounted window updates it in place rather than stacking a
+/// second copy, so `/chat` twice never leaves two chat windows behind.
+pub(crate) fn open_chat_window(app: &mut App, project_id: &str) {
+    use crate::components::dialogs::chat::ChatDialog;
+    let snapshot = app.chat.snapshot(project_id, now_ms());
+    if app.focus_manager.has_component::<ChatDialog>() {
+        let _ = app
+            .focus_manager
+            .with_component_mut::<ChatDialog, _>(|dialog| dialog.apply_snapshot(snapshot));
+    } else {
+        let mut dialog = ChatDialog::new(Arc::clone(&app.ui_state.theme), project_id.to_string());
+        dialog.apply_snapshot(snapshot);
+        // Open ready to type. After the snapshot, not before, so the project
+        // draft is still adopted — see `ChatDialog::enter_insert_mode`.
+        dialog.enter_insert_mode();
+        app.push_dialog(crate::app::Dialog::ProjectChat, Box::new(dialog));
+    }
+}
+
+/// Push the current reducer state into the open chat window.
+///
+/// Called from every completion and live-event path, so the window tracks
+/// the projection without refetching. Returns early when no window is
+/// mounted: chat must keep working from the command line with the window
+/// closed.
+pub(crate) fn refresh_chat_panel(app: &mut App) {
+    use crate::components::dialogs::chat::ChatDialog;
+    // The side panel reads `ChatState` live at render time, so it needs no
+    // push — but only once it is bound to the project whose events just
+    // landed. Without this the panel kept showing a projection for a project
+    // the daemon was no longer updating, which read as "it doesn't refresh".
+    crate::commands::panels::sync_chat_panel_project(app);
+
+    if !app.focus_manager.has_component::<ChatDialog>() {
+        return;
+    }
+    let Some(project_id) = app.chat_panel_project.clone() else {
+        return;
+    };
+    let snapshot = app.chat.snapshot(&project_id, now_ms());
+    let _ = app
+        .focus_manager
+        .with_component_mut::<ChatDialog, _>(|dialog| dialog.apply_snapshot(snapshot));
+}
+
+/// Switch the chat window to `channel_id` and load its newest window.
+///
+/// The reducer only retains the active channel's message window — caching
+/// every channel would multiply the documented memory bound by the channel
+/// count — so a switch refetches rather than restoring from a local copy.
+/// The channel pointer moves before the fetch so a message typed right
+/// after switching targets the channel the user is actually looking at.
+pub(crate) fn start_chat_switch_channel(app: &mut App, project_id: String, channel_id: String) {
+    if !app.chat.set_active_channel(&project_id, &channel_id) {
+        // Unknown channel, or already active: nothing to fetch.
+        refresh_chat_panel(app);
+        return;
+    }
+    refresh_chat_panel(app);
+    start_chat_history(app, project_id);
+}
+
+/// Page one window of messages older than the current one.
+///
+/// Gated on the negotiated `backward_paging` capability: an older daemon
+/// cannot decode the request, so this reports that plainly instead of
+/// issuing a round-trip that would fail opaquely.
+pub(crate) fn start_chat_load_older(app: &mut App, project_id: String) {
+    if !app.chat.backward_paging {
+        app.messages_state.toasts.warning(
+            "This daemon does not support loading older chat history — it must be restarted or upgraded",
+        );
+        return;
+    }
+    let Some(channel_id) = active_channel_for(app, &project_id) else {
+        app.messages_state
+            .toasts
+            .warning("No chat channel loaded — nothing older to fetch");
+        return;
+    };
+    // Anchor strictly before the oldest retained message so the page
+    // cannot overlap what the window already holds.
+    let before_seq = app
+        .chat
+        .get(&project_id)
+        .and_then(|entry| entry.messages.front().map(|m| m.seq));
+    let Some(request_id) = app.chat.begin_history_older(&project_id, &channel_id) else {
+        app.messages_state
+            .toasts
+            .warning("Invalid channel locator — older history not loaded");
+        return;
+    };
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let Some(core_client) = app.core_client.clone() else {
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            "Core unavailable — check daemon status with /doctor".to_string(),
+            false,
+            false,
+            reconnect_epoch,
+        );
+        refresh_chat_panel(app);
+        return;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_history_older",
+        async move {
+            let req = codegg::core::new_request(
+                format!("chat-history-older-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatHistoryOlder {
+                    channel_id: channel_id.clone(),
+                    before_seq,
+                    limit: None,
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatHistoryOlder {
+                    messages,
+                    has_older,
+                    retention_floor_seq,
+                    // The `older_cursor` is intentionally ignored: the next
+                    // page is anchored from the window's own oldest message,
+                    // which stays authoritative once the merge has applied the
+                    // retention bound. Trusting a cursor from a trimmed page
+                    // would re-fetch rows the window already holds.
+                    ..
+                }) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages,
+                    has_older,
+                    retention_floor_seq,
+                    error: None,
+                    reconnect_epoch,
+                }),
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ChatHistoryOlderLoaded {
+                        request_id,
+                        project_id: pid,
+                        channel_id,
+                        messages: Vec::new(),
+                        has_older: false,
+                        retention_floor_seq: 0,
+                        error: Some(format!("{code}: {message}")),
+                        reconnect_epoch,
+                    })
+                }
+                Ok(other) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages: Vec::new(),
+                    has_older: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("Unexpected core response: {other:?}")),
+                    reconnect_epoch,
+                }),
+                Err(e) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages: Vec::new(),
+                    has_older: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("Older history request failed: {e}")),
+                    reconnect_epoch,
+                }),
+            }
+        },
+    );
+}
+
+/// Apply a backward-page completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_history_older_loaded(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    channel_id: String,
+    messages: Vec<ChatMessageDto>,
+    has_older: bool,
+    retention_floor_seq: u64,
+    error: Option<String>,
+    reconnect_epoch: u64,
+) {
+    if let Some(error) = error {
+        // `apply_error` clears `current_request_id`; a transient failure
+        // keeps the visible window and asks for a retry.
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            error.clone(),
+            false,
+            false,
+            reconnect_epoch,
+        );
+        app.messages_state
+            .toasts
+            .warning(&format!("Could not load older messages: {error}"));
+        refresh_chat_panel(app);
+        return;
+    }
+    let _ = app.chat.apply_history_older(
+        request_id,
+        &project_id,
+        &channel_id,
+        messages,
+        has_older,
+        retention_floor_seq,
+        reconnect_epoch,
+    );
+    refresh_chat_panel(app);
+}
+
+// ── Observer insert routing ──────────────────────────────────────────────
+
+/// Route observer-mode insert text to project chat.
+///
+/// This is the M002 collaboration seam: while observing another session,
+/// bare insert-mode input (Enter) targets the observed project's chat
+/// instead of the read-only session. Only `Chat*` core requests are
+/// issued here — turn submit/steer/cancel and permission/question answers
+/// never flow through this path (they stay blocked by `ObserverState`).
+///
+/// Returns `true` when the text was routed (prompt already cleared);
+/// `false` when no project is available and the caller should fall back
+/// to the read-only placeholder.
+pub(crate) fn route_observer_insert_to_chat(app: &mut App, text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    // Prefer the observed session's project (the collaboration context
+    // the observer is watching); fall back to the active tab. Both are
+    // opaque locators, never paths.
+    let project_id = app
+        .observer
+        .observed_project_id()
+        .map(str::to_string)
+        .or_else(|| app.active_project_id().map(str::to_string));
+    let Some(project_id) = project_id else {
+        return false;
+    };
+    start_chat_send(app, project_id, trimmed.to_string(), None);
+    app.prompt_state.prompt.clear();
+    app.prompt_state.show_completions = false;
+    true
+}
+
+/// Route composer text to the project chat when the `[CHAT]` target is
+/// armed.
+///
+/// The project comes from `chat_panel_project`, which the panel command
+/// layer resolved from the active tab or the Workspace selection. It is
+/// deliberately *not* re-resolved here and never comes from a path or the
+/// process cwd: the composer is a general input surface and must not
+/// become a way to name a destination.
+///
+/// Returns `false` only when the target is armed but no project is bound,
+/// which the caller must treat as "do not send this anywhere".
+pub(crate) fn route_composer_to_chat(app: &mut App, text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let Some(project_id) = app.chat_panel_project.clone() else {
+        return false;
+    };
+    // An armed seed decides what this send *means*: a body replacement or a
+    // threaded reply, rather than a plain message. Read it as a value and
+    // clear it after the seam runs, so a failed send still loses only the
+    // context — the body itself is restored into the project draft by the
+    // seam, exactly as an unseeded failed send would be.
+    let seed = app.prompt_state.chat_seed.clone();
+    match seed.as_ref().and_then(|seed| seed.edit_target.clone()) {
+        Some(message_id) => start_chat_edit(app, project_id, message_id, trimmed.to_string()),
+        None => start_chat_send(
+            app,
+            project_id,
+            trimmed.to_string(),
+            seed.and_then(|seed| seed.reply_to),
+        ),
+    }
+    app.prompt_state.chat_seed = None;
+    app.prompt_state.prompt.clear();
+    app.prompt_state.show_completions = false;
+    true
+}
+
+// ── Daemon event intake ──────────────────────────────────────────────────
+
+/// Route a daemon `ChatMessageCommitted` payload into the bounded chat
+/// reducer. Unknown projects only flag a resync hint (fail closed — no
+/// message stored until an authorized fetch confirms it).
+pub(crate) fn on_chat_message_committed(app: &mut App, message: ChatMessageDto) {
+    if app.chat.apply_event_committed(&message) {
+        refresh_chat_panel(app);
+    } else if app.chat.note_hint(&message.project_id) {
+        // M005: Workspace selection owns the chat target while the view
+        // is active; otherwise the active tab.
+        let is_target =
+            app.chat_target_project_id().as_deref() == Some(message.project_id.as_str());
+        if is_target {
+            start_chat_history(app, message.project_id.clone());
+        }
+    }
+}
+
+/// Route a daemon `ChatMessageEdited` payload into the reducer.
+pub(crate) fn on_chat_message_edited(app: &mut App, message: ChatMessageDto) {
+    if app.chat.apply_event_edited(&message) {
+        refresh_chat_panel(app);
+    } else if app.chat.note_hint(&message.project_id) {
+        let is_target =
+            app.chat_target_project_id().as_deref() == Some(message.project_id.as_str());
+        if is_target {
+            start_chat_history(app, message.project_id.clone());
+        }
+    }
+}
+
+/// Route a daemon `ChatMessageRedacted` hint into the reducer.
+pub(crate) fn on_chat_message_redacted(
+    app: &mut App,
+    project_id: String,
+    channel_id: String,
+    message_id: String,
+    revision: u64,
+) {
+    if app
+        .chat
+        .apply_event_redacted(&project_id, &channel_id, &message_id, revision)
+    {
+        refresh_chat_panel(app);
+    } else if app.chat.note_hint(&project_id) {
+        let is_target = app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+        if is_target {
+            start_chat_history(app, project_id);
+        }
+    }
+}
+
+/// Route a daemon `ChatComposingUpdated` liveness hint into the reducer.
+/// Carries no content; the active project re-fetches through the
+/// authorized composing-list path only when the chat panel is showing
+/// (no polling storm from background typing).
+pub(crate) fn on_chat_composing_hint(app: &mut App, project_id: String, channel_id: String) {
+    // M005: the Workspace side panel counts as showing when the view is
+    // active and bound to this project; otherwise the modal dialog.
+    let workspace_showing = crate::commands::workspace_dashboard::is_workspace_view_active(app)
+        && app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+    let panel_showing = workspace_showing
+        || app
+            .focus_manager
+            .has_dialog(crate::components::component::DialogType::ProjectChat);
+    if !panel_showing {
+        app.chat.note_hint(&project_id);
+        return;
+    }
+    if app.chat.note_hint(&project_id) {
+        let is_target = app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+        if is_target {
+            // Refresh the composing snapshot only; the message window
+            // re-fetches on explicit user action.
+            let _ = channel_id;
+            start_chat_composing_refresh(app, project_id);
+        }
+    }
+}
+
+/// Re-fetch only the composing snapshot for the active channel.
+fn start_chat_composing_refresh(app: &mut App, project_id: String) {
+    let Some(channel_id) = active_channel_for(app, &project_id) else {
+        return;
+    };
+    if app.core_client.is_none() {
+        return;
+    }
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_composing_refresh",
+        async move {
+            let core_client = core_client?;
+            let list_req = codegg::core::new_request(
+                format!("chat-composing-list-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatComposingList {
+                    channel_id: channel_id.clone(),
+                },
+            );
+            match core_client.request(list_req).await {
+                Ok(CoreResponse::ChatComposing { composing, .. }) => {
+                    Some(TuiCommand::ChatComposingLoaded {
+                        request_id: 0,
+                        project_id: project_id.clone(),
+                        channel_id: channel_id.clone(),
+                        composing,
+                        error: None,
+                        unauthorized: false,
+                        unsupported: false,
+                        reconnect_epoch: 0,
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ChatComposingLoaded {
+                        request_id: 0,
+                        project_id: project_id.clone(),
+                        channel_id: channel_id.clone(),
+                        composing: Vec::new(),
+                        error: Some(format!("{code}: {message}")),
+                        unauthorized: unauthorized_of(&code),
+                        unsupported: false,
+                        reconnect_epoch: 0,
+                    })
+                }
+                Ok(_) => None,
+                Err(_) => None,
+            }
+        },
+    );
+}
+
+/// Re-fetch only the composing snapshot for the active channel — tail marker.
+/// M003 structured-action helpers follow (explicit typed operations only).
+fn _chat_m003_anchor() {}
+
+// ── M003: Separately authorized structured chat actions ───────────────
+//
+// Explicit typed operations only. Free text — including command-like
+// text sent via `start_chat_send` or `route_observer_insert_to_chat` —
+// never constructs a `ChatActionSubmit`; only these explicit
+// `/chat-action-*` entry points do. The daemon checks `project.chat`
+// plus the ordinary semantic capability and calls the canonical
+// Job services; denials create nothing.
+
+use codegg::protocol::core::{ChatActionDto, ChatActionSubmitDto};
+
+/// Maximum prompt bytes accepted by the TUI composer (matches the
+/// daemon bound; oversized input fails fast with the draft retained).
+pub const CHAT_ACTION_PROMPT_MAX_BYTES: usize = 8192;
+
+/// Submit an agent task linked to a message. Explicit command only.
+pub(crate) fn start_chat_action_task(
+    app: &mut App,
+    project_id: String,
+    message_id: String,
+    workspace_id: String,
+    agent: String,
+    prompt: String,
+) {
+    let payload = ChatActionSubmitDto::AgentTask {
+        workspace_id,
+        agent,
+        prompt,
+        session_id: None,
+        title: None,
+    };
+    start_chat_action_submit(app, project_id, message_id, payload);
+}
+
+/// Submit a review request linked to a message. Explicit command only.
+pub(crate) fn start_chat_action_review(
+    app: &mut App,
+    project_id: String,
+    message_id: String,
+    workspace_id: String,
+    agent: String,
+    prompt: String,
+) {
+    let payload = ChatActionSubmitDto::ReviewRequest {
+        workspace_id,
+        agent,
+        prompt,
+        session_id: None,
+        title: None,
+    };
+    start_chat_action_submit(app, project_id, message_id, payload);
+}
+
+/// Generic explicit action submit through the daemon gate.
+fn start_chat_action_submit(
+    app: &mut App,
+    project_id: String,
+    message_id: String,
+    payload: ChatActionSubmitDto,
+) {
+    if message_id.is_empty() || message_id.len() > 128 {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-action-* <message-id> … — invalid message id");
+        return;
+    }
+    let prompt_len = match &payload {
+        ChatActionSubmitDto::AgentTask { prompt, .. }
+        | ChatActionSubmitDto::ReviewRequest { prompt, .. } => Some(prompt.len()),
+        _ => None,
+    };
+    if prompt_len.is_some_and(|len| len > CHAT_ACTION_PROMPT_MAX_BYTES) {
+        app.chat.note_failed_action(
+            &project_id,
+            "chat_invalid_input: action prompt exceeds 8 KiB".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Action prompt exceeds 8 KiB and was not submitted");
+        refresh_chat_panel(app);
+        return;
+    }
+    let Some(request_id) = app.chat.begin_action(&project_id) else {
+        app.messages_state
+            .toasts
+            .warning("Invalid project for chat action");
+        return;
+    };
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let known_channel = active_channel_for(app, &project_id);
+    if app.core_client.is_none() {
+        app.chat.note_failed_action(
+            &project_id,
+            "Core unavailable — check daemon status with /doctor".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Chat action failed: core unavailable");
+        refresh_chat_panel(app);
+        return;
+    }
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    let idempotency_key = uuid::Uuid::new_v4().to_string();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_action_submit",
+        async move {
+            let finish = |action: Option<ChatActionDto>,
+                          duplicate: bool,
+                          channel_id: String,
+                          error: Option<String>,
+                          unauthorized: bool,
+                          unsupported: bool| {
+                TuiCommand::ChatActionSubmitted {
+                    request_id,
+                    project_id: pid.clone(),
+                    channel_id,
+                    action,
+                    duplicate,
+                    error,
+                    unauthorized,
+                    unsupported,
+                    reconnect_epoch,
+                }
+            };
+            let Some(core_client) = core_client else {
+                return Some(finish(
+                    None,
+                    false,
+                    String::new(),
+                    Some("Core unavailable".to_string()),
+                    false,
+                    true,
+                ));
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(finish(None, false, String::new(), None, false, true));
+            }
+            let channel_id = match known_channel {
+                Some(id) => id,
+                None => match ensure_default_channel(&core_client, &pid).await {
+                    Ok(channel) => channel.channel_id,
+                    Err((error, unauthorized)) => {
+                        return Some(finish(
+                            None,
+                            false,
+                            String::new(),
+                            error,
+                            unauthorized,
+                            false,
+                        ));
+                    }
+                },
+            };
+            let req = codegg::core::new_request(
+                format!("chat-action-submit-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatActionSubmit {
+                    channel_id: channel_id.clone(),
+                    message_id: message_id.clone(),
+                    action: payload,
+                    idempotency_key,
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatAction { action, duplicate }) => Some(finish(
+                    Some(action),
+                    duplicate,
+                    channel_id,
+                    None,
+                    false,
+                    false,
+                )),
+                Ok(CoreResponse::Error { code, message }) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("{code}: {message}")),
+                    unauthorized_of(&code) || code == "chat_action_denied",
+                    false,
+                )),
+                Ok(other) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("Unexpected core response: {other:?}")),
+                    false,
+                    false,
+                )),
+                Err(e) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("Chat action failed: {e}")),
+                    false,
+                    false,
+                )),
+            }
+        },
+    );
+}
+
+/// List structured actions for the active channel, optionally filtered
+/// to one message. Explicit command only.
+pub(crate) fn start_chat_action_list(
+    app: &mut App,
+    project_id: String,
+    message_id: Option<String>,
+) {
+    if let Some(ref target) = message_id {
+        if target.is_empty() || target.len() > 128 {
+            app.messages_state
+                .toasts
+                .warning("Usage: /chat-action-list [message-id] — invalid message id");
+            return;
+        }
+    }
+    let Some(request_id) = app.chat.begin_action(&project_id) else {
+        app.messages_state
+            .toasts
+            .warning("Invalid project for chat action list");
+        return;
+    };
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let known_channel = active_channel_for(app, &project_id);
+    if app.core_client.is_none() {
+        app.chat.note_failed_action(
+            &project_id,
+            "Core unavailable — check daemon status with /doctor".to_string(),
+        );
+        refresh_chat_panel(app);
+        return;
+    }
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    // M007-D: the daemon owns the effect.
+    let scope = crate::command_route::scope_for(app);
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_action_list",
+        async move {
+            let finish = |actions: Vec<ChatActionDto>,
+                          channel_id: String,
+                          error: Option<String>,
+                          unauthorized: bool,
+                          unsupported: bool| {
+                TuiCommand::ChatActionListLoaded {
+                    request_id,
+                    project_id: pid.clone(),
+                    channel_id,
+                    actions,
+                    error,
+                    unauthorized,
+                    unsupported,
+                    reconnect_epoch,
+                }
+            };
+            let Some(core_client) = core_client else {
+                return Some(finish(
+                    Vec::new(),
+                    String::new(),
+                    Some("Core unavailable".to_string()),
+                    false,
+                    true,
+                ));
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(finish(Vec::new(), String::new(), None, false, true));
+            }
+            let channel_id = match known_channel {
+                Some(id) => id,
+                None => match ensure_default_channel(&core_client, &pid).await {
+                    Ok(channel) => channel.channel_id,
+                    Err((error, unauthorized)) => {
+                        return Some(finish(
+                            Vec::new(),
+                            String::new(),
+                            error,
+                            unauthorized,
+                            false,
+                        ));
+                    }
+                },
+            };
+            // M007-D: the daemon owns the effect. The argument carries the
+            // channel and the optional message id, in that order.
+            let argument = match &message_id {
+                Some(id) => format!("{channel_id} {id}"),
+                None => channel_id.clone(),
+            };
+            match crate::command_route::send_command(
+                &core_client,
+                scope,
+                "chat_action_list",
+                "",
+                &argument,
+            )
+            .await
+            {
+                Ok(CoreResponse::ChatActionList { actions, .. }) => {
+                    Some(finish(actions, channel_id, None, false, false))
+                }
+                Ok(CoreResponse::Error { code, message }) => Some(finish(
+                    Vec::new(),
+                    channel_id,
+                    Some(format!("{code}: {message}")),
+                    unauthorized_of(&code),
+                    false,
+                )),
+                Ok(other) => Some(finish(
+                    Vec::new(),
+                    channel_id,
+                    Some(format!("Unexpected core response: {other:?}")),
+                    false,
+                    false,
+                )),
+                Err(e) => Some(finish(
+                    Vec::new(),
+                    channel_id,
+                    Some(format!("Chat action list failed: {e}")),
+                    false,
+                    false,
+                )),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatActionSubmitted` completion. Failures retain the typed
+/// error and fabricate nothing; duplicates converge.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_action_submitted(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    channel_id: String,
+    action: Option<ChatActionDto>,
+    duplicate: bool,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    reconnect_epoch: u64,
+) {
+    if unsupported {
+        app.chat.set_capability(false);
+        app.chat.note_failed_action(
+            &project_id,
+            "Chat actions unavailable — daemon does not support chat actions".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Chat actions unavailable — daemon does not support chat actions");
+        refresh_chat_panel(app);
+        return;
+    }
+    if unauthorized {
+        app.chat.clear_project(&project_id);
+        app.messages_state
+            .toasts
+            .warning("Chat action denied — project not found or missing capability");
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(error) = error {
+        app.chat.note_failed_action(&project_id, error.clone());
+        app.messages_state
+            .toasts
+            .warning(&format!("Chat action failed: {error}"));
+        refresh_chat_panel(app);
+        return;
+    }
+    let Some(action) = action else {
+        app.chat.note_failed_action(
+            &project_id,
+            "Chat action failed: empty response".to_string(),
+        );
+        refresh_chat_panel(app);
+        return;
+    };
+    if app.chat.apply_action_submitted(
+        request_id,
+        &project_id,
+        &channel_id,
+        &action,
+        reconnect_epoch,
+    ) {
+        if duplicate {
+            app.messages_state
+                .toasts
+                .info("Chat action already submitted — retry converged");
+        } else {
+            app.messages_state.toasts.success("Chat action submitted");
+        }
+    }
+    refresh_chat_panel(app);
+}
+
+/// Apply a `ChatActionListLoaded` completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_action_list_loaded(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    channel_id: String,
+    actions: Vec<ChatActionDto>,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    reconnect_epoch: u64,
+) {
+    if unsupported {
+        app.chat.set_capability(false);
+        refresh_chat_panel(app);
+        return;
+    }
+    if unauthorized {
+        app.chat.clear_project(&project_id);
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(error) = error {
+        app.chat.note_failed_action(&project_id, error);
+        refresh_chat_panel(app);
+        return;
+    }
+    app.chat.apply_action_list(
+        request_id,
+        &project_id,
+        &channel_id,
+        actions,
+        reconnect_epoch,
+    );
+    refresh_chat_panel(app);
+}
+
+/// Route a daemon `ChatActionUpdated` payload into the reducer.
+pub(crate) fn on_chat_action_updated(app: &mut App, action: ChatActionDto) {
+    if app.chat.apply_event_action(&action) {
+        refresh_chat_panel(app);
+    } else if app.chat.note_hint(&action.project_id) {
+        let is_target = app.chat_target_project_id().as_deref() == Some(action.project_id.as_str());
+        if is_target {
+            start_chat_action_list(
+                app,
+                action.project_id.clone(),
+                Some(action.message_id.clone()),
+            );
+        }
+    }
+}
+
+pub(crate) fn dispatch_chat(app: &mut App) {
+    close_command_mode(app);
+    // M005: Workspace side panel owns chat while the view is
+    // active (explicit focus, no modal); otherwise the modal.
+    if crate::commands::workspace_dashboard::is_workspace_view_active(app) {
+        crate::commands::workspace_dashboard::focus_workspace_chat(app);
+    } else {
+        crate::commands::chat::show_chat(app);
+    }
+}
+
+pub(crate) fn dispatch_chat_send(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let body = argument.to_string();
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_send(app, project_id, body, None);
+}
+
+pub(crate) fn dispatch_chat_reply(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    let Some((target, body)) = rest.split_once(' ') else {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-reply <message-id> <text>");
+        return;
+    };
+    let body = body.trim();
+    if body.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-reply <message-id> <text>");
+        return;
+    }
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_send(
+        app,
+        project_id,
+        body.to_string(),
+        Some(target.trim().to_string()),
+    );
+}
+
+pub(crate) fn dispatch_chat_history(app: &mut App) {
+    close_command_mode(app);
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    let workspace_active = crate::commands::workspace_dashboard::is_workspace_view_active(app);
+    crate::commands::chat::start_chat_history(app, project_id);
+    if workspace_active {
+        crate::commands::workspace_dashboard::sync_workspace_chat_panel(app);
+    } else {
+        // Refresh the panel view when it is showing chat.
+        crate::commands::chat::show_chat(app);
+    }
+}
+
+pub(crate) fn dispatch_chat_sync(app: &mut App) {
+    close_command_mode(app);
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_sync(app, project_id);
+}
+
+pub(crate) fn dispatch_chat_read(app: &mut App) {
+    close_command_mode(app);
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_read(app, project_id);
+}
+
+pub(crate) fn dispatch_chat_edit(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    let Some((target, body)) = rest.split_once(' ') else {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-edit <message-id> <new-text>");
+        return;
+    };
+    if body.trim().is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-edit <message-id> <new-text>");
+        return;
+    }
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_edit(
+        app,
+        project_id,
+        target.trim().to_string(),
+        body.trim().to_string(),
+    );
+}
+
+pub(crate) fn dispatch_chat_redact(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    if rest.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-redact <message-id> [reason]");
+        return;
+    }
+    let (target, reason) = match rest.split_once(' ') {
+        Some((t, r)) if !r.trim().is_empty() => (t.trim().to_string(), Some(r.trim().to_string())),
+        _ => (rest.trim().to_string(), None),
+    };
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_redact(app, project_id, target, reason);
+}
+
+pub(crate) fn dispatch_chat_composing(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let arg = argument;
+    let composing = match arg.to_lowercase().as_str() {
+        "on" | "true" | "1" | "start" => true,
+        "off" | "false" | "0" | "stop" | "clear" => false,
+        _ => {
+            app.messages_state
+                .toasts
+                .warning("Usage: /chat-composing on|off");
+            return;
+        }
+    };
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_composing(app, project_id, composing);
+}
+
+pub(crate) fn dispatch_chat_action_task(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    // Explicit form: <message-id> <workspace-id> <agent> <prompt…>.
+    let mut parts = rest.splitn(4, ' ');
+    let message_id = parts.next().unwrap_or_default().trim();
+    let workspace_id = parts.next().unwrap_or_default().trim();
+    let agent = parts.next().unwrap_or_default().trim();
+    let prompt = parts.next().unwrap_or_default().trim();
+    if message_id.is_empty() || workspace_id.is_empty() || agent.is_empty() || prompt.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-action-task <message-id> <workspace-id> <agent> <prompt>");
+        return;
+    }
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_action_task(
+        app,
+        project_id,
+        message_id.to_string(),
+        workspace_id.to_string(),
+        agent.to_string(),
+        prompt.to_string(),
+    );
+}
+
+pub(crate) fn dispatch_chat_action_review(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    let mut parts = rest.splitn(4, ' ');
+    let message_id = parts.next().unwrap_or_default().trim();
+    let workspace_id = parts.next().unwrap_or_default().trim();
+    let agent = parts.next().unwrap_or_default().trim();
+    let prompt = parts.next().unwrap_or_default().trim();
+    if message_id.is_empty() || workspace_id.is_empty() || agent.is_empty() || prompt.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-action-review <message-id> <workspace-id> <agent> <prompt>");
+        return;
+    }
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_action_review(
+        app,
+        project_id,
+        message_id.to_string(),
+        workspace_id.to_string(),
+        agent.to_string(),
+        prompt.to_string(),
+    );
+}
+
+pub(crate) fn dispatch_chat_action_list(app: &mut App, argument: &str) {
+    close_command_mode(app);
+    let rest = argument;
+    let message_id = if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    };
+    let Some(project_id) = app.chat_target_project_id() else {
+        app.messages_state.toasts.warning(
+            "No project selected — select a Workspace project or open a project tab first",
+        );
+        return;
+    };
+    crate::commands::chat::start_chat_action_list(app, project_id, message_id);
+    if crate::commands::workspace_dashboard::is_workspace_view_active(app) {
+        crate::commands::workspace_dashboard::sync_workspace_chat_panel(app);
+    } else {
+        crate::commands::chat::show_chat(app);
+    }
+}

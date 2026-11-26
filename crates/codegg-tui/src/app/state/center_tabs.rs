@@ -1,0 +1,1804 @@
+//! The center tab set over the main LLM buffer.
+//!
+//! The center shows one surface at a time: the main conversation, a delegated
+//! run, or an open document. This module owns that sequence - the delegated
+//! runs and the open documents alike - so the strip, the cycle and the close
+//! key all speak about the same set. It deliberately mirrors
+//! [`crate::app::state::project_tabs::ProjectTabs`] rather than inventing a
+//! second convention. It is a **sibling** of project tabs, not a replacement:
+//! project tabs live in the header, center tabs live in the main buffer, and
+//! the two axes never consult each other.
+//!
+//! # Identity is the projection's, and it is not durable
+//!
+//! A [`SubagentTabId`] *is* the projection's canonical `task_id`. That is a
+//! conscious departure from `ProjectTabId`, which mints a fresh UUID: a
+//! subagent already carries a stable, snapshot-derived identity, and inventing
+//! a second one would mean carrying a mapping between the two for no benefit.
+//!
+//! It is also the reason this module cannot promise anything across a restart.
+//! `task_id` is a daemon-local `u64` minted per dispatched job, and the per-turn
+//! agent tree is cleared when the turn ends (roadmap defect D-b). A tab id is
+//! valid for exactly as long as this process remembers it, and nothing may
+//! persist one.
+//!
+//! # "The subject left the snapshot" is a state, not an error
+//!
+//! Because the tree is per-turn, a tab's subject can vanish while the tab is
+//! still open — the turn ended, or the 16-node per-turn cap evicted the node.
+//! [`SubagentTabLiveness::Detached`] is that state, and it is load-bearing
+//! rather than cosmetic: [`SubagentTabState::is_running`] refuses to report
+//! `true` for a detached tab, so the buffer can never keep claiming a run is
+//! live after the projection stopped vouching for it.
+//!
+//! # The main conversation is the absence of an active tab
+//!
+//! `active_tab_id == None` *is* the main conversation. That is the direct
+//! analogue of `ProjectTabs::close_fallback_tab`: projects must always have
+//! some tab to render, so removing the last one mints a fresh empty compat tab.
+//! The main buffer already has a surface, so the fallback is to stop selecting
+//! a subagent. Closing the last subagent tab therefore needs no special case and
+//! cannot leave the renderer with nothing to draw.
+
+use std::collections::HashMap;
+
+use crate::app::state::subagents::SubagentRow;
+use crate::app::state::transcript_cache::TranscriptCache;
+
+/// Ceiling on simultaneously open subagent tabs.
+///
+/// Tabs outlive their subject by design, so the tab count is not bounded by
+/// anything the projection enforces. At capacity the set **refuses** a new tab
+/// rather than evicting one: closing a tab the user is reading is a worse
+/// failure than declining the open.
+pub const MAX_OPEN_SUBAGENT_TABS: usize = 16;
+
+/// Label for the always-present main-conversation entry in the tab bar.
+///
+/// Named for what it *is* rather than for what it used to be called. `Chat`
+/// described a chat pane, but this entry is the main **conversation** — the
+/// root of the tab set, and the thing every other tab is a departure from.
+pub const MAIN_TAB_LABEL: &str = "Main";
+
+/// Glyph on the always-present main-conversation entry.
+///
+/// The liveness glyphs — `●` live, `○` finished, `✕` detached — all encode
+/// **a run's state**, and the main conversation is not a run, so the marker
+/// comes from another shape family (a square). One column wide, and asserted.
+pub const MAIN_TAB_GLYPH: &str = "▣";
+
+/// Columns between two entries in the tab bar.
+///
+/// Measured rather than assumed by [`bar_width`], so changing the separator
+/// cannot silently desynchronise the width arithmetic from what is drawn.
+pub const BAR_SEPARATOR: &str = " │ ";
+
+/// Placeholder standing in for tabs dropped to fit the bar's width.
+pub const BAR_ELLIPSIS: &str = "…";
+
+/// The keys that operate the tab bar, stated on the bar's own row.
+///
+/// The strip row exists **only** while tabs are open (`subagent_tab_strip_height`
+/// reserves it exactly then), so this text cannot outlive the surface it
+/// describes and cannot claim a row the layout never reserved. The composer
+/// hint line is the tempting alternative and the wrong one: that row is
+/// reserved only when it is present, so writing tab hints there would reserve
+/// a **new** row and reflow the transcript on every submit and completion.
+pub const BAR_HINTS: &str = "⇧P/⇧N switch · ⇧X close";
+
+/// Columns between the tab entries (and the persona) and the key hints.
+pub const BAR_GAP: usize = 1;
+/// Maximum body bytes one transcript entry may occupy on screen.
+///
+/// The wire payload is bounded by the DTO's declared bound; this is the
+/// **display** bound, and it is separate on purpose. A tool result is the
+/// one place a delegated run can hand back an arbitrary blob, and a blob
+/// that fills the viewport is a blob the user cannot scroll past. The cut
+/// is stated on screen, so a shortened body never reads as the whole one.
+pub const MAX_RENDERED_TRANSCRIPT_ENTRY_BYTES: usize = 4 * 1024;
+/// Narrowest a persona may be trimmed to before it is dropped instead.
+///
+/// The same rule the sidebar applied to its descriptor, and for the same
+/// reason: a persona squeezed to a couple of characters reads as a rendering
+/// fault rather than as prose. Below this floor the persona is **absent**,
+/// which is honest — the row still says which run is on screen.
+pub const MIN_STRIP_PERSONA_COLS: usize = 12;
+
+/// Identity of one open subagent tab.
+///
+/// See the module docs: this is the projection's `task_id`, and it is valid
+/// only for this process.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SubagentTabId(String);
+
+impl SubagentTabId {
+    /// Wrap a projection `task_id`.
+    ///
+    /// No validation happens here — see [`SubagentTabs::open_or_focus`], which
+    /// is the only constructor path and is where a blank id is refused.
+    pub fn new(task_id: impl Into<String>) -> Self {
+        Self(task_id.into())
+    }
+
+    /// Borrow the underlying `task_id`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SubagentTabId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Whether a tab's subject is still in the projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentTabLiveness {
+    /// The subject is present in the current snapshot.
+    Attached,
+    /// The subject is gone: its turn ended, the per-turn tree was cleared, or
+    /// the per-turn node cap evicted it. The tab keeps rendering its last
+    /// known row so the user can still read what the run was doing, but it
+    /// makes no live claim.
+    Detached,
+}
+
+impl SubagentTabLiveness {
+    /// Whether the subject is still in the projection.
+    pub fn is_attached(self) -> bool {
+        matches!(self, SubagentTabLiveness::Attached)
+    }
+}
+
+/// One open subagent tab: its identity, its last known row, and its scroll.
+///
+/// Scroll lives *inside* the tab record rather than beside it. That is what
+/// makes "a closed tab cannot resurrect scroll" true by construction: closing
+/// removes the whole record, so reopening the same subject starts at the top
+/// instead of inheriting where the user had scrolled in a previous visit.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SubagentTabState {
+    /// Stable identity for this tab.
+    pub tab_id: SubagentTabId,
+    /// The row as last known. Retained after detachment so a tab outliving
+    /// its subject still shows what the run was.
+    pub row: SubagentRow,
+    /// Whether the subject is still in the projection.
+    pub liveness: SubagentTabLiveness,
+    /// Scroll offset within the rendered view, in rows.
+    pub scroll: u16,
+    /// Whether the view is pinned to the bottom of the content.
+    ///
+    /// This is the *only* thing that decides whether newly recorded rows
+    /// pull the view down. A user who has scrolled up is reading, and their
+    /// position is anchored: a new row must not yank the view away from
+    /// what they were reading.
+    ///
+    /// The flag is set by an explicit jump to the bottom and cleared by an
+    /// explicit scroll upward. It is not derived from the offset alone: a
+    /// fresh tab starts at the top of a long transcript, which is *not* the
+    /// bottom, and treating "offset 0" as "pinned" would hide every new row
+    /// below the fold.
+    pub follow_bottom: bool,
+    /// The maximum scroll offset the last render computed.
+    ///
+    /// Only the renderer knows how tall the content is, so it writes this
+    /// back. The tab uses it to turn "pinned to the bottom" back into a
+    /// real offset when the user scrolls up from there. `None` means the
+    /// view has not been rendered yet, so its extent is unknown.
+    pub scroll_max: Option<u16>,
+    /// The tab's bounded live transcript cache.
+    ///
+    /// `None` when the tab has no durable run identity, or when live follow
+    /// is not available for it. This is **paging state** and is deliberately
+    /// separate from [`SubagentTabState::row`], which is the last-known
+    /// inspector metadata: a snapshot that arrives late must not overwrite
+    /// fresher fetched entries.
+    pub transcript: Option<TranscriptCache>,
+    /// Why live follow is unavailable for this tab, when it is.
+    ///
+    /// `None` means live follow is not *unavailable* — it is simply not
+    /// started yet (the tab was just opened, or the session was re-bound and
+    /// the cache was dropped). `Some` names the reason the tab cannot
+    /// follow at all.
+    pub follow_unavailable: Option<String>,
+}
+
+impl Clone for SubagentTabState {
+    /// Copy the tab, and count the copy.
+    ///
+    /// `Clone` is written out rather than derived because a clone of this
+    /// struct is exactly the operation M001 removed from the frame: it can
+    /// copy two 512-entry transcript windows for a view that then draws
+    /// forty rows. The counter lives here so the operation cannot come back
+    /// without `render_cost::subagent_tab_clones` moving — a counter with
+    /// only a test-side producer would be a claim, not a hook.
+    fn clone(&self) -> Self {
+        crate::render_cost::count_subagent_tab_clone();
+        Self {
+            tab_id: self.tab_id.clone(),
+            row: self.row.clone(),
+            liveness: self.liveness,
+            scroll: self.scroll,
+            follow_bottom: self.follow_bottom,
+            scroll_max: self.scroll_max,
+            transcript: self.transcript.clone(),
+            follow_unavailable: self.follow_unavailable.clone(),
+        }
+    }
+}
+
+impl SubagentTabState {
+    /// Build an attached tab for `row`.
+    pub fn attached(tab_id: SubagentTabId, row: SubagentRow) -> Self {
+        Self {
+            tab_id,
+            row,
+            liveness: SubagentTabLiveness::Attached,
+            scroll: 0,
+            follow_bottom: false,
+            scroll_max: None,
+            transcript: None,
+            follow_unavailable: None,
+        }
+    }
+
+    /// What to call this subagent in the UI. Delegates to the row so the tab
+    /// strip, the overlay, and the buffer all name a subagent identically.
+    pub fn label(&self) -> &str {
+        self.row.label()
+    }
+
+    /// Whether this run is still going.
+    ///
+    /// The liveness check is the whole point: a detached tab's captured row
+    /// still says `running` because that is what the projection last reported,
+    /// so reading `row.is_running()` alone would keep claiming live work that
+    /// the projection has stopped vouching for.
+    pub fn is_running(&self) -> bool {
+        self.liveness.is_attached() && self.row.is_running()
+    }
+
+    /// Status glyph for the tab bar.
+    ///
+    /// `●` live, `○` finished but still in the tree, `✕` gone from the tree.
+    pub fn glyph(&self) -> &'static str {
+        match self.liveness {
+            SubagentTabLiveness::Detached => "✕",
+            SubagentTabLiveness::Attached if self.row.is_running() => "●",
+            SubagentTabLiveness::Attached => "○",
+        }
+    }
+}
+
+/// Ordered collection of open subagent tabs with at most one designated
+/// active tab.
+///
+/// Invariants held after every mutation:
+///
+/// - `active_tab_id` is `None` (the main conversation) or resolves to a tab
+///   that is in `tabs`.
+/// - `order` contains no id that is missing from `tabs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubagentTabs {
+    tabs: HashMap<SubagentTabId, SubagentTabState>,
+    order: Vec<SubagentTabId>,
+    active_tab_id: Option<SubagentTabId>,
+}
+
+impl SubagentTabs {
+    /// Create an empty tab set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of open subagent tabs.
+    pub fn len(&self) -> usize {
+        self.tabs.len()
+    }
+
+    /// Whether no subagent tabs are open.
+    pub fn is_empty(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
+    /// Whether the set has reached [`MAX_OPEN_SUBAGENT_TABS`].
+    pub fn is_at_capacity(&self) -> bool {
+        self.tabs.len() >= MAX_OPEN_SUBAGENT_TABS
+    }
+
+    /// The active tab id, or `None` when the main conversation is showing.
+    pub fn active_tab_id(&self) -> Option<&SubagentTabId> {
+        self.active_tab_id.as_ref()
+    }
+
+    /// The active tab, or `None` when the main conversation is showing.
+    pub fn active(&self) -> Option<&SubagentTabState> {
+        let id = self.active_tab_id.as_ref()?;
+        self.tabs.get(id)
+    }
+
+    /// Mutable accessor for the active tab.
+    pub fn active_mut(&mut self) -> Option<&mut SubagentTabState> {
+        let id = self.active_tab_id.clone()?;
+        self.tabs.get_mut(&id)
+    }
+    /// Scroll the active tab's view by `delta` rows.
+    ///
+    /// The offset never goes below zero. The **lower** end is the renderer's
+    /// to clamp: only the renderer knows how tall the content is, and a tab
+    /// that guessed would either stop short of the end or run past it.
+    ///
+    /// Scrolling **upward** releases the bottom pin: the user is reading
+    /// something other than the live edge, and newly recorded rows must not
+    /// pull the view away from them. Scrolling downward keeps the pin, so a
+    /// reader who is already at the bottom stays at the bottom.
+    pub fn scroll_active(&mut self, delta: i16) {
+        let Some(tab) = self.active_mut() else {
+            return;
+        };
+        if delta < 0 {
+            tab.follow_bottom = false;
+        }
+        // `u16::MAX` is the "as far down as there is" sentinel. Resolving it
+        // against the last known extent is what lets a scroll *up* from the
+        // bottom move instead of saturating.
+        let base = if tab.scroll == u16::MAX {
+            tab.scroll_max.unwrap_or(0)
+        } else {
+            tab.scroll
+        };
+        let next = i32::from(base) + i32::from(delta);
+        tab.scroll = next.max(0) as u16;
+    }
+    /// Move the active tab's view to its first line.
+    pub fn scroll_active_to_top(&mut self) {
+        if let Some(tab) = self.active_mut() {
+            tab.scroll = 0;
+            tab.follow_bottom = false;
+        }
+    }
+    /// Move the active tab's view to its last line.
+    ///
+    /// `u16::MAX` means "as far down as there is": the renderer clamps the
+    /// offset to the content height, so the tab does not have to know how
+    /// tall its own content is.
+    ///
+    /// This is also the explicit **pin**: a jump to the bottom is the user
+    /// saying they want to watch the live edge, so newly recorded rows
+    /// follow from here on.
+    pub fn scroll_active_to_bottom(&mut self) {
+        if let Some(tab) = self.active_mut() {
+            tab.scroll = u16::MAX;
+            tab.follow_bottom = true;
+        }
+    }
+    /// Lookup a tab by id.
+    pub fn get(&self, tab_id: &SubagentTabId) -> Option<&SubagentTabState> {
+        self.tabs.get(tab_id)
+    }
+
+    /// Mutable lookup of a tab by id.
+    pub fn get_mut(&mut self, tab_id: &SubagentTabId) -> Option<&mut SubagentTabState> {
+        self.tabs.get_mut(tab_id)
+    }
+
+    /// Drop every tab's fetched transcript rows.
+    ///
+    /// The cached rows are **bodies** the daemon authorized for one session
+    /// and one project. A session switch, a project switch, or a reconnect
+    /// changes who owns the view, so the bodies go with it: keeping them
+    /// would leave one session's conversation on screen under another
+    /// session's header.
+    ///
+    /// The tabs themselves stay open — a tab outlives its subject by design
+    /// — but they keep only the last-known metadata, which the projection
+    /// refreshes or drops on its own terms.
+    pub fn clear_transcript_caches(&mut self) {
+        for tab in self.tabs.values_mut() {
+            tab.transcript = None;
+            // The follow is not *unavailable* — it is not started yet. The
+            // distinction matters: an unavailable follow says the run has no
+            // durable identity, and that is a claim about the run.
+            tab.follow_unavailable = None;
+        }
+    }
+
+    /// Whether a tab for this subject is already open.
+    pub fn contains(&self, task_id: &str) -> bool {
+        self.tabs.contains_key(&SubagentTabId::new(task_id))
+    }
+
+    /// All open tabs in display order.
+    pub fn ordered(&self) -> Vec<&SubagentTabState> {
+        self.order
+            .iter()
+            .filter_map(|id| self.tabs.get(id))
+            .collect()
+    }
+
+    /// Whether any tab's subject has left the projection.
+    pub fn has_detached(&self) -> bool {
+        self.tabs.values().any(|tab| !tab.liveness.is_attached())
+    }
+
+    /// Make `tab_id` active. Returns `false` when the id is not open, leaving
+    /// the active tab unchanged rather than falling back to an arbitrary one.
+    pub fn set_active(&mut self, tab_id: &SubagentTabId) -> bool {
+        if self.tabs.contains_key(tab_id) {
+            self.active_tab_id = Some(tab_id.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Stop selecting a tab without removing it.
+    ///
+    /// The center shows one surface at a time, so leaving a delegated run
+    /// for an open document clears the selection here rather than dropping
+    /// the tab: the run is still there to come back to.
+    pub fn clear_active(&mut self) {
+        self.active_tab_id = None;
+    }
+
+    /// Remove a tab by id.
+    ///
+    /// When the removed tab was active the selection falls back to the
+    /// adjacent previous tab, or to the new first when the removed tab was
+    /// first — the same rule `ProjectTabs::remove_tab` uses. When nothing
+    /// remains, the active id becomes `None`, which *is* the main
+    /// conversation: this is the close-fallback analogue of
+    /// `ProjectTabs::close_fallback_tab`, reached by having a real surface to
+    /// fall back to rather than by minting an empty placeholder tab.
+    pub fn remove_tab(&mut self, tab_id: &SubagentTabId) -> Option<SubagentTabState> {
+        let removed = self.tabs.remove(tab_id);
+        if removed.is_some() {
+            let prev_index = self.order.iter().position(|id| id == tab_id);
+            self.order.retain(|id| id != tab_id);
+            if self.active_tab_id.as_ref() == Some(tab_id) {
+                self.active_tab_id = prev_index
+                    .and_then(|index| {
+                        if index > 0 {
+                            self.order.get(index - 1)
+                        } else {
+                            self.order.first()
+                        }
+                    })
+                    .cloned();
+            }
+        }
+        removed
+    }
+
+    /// Close the active tab, returning what was removed.
+    pub fn close_active(&mut self) -> Option<SubagentTabState> {
+        let id = self.active_tab_id.clone()?;
+        self.remove_tab(&id)
+    }
+
+    /// Open `row` as a tab, or focus the existing tab for the same subject.
+    ///
+    /// Idempotent by design: the same subagent opened from the overlay and
+    /// from the panel is one tab that gains focus, not two tabs that fight
+    /// over it. An existing tab is also refreshed from the incoming row, so
+    /// reopening one that went detached and came back immediately repairs it.
+    ///
+    /// Returns `None` in exactly two cases: the row has a blank `task_id`,
+    /// which cannot key a tab, or the set is at capacity. Neither is an error
+    /// — the caller decides whether a refusal is worth a toast.
+    pub fn open_or_focus(&mut self, row: SubagentRow) -> Option<SubagentTabId> {
+        let identity = row.identity_key().trim();
+        if identity.is_empty() {
+            return None;
+        }
+        let id = SubagentTabId::new(identity.to_string());
+
+        if let Some(tab) = self.tabs.get_mut(&id) {
+            tab.row = row;
+            tab.liveness = SubagentTabLiveness::Attached;
+            self.active_tab_id = Some(id.clone());
+            return Some(id);
+        }
+
+        if self.is_at_capacity() {
+            return None;
+        }
+
+        let tab = SubagentTabState::attached(id.clone(), row);
+        self.tabs.insert(id.clone(), tab);
+        self.order.push(id.clone());
+        self.active_tab_id = Some(id.clone());
+        Some(id)
+    }
+
+    /// Move `offset` places through the tab cycle and return the new active tab.
+    ///
+    /// Cycle order is stable — the display order in `order`, plus the main
+    /// conversation as position 0 — and wraps in both directions.
+    ///
+    /// Modelling the main conversation as an explicit *position* rather than as
+    /// "no active tab" is what makes the wrap correct. Treating it as position
+    /// −1 and taking a remainder would send "previous" from the main buffer to
+    /// the second tab instead of the last; position 0 with an explicit
+    /// wraparound puts it on the last tab, which is what a user stepping
+    /// backwards out of the transcript expects.
+    ///
+    /// Returns `None` when there are no subagent tabs: with nothing to cycle
+    /// to, the main conversation stays selected.
+    pub fn cycle(&mut self, offset: isize) -> Option<&SubagentTabState> {
+        let len = self.order.len() as isize;
+        if len == 0 {
+            return None;
+        }
+        let current = self
+            .active_tab_id
+            .as_ref()
+            .and_then(|id| self.order.iter().position(|candidate| candidate == id))
+            .map(|index| index as isize + 1)
+            .unwrap_or(0);
+        let next = (current + offset).rem_euclid(len + 1);
+        self.active_tab_id = match next {
+            0 => None,
+            position => Some(self.order[position as usize - 1].clone()),
+        };
+        self.active()
+    }
+
+    /// Reconcile every tab against a freshly arrived snapshot.
+    ///
+    /// A tab whose subject is present is refreshed and re-attached. A tab whose
+    /// subject is absent is marked [`SubagentTabLiveness::Detached`] and keeps
+    /// its captured row: the turn that produced it has ended, and that row is
+    /// the only remaining record of what the run was doing.
+    ///
+    /// Called only when a snapshot *arrives*. A missing snapshot is not
+    /// evidence that a subject is gone — it means the projection stream has
+    /// not spoken — so the caller must not route that case here.
+    pub fn sync_with_rows(&mut self, rows: &[SubagentRow]) {
+        for tab in self.tabs.values_mut() {
+            match rows
+                .iter()
+                .find(|row| row.identity_key() == tab.tab_id.as_str())
+            {
+                Some(row) => {
+                    tab.row = row.clone();
+                    tab.liveness = SubagentTabLiveness::Attached;
+                }
+                None => {
+                    tab.liveness = SubagentTabLiveness::Detached;
+                }
+            }
+        }
+    }
+
+    /// The tab bar's entries in display order, main conversation first.
+    pub fn bar_tabs(&self) -> Vec<CenterBarTab> {
+        let mut out = vec![CenterBarTab {
+            label: MAIN_TAB_LABEL.to_string(),
+            main: true,
+            active: self.active_tab_id.is_none(),
+            glyph: MAIN_TAB_GLYPH,
+            ellipsis: false,
+            persona: None,
+        }];
+        for tab in self.ordered() {
+            let active = self.active_tab_id.as_ref() == Some(&tab.tab_id);
+            out.push(CenterBarTab {
+                label: tab.label().to_string(),
+                main: false,
+                active,
+                glyph: tab.glyph(),
+                ellipsis: false,
+                // The persona is the projection's own value, carried on the row
+                // this tab already holds. Only the **active** tab's persona is
+                // carried: the strip's job is to describe what is on screen.
+                persona: if active {
+                    tab.row.descriptor().map(str::to_string)
+                } else {
+                    None
+                },
+            });
+        }
+        out
+    }
+}
+
+/// One entry in the one-row buffer tab bar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CenterBarTab {
+    /// Text to draw for this entry.
+    pub label: String,
+    /// The always-leftmost main-conversation entry.
+    pub main: bool,
+    /// Whether this is the entry currently displayed.
+    pub active: bool,
+    /// Status glyph, empty for the main conversation.
+    pub glyph: &'static str,
+    /// Set on the placeholder standing in for dropped tabs.
+    pub ellipsis: bool,
+    /// The active tab's persona, carried for the strip to show.
+    ///
+    /// `None` on every entry but the active one, and `None` for the main
+    /// conversation, which has no persona of its own.
+    pub persona: Option<String>,
+}
+
+impl CenterBarTab {
+    /// Columns this entry's own text occupies, excluding separators.
+    ///
+    /// **Display** width, not `chars().count()`. The pool is curated today, but
+    /// a display name is bounded by *bytes* upstream
+    /// (`MAX_PROJECTION_DISPLAY_NAME_BYTES`), not by character count, so a
+    /// wide-glyph name is a live input rather than a hypothetical one. Counting
+    /// characters would under-measure it, the budget would overshoot, and the
+    /// bar would paint into the next column.
+    pub fn label_width(&self) -> usize {
+        unicode_width::UnicodeWidthStr::width(self.label.as_str())
+    }
+
+    /// Columns this entry's glyph occupies.
+    pub fn glyph_width(&self) -> usize {
+        unicode_width::UnicodeWidthStr::width(self.glyph)
+    }
+
+    /// Columns this entry occupies as painted, glyph included.
+    ///
+    /// The glyph is painted in front of the label with one space between them,
+    /// so it costs its own width plus that space. Counting it here is what
+    /// keeps the bar's arithmetic honest: a glyph that is not counted is a
+    /// glyph that paints past the width the budget promised, which is how the
+    /// key hints would end up underneath a tab marker.
+    pub fn entry_width(&self) -> usize {
+        let glyph = self.glyph_width();
+        if glyph == 0 {
+            self.label_width()
+        } else {
+            glyph + 1 + self.label_width()
+        }
+    }
+}
+
+/// Columns the bar occupies if these entries were drawn in order.
+pub fn bar_width(entries: &[CenterBarTab]) -> usize {
+    if entries.is_empty() {
+        return 0;
+    }
+    let labels: usize = entries.iter().map(CenterBarTab::entry_width).sum();
+    labels + unicode_width::UnicodeWidthStr::width(BAR_SEPARATOR) * (entries.len() - 1)
+}
+
+/// Truncate `text` to at most `width` display columns, with no ellipsis.
+fn truncate_to_width(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if unicode_width::UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out
+}
+
+/// Assemble the surviving entries, inserting a placeholder wherever subagent
+/// tabs were dropped. Without it a trimmed bar would silently read as "these
+/// are all your subagents" rather than "these are the ones that fitted".
+fn assemble(tabs: &[CenterBarTab], chosen: &[usize]) -> Vec<CenterBarTab> {
+    let mut out: Vec<CenterBarTab> = Vec::with_capacity(chosen.len() + 1);
+    for (position, &index) in chosen.iter().enumerate() {
+        if position > 0 {
+            let dropped = (chosen[position - 1] + 1)..index;
+            if dropped.clone().any(|skip| !tabs[skip].main) {
+                out.push(CenterBarTab {
+                    label: BAR_ELLIPSIS.to_string(),
+                    main: false,
+                    active: false,
+                    glyph: "",
+                    ellipsis: true,
+                    persona: None,
+                });
+            }
+        }
+        out.push(tabs[index].clone());
+    }
+    out
+}
+
+/// Fit the bar's entries into `width` columns.
+///
+/// Three guarantees, in priority order:
+///
+/// 1. **The active entry is always present.** A tab bar that hides the tab
+///    currently on screen is worse than one that hides other tabs.
+/// 2. **The main conversation is kept** whenever anything else survives, so
+///    there is always a visible way back to the transcript.
+/// 3. Anything dropped leaves an ellipsis behind.
+///
+/// The suffix is grown newest-first and stops at the first entry that does not
+/// fit, so the kept set is always `main` plus a *contiguous* run of tabs and the
+/// ellipsis is never misleading about what it stands for. If the active tab
+/// falls outside that run it gets the whole budget instead.
+pub fn fit_bar_tabs(tabs: Vec<CenterBarTab>, width: usize) -> Vec<CenterBarTab> {
+    if width == 0 || tabs.is_empty() {
+        return Vec::new();
+    }
+    if bar_width(&tabs) <= width {
+        return tabs;
+    }
+
+    let main_index = tabs.iter().position(|tab| tab.main).unwrap_or(0);
+    let active_index = tabs.iter().position(|tab| tab.active);
+
+    let mut chosen: Vec<usize> = vec![main_index];
+    for index in (0..tabs.len()).rev().filter(|index| *index != main_index) {
+        let mut trial = chosen.clone();
+        trial.push(index);
+        trial.sort_unstable();
+        if bar_width(&assemble(&tabs, &trial)) <= width {
+            chosen = trial;
+        } else {
+            break;
+        }
+    }
+
+    if let Some(active) = active_index {
+        if active != main_index && !chosen.contains(&active) {
+            chosen = vec![main_index, active];
+            if bar_width(&assemble(&tabs, &chosen)) > width {
+                chosen = vec![active];
+            }
+        }
+    }
+
+    let mut entries = assemble(&tabs, &chosen);
+
+    // Degenerate clamp: the bar is narrower than a single entry. Shrink labels
+    // in place rather than letting the strip overflow its rect. Ellipses are
+    // skipped so the "something was dropped" signal survives; if only the
+    // ellipsis is over budget it stays, because it is one column of a bar that
+    // has nothing left to describe.
+    //
+    // A glyph whose label has been squeezed away goes with it: a marker
+    // standing next to no name says nothing, and it is the only thing left
+    // that can give a column back. Leaving it would let the strip paint past
+    // the width it promised — the same class of defect as an unaccounted-for
+    // glyph in the first place.
+    let mut overflow = bar_width(&entries).saturating_sub(width);
+    for entry in entries.iter_mut().rev() {
+        if overflow == 0 {
+            break;
+        }
+        if entry.ellipsis {
+            continue;
+        }
+        let before = entry.entry_width();
+        let current = entry.label_width();
+        entry.label = truncate_to_width(&entry.label, current.saturating_sub(overflow));
+        if entry.label.is_empty() {
+            entry.glyph = "";
+        }
+        let after = entry.entry_width();
+        overflow = overflow.saturating_sub(before.saturating_sub(after));
+    }
+    entries
+}
+
+/// The strip's width budget, computed once for its three consumers.
+///
+/// The one row carries three things that all want the same columns: the tab
+/// labels, the active tab's persona, and the key hints. The precedence is
+/// fixed and the computation lives here rather than in the renderer, so it can
+/// be tested without a terminal:
+///
+/// 1. the **hints** — reserved first and in full. They are short, fixed, and
+///    are the discoverability fix the strip exists to deliver.
+/// 2. the **labels** — every surviving tab keeps its label; [`fit_bar_tabs`]
+///    drops the oldest tabs and leaves an ellipsis rather than truncating a
+///    label to make room.
+/// 3. the **persona** — what remains after 1 and 2, truncated to fit. If what
+///    remains is too small to be legible the persona is **dropped**, never
+///    rendered as a two-character stub.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StripPlan {
+    /// The entries that survive, already fitted to [`StripPlan::entries_width`].
+    pub entries: Vec<CenterBarTab>,
+    /// The persona to show, already truncated; `None` when it does not fit.
+    pub persona: Option<String>,
+    /// Width the tab entries and the persona share.
+    pub entries_width: usize,
+    /// Columns between the entries region and the hints region.
+    pub gap: usize,
+    /// Width the hints are painted in.
+    ///
+    /// The full width of [`BAR_HINTS`] whenever the row has room for it. A row
+    /// narrower than the hints themselves is a row the terminal cannot show
+    /// them on, and the hints are clipped to what is left — the *budget* never
+    /// shortens them to make room for the labels or the persona.
+    pub hints_width: usize,
+}
+
+/// Split the strip's width between its labels, its persona, and its hints.
+///
+/// `total_width` is the width of the row itself. The hints are reserved
+/// first and in full, so the label fitting works on the width the tabs
+/// actually have; the persona then takes what the labels left behind, and is
+/// dropped when that remainder is below [`MIN_STRIP_PERSONA_COLS`].
+pub fn plan_strip(entries: Vec<CenterBarTab>, total_width: usize) -> StripPlan {
+    let hints = unicode_width::UnicodeWidthStr::width(BAR_HINTS);
+    // The gap only exists when there is room for it: a row that cannot hold
+    // the hints *and* a gap must not spend its last column on whitespace.
+    let (gap, entries_width) = if total_width >= hints + BAR_GAP {
+        (BAR_GAP, total_width - hints - BAR_GAP)
+    } else {
+        (0, 0)
+    };
+    let entries = fit_bar_tabs(entries, entries_width);
+    // The persona sits after the active entry, so what it may use is what the
+    // labels left behind.
+    let persona_width = entries_width.saturating_sub(bar_width(&entries) + BAR_GAP);
+    let persona = if persona_width < MIN_STRIP_PERSONA_COLS {
+        None
+    } else {
+        entries
+            .iter()
+            .find(|entry| entry.active)
+            .and_then(|entry| entry.persona.as_deref())
+            .map(|persona| fit_persona(persona, persona_width))
+    };
+    StripPlan {
+        entries,
+        persona,
+        entries_width,
+        gap,
+        hints_width: hints.min(total_width.saturating_sub(entries_width + gap)),
+    }
+}
+
+/// Flatten and truncate a persona to `width` display columns.
+///
+/// The persona is prose, so it is cut with an ellipsis rather than mid-word: a
+/// persona that ends in half a word reads as a rendering fault. Control
+/// characters become spaces — a one-line row cannot show two.
+fn fit_persona(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let flattened: String = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let trimmed = flattened.trim();
+    if unicode_width::UnicodeWidthStr::width(trimmed) <= width {
+        return trimmed.to_string();
+    }
+    // One column is spent on the ellipsis itself.
+    let budget = width.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in trimmed.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+pub const MAX_OPEN_FILE_TABS: usize = 16;
+
+pub const FILE_TAB_GLYPH: &str = "◆";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FileTabId(String);
+
+impl FileTabId {
+    pub fn new(path: &str, scope: codegg_protocol::document::DocumentScope) -> Self {
+        Self(format!("{scope:?}|{path}"))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+pub struct FileTab {
+    pub id: FileTabId,
+    pub path: String,
+    pub scope: codegg_protocol::document::DocumentScope,
+    pub parked: Option<crate::app::state::editor::EditorState>,
+}
+
+#[derive(Default)]
+pub struct FileTabs {
+    tabs: HashMap<FileTabId, FileTab>,
+    order: Vec<FileTabId>,
+    active: Option<FileTabId>,
+}
+
+impl FileTabs {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.tabs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tabs.is_empty()
+    }
+
+    pub fn is_at_capacity(&self) -> bool {
+        self.tabs.len() >= MAX_OPEN_FILE_TABS
+    }
+
+    pub fn active(&self) -> Option<&FileTab> {
+        let id = self.active.as_ref()?;
+        self.tabs.get(id)
+    }
+
+    pub fn active_mut(&mut self) -> Option<&mut FileTab> {
+        let id = self.active.clone()?;
+        self.tabs.get_mut(&id)
+    }
+
+    pub fn active_id(&self) -> Option<&FileTabId> {
+        self.active.as_ref()
+    }
+
+    pub fn get(&self, id: &FileTabId) -> Option<&FileTab> {
+        self.tabs.get(id)
+    }
+
+    pub fn get_mut(&mut self, id: &FileTabId) -> Option<&mut FileTab> {
+        self.tabs.get_mut(id)
+    }
+
+    pub fn ordered(&self) -> Vec<&FileTab> {
+        self.order
+            .iter()
+            .filter_map(|id| self.tabs.get(id))
+            .collect()
+    }
+
+    pub fn contains(&self, path: &str, scope: codegg_protocol::document::DocumentScope) -> bool {
+        self.tabs.contains_key(&FileTabId::new(path, scope))
+    }
+
+    pub fn set_active(&mut self, id: &FileTabId) -> bool {
+        if self.tabs.contains_key(id) {
+            self.active = Some(id.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear_active(&mut self) {
+        self.active = None;
+    }
+
+    pub fn remove_tab(&mut self, id: &FileTabId) -> Option<FileTab> {
+        let removed = self.tabs.remove(id);
+        if removed.is_some() {
+            self.order.retain(|candidate| candidate != id);
+            if self.active.as_ref() == Some(id) {
+                self.active = self.order.first().cloned();
+            }
+        }
+        removed
+    }
+
+    pub fn close_active(&mut self) -> Option<FileTab> {
+        let id = self.active.clone()?;
+        self.remove_tab(&id)
+    }
+
+    pub fn open_or_focus(
+        &mut self,
+        path: &str,
+        scope: codegg_protocol::document::DocumentScope,
+    ) -> Option<FileTabId> {
+        let id = FileTabId::new(path, scope);
+        if self.tabs.contains_key(&id) {
+            self.active = Some(id.clone());
+            return Some(id);
+        }
+        if self.is_at_capacity() {
+            return None;
+        }
+        let tab = FileTab {
+            id: id.clone(),
+            path: path.to_string(),
+            scope,
+            parked: None,
+        };
+        self.tabs.insert(id.clone(), tab);
+        self.order.push(id.clone());
+        self.active = Some(id.clone());
+        Some(id)
+    }
+
+    pub fn parked_with_generation(
+        &mut self,
+        generation: u64,
+    ) -> Option<&mut crate::app::state::editor::EditorState> {
+        self.tabs.values_mut().find_map(|tab| {
+            tab.parked
+                .as_mut()
+                .filter(|state| state.generation == generation)
+        })
+    }
+
+    pub fn bar_tabs(&self) -> Vec<CenterBarTab> {
+        self.ordered()
+            .into_iter()
+            .map(|tab| {
+                let active = self.active.as_ref() == Some(&tab.id);
+                CenterBarTab {
+                    label: file_name_of(&tab.path).to_string(),
+                    main: false,
+                    active,
+                    glyph: FILE_TAB_GLYPH,
+                    ellipsis: false,
+                    persona: if active {
+                        directory_of(&tab.path).map(str::to_string)
+                    } else {
+                        None
+                    },
+                }
+            })
+            .collect()
+    }
+}
+
+fn file_name_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn directory_of(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(directory, _)| directory)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CenterTabRef {
+    Main,
+    Subagent(SubagentTabId),
+    File(FileTabId),
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(task_id: &str, status: &str) -> SubagentRow {
+        SubagentRow {
+            transcript: None,
+            child_instance_id: Some(task_id.to_string()),
+            task_id: task_id.into(),
+            run_id: None,
+            display_name: Some(format!("name-{task_id}")),
+            agent: "explore".into(),
+            description: "work".into(),
+            profile: None,
+            usefulness: None,
+            status: status.into(),
+        }
+    }
+
+    fn bar(label: &str, main: bool, active: bool) -> CenterBarTab {
+        CenterBarTab {
+            label: label.into(),
+            main,
+            active,
+            glyph: "",
+            ellipsis: false,
+            persona: None,
+        }
+    }
+
+    fn files() -> FileTabs {
+        FileTabs::new()
+    }
+
+    #[test]
+    fn a_document_opens_as_a_tab_and_is_focused() {
+        let mut tabs = files();
+        let id = tabs
+            .open_or_focus(
+                "src/lib.rs",
+                codegg_protocol::document::DocumentScope::Workspace,
+            )
+            .expect("the tab opens");
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs.active_id(), Some(&id));
+    }
+
+    #[test]
+    fn opening_the_same_document_again_focuses_the_one_tab() {
+        let mut tabs = files();
+        let first = tabs
+            .open_or_focus(
+                "src/lib.rs",
+                codegg_protocol::document::DocumentScope::Workspace,
+            )
+            .expect("the tab opens");
+        tabs.open_or_focus(
+            "src/main.rs",
+            codegg_protocol::document::DocumentScope::Workspace,
+        );
+        let again = tabs
+            .open_or_focus(
+                "src/lib.rs",
+                codegg_protocol::document::DocumentScope::Workspace,
+            )
+            .expect("the tab opens");
+        assert_eq!(tabs.len(), 2, "the document is not opened twice");
+        assert_eq!(again, first, "the same document is the same tab");
+        assert_eq!(tabs.active_id(), Some(&first));
+    }
+
+    #[test]
+    fn the_same_path_in_two_scopes_is_two_documents() {
+        let mut tabs = files();
+        tabs.open_or_focus(
+            "build.toml",
+            codegg_protocol::document::DocumentScope::Workspace,
+        );
+        tabs.open_or_focus(
+            "build.toml",
+            codegg_protocol::document::DocumentScope::GlobalAgent,
+        );
+        assert_eq!(
+            tabs.len(),
+            2,
+            "the scope is part of the document's identity"
+        );
+    }
+
+    #[test]
+    fn the_file_tab_limit_refuses_a_new_tab_rather_than_closing_one() {
+        let mut tabs = files();
+        for index in 0..MAX_OPEN_FILE_TABS {
+            assert!(tabs
+                .open_or_focus(
+                    &format!("src/file-{index}.rs"),
+                    codegg_protocol::document::DocumentScope::Workspace
+                )
+                .is_some());
+        }
+        assert!(tabs.is_at_capacity());
+        assert!(tabs
+            .open_or_focus(
+                "src/overflow.rs",
+                codegg_protocol::document::DocumentScope::Workspace
+            )
+            .is_none());
+        assert_eq!(tabs.len(), MAX_OPEN_FILE_TABS, "no tab was closed");
+    }
+
+    #[test]
+    fn the_strip_names_the_document_and_says_where_it_lives() {
+        let mut tabs = files();
+        tabs.open_or_focus(
+            "crates/codegg-tui/src/app/mod.rs",
+            codegg_protocol::document::DocumentScope::Workspace,
+        );
+        let entries = tabs.bar_tabs();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "mod.rs");
+        assert_eq!(
+            entries[0].persona.as_deref(),
+            Some("crates/codegg-tui/src/app"),
+            "the directory says which file this is"
+        );
+    }
+
+    /// A bar entry that carries a persona, as the active tab's does.
+    fn bar_with_persona(label: &str, active: bool, persona: Option<&str>) -> CenterBarTab {
+        CenterBarTab {
+            persona: persona.map(str::to_string),
+            ..bar(label, false, active)
+        }
+    }
+
+    #[test]
+    fn opening_a_row_makes_it_the_active_tab() {
+        let mut tabs = SubagentTabs::new();
+        assert!(tabs.is_empty());
+        let id = tabs.open_or_focus(row("1", "running")).expect("opens");
+        assert_eq!(tabs.active_tab_id(), Some(&id));
+        assert_eq!(tabs.active().map(SubagentTabState::label), Some("name-1"));
+    }
+
+    #[test]
+    fn reopening_the_same_subject_focuses_the_one_existing_tab() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        tabs.open_or_focus(row("2", "running"));
+        assert_eq!(tabs.len(), 2);
+
+        // Opening 1 again must not duplicate it.
+        tabs.open_or_focus(row("1", "running"));
+        assert_eq!(tabs.len(), 2, "the subject already has a tab");
+        assert_eq!(tabs.active().map(|tab| tab.tab_id.as_str()), Some("1"));
+    }
+
+    #[test]
+    fn reused_numeric_task_id_uses_distinct_child_generations() {
+        let mut tabs = SubagentTabs::new();
+        let mut first = row("7", "running");
+        first.child_instance_id = Some("generation-a".into());
+        let mut second = row("7", "running");
+        second.child_instance_id = Some("generation-b".into());
+        assert!(tabs.open_or_focus(first).is_some());
+        assert!(tabs.open_or_focus(second).is_some());
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.active().unwrap().tab_id.as_str(), "generation-b");
+    }
+
+    #[test]
+    fn a_blank_task_id_cannot_key_a_tab() {
+        let mut tabs = SubagentTabs::new();
+        // A tab id is the projection's task_id; a blank one would collide
+        // with every other blank row, so it is refused rather than keyed.
+        assert!(tabs.open_or_focus(row("   ", "running")).is_none());
+        assert!(tabs.is_empty());
+    }
+
+    #[test]
+    fn the_set_refuses_a_new_tab_at_capacity_rather_than_evicting_one() {
+        let mut tabs = SubagentTabs::new();
+        for index in 0..MAX_OPEN_SUBAGENT_TABS {
+            assert!(tabs
+                .open_or_focus(row(&index.to_string(), "running"))
+                .is_some());
+        }
+        assert!(tabs.is_at_capacity());
+        assert_eq!(tabs.len(), MAX_OPEN_SUBAGENT_TABS);
+
+        // Still full, and the open is declined rather than costing the user a
+        // tab they were reading.
+        assert!(tabs.open_or_focus(row("overflow", "running")).is_none());
+        assert_eq!(tabs.len(), MAX_OPEN_SUBAGENT_TABS);
+        // Focusing an existing tab still works at capacity.
+        assert!(tabs
+            .open_or_focus(row("0", "running"))
+            .is_some_and(|id| tabs.active_tab_id() == Some(&id)));
+    }
+
+    #[test]
+    fn cycling_forward_from_the_main_buffer_lands_on_the_first_tab() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        tabs.open_or_focus(row("2", "running"));
+
+        // Wrap forward off the end to reach the main conversation. Deliberately
+        // *not* `close_active`: that removes a tab, so it would leave a
+        // one-tab set and quietly turn this into a different test.
+        assert!(
+            tabs.cycle(1).is_none(),
+            "off the end wraps to the transcript"
+        );
+        assert!(tabs.active_tab_id().is_none());
+        assert_eq!(tabs.cycle(1).map(|tab| tab.tab_id.as_str()), Some("1"));
+        assert_eq!(tabs.cycle(1).map(|tab| tab.tab_id.as_str()), Some("2"));
+        assert!(
+            tabs.cycle(1).is_none(),
+            "and wraps back to the main conversation"
+        );
+    }
+
+    #[test]
+    fn cycling_backward_from_the_main_buffer_lands_on_the_last_tab() {
+        // The wrap that a naive "main is position -1" remainder gets wrong:
+        // stepping back out of the transcript must reach the *last* subagent.
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        tabs.open_or_focus(row("2", "running"));
+        tabs.open_or_focus(row("3", "running"));
+        assert!(tabs.cycle(1).is_none(), "onto the main conversation");
+
+        assert_eq!(tabs.cycle(-1).map(|tab| tab.tab_id.as_str()), Some("3"));
+        assert_eq!(tabs.cycle(-1).map(|tab| tab.tab_id.as_str()), Some("2"));
+        assert_eq!(tabs.cycle(-1).map(|tab| tab.tab_id.as_str()), Some("1"));
+        assert!(tabs.cycle(-1).is_none(), "wraps forward to the main buffer");
+    }
+
+    #[test]
+    fn cycling_with_no_tabs_leaves_the_main_buffer_selected() {
+        let mut tabs = SubagentTabs::new();
+        assert!(tabs.cycle(1).is_none());
+        assert!(tabs.cycle(-1).is_none());
+        assert!(tabs.active_tab_id().is_none());
+    }
+
+    #[test]
+    fn cycling_with_a_single_tab_alternates_between_it_and_the_main_buffer() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        assert!(tabs.cycle(1).is_none(), "on to the main buffer");
+        assert_eq!(
+            tabs.cycle(1).map(|tab| tab.tab_id.as_str()),
+            Some("1"),
+            "and back again"
+        );
+        assert!(tabs.cycle(1).is_none());
+    }
+
+    #[test]
+    fn closing_the_active_tab_falls_back_to_its_neighbour() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        tabs.open_or_focus(row("2", "running"));
+        tabs.open_or_focus(row("3", "running"));
+
+        tabs.set_active(&SubagentTabId::new("2"));
+        tabs.close_active();
+        // Adjacent previous, exactly as projects do.
+        assert_eq!(tabs.active_tab_id().map(|id| id.as_str()), Some("1"));
+
+        tabs.set_active(&SubagentTabId::new("1"));
+        tabs.close_active();
+        // The removed tab was first, so the new first wins.
+        assert_eq!(tabs.active_tab_id().map(|id| id.as_str()), Some("3"));
+    }
+
+    #[test]
+    fn closing_the_last_tab_falls_back_to_the_main_conversation() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        assert_eq!(
+            tabs.close_active().map(|tab| tab.row.task_id),
+            Some("1".into())
+        );
+        assert!(tabs.is_empty());
+        // No placeholder tab is minted: the main buffer already exists, so
+        // "no active subagent tab" *is* the fallback surface.
+        assert!(tabs.active_tab_id().is_none());
+        assert!(tabs.active().is_none());
+    }
+
+    #[test]
+    fn closing_an_inactive_tab_leaves_the_selection_alone() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        tabs.open_or_focus(row("2", "running"));
+        tabs.set_active(&SubagentTabId::new("2"));
+        tabs.remove_tab(&SubagentTabId::new("1"));
+        assert_eq!(tabs.active_tab_id().map(|id| id.as_str()), Some("2"));
+    }
+
+    #[test]
+    fn a_closed_tab_cannot_resurrect_its_scroll() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        tabs.active_mut().expect("open").scroll = 42;
+
+        tabs.close_active();
+        assert!(tabs.is_empty());
+
+        // Reopening the same subject starts at the top rather than
+        // inheriting the previous visit's scroll.
+        tabs.open_or_focus(row("1", "running"));
+        assert_eq!(tabs.active().map(|tab| tab.scroll), Some(0));
+    }
+
+    #[test]
+    fn a_subject_that_leaves_the_snapshot_detaches_instead_of_claiming_to_run() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        assert!(tabs.active().expect("open").is_running());
+
+        // The turn ended and the per-turn tree was cleared.
+        tabs.sync_with_rows(&[]);
+
+        let tab = tabs.active().expect("the tab survives its subject");
+        assert_eq!(tab.liveness, SubagentTabLiveness::Detached);
+        assert!(
+            !tab.is_running(),
+            "a detached tab must not keep claiming live work"
+        );
+        // The row it was reading is still there, which is the whole reason
+        // detaching instead of removing.
+        assert_eq!(tab.row.task_id, "1");
+        assert!(tabs.has_detached());
+    }
+
+    #[test]
+    fn a_detached_tab_that_returns_is_refreshed_and_re_attached() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        tabs.sync_with_rows(&[]);
+        assert!(!tabs.active().expect("open").is_running());
+
+        let mut back = row("1", "running");
+        back.description = "resumed".into();
+        tabs.sync_with_rows(&[back]);
+
+        let tab = tabs.active().expect("open");
+        assert_eq!(tab.liveness, SubagentTabLiveness::Attached);
+        assert!(tab.is_running());
+        assert_eq!(tab.row.description, "resumed", "the row is refreshed");
+        assert!(!tabs.has_detached());
+    }
+
+    #[test]
+    fn a_still_running_row_in_a_detached_tab_reads_as_detached_on_the_bar() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        tabs.sync_with_rows(&[]);
+        assert_eq!(tabs.active().expect("open").glyph(), "✕");
+    }
+
+    #[test]
+    fn bar_glyphs_distinguish_live_finished_and_gone() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        assert_eq!(tabs.active().expect("open").glyph(), "●");
+
+        tabs.open_or_focus(row("2", "completed"));
+        assert_eq!(tabs.active().expect("open").glyph(), "○");
+
+        tabs.sync_with_rows(&[]);
+        assert_eq!(tabs.active().expect("open").glyph(), "✕");
+    }
+
+    #[test]
+    fn the_bar_always_offers_the_main_conversation_first() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        let entries = tabs.bar_tabs();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].main);
+        assert_eq!(entries[0].label, MAIN_TAB_LABEL);
+        assert!(!entries[0].active, "a subagent tab is showing");
+
+        tabs.close_active();
+        assert!(tabs.bar_tabs()[0].active, "back to the transcript");
+    }
+
+    #[test]
+    fn the_main_entry_reads_main_and_carries_a_glyph_of_its_own() {
+        let mut tabs = SubagentTabs::new();
+        tabs.open_or_focus(row("1", "running"));
+        let entries = tabs.bar_tabs();
+        assert_eq!(entries[0].label, "Main");
+        assert!(
+            !entries[0].glyph.is_empty(),
+            "the main entry must read as a tab, not as plain text"
+        );
+        // The three liveness glyphs encode a *run's* state. The main
+        // conversation is not a run, so it must not wear one of them.
+        for liveness in ["●", "○", "✕"] {
+            assert_ne!(
+                entries[0].glyph, liveness,
+                "the main entry must not be mistaken for a run"
+            );
+        }
+    }
+
+    #[test]
+    fn the_main_glyph_costs_exactly_one_column() {
+        // A marker that cost two columns would silently over-draw the row's
+        // width budget, and the arithmetic would be wrong by one on every
+        // frame.
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(MAIN_TAB_GLYPH),
+            1,
+            "the main glyph must be one column wide"
+        );
+    }
+
+    #[test]
+    fn only_the_active_entry_carries_the_persona() {
+        let mut tabs = SubagentTabs::new();
+        let mut first = row("1", "running");
+        first.profile = Some("Reconnaissance generalist.".into());
+        let mut second = row("2", "running");
+        second.profile = Some("Relentless verifier.".into());
+        tabs.open_or_focus(first);
+        tabs.open_or_focus(second);
+
+        let entries = tabs.bar_tabs();
+        assert_eq!(entries.len(), 3);
+        assert!(
+            entries[1].persona.is_none(),
+            "an inactive tab carries no persona"
+        );
+        assert_eq!(
+            entries[2].persona.as_deref(),
+            Some("Relentless verifier."),
+            "the active tab carries the projection's persona"
+        );
+        assert!(
+            entries[0].persona.is_none(),
+            "the main conversation has no persona of its own"
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_descriptor_yields_no_persona_rather_than_an_empty_one() {
+        // A snapshot recorded before descriptors existed must render what this
+        // surface rendered before — not an empty column.
+        let mut tabs = SubagentTabs::new();
+        let mut without = row("1", "running");
+        without.profile = None;
+        tabs.open_or_focus(without);
+        assert_eq!(tabs.bar_tabs()[1].persona, None);
+
+        let mut blank = row("2", "running");
+        blank.profile = Some("   ".into());
+        tabs.open_or_focus(blank);
+        assert_eq!(tabs.bar_tabs()[2].persona, None);
+    }
+
+    #[test]
+    fn the_budget_reserves_the_hints_before_anything_else() {
+        let entries = vec![bar("Main", true, false), bar("Sally", false, true)];
+        let plan = plan_strip(entries, 80);
+        assert_eq!(
+            plan.hints_width,
+            unicode_width::UnicodeWidthStr::width(BAR_HINTS),
+            "the hints are reserved in full"
+        );
+        assert_eq!(
+            plan.entries_width,
+            80 - plan.hints_width - BAR_GAP,
+            "the tab fitting works on the width the tabs actually have"
+        );
+        assert!(
+            plan.entries_width < 80,
+            "the hint reservation is applied before the call"
+        );
+    }
+
+    #[test]
+    fn the_labels_are_preferred_over_the_persona() {
+        // A strip too narrow for the labels, the hints and the persona keeps
+        // every label and drops the persona.
+        let entries = vec![
+            bar("Main", true, false),
+            bar_with_persona("Sally", true, Some("Reconnaissance generalist.")),
+        ];
+        let plan = plan_strip(entries, 40);
+        assert_eq!(
+            plan.persona, None,
+            "the persona is what remains, and nothing remained"
+        );
+        assert!(
+            plan.entries.iter().any(|entry| entry.active),
+            "the label survives"
+        );
+    }
+
+    #[test]
+    fn the_persona_is_dropped_rather_than_squeezed_to_a_stub() {
+        let entries = vec![
+            bar("Main", true, false),
+            bar_with_persona("Sally", true, Some("Reconnaissance generalist.")),
+        ];
+        // Exactly the width the labels leave, minus the gap: one column short
+        // of the legible floor.
+        let labels = bar_width(&plan_strip(entries.clone(), 200).entries);
+        let width = unicode_width::UnicodeWidthStr::width(BAR_HINTS)
+            + BAR_GAP
+            + labels
+            + BAR_GAP
+            + MIN_STRIP_PERSONA_COLS
+            - 1;
+        let plan = plan_strip(entries, width);
+        assert_eq!(
+            plan.persona, None,
+            "a persona below the legible floor is dropped, not stubbed"
+        );
+    }
+
+    #[test]
+    fn the_persona_is_truncated_to_the_width_that_is_left() {
+        let persona = "Reconnaissance generalist who has seen something like this before.";
+        let entries = vec![
+            bar("Main", true, false),
+            bar_with_persona("Sally", true, Some(persona)),
+        ];
+        let plan = plan_strip(entries, 80);
+        let shown = plan.persona.expect("the persona fits");
+        assert!(
+            unicode_width::UnicodeWidthStr::width(shown.as_str()) <= plan.entries_width,
+            "the persona must fit the width the labels left"
+        );
+        assert!(shown.ends_with('…'), "prose is cut with an ellipsis");
+        assert!(persona.starts_with(shown.trim_end_matches('…')));
+    }
+
+    #[test]
+    fn a_persona_that_fits_is_shown_whole() {
+        let entries = vec![
+            bar("Main", true, false),
+            bar_with_persona("Sally", true, Some("Reconnaissance generalist.")),
+        ];
+        let plan = plan_strip(entries, 120);
+        assert_eq!(
+            plan.persona.as_deref(),
+            Some("Reconnaissance generalist."),
+            "a persona that fits is not truncated"
+        );
+    }
+
+    #[test]
+    fn the_main_entry_is_active_shows_no_persona() {
+        let mut tabs = SubagentTabs::new();
+        let mut first = row("1", "running");
+        first.profile = Some("Reconnaissance generalist.".into());
+        tabs.open_or_focus(first);
+        tabs.close_active();
+
+        let plan = plan_strip(tabs.bar_tabs(), 120);
+        assert_eq!(plan.persona, None, "the main conversation has no persona");
+    }
+
+    #[test]
+    fn a_strip_too_narrow_for_the_hints_keeps_the_row_inside_its_own_width() {
+        // The degenerate case: the row cannot hold the hints and the labels
+        // and the persona at once. It must still not overflow.
+        let entries = vec![bar("Main", true, false), bar("Sally", false, true)];
+        for width in 0..=40usize {
+            let plan = plan_strip(entries.clone(), width);
+            let painted = bar_width(&plan.entries) + plan.gap + plan.hints_width;
+            assert!(painted <= width, "width {width} painted {painted} cols");
+        }
+    }
+
+    #[test]
+    fn the_hints_are_never_truncated_by_the_budget() {
+        let entries = vec![
+            bar("Main", true, false),
+            bar("Sally", false, true),
+            bar("Bertha", false, false),
+        ];
+        let full = unicode_width::UnicodeWidthStr::width(BAR_HINTS);
+        for width in 0..=80usize {
+            let plan = plan_strip(entries.clone(), width);
+            if width >= full {
+                assert_eq!(
+                    plan.hints_width, full,
+                    "width {width} shrank the hints to make room"
+                );
+            } else {
+                // A row narrower than the hints is a row the terminal cannot
+                // show them on; the budget may not take a column from them to
+                // give to the labels, so the labels get nothing instead.
+                assert_eq!(plan.hints_width, width, "width {width}");
+                assert_eq!(plan.entries_width, 0, "width {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_glyph_is_counted_in_the_bars_width() {
+        // A glyph that is painted but not measured is a glyph that paints past
+        // the width the budget promised.
+        let mut entry = bar("Sally", false, true);
+        entry.glyph = "●";
+        assert_eq!(entry.entry_width(), 1 + 1 + 5);
+        assert_eq!(bar_width(&[entry.clone()]), 7);
+        assert_eq!(
+            bar_width(&[entry.clone(), bar("Main", true, false)]),
+            7 + 3 + 4
+        );
+    }
+
+    #[test]
+    fn a_glyph_whose_label_is_gone_does_not_overflow_the_row() {
+        let mut entry = bar("Sally", false, true);
+        entry.glyph = "●";
+        let fitted = fit_bar_tabs(vec![entry], 2);
+        assert!(
+            bar_width(&fitted) <= 2,
+            "the bar painted {} cols into 2",
+            bar_width(&fitted)
+        );
+    }
+
+    #[test]
+    fn a_bar_that_fits_is_returned_untouched() {
+        let entries = vec![bar("Main", true, false), bar("Sally", false, true)];
+        assert_eq!(fit_bar_tabs(entries.clone(), 80), entries);
+    }
+
+    #[test]
+    fn a_zero_width_bar_renders_nothing() {
+        let entries = vec![bar("Main", true, true)];
+        assert!(fit_bar_tabs(entries, 0).is_empty());
+    }
+
+    #[test]
+    fn trimming_keeps_the_active_tab_and_marks_what_it_dropped() {
+        let entries = vec![
+            bar("Main", true, false),
+            bar("Sally", false, false),
+            bar("Bertha", false, false),
+            bar("Cleo", false, false),
+            bar("Dara", false, true),
+        ];
+        let fitted = fit_bar_tabs(entries, 20);
+        let total = bar_width(&fitted);
+        assert!(total <= 20, "bar grew to {total} cols");
+        assert!(
+            fitted.iter().any(|entry| entry.active),
+            "the tab on screen must survive the trim"
+        );
+        assert!(fitted[0].main, "the way back to the transcript survives");
+        assert!(
+            fitted.iter().any(|entry| entry.ellipsis),
+            "dropped tabs leave a placeholder"
+        );
+    }
+
+    #[test]
+    fn trimming_never_overflows_even_when_the_bar_is_tiny() {
+        let entries = vec![
+            bar("Main", true, false),
+            bar("Sally", false, false),
+            bar("Bertha", false, true),
+        ];
+        for width in 0..=24usize {
+            let fitted = fit_bar_tabs(entries.clone(), width);
+            assert!(
+                bar_width(&fitted) <= width,
+                "width {width} produced {} cols",
+                bar_width(&fitted)
+            );
+        }
+    }
+
+    #[test]
+    fn wide_glyph_labels_are_measured_in_columns_not_characters() {
+        // A display name is bounded upstream by *bytes*, so a CJK name is a
+        // live input. Counting characters would measure these labels at half
+        // their real width and the bar would paint into the next column.
+        let entries = vec![
+            bar("Main", true, false),
+            bar("敏晴敏晴", false, false),
+            bar("敏晴敏晴", false, true),
+        ];
+        assert_eq!(
+            bar_width(&entries),
+            "Main".len() + 3 + 8 + 3 + 8,
+            "a CJK label is two columns per character"
+        );
+        for width in 0..=30usize {
+            let fitted = fit_bar_tabs(entries.clone(), width);
+            assert!(
+                bar_width(&fitted) <= width,
+                "width {width} produced {} cols: {fitted:?}",
+                bar_width(&fitted)
+            );
+        }
+    }
+
+    #[test]
+    fn a_bar_narrower_than_its_active_tab_truncates_rather_than_dropping_it() {
+        // Five cols cannot hold "Chat │ Sally"; the active tab is what the
+        // user is reading, so it is shortened to fit rather than removed.
+        let entries = vec![bar("Main", true, false), bar("Sally", false, true)];
+        let fitted = fit_bar_tabs(entries, 5);
+        assert!(bar_width(&fitted) <= 5);
+        assert!(
+            fitted.iter().any(|entry| entry.active),
+            "the active tab stays visible in some form"
+        );
+    }
+}

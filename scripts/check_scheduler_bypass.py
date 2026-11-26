@@ -97,7 +97,7 @@ RULES: list[tuple[str, list[tuple[str, str]], str]] = [
         r"\.spawn_loop\(",
         [
             ("src/agent/task.rs", "compatibility definition"),
-            ("src/main.rs", "explicit standalone mode wiring"),
+            ("crates/codegg-cli/src/main.rs", "explicit standalone mode wiring"),
             ("tests/**", "test fixture"),
         ],
         "BackgroundScheduler loops are standalone compatibility only; daemon work must use durable schedules.",

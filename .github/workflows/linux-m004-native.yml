@@ -5,7 +5,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/linux-m004-native.yml'
-      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'crates/codegg-sandbox/**'
+      - 'crates/codegg-sandbox-helper/**'
       - 'src/managed_process.rs'
       - 'src/interactive_process.rs'
       - 'src/lsp/**'
@@ -67,7 +68,8 @@ on:
   push:
     paths:
       - '.github/workflows/linux-m004-native.yml'
-      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'crates/codegg-sandbox/**'
+      - 'crates/codegg-sandbox-helper/**'
       - 'src/managed_process.rs'
       - 'src/interactive_process.rs'
       - 'src/lsp/**'
@@ -252,7 +254,8 @@ jobs:
 
       - name: Protected mount and Git regressions
         run: |
-          python3 scripts/check_test_filter_execution.py --run -- cargo test --locked --lib protected_mount_ -- --nocapture
+          python3 scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg --lib protected_mount_ -- --nocapture
+          python3 scripts/check_test_filter_execution.py --run -- cargo test --locked -p codegg-sandbox --lib protected_mount_refuses_bare_repository_as_workspace -- --nocapture
           python3 scripts/check_test_filter_execution.py --run -- cargo test -p egggit --locked trusted_git -- --test-threads=1
 
   restricted-userns-fails-closed:

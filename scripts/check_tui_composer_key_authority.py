@@ -24,10 +24,10 @@ behaviour rather than by consumption.
 
 The guard reads two files:
 
-* ``src/tui/composer_claims.rs`` — the claim table itself. It is the single
+* ``crates/codegg-tui/src/composer_claims.rs`` — the claim table itself. It is the single
   source of truth for what the composer owns; there is deliberately no second
   copy of it anywhere, so this file is the only place the table is read.
-* ``src/tui/input.rs`` — the two binding maps, ``is_normal_only``, and the
+* ``crates/codegg-tui/src/input.rs`` — the two binding maps, ``is_normal_only``, and the
   help's own rows.
 
 It fails when:
@@ -84,8 +84,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLAIMS_SRC = REPO_ROOT / "src" / "tui" / "composer_claims.rs"
-INPUT_SRC = REPO_ROOT / "src" / "tui" / "input.rs"
+CLAIMS_SRC = REPO_ROOT / "crates" / "codegg-tui" / "src" / "composer_claims.rs"
+INPUT_SRC = REPO_ROOT / "crates" / "codegg-tui" / "src" / "input.rs"
 
 # The app-level actions ADR-0042 moved because the composer claims the letter
 # they used to own. The list is the guard's declaration of *which* actions
@@ -352,7 +352,7 @@ def _function_body(text: str, name: str) -> tuple[str, int]:
 
 
 def parse_claims(source: str) -> tuple[list[Claim], list[str]]:
-    """Parse the claim table out of `src/tui/composer_claims.rs`."""
+    """Parse the claim table out of `crates/codegg-tui/src/composer_claims.rs`."""
     claims: list[Claim] = []
     problems: list[str] = []
 

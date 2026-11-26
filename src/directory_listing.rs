@@ -2,7 +2,7 @@
 //!
 //! This module owns the bounded traversal that both the TUI navigator and
 //! the daemon-owned `WorkspaceDirectoryList` handler execute. There is
-//! exactly one walk authority: `src/tui/file_tree.rs` delegates to
+//! exactly one walk authority: `crates/codegg-tui/src/file_tree.rs` delegates to
 //! [`walk_directory`] and converts the result into its presentation types,
 //! and `src/core/daemon_documents.rs` calls [`walk_directory`] inside a
 //! `spawn_blocking` worker under the daemon's single-flight admission.
@@ -196,10 +196,23 @@ pub(crate) fn account_one_entry(
     true
 }
 
+#[cfg(feature = "tui-test-support")]
+#[doc(hidden)]
+pub fn account_one_entry_for_test(
+    cancel: &AtomicBool,
+    examined: &mut usize,
+    max_examined: usize,
+    budget: usize,
+    listing: &mut DirectoryListing,
+) -> bool {
+    account_one_entry(cancel, examined, max_examined, budget, listing)
+}
+
 /// Test hook: walk with explicit budgets, bypassing the production
 /// constants so cap branches are reachable without creating 100k files.
-#[cfg(test)]
-pub(crate) fn walk_with_budgets(
+#[cfg(any(test, feature = "tui-test-support"))]
+#[doc(hidden)]
+pub fn walk_with_budgets(
     target: &Path,
     relative_base: &str,
     max_nodes: usize,

@@ -1,0 +1,26 @@
+[package]
+name = "codegg-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+codegg-core.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { version = "0.4.7", default-features = false }
+seccompiler = { version = "0.5.0", default-features = false }
+
+[dev-dependencies]
+tempfile.workspace = true

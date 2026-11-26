@@ -204,6 +204,18 @@ impl CoreDaemon {
         }
     }
 
+    #[cfg(feature = "tui-test-support")]
+    #[doc(hidden)]
+    pub async fn projection_snapshot_for_session_for_test(
+        &self,
+        session_id: &str,
+        project_id: &str,
+        workspace_id: &str,
+    ) -> codegg_protocol::projection::snapshot::SessionProjectionSnapshot {
+        self.projection_snapshot_for_session(session_id, project_id, workspace_id)
+            .await
+    }
+
     /// Build the durable portion of a session projection from authoritative
     /// stores. This is used for initial connect and resync, so a reconnect
     /// does not depend on transient legacy subagent events. The method is

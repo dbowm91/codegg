@@ -595,6 +595,7 @@ impl AgentLoop {
 
         let mut frame = crate::agent::context_frame::ContextFrame {
             user_goal: self.original_user_prompt.clone(),
+            goal_tools_active: Some(false),
             current_task,
             constraints: Vec::new(),
             decisions: Vec::new(),
@@ -635,6 +636,7 @@ impl AgentLoop {
         if let Some(goal_store) = self.services.goal_store.clone() {
             match goal_store.active_for_session(&self.session_id).await {
                 Ok(Some(goal)) if goal.status == crate::goal::model::GoalStatus::Active => {
+                    frame.goal_tools_active = Some(true);
                     if !goal.objective.trim().is_empty() {
                         frame.user_goal = Some(goal.objective.clone());
                     }

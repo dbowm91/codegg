@@ -38,6 +38,35 @@ upstream actually exposes, and records explicitly that the overlay has **no live
 source** at this baseline. See
 `plans/implementation/provider-reasoning-control/005-discovery-overlay-from-catalog-metadata.md`.
 
+Corrective amendment (2026-11-22 — **the decision changes**): §4's local
+admission policy shipped with the kernel's fail-closed disposition set
+(`unknown → Reject`, `unsupported → Reject`). It assumed capability facts
+cover the models in use. They do not. Only three of the seven adapter
+families (`anthropic`, `openai`, `minimax`) publish a baseline, the
+discovery overlay has no live source, and the pinned upstream
+`/v1/models` response carries no capability block — so `google`, `local`,
+`laguna` and `generic` resolve to an all-`Unknown` record for every model.
+The consequence was not a withheld control: a persisted `Off`, or any
+effort selection, refused the turn **before any provider request** on
+every model outside those three families, and a `disable` on MiniMax
+refused the turn as well. No model call could be made, so the policy
+defeated the feature it gates.
+
+The disposition set therefore changes to `unknown → Allow`,
+`unsupported → WarnDrop`, `mixed → WarnDrop`
+(`codegg_core::model_profile::capability::local_admission_policy`). An
+unknown dimension is forwarded unchanged, because no contract is not
+evidence of unsupported and the provider is the authority; a
+declared-`Unsupported` dimension is dropped with a notice and the turn
+runs. `Reject` remains in the vocabulary, but nothing on the shipped path
+produces it. The authority order, the narrowing-only rule, the `Unknown`
+semantics, the always-reasons treatment, and the division that the kernel
+supplies the decision function while CodeGG supplies the facts are all
+unchanged. This amendment additionally makes a declared `Unsupported`
+dimension decisive per dimension, ahead of the kernel call, because the
+kernel reads the model's overall status first and a partial record would
+otherwise lose its one declared fact.
+
 Decision owners: project maintainers
 
 Related specification sections:

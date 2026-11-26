@@ -62,7 +62,7 @@ import check_desktop_editor_authority as editor_authority  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 CATALOG_PATH = "crates/codegg-core/src/command_catalog.rs"
-TUI_COMMAND_PATH = "src/tui/command.rs"
+TUI_COMMAND_PATH = "crates/codegg-tui/src/command.rs"
 PROTOCOL_PATH = "crates/codegg-protocol/src/core.rs"
 DAEMON_COMMANDS_PATH = "src/core/daemon_commands.rs"
 DESKTOP_RENDERER_DIR = "apps/desktop/src"

@@ -237,6 +237,19 @@ pick authenticates with the key the user replaced — the rotation appears to do
 nothing. Refusing the ambiguous case is what makes the store a safe source; a
 `no-account` label in a candidate list means a legacy account-less record.
 
+**A credential provider is registered only when a credential resolves for it.**
+`register_credential_provider` adds a provider through the resolver above, so a
+provider whose credential does not resolve is not in the registry at all. A
+turn that names such a provider is refused with `provider_not_found` *before*
+it reaches the behaviour its own name describes, and that refusal says nothing
+about the behaviour. A test that names one must therefore supply the key
+itself — the way `MINIMAX_API_KEY` supplies the `minimax` provider's — rather
+than inherit one from the operator's shell: a test whose pass or fail depends
+on the ambient environment is not a test. The same rule holds for the durable
+connection a test seeds: a connection row and its catalog rows make the
+provider *selectable*, but the registry still needs the credential the
+resolver can find.
+
 ### Turn Credential Authority (connection binding)
 
 A turn bound to a durable connection authenticates with *that connection's*
@@ -1257,6 +1270,23 @@ argument aliases, closed reasoning transforms, tool choice, and parallel-tool
 constraints. Callers without a projection receive conservative behavior. The
 provider crate does not infer model policy from model names.
 
+### Raw wire capture (diagnostics)
+
+The OpenCode Go provider can tee its own wire traffic to a file for
+diagnosis. Both captures are opt-in and off unless the environment
+variable is set:
+
+- `CODEGG_DIAG_RAW_RESPONSE` — the raw response body, appended as it
+  arrives. It is the model's own output.
+- `CODEGG_DIAG_RAW_REQUEST` — the encoded request body, appended per
+  request. The credential travels in a header and is never in the body, so
+  the captured body carries no secret.
+
+The capture exists because the provider had no response diagnostic at all:
+a wire-shape question could only be answered by reading the gateway's own
+logs. It is a diagnostic seam, not a telemetry surface — nothing reads the
+files back, and the agent loop does not consult them.
+
 ### Extended-thinking control (`/reasoning`)
 
 Extended thinking is configured in four places, applied in this order —
@@ -1386,7 +1416,11 @@ the order **operator/config override ▸ adapter baseline ▸ discovery overlay
    the dimensions it declares and may only **narrow** the compiled
    baseline;
 2. the adapter-declared baseline is the compiled, deterministic record
-   shipped in `crates/codegg-core/assets/model-adapters/`;
+   shipped in `crates/codegg-core/assets/model-adapters/`. A **match**
+   may carry its own record, and it **replaces** the adapter's family
+   record for the models it names: a match names exact model ids, so its
+   record is the narrower claim (see
+   [model-adapters.md](model-adapters.md));
 3. the discovery overlay (provider catalog metadata) may only narrow — an
    overlay that introduces a label, a bound, or an always-reasons value the
    effective record does not already carry is **rejected in full** and the
@@ -1794,7 +1828,95 @@ The daemon's `CoreRequest::SnapshotModels` handler follows this sequence
 rather than calling `refresh()` unconditionally on a fresh service, which
 re-queried every provider on every request and returned `[]` whenever any
 of them was slow — leaving the TUI model picker permanently empty.
-Standalone mode uses the same sequence in `src/main.rs`.
+Standalone mode uses the same sequence in `crates/codegg-cli/src/main.rs`.
+
+## The one-shot inline generation (ADR-0066)
+
+**The audit classification.** `editor_inline_generate` is listed in
+`UNINSTRUMENTED_OPERATIONS`, and the reason is that the operation's
+capability is read-only: `direct_project` + `file.read`. It mutates no
+shared state, and the document's bytes stay untouched until the operator
+accepts the answer through the editor's own edit funnel. The provider call
+it makes is visible in the existing provider observability, and the
+capability denial *is* audited upstream by `authorize_request`, so the
+request itself earns no dedicated audit action. This mirrors
+`document_read` and `workspace_directory_list`, which share the same
+capability and the same shape.
+
+The editor's inline assist issues one bounded generation that is **not** a
+turn. It carries no session, admits no tool loop, writes into no
+transcript, and consumes neither the session's turn budget nor its
+transcript.
+
+**The request.** `CoreRequest::EditorInlineGenerate` carries the project and
+workspace identity, the document id and the revision it was asked against,
+the insertion anchor, the context extent, the operator's instruction, an
+optional model and an optional reasoning override. It carries **no document
+text** and no filesystem path: the daemon reads the code context from its
+own document replica, bounded by
+`MAX_EDITOR_INLINE_CONTEXT_BYTES`. The instruction is bounded by
+`MAX_EDITOR_INLINE_INSTRUCTION_BYTES`.
+
+**The model's and the effort's resolution.** The effective selection is
+resolved as **explicit request override > persisted principal preference >
+agent/model-profile default** — the precedence ADR-0049 and the turn path
+already implement. A request that names neither inherits the daemon's stored
+selection; a request that names one overrides it **for that request only**
+and never mutates the stored selection. The override is admitted against the
+model's per-model reasoning capability through the same policy the turn path
+uses, so a label the model does not accept is refused rather than translated.
+
+The middle tier is the principal's remembered selection: the runtime
+preference row's last-used connection and model, read through the
+connection's own provider kind, so a remembered model is addressed through
+the provider that can serve it. A row that names no model, names a
+connection that is gone, or names a connection that is no longer **Active**
+is not authority for a request, so the tier degrades to the configured
+default rather than to a guess.
+
+A model the connection cannot serve is **refused, never substituted**. The
+refusal carries a typed code, the request does not fall through to a
+different provider, and the model is not silently swapped for another one.
+
+**The provider transport context.** The one-shot request carries a canonical
+session identity even though it is not a turn: the conversation the client is
+attached to, or a stable bounded id derived from the document when the
+connection has none. This is not bookkeeping. OpenCode Go refuses a request
+with no session context locally, before any network I/O, and that refusal is
+indistinguishable from an upstream failure unless the context is supplied. A
+provider failure is logged with the provider, the wire model and the error
+class; the wire still reports `provider_error`.
+
+**The refusal matrix.** Every refusal is a **stable code**, never a
+sentence: the frontend owns the wording, and an unrecognised code degrades
+to the code itself. The codes live in `codegg_protocol::core::editor_inline_refusal`.
+
+| Code | Condition |
+|---|---|
+| `unsupported` | the daemon does not serve the request |
+| `unknown_model` | the named model is not in the connection's catalog |
+| `model_unavailable` | the named model exists but the connection cannot serve it |
+| `reasoning_not_admitted` | the reasoning label is not admitted for that model |
+| `instruction_too_large` | the instruction is over its budget |
+| `context_too_large` | the document context is over its budget |
+| `provider_error` | the provider call failed |
+| `empty_generation` | the provider returned nothing usable |
+| `timeout` | the provider call exceeded its timeout |
+| `document_mismatch` | the document is not the one the request named |
+| `document_unavailable` | the daemon holds no readable replica of that document |
+
+The daemon resolves the **provider**, not an entry in a model catalog: a
+provider that is not registered is `model_unavailable`, and a model the
+provider itself rejects arrives as `provider_error`. `unknown_model` belongs
+to the wire contract for a caller that resolves a model against a catalog;
+the daemon arm does not emit it.
+
+**Bounded work.** The call runs with `tools: None`, a bounded output
+budget, a bounded instruction budget and a bounded timeout. The timeout
+covers the **whole** call — opening the stream and draining it — because a
+provider that answers promptly and then stalls is exactly the case a
+timeout on stream creation alone does not catch. The daemon logs neither the
+instruction's surrounding document text nor the generated text.
 
 ## Configuration Surface
 

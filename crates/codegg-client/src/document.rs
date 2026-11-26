@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codegg_document::{DocumentBuffer, DocumentLimits, DocumentSnapshot, TextTransaction};
-use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
+use codegg_protocol::core::{
+    CoreRequest, CoreResponse, DocumentLspSync, RequestEnvelope, PROTOCOL_VERSION,
+};
 use codegg_protocol::document::{
     DocumentScope, DocumentSnapshotDto, DocumentTextEditDto, DocumentTextRangeDto,
     DocumentTransactionDto, MAX_DOCUMENT_EDITS, MAX_DOCUMENT_INSERT_BYTES, MAX_DOCUMENT_TEXT_BYTES,
@@ -144,6 +146,10 @@ struct Attachment {
     daemon_revision: u64,
     buffer: DocumentBuffer,
     generation: u64,
+    /// The open lifecycle epoch fences one-shot snapshot reads from an older
+    /// attachment of the same document.
+    attachment_epoch: u64,
+    lsp_sync: DocumentLspSync,
     pending: VecDeque<PendingChange>,
     pending_bytes: usize,
     in_flight: Option<String>,
@@ -303,6 +309,67 @@ impl DocumentController {
             pending_changes: a.pending.len(),
         })
     }
+    /// The LSP publication witness retained for the attached document.
+    pub fn try_lsp_sync(&self) -> Option<DocumentLspSync> {
+        let guard = self.replica.lock().expect("replica mutex poisoned");
+        guard
+            .attachment
+            .as_ref()
+            .map(|attachment| attachment.lsp_sync)
+    }
+
+    /// Make the single authorized snapshot read that can settle an
+    /// interactive open's `Pending` publication witness. The full snapshot is
+    /// never installed here; only its sync state is retained. A response for
+    /// an attachment that has since closed or been replaced is discarded.
+    pub async fn settle_lsp_sync(
+        &self,
+    ) -> Result<Option<DocumentLspSync>, DocumentControllerError> {
+        let (project_id, document_id, attachment_epoch) = {
+            let guard = self.replica.lock().expect("replica mutex poisoned");
+            let attachment = guard
+                .attachment
+                .as_ref()
+                .ok_or(DocumentControllerError::NotOpen)?;
+            (
+                attachment.project_id.clone(),
+                attachment.document_id.clone(),
+                attachment.attachment_epoch,
+            )
+        };
+        let response = self
+            .transport
+            .request(CoreRequest::DocumentSnapshotGet {
+                project_id: project_id.clone(),
+                document_id: document_id.clone(),
+            })
+            .await
+            .map_err(DocumentControllerError::Transport)?;
+        let (snapshot, lsp_sync) = match response {
+            CoreResponse::DocumentSnapshot {
+                snapshot, lsp_sync, ..
+            } => (snapshot, lsp_sync),
+            response => return self.response_error(response),
+        };
+        if snapshot.project_id != project_id || snapshot.document_id != document_id {
+            return Err(DocumentControllerError::Response(
+                "snapshot read did not match the attached document".into(),
+            ));
+        }
+        let mut guard = self.replica.lock().expect("replica mutex poisoned");
+        let Some(attachment) = guard.attachment.as_mut() else {
+            return Ok(None);
+        };
+        if attachment.attachment_epoch != attachment_epoch
+            || attachment.project_id != project_id
+            || attachment.document_id != document_id
+        {
+            return Ok(None);
+        }
+        attachment.lsp_sync = lsp_sync;
+        Ok(Some(lsp_sync))
+    }
+
     /// Open one document under `scope`.
     ///
     /// `scope` selects the daemon's authority root: the bound workspace, or
@@ -346,6 +413,7 @@ impl DocumentController {
                 relative_path,
                 scope,
                 writable,
+                open_epoch,
                 response,
             )
             .await?;
@@ -384,6 +452,7 @@ impl DocumentController {
                 relative_path,
                 scope,
                 writable,
+                open_epoch,
                 response,
             )
             .await?;
@@ -411,14 +480,16 @@ impl DocumentController {
         relative_path: String,
         scope: DocumentScope,
         writable: bool,
+        open_epoch: u64,
         response: CoreResponse,
     ) -> Result<DocumentState, DocumentControllerError> {
-        let (snapshot, lease) = match response {
+        let (snapshot, lease, lsp_sync) = match response {
             CoreResponse::DocumentSnapshot {
                 snapshot,
                 writer_lease,
+                lsp_sync,
                 ..
-            } => (snapshot, writer_lease),
+            } => (snapshot, writer_lease, lsp_sync),
             r => {
                 self.fail_open();
                 return self.response_error(r);
@@ -473,6 +544,8 @@ impl DocumentController {
             snapshot.conflicted,
             buffer,
             lease,
+            open_epoch,
+            lsp_sync,
             state.clone(),
         );
         Ok(state)
@@ -531,12 +604,13 @@ impl DocumentController {
                 return Err(DocumentControllerError::Transport(error));
             }
         };
-        let (snapshot, lease) = match response {
+        let (snapshot, lease, lsp_sync) = match response {
             CoreResponse::DocumentSnapshot {
                 snapshot,
                 writer_lease,
+                lsp_sync,
                 ..
-            } => (snapshot, writer_lease),
+            } => (snapshot, writer_lease, lsp_sync),
             CoreResponse::Error { message, .. } => {
                 self.fail_open();
                 return Err(DocumentControllerError::Response(message));
@@ -577,6 +651,8 @@ impl DocumentController {
             snapshot.conflicted,
             DocumentBuffer::new(&snapshot.text),
             Some(lease),
+            open_epoch,
+            lsp_sync,
             state.clone(),
         );
         lifecycle.finish(state);
@@ -647,6 +723,8 @@ impl DocumentController {
         conflicted: bool,
         buffer: DocumentBuffer,
         lease: Option<String>,
+        attachment_epoch: u64,
+        lsp_sync: DocumentLspSync,
         state: DocumentState,
     ) {
         {
@@ -661,6 +739,8 @@ impl DocumentController {
                 daemon_revision,
                 buffer,
                 generation: self.generation,
+                attachment_epoch,
+                lsp_sync,
                 pending: VecDeque::new(),
                 pending_bytes: 0,
                 in_flight: None,
@@ -1075,8 +1155,10 @@ impl DocumentController {
                     .await;
                 match r {
                     Err(error) => Err(DocumentControllerError::Transport(error)),
-                    Ok(CoreResponse::DocumentSnapshot { snapshot, .. }) => {
-                        self.install_snapshot(snapshot)?;
+                    Ok(CoreResponse::DocumentSnapshot {
+                        snapshot, lsp_sync, ..
+                    }) => {
+                        self.install_snapshot(snapshot, lsp_sync)?;
                         Ok(())
                     }
                     Ok(response) => self.response_error(response),
@@ -1121,8 +1203,10 @@ impl DocumentController {
             .await;
         let result = match r {
             Err(error) => Err(DocumentControllerError::Transport(error)),
-            Ok(CoreResponse::DocumentSnapshot { snapshot, .. }) => {
-                self.install_snapshot(snapshot)?;
+            Ok(CoreResponse::DocumentSnapshot {
+                snapshot, lsp_sync, ..
+            }) => {
+                self.install_snapshot(snapshot, lsp_sync)?;
                 let replica = self.replica.lock().expect("replica mutex poisoned");
                 let next = replica
                     .attachment
@@ -1231,12 +1315,13 @@ impl DocumentController {
                 return Err(DocumentControllerError::Transport(error));
             }
         };
-        let (snapshot, mut lease) = match response {
+        let (snapshot, mut lease, lsp_sync) = match response {
             CoreResponse::DocumentSnapshot {
                 snapshot,
                 writer_lease,
+                lsp_sync,
                 ..
-            } => (snapshot, writer_lease),
+            } => (snapshot, writer_lease, lsp_sync),
             CoreResponse::Error { code, message } if code == "document_not_found" => {
                 lifecycle.finish(DocumentState::GoneWithLocalDraft);
                 return Err(DocumentControllerError::Response(message));
@@ -1277,8 +1362,9 @@ impl DocumentController {
                 .ok_or(DocumentControllerError::NotOpen)?;
             a.writer_lease = lease;
             a.generation = self.generation;
+            a.lsp_sync = lsp_sync;
         }
-        if let Err(error) = self.install_snapshot(snapshot) {
+        if let Err(error) = self.install_snapshot(snapshot, lsp_sync) {
             let state = if matches!(error, DocumentControllerError::ResyncRequired) {
                 DocumentState::ResyncRequired
             } else {
@@ -1345,6 +1431,7 @@ impl DocumentController {
     fn install_snapshot(
         &self,
         snapshot: DocumentSnapshotDto,
+        lsp_sync: DocumentLspSync,
     ) -> Result<(), DocumentControllerError> {
         let mut g = self.replica.lock().expect("replica mutex poisoned");
         let a = g
@@ -1394,6 +1481,7 @@ impl DocumentController {
         a.daemon_revision = snapshot.revision;
         a.dirty = snapshot.dirty || !a.pending.is_empty();
         a.conflicted = snapshot.conflicted;
+        a.lsp_sync = lsp_sync;
         Ok(())
     }
     pub async fn close(&self) -> Result<(), DocumentControllerError> {
@@ -1545,6 +1633,8 @@ mod tests {
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 }),
                 CoreRequest::DocumentChange { .. } => {
                     let current = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
@@ -1589,6 +1679,8 @@ mod tests {
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 }),
                 CoreRequest::DocumentSave { .. } => {
                     self.save_entered.notify_one();
@@ -1664,6 +1756,8 @@ mod tests {
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 }),
                 Err("response lost after send".into()),
                 Ok(CoreResponse::DocumentChanged {
@@ -1730,6 +1824,8 @@ mod tests {
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 }),
                 Ok(CoreResponse::DocumentChanged {
                     revision: 1,
@@ -1796,6 +1892,8 @@ mod tests {
                     },
                     writer_lease: Some("old-lease".into()),
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 }),
                 Err("connection lost after write".into()),
             ])),
@@ -1819,6 +1917,8 @@ mod tests {
                     },
                     writer_lease: None,
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 }),
                 Ok(CoreResponse::DocumentWriterLease {
                     document_id: "doc-1".into(),
@@ -1898,6 +1998,8 @@ mod tests {
                 },
                 writer_lease: Some("lease-1".into()),
                 lsp_degraded: false,
+
+                lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
             })])),
             requests: AsyncMutex::new(Vec::new()),
         });
@@ -1943,6 +2045,8 @@ mod tests {
                 },
                 writer_lease: Some("lease".into()),
                 lsp_degraded: false,
+
+                lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
             })])),
             requests: AsyncMutex::new(Vec::new()),
         });
@@ -2022,6 +2126,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_lsp_sync_settles_with_one_snapshot_read_without_replacing_text() {
+        fn snapshot_response(text: &str, sync: DocumentLspSync) -> CoreResponse {
+            CoreResponse::DocumentSnapshot {
+                snapshot: DocumentSnapshotDto {
+                    document_id: "doc-1".into(),
+                    project_id: "project-1".into(),
+                    workspace_id: "workspace-1".into(),
+                    relative_path: "src/lib.rs".into(),
+                    revision: 0,
+                    text: text.into(),
+                    dirty: false,
+                    conflicted: false,
+                    writer: true,
+                    disk_base_digest: "digest".into(),
+                    scope: DocumentScope::Workspace,
+                },
+                writer_lease: Some("lease".into()),
+                lsp_degraded: false,
+                lsp_sync: sync,
+            }
+        }
+
+        let transport = Arc::new(FakeTransport {
+            responses: AsyncMutex::new(VecDeque::from([
+                Ok(snapshot_response(
+                    "the opened text",
+                    DocumentLspSync::Pending,
+                )),
+                Ok(snapshot_response(
+                    "a read must not replace the local replica",
+                    DocumentLspSync::Synced,
+                )),
+            ])),
+            requests: AsyncMutex::new(Vec::new()),
+        });
+        let controller = DocumentController::new(transport.clone());
+        controller
+            .open(
+                "project-1".into(),
+                "workspace-1".into(),
+                "src/lib.rs".into(),
+                true,
+                DocumentScope::Workspace,
+            )
+            .await
+            .expect("open succeeds with Pending");
+        assert_eq!(controller.try_lsp_sync(), Some(DocumentLspSync::Pending));
+
+        assert_eq!(
+            controller.settle_lsp_sync().await.expect("settlement read"),
+            Some(DocumentLspSync::Synced)
+        );
+        assert_eq!(controller.try_lsp_sync(), Some(DocumentLspSync::Synced));
+        assert_eq!(
+            controller.try_snapshot().unwrap().0.to_string(),
+            "the opened text",
+            "settlement retains only the witness, not the returned snapshot"
+        );
+        let requests = transport.requests.lock().await;
+        assert_eq!(requests.len(), 2, "exactly one settlement request");
+        assert!(matches!(
+            requests[1],
+            CoreRequest::DocumentSnapshotGet { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_lsp_sync_settlement_preserves_pending() {
+        let pending = CoreResponse::DocumentSnapshot {
+            snapshot: DocumentSnapshotDto {
+                document_id: "doc-1".into(),
+                project_id: "project-1".into(),
+                workspace_id: "workspace-1".into(),
+                relative_path: "src/lib.rs".into(),
+                revision: 0,
+                text: "text".into(),
+                dirty: false,
+                conflicted: false,
+                writer: true,
+                disk_base_digest: "digest".into(),
+                scope: DocumentScope::Workspace,
+            },
+            writer_lease: Some("lease".into()),
+            lsp_degraded: false,
+            lsp_sync: DocumentLspSync::Pending,
+        };
+        let transport = Arc::new(FakeTransport {
+            responses: AsyncMutex::new(VecDeque::from([Ok(pending), Err("offline".into())])),
+            requests: AsyncMutex::new(Vec::new()),
+        });
+        let controller = DocumentController::new(transport);
+        controller
+            .open(
+                "project-1".into(),
+                "workspace-1".into(),
+                "src/lib.rs".into(),
+                true,
+                DocumentScope::Workspace,
+            )
+            .await
+            .expect("open succeeds with Pending");
+
+        assert!(controller.settle_lsp_sync().await.is_err());
+        assert_eq!(controller.try_lsp_sync(), Some(DocumentLspSync::Pending));
+    }
+
+    #[tokio::test]
     async fn repeated_open_is_rejected_without_a_second_remote_open() {
         let transport = Arc::new(FakeTransport {
             responses: AsyncMutex::new(VecDeque::from([Ok(CoreResponse::DocumentSnapshot {
@@ -2040,6 +2251,8 @@ mod tests {
                 },
                 writer_lease: Some("lease".into()),
                 lsp_degraded: false,
+
+                lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
             })])),
             requests: AsyncMutex::new(Vec::new()),
         });
@@ -2238,6 +2451,8 @@ mod tests {
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 }),
                 Ok(CoreResponse::Error {
                     code: "stale_revision".into(),
@@ -2259,6 +2474,8 @@ mod tests {
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
+
+                    lsp_sync: codegg_protocol::core::DocumentLspSync::Synced,
                 }),
                 Ok(CoreResponse::DocumentChanged {
                     revision: 1,

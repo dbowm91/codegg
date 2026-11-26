@@ -4,16 +4,8 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-/// # Compaction Invariant
-/// All compaction strategies must uphold the following invariants:
-/// 1. No orphan `Message::Tool`: every tool result must have a corresponding assistant tool call
-///    with matching `tool_call_id` in the retained messages.
-/// 2. No assistant tool-call message may exist without all its required tool results in the retained
-///    transcript, unless the provider-specific serializer can safely handle missing results.
-/// 3. The relative order of assistant tool calls and their matching tool results must be preserved.
-/// 4. Truncation of tool outputs must preserve the `tool_call_id` field unchanged.
-/// 5. Multi-tool pairs (assistant with multiple tool calls + matching tool results) must preserve
-///    all IDs and their original order.
+/// Compaction preserves tool-call/result pairing, IDs, and order. Truncating
+/// output never changes its call ID.
 pub use eggcontext::TokenizerType;
 
 fn estimate_tokens_sync(text: &str, model: Option<&str>) -> usize {
@@ -62,6 +54,12 @@ impl ContextTracker {
         estimate_tokens_sync(text, None)
     }
 
+    /// Estimate provider-facing text with the tokenizer selected for a model.
+    /// Callers accounting for non-message request fields use the same hint.
+    pub fn estimate_text_tokens(text: &str, model: Option<&str>) -> usize {
+        estimate_tokens_sync(text, model)
+    }
+
     fn estimate_tokens_model(&self, text: &str) -> usize {
         estimate_tokens_sync(text, self.model.as_deref())
     }
@@ -76,13 +74,22 @@ impl ContextTracker {
                     _ => 0,
                 })
                 .sum(),
-            Message::Assistant { content, .. } => content
-                .iter()
-                .map(|p| match p {
-                    ContentPart::Text { text } => self.estimate_tokens_model(text),
-                    _ => 0,
-                })
-                .sum(),
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => {
+                let content_tokens = content
+                    .iter()
+                    .map(|p| match p {
+                        ContentPart::Text { text } => self.estimate_tokens_model(text),
+                        _ => 0,
+                    })
+                    .sum::<usize>();
+                let tool_call_tokens = serde_json::to_string(tool_calls)
+                    .map(|serialized| self.estimate_tokens_model(&serialized))
+                    .unwrap_or(0);
+                content_tokens.saturating_add(tool_call_tokens)
+            }
             Message::Tool { content, .. } => self.estimate_tokens_model(content),
         };
         self.message_token_counts.push(tokens);
@@ -167,13 +174,22 @@ impl ContextTracker {
                         _ => 0,
                     })
                     .sum(),
-                Message::Assistant { content, .. } => content
-                    .iter()
-                    .map(|p| match p {
-                        ContentPart::Text { text } => self.estimate_tokens_model(text),
-                        _ => 0,
-                    })
-                    .sum(),
+                Message::Assistant {
+                    content,
+                    tool_calls,
+                } => {
+                    let content_tokens = content
+                        .iter()
+                        .map(|p| match p {
+                            ContentPart::Text { text } => self.estimate_tokens_model(text),
+                            _ => 0,
+                        })
+                        .sum::<usize>();
+                    let tool_call_tokens = serde_json::to_string(tool_calls)
+                        .map(|serialized| self.estimate_tokens_model(&serialized))
+                        .unwrap_or(0);
+                    content_tokens.saturating_add(tool_call_tokens)
+                }
                 Message::Tool { content, .. } => self.estimate_tokens_model(content),
             };
         }
@@ -460,12 +476,7 @@ fn drop_middle_messages(messages: Vec<Message>) -> Vec<Message> {
         return messages;
     }
 
-    let keep_each_side = 2;
-    let mut result = Vec::new();
-
-    result.extend(messages.iter().take(keep_each_side).cloned());
-    result.extend(messages.iter().rev().take(keep_each_side).rev().cloned());
-    result
+    emergency_pair_safe_compaction(&messages, &ResolvedCompactionConfig::default())
 }
 
 pub fn detect_overflow(messages: &[Message], context_limit: usize, reserved: usize) -> bool {
@@ -807,9 +818,8 @@ impl ResolvedCompactionConfig {
     }
 }
 
-/// The effective capacity used by context preparation.  Keeping this
-/// calculation beside compaction prevents callers from independently
-/// subtracting output/tool reservations before invoking the policy engine.
+/// The effective capacity used by context preparation. Keeping it beside
+/// compaction prevents callers from subtracting reservations independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextCapacity {
     pub model_limit: usize,
@@ -1020,14 +1030,10 @@ pub async fn compact_context(request: ContextCompactionRequest<'_>) -> ContextCo
         };
     }
 
-    // M004 §6.7 production strategy reconciliation: explicit
-    // `mode=programmatic|agent|hybrid` is honored via the resolved config.
-    // When `auto` is true and `mode` is omitted, the resolved default
-    // (Hybrid) is used rather than the unrelated legacy branch. Without a
-    // provider/model the hybrid engine emits a deterministic programmatic
-    // frame, so no silent billable model call is introduced. Legacy
-    // `auto_compact_*` helpers remain for compatibility/tests but are no
-    // longer the normal production path.
+    // M004 §6.7 production strategy reconciliation: an explicit mode is
+    // honored via the resolved config, and an omitted one takes the resolved
+    // default (Hybrid) rather than the unrelated legacy branch. Without a
+    // provider the hybrid engine emits a deterministic programmatic frame.
     let mut continuation_candidate: Option<ContinuationCandidate> = None;
     if !request.auto {
         messages = compact_messages_sync(messages, CompactionStrategy::DropMiddleMessages);
@@ -1140,6 +1146,19 @@ pub async fn compact_context(request: ContextCompactionRequest<'_>) -> ContextCo
                 }
             }
         }
+    }
+
+    let reduced = reduce_to_budget(
+        &messages,
+        capacity.available_context_tokens,
+        request.active_model,
+    );
+    if reduced.len() != messages.len() {
+        messages = reduced;
+        diagnostics.push(CompactionDiagnostic {
+            level: CompactionDiagnosticLevel::Info,
+            message: "history reduced to the available context budget".into(),
+        });
     }
 
     if cancellation_requested(request.cancellation) {
@@ -1278,11 +1297,10 @@ pub struct CompactionOutput {
 
 /// Effective production strategy after M004 reconciliation (§6.7).
 ///
-/// Explicit `mode=programmatic|agent|hybrid` is always honored. When `auto`
-/// is true and `mode` is omitted, the resolved default (Hybrid) is used —
-/// deterministically programmatic when no provider/model is configured, so
-/// no silent billable model call is introduced. `auto=false` keeps the
-/// bounded `DropMiddleMessages` compatibility path.
+/// An explicit mode is always honored; an omitted one takes the resolved
+/// default (Hybrid) — deterministically programmatic with no provider, so no
+/// silent billable model call. `auto=false` keeps the bounded
+/// `DropMiddleMessages` compatibility path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectiveCompactionStrategy {
     DropMiddleNonAuto,
@@ -1361,13 +1379,11 @@ pub async fn semantic_checkpoint(
 
 /// Baseline-aware semantic enrichment (M002 §6.5).
 ///
-/// The reduced programmatic state must already contain the host-owned
-/// baseline; `baseline` additionally supplies the authoritative objective,
-/// current task, and carried-forward semantic state so the prompt never
-/// falls back to `"unknown"`/`"none"` when the host knows better. The
-/// structured output remains narrowly owned: it must not return/override
-/// goal ID, goal revision, plan digest, file list, command list, or test
-/// state (enforced by `parse_semantic_response` + `merge_frames`).
+/// `baseline` supplies the authoritative objective, current task, and
+/// carried-forward semantic state so the prompt never falls back to
+/// `"unknown"`/`"none"` when the host knows better. The structured output
+/// stays narrowly owned: it must not override goal, plan, file, command or
+/// test state (enforced by `parse_semantic_response` + `merge_frames`).
 pub async fn semantic_checkpoint_with_baseline(
     reduced: &ProgrammaticCompactionState,
     baseline: Option<&crate::context::continuation::ContinuationSnapshot>,
@@ -1858,6 +1874,114 @@ pub fn emergency_pair_safe_compaction(
     );
 
     result
+}
+
+/// Reduce the history until it fits the available context budget.
+///
+/// The retention rules are count-based — a fixed number of message groups,
+/// plus every system message — so a history whose control instructions
+/// change on every pass grows without bound and never reaches the budget.
+///
+/// Kept, in preference order: the first system message (the host prompt),
+/// the newest continuation frame (the session state), the newest remaining
+/// system messages, the oldest non-system group (the request that started
+/// the work), and the newest non-system groups — each while it fits.
+pub fn reduce_to_budget(
+    messages: &[Message],
+    target_tokens: usize,
+    model: Option<&str>,
+) -> Vec<Message> {
+    if context_tokens(messages, model) <= target_tokens {
+        return messages.to_vec();
+    }
+    let groups = build_message_groups(messages);
+    let mut group_tokens = Vec::with_capacity(groups.len());
+    for group in &groups {
+        let owned: Vec<Message> = group
+            .indices()
+            .iter()
+            .map(|index| messages[*index].clone())
+            .collect();
+        group_tokens.push(context_tokens(&owned, model));
+    }
+    let is_system = |index: usize| matches!(groups[index], MessageGroup::System { .. });
+    let mut keep = vec![false; groups.len()];
+    let mut remaining = target_tokens;
+
+    if let Some(index) = (0..groups.len()).find(|index| is_system(*index)) {
+        keep[index] = true;
+        remaining = remaining.saturating_sub(group_tokens[index]);
+    }
+    for index in (0..groups.len()).rev() {
+        if keep[index] || !is_system(index) {
+            continue;
+        }
+        if is_continuation_frame(&messages[group_message_index(&groups[index])]) {
+            keep[index] = true;
+            remaining = remaining.saturating_sub(group_tokens[index]);
+            break;
+        }
+    }
+    for index in (0..groups.len()).rev() {
+        if keep[index] || !is_system(index) {
+            continue;
+        }
+        if group_tokens[index] <= remaining {
+            keep[index] = true;
+            remaining -= group_tokens[index];
+        }
+    }
+
+    let conversation: Vec<usize> = (0..groups.len())
+        .filter(|index| !is_system(*index))
+        .collect();
+    if let Some(index) = conversation.first() {
+        if group_tokens[*index] <= remaining {
+            keep[*index] = true;
+            remaining -= group_tokens[*index];
+        }
+    }
+    for index in conversation.iter().rev() {
+        if keep[*index] {
+            continue;
+        }
+        if group_tokens[*index] <= remaining {
+            keep[*index] = true;
+            remaining -= group_tokens[*index];
+        }
+    }
+
+    let mut kept: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for (group_index, group) in groups.iter().enumerate() {
+        if keep[group_index] {
+            for index in group.indices() {
+                kept.insert(*index);
+            }
+        }
+    }
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| kept.contains(index))
+        .map(|(_, message)| message.clone())
+        .collect()
+}
+
+fn group_message_index(group: &MessageGroup) -> usize {
+    match group {
+        MessageGroup::System { index } => *index,
+        MessageGroup::Single { index } => *index,
+        MessageGroup::ToolPair { indices } => indices[0],
+    }
+}
+
+fn is_continuation_frame(message: &Message) -> bool {
+    match message {
+        Message::System { content } => {
+            crate::agent::context_frame::is_codegg_owned_frame(content.as_str())
+        }
+        _ => false,
+    }
 }
 
 enum MessageGroup {
@@ -3031,6 +3155,87 @@ mod tests {
         }
     }
 
+    fn system(content: &str) -> Message {
+        Message::System {
+            content: content.to_string().into(),
+        }
+    }
+
+    fn user(content: &str) -> Message {
+        Message::User {
+            content: vec![ContentPart::Text {
+                text: content.to_string().into(),
+            }],
+        }
+    }
+
+    async fn compact_compat(messages: &[Message]) -> ContextCompactionResult {
+        compact_context(ContextCompactionRequest {
+            messages,
+            context_limit: 2_000,
+            threshold: 0.85,
+            reserved_output_tokens: 500,
+            max_tool_result_tokens: 2_000,
+            auto: false,
+            prune: true,
+            compaction_config: None,
+            active_model: None,
+            provider: None,
+            provider_context: ProviderRequestContext::default(),
+            cancellation: None,
+            baseline: None,
+            proposed_checkpoint_id: None,
+            force: true,
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_control_instruction_that_changes_every_pass_stays_within_the_budget() {
+        let mut messages = vec![system("host prompt"), user("do the thing")];
+        let mut sizes = Vec::new();
+        for round in 0..8 {
+            messages.push(system(&format!(
+                "Active task state: pending: {round}: {}",
+                "x".repeat(4_000)
+            )));
+            let result = compact_compat(&messages).await;
+            sizes.push(result.tokens_after);
+            messages = result.messages;
+        }
+        assert!(
+            sizes.iter().all(|tokens| *tokens <= 1_500),
+            "the history must stay within the available budget: {sizes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reduction_keeps_the_host_prompt_and_the_continuation_frame() {
+        let frame = format!(
+            "{}\n- Goal: keep the frame",
+            crate::agent::context_frame::CONTINUATION_STATE_MARKER_V1
+        );
+        let messages = vec![
+            system("host prompt"),
+            system(&frame),
+            system(&"x".repeat(8_000)),
+            user("do the thing"),
+        ];
+        let reduced = reduce_to_budget(&messages, 1_500, None);
+        assert!(
+            reduced
+                .iter()
+                .any(|message| matches!(message, Message::System { content } if content.as_str() == "host prompt")),
+            "the host prompt survives the reduction"
+        );
+        assert!(
+            reduced
+                .iter()
+                .any(|message| matches!(message, Message::System { content } if content.as_str() == frame)),
+            "the continuation frame survives the reduction"
+        );
+    }
+
     #[test]
     fn test_truncation_helpers_are_utf8_boundary_safe() {
         // Each '字' is 3 bytes; a naive `&content[..N]` cut at N=500/300/400
@@ -3690,6 +3895,80 @@ mod tests {
         assert_eq!(result.status, CompactionStatus::Compacted);
         assert!(result.messages.len() < messages.len());
         assert_eq!(result.capacity.available_context_tokens, 40);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compatibility_compaction_preserves_tool_call_history() {
+        let long_text = "history ".repeat(2_000);
+        let messages = vec![
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![],
+                tool_calls: vec![crate::provider::ToolCall {
+                    id: "first-call".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({"path": "first.rs"}),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "first-call".to_string().into(),
+                content: long_text.clone().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![],
+                tool_calls: vec![crate::provider::ToolCall {
+                    id: "second-call".to_string().into(),
+                    name: "read".to_string().into(),
+                    arguments: serde_json::json!({"path": "second.rs"}),
+                }],
+            },
+            Message::Tool {
+                tool_call_id: "second-call".to_string().into(),
+                content: long_text.clone().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: long_text.clone().into(),
+                }],
+            },
+            Message::Assistant {
+                content: vec![ContentPart::Text {
+                    text: long_text.into(),
+                }],
+                tool_calls: vec![],
+            },
+        ];
+
+        let result = compact_context(ContextCompactionRequest {
+            messages: &messages,
+            context_limit: 128,
+            threshold: 0.5,
+            reserved_output_tokens: 16,
+            max_tool_result_tokens: 100,
+            auto: false,
+            prune: false,
+            force: false,
+            compaction_config: None,
+            active_model: Some("deepseek-v4.1-flash"),
+            provider: None,
+            provider_context: ProviderRequestContext::default(),
+            cancellation: None,
+            baseline: None,
+            proposed_checkpoint_id: None,
+        })
+        .await;
+
+        assert_ne!(result.status, CompactionStatus::InvalidHistoryOrBudget);
+        assert!(validate_message_invariants(&result.messages).is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]

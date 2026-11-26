@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC = REPO_ROOT / "src" / "tui"
+SRC = REPO_ROOT / "crates" / "codegg-tui" / "src"
 
 SEND_CALL = re.compile(r"send_remote_message\s*\(")
 BRANCH = re.compile(r"^\s*(?:}\s*else\s+)?(?:if|else\s+if|match)\b")

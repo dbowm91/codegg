@@ -21,7 +21,7 @@ told something the reader of another is not.
 
 Three inputs, and no more:
 
-* `src/tui/composer_claims.rs` — the claim table (`COMPOSER_CLAIMS`) and the
+* `crates/codegg-tui/src/composer_claims.rs` — the claim table (`COMPOSER_CLAIMS`) and the
   condition's wording (`ClaimCondition::label`). This is the **model**: the
   guard reads the table's entries and the label the code publishes, and it
   never re-derives either from the Rust around them.
@@ -90,7 +90,7 @@ from pathlib import Path
 GUARD = "check_tui_composer_keymap_drift"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-IMPL_RS = "src/tui/composer_claims.rs"
+IMPL_RS = "crates/codegg-tui/src/composer_claims.rs"
 ARCHITECTURE_MD = "architecture/tui.md"
 DOCS_MD = "docs/tui.md"
 

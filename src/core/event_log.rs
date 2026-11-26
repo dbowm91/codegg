@@ -16,10 +16,7 @@ pub trait ProjectionSink: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 }
 
-/// Apply the connection-local raw compatibility filter to one event.
-///
-/// This is shared by replay and live delivery so a connection cannot receive
-/// a session-scoped event live that it would not have received on resume.
+/// Apply the event-log session and include-global filter to one event.
 pub fn event_matches_filter(filter: &EventFilter, event: &EventEnvelope<CoreEvent>) -> bool {
     match (&filter.session_id, filter.include_global) {
         (Some(sid), true) => {
@@ -28,6 +25,24 @@ pub fn event_matches_filter(filter: &EventFilter, event: &EventEnvelope<CoreEven
         (Some(sid), false) => event.session_id.as_deref() == Some(sid.as_str()),
         (None, _) => event.session_id.is_none(),
     }
+}
+
+/// Filter raw transport delivery, including its sessionless-event allowlist.
+pub fn event_matches_raw_filter(filter: &EventFilter, event: &EventEnvelope<CoreEvent>) -> bool {
+    event_matches_filter(filter, event)
+        && match event.session_id.as_deref() {
+            Some(_) => true,
+            None => matches!(
+                &event.payload,
+                CoreEvent::SnapshotModels { .. }
+                    | CoreEvent::ProjectRegistered { .. }
+                    | CoreEvent::ProjectArchived { .. }
+                    | CoreEvent::ProjectRestored { .. }
+                    | CoreEvent::ProjectDeleted { .. }
+                    | CoreEvent::ProjectUpdated { .. }
+                    | CoreEvent::ProjectHealthChanged { .. }
+            ),
+        }
 }
 
 /// Events that are persisted to SQLite for recovery after restart.
@@ -799,6 +814,53 @@ mod tests {
         // resume from 2 -> none
         let events = log.replay_from(2, &s1_filter).await;
         assert!(events.is_empty(), "expected no events, got {:?}", events);
+    }
+
+    #[tokio::test]
+    async fn raw_filter_excludes_global_errors_but_keeps_allowlisted_snapshots() {
+        let log = EventLog::new(10);
+        let mut rx = log.subscribe();
+        log.publish(
+            Some("s1".into()),
+            None,
+            CoreEvent::Error {
+                code: "session-error".into(),
+                message: "session error".into(),
+            },
+        )
+        .await;
+        log.publish(
+            None,
+            None,
+            CoreEvent::Error {
+                code: "global-error".into(),
+                message: "stale global error".into(),
+            },
+        )
+        .await;
+        log.publish(
+            None,
+            None,
+            CoreEvent::SnapshotModels {
+                current_model: None,
+                models: Vec::new(),
+            },
+        )
+        .await;
+
+        let session_error = rx.recv().await.unwrap();
+        let global_error = rx.recv().await.unwrap();
+        let global_snapshot = rx.recv().await.unwrap();
+        let filter = EventFilter {
+            session_id: Some("s1".into()),
+            client_id: None,
+            include_global: true,
+        };
+
+        assert!(event_matches_raw_filter(&filter, &session_error));
+        assert!(event_matches_filter(&filter, &global_error));
+        assert!(!event_matches_raw_filter(&filter, &global_error));
+        assert!(event_matches_raw_filter(&filter, &global_snapshot));
     }
 
     #[tokio::test]

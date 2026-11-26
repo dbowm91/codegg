@@ -63,13 +63,24 @@ deleted rather than fixed.
 ## Non-vacuity
 
 The guard asserts the declarations it reasons about still exist, so it
-cannot pass by the file being emptied or the types renamed away.
+cannot pass by the file being emptied or the types renamed away. It also
+asserts that each file it claims to scan is present: a moved file is a
+rule that silently stopped applying.
+
+`--self-test` proves the rules can actually fail. It copies the five files
+the guard reads into a throwaway directory and injects one realistic
+regression per rule — a retained `text: String`, an owned snapshot, a
+per-frame `Vec<Line>`, a `std::fs` read, a second `DocumentBuffer`, a
+deleted file — plus two controls (the untouched copy must pass, and a
+filesystem read inside a `#[cfg(test)]` module must stay permitted). A case
+that stops being caught fails the self-test loudly.
 
 Exit code 1 if violations are found.
 
 Usage::
 
     python3 scripts/check_tui_editor_text_authority.py
+    python3 scripts/check_tui_editor_text_authority.py --self-test
 
 This is invoked by `scripts/verify.sh quick` and the CI `verify` job.
 """
@@ -77,22 +88,25 @@ This is invoked by `scripts/verify.sh quick` and the CI `verify` job.
 from __future__ import annotations
 
 import re
+import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC = REPO_ROOT / "src"
 
 # Files that make up the TUI editor path. The presentation model, the
 # session seam, the render widget, the state record, and the command
 # layer. All of them must respect the same two invariants.
 SCANNED_FILES: list[str] = [
-    "tui/editor.rs",
-    "tui/document_session.rs",
-    "tui/components/editor.rs",
-    "tui/app/state/editor.rs",
-    "tui/commands/editor.rs",
+    "editor.rs",
+    "document_session.rs",
+    "components/editor.rs",
+    "app/state/editor.rs",
+    "commands/editor.rs",
+    "editor_inline_assist.rs",
 ]
 
 # Declarations that read or enumerate the filesystem. The editor must
@@ -145,6 +159,17 @@ TEXT_FIELD_NAMES: list[str] = [
     "document",
 ]
 
+# The pending generated payload (ADR-0066).
+#
+# The model's answer is **not** document text: it is a bounded payload the
+# frontend holds until the operator approves it, and it never becomes
+# document text before that. Its field name is therefore permitted only
+# where the module declares the bound that keeps it bounded, and only as a
+# plain scalar. The same field name in a file with no declared bound is a
+# finding, and so is a payload held in a container.
+PENDING_PAYLOAD_FIELD = "generated_text"
+PENDING_PAYLOAD_BUDGET = "MAX_EDITOR_INLINE_PAYLOAD_BYTES"
+
 # A `name: Type,` struct field or enum-variant field.
 FIELD_RE = re.compile(
     r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?P<name>[a-z_][a-z0-9_]*)\s*:\s*(?P<type>[^,]+?),?\s*$"
@@ -162,12 +187,14 @@ CFG_TEST_RE = re.compile(r"^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 
 # Declarations that must exist for the guard's rules to be meaningful.
 REQUIRED_DECLARATIONS: list[tuple[str, str]] = [
-    ("tui/document_session.rs", "pub struct TuiDocumentPresentation"),
-    ("tui/document_session.rs", "pub struct TuiDocumentSession"),
-    ("tui/app/state/editor.rs", "pub struct EditorState"),
-    ("tui/editor.rs", "pub struct EditorUndoEntry"),
-    ("tui/editor.rs", "pub fn clear_history"),
-    ("tui/components/editor.rs", "pub struct EditorWidget"),
+    ("editor_inline_assist.rs", "pub struct InlineAssistRegion"),
+    ("editor_inline_assist.rs", PENDING_PAYLOAD_BUDGET),
+    ("document_session.rs", "pub struct TuiDocumentPresentation"),
+    ("document_session.rs", "pub struct TuiDocumentSession"),
+    ("app/state/editor.rs", "pub struct EditorState"),
+    ("editor.rs", "pub struct EditorUndoEntry"),
+    ("editor.rs", "pub fn clear_history"),
+    ("components/editor.rs", "pub struct EditorWidget"),
 ]
 
 # Rules reported for visibility but not counted as violations.
@@ -181,6 +208,12 @@ class Finding:
     line_text: str
     rule: str
     advisory: bool = False
+
+
+@dataclass(frozen=True)
+class Report:
+    violations: list[Finding]
+    advisory: list[Finding]
 
 
 def _is_comment_or_blank(line: str) -> bool:
@@ -206,16 +239,34 @@ def _strip_line_comment(line: str) -> str:
     return line
 
 
-def _check_field(path: Path, line_no: int, raw: str, code: str) -> Finding | None:
+def _check_field(
+    path: Path,
+    line_no: int,
+    raw: str,
+    code: str,
+    budget_declared: bool = False,
+) -> Finding | None:
     field = FIELD_RE.match(code)
     if not field:
         return None
     name = field.group("name")
     field_type = field.group("type").strip()
+    if name == PENDING_PAYLOAD_FIELD:
+        if field_type != "String" or not budget_declared:
+            return Finding(
+                path,
+                line_no,
+                raw.strip(),
+                f"unbounded-pending-payload:{name}",
+            )
+        return None
     if name in TEXT_FIELD_NAMES:
         return Finding(path, line_no, raw.strip(), f"retained-text-field:{name}")
     for container in TEXT_CONTAINER_TYPES:
-        if re.search(rf"\b{re.escape(container)}\b", field_type):
+        # Not `\b`: the type ends with `>`, which is not a word character, so a
+        # trailing word boundary could never match and this rule could not fire
+        # at all. `\b` on the leading edge still keeps `MyVec<String>` out.
+        if re.search(rf"\b{re.escape(container)}(?![A-Za-z0-9_])", field_type):
             return Finding(path, line_no, raw.strip(), f"retained-text-container:{container}")
     for document in DOCUMENT_TYPES:
         if not re.search(rf"\b{re.escape(document)}\b", field_type):
@@ -233,8 +284,8 @@ def _check_field(path: Path, line_no: int, raw: str, code: str) -> Finding | Non
     return None
 
 
-def _scan_file(relative: str) -> list[Finding]:
-    path = SRC / relative
+def _scan_file(root: Path, relative: str) -> list[Finding]:
+    path = root / "crates" / "codegg-tui" / "src" / relative
     if not path.is_file():
         return [Finding(path, 0, "file not found", "missing-file")]
 
@@ -243,6 +294,7 @@ def _scan_file(relative: str) -> list[Finding]:
         lines = path.read_text().splitlines()
     except UnicodeDecodeError:
         return findings
+    budget_declared = PENDING_PAYLOAD_BUDGET in "\n".join(lines)
 
     # Brace depth at which the `#[cfg(test)]` module body begins, and the
     # depth just inside the innermost `struct`/`enum` body. `None` means the
@@ -268,7 +320,7 @@ def _scan_file(relative: str) -> list[Finding]:
                     findings.append(Finding(path, line_no, raw.strip(), f"buffer-owner:{label}"))
 
             if in_type_body:
-                finding = _check_field(path, line_no, raw, code)
+                finding = _check_field(path, line_no, raw, code, budget_declared)
                 if finding is not None:
                     findings.append(finding)
 
@@ -287,18 +339,18 @@ def _scan_file(relative: str) -> list[Finding]:
     return findings
 
 
-def collect_findings() -> list[Finding]:
+def collect_findings(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for relative in SCANNED_FILES:
-        findings.extend(_scan_file(relative))
+        findings.extend(_scan_file(root, relative))
     return findings
 
 
-def check_non_vacuous() -> list[Finding]:
+def check_non_vacuous(root: Path) -> list[Finding]:
     """Assert the declarations the rules reason about still exist."""
     findings: list[Finding] = []
     for relative, declaration in REQUIRED_DECLARATIONS:
-        path = SRC / relative
+        path = root / "crates" / "codegg-tui" / "src" / relative
         if not path.is_file():
             findings.append(Finding(path, 0, f"{relative} is missing", "missing-file"))
             continue
@@ -314,16 +366,21 @@ def check_non_vacuous() -> list[Finding]:
     return findings
 
 
-def main() -> int:
-    all_findings = collect_findings() + check_non_vacuous()
-    violations = [f for f in all_findings if not f.advisory]
-    advisory = [f for f in all_findings if f.advisory]
+def check(root: Path) -> Report:
+    """Run every rule against `root`; the self-test calls this same function."""
+    all_findings = collect_findings(root) + check_non_vacuous(root)
+    return Report(
+        [finding for finding in all_findings if not finding.advisory],
+        [finding for finding in all_findings if finding.advisory],
+    )
 
-    for finding in advisory:
-        rel = finding.file.relative_to(REPO_ROOT)
+
+def _render(report: Report, root: Path) -> int:
+    for finding in report.advisory:
+        rel = finding.file.relative_to(root)
         print(f"  note {rel}:{finding.line_no} [{finding.rule}] {finding.line_text}")
 
-    if violations:
+    if report.violations:
         print(
             "TUI editor text-authority violations found.\n"
             "M006-A requires the editor to render only from the\n"
@@ -333,11 +390,11 @@ def main() -> int:
             "TextTransaction undo entries and scoped `&DocumentSnapshot`\n"
             "borrows are permitted by design.\n"
         )
-        for finding in violations:
-            rel = finding.file.relative_to(REPO_ROOT)
+        for finding in report.violations:
+            rel = finding.file.relative_to(root)
             location = f"{rel}:{finding.line_no}" if finding.line_no else str(rel)
             print(f"  {location} [{finding.rule}] {finding.line_text}")
-        print(f"\n{len(violations)} violation(s) found.")
+        print(f"\n{len(report.violations)} violation(s) found.")
         return 1
 
     print(
@@ -347,5 +404,259 @@ def main() -> int:
     return 0
 
 
+# ── Self-test ────────────────────────────────────────────────────────────────
+
+# The self-test copies exactly the files this guard scans into a throwaway
+# tree before mutating one, so a case cannot depend on a file the guard does
+# not read and a mutation can never touch the working tree.
+EXPECTED_INJECTIONS = 10
+
+
+def copy_guard_tree(root: Path, destination: Path) -> None:
+    for relative in SCANNED_FILES:
+        source = root / "crates" / "codegg-tui" / "src" / relative
+        target = destination / "crates" / "codegg-tui" / "src" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def mutate(path: Path, old: str, new: str) -> tuple[Path, str]:
+    """Replace the one occurrence and return what is needed to undo it."""
+    text = path.read_text()
+    occurrences = text.count(old)
+    if occurrences != 1:
+        raise AssertionError(
+            f"self-test fixture text must appear exactly once in {path.name} "
+            f"({occurrences} occurrence(s)): {old!r}"
+        )
+    path.write_text(text.replace(old, new, 1))
+    return path, text
+
+
+def restore(undo: list[tuple[Path, str]]) -> None:
+    for path, text in reversed(undo):
+        path.write_text(text)
+
+
+def run_self_test() -> int:
+    """Inject one realistic regression per rule and require the guard to catch it.
+
+    Each case mutates a copy and runs the *same* `check` the guard runs, so a
+    passing case proves that rule can fail. A case whose defect stops being
+    caught fails the self-test: that is the non-vacuity demonstration rather
+    than a claim about it.
+    """
+    failures: list[str] = []
+    cases: list[tuple[str, Callable[[Path], list[tuple[Path, str]]], str | None]] = []
+
+    def case(name: str, expected: str | None):
+        def register(fn):
+            cases.append((name, fn, expected))
+            return fn
+
+        return register
+
+    @case("the presentation retains a copy of the document text", "retained-text-field:text")
+    def _retained_text(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/document_session.rs",
+                "    pub mode: EditorMode,\n",
+                "    pub mode: EditorMode,\n    pub text: String,\n",
+            )
+        ]
+
+    @case(
+        "the editor state caches a per-frame materialized line collection",
+        "retained-text-container:Vec<Line<'static>>",
+    )
+    def _retained_lines(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/app/state/editor.rs",
+                "    pub path: Option<String>,\n",
+                "    pub path: Option<String>,\n"
+                "    pub rendered: Vec<Line<'static>>,\n",
+            )
+        ]
+
+    @case(
+        "the presentation owns a snapshot instead of borrowing one",
+        "retained-document-field:DocumentSnapshot",
+    )
+    def _owned_snapshot(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/document_session.rs",
+                "    pub clamp_cache: Option<ClampCache>,\n",
+                "    pub clamp_cache: Option<ClampCache>,\n"
+                "    pub cached_snapshot: DocumentSnapshot,\n",
+            )
+        ]
+
+    @case(
+        "the editor command layer reloads text from disk",
+        "filesystem:std::fs",
+    )
+    def _direct_read(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/commands/editor.rs",
+                "fn editor_buffer_key(\n",
+                "fn stale_reload(path: &std::path::Path) -> std::io::Result<String> {\n"
+                "    std::fs::read_to_string(path)\n"
+                "}\n\n"
+                "fn editor_buffer_key(\n",
+            )
+        ]
+
+    @case(
+        "the TUI builds its own DocumentBuffer beside the controller",
+        "buffer-owner:DocumentBuffer::",
+    )
+    def _second_buffer(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/editor.rs",
+                "pub fn clear_history(",
+                "pub fn adopt_local_buffer(text: &str) -> DocumentBuffer {\n"
+                "    DocumentBuffer::new(text)\n"
+                "}\n\n"
+                "pub fn clear_history(",
+            )
+        ]
+
+    @case(
+        "a filesystem read inside a #[cfg(test)] module stays permitted",
+        None,
+    )
+    def _test_fixture_read(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/commands/editor.rs",
+                "#[cfg(test)]\nmod tests {\n    use super::*;\n",
+                "#[cfg(test)]\nmod tests {\n    use super::*;\n"
+                "\n    fn reload_fixture() -> std::io::Result<String> {\n"
+                '        std::fs::read_to_string("fixture")\n'
+                "    }\n",
+            )
+        ]
+
+    @case(
+        "the presentation type is renamed away from the declaration the guard reads",
+        "guard-would-be-vacuous",
+    )
+    def _renamed_presentation(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/document_session.rs",
+                "pub struct TuiDocumentPresentation",
+                "pub struct EditorPresentation",
+            )
+        ]
+
+    @case(
+        "the pending payload is held in an unbounded container",
+        "unbounded-pending-payload:generated_text",
+    )
+    def _unbounded_payload(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/editor_inline_assist.rs",
+                "    pub generated_text: String,\n",
+                "    pub generated_text: Vec<String>,\n",
+            )
+        ]
+
+    @case(
+        "the pending payload is held where no bound is declared",
+        "unbounded-pending-payload:generated_text",
+    )
+    def _payload_without_budget(root: Path) -> list[tuple[Path, str]]:
+        return [
+            mutate(
+                root / "crates/codegg-tui/src/app/state/editor.rs",
+                "    pub inline_assist: crate::editor_inline_assist::InlineAssistState,\n",
+                "    pub inline_assist: crate::editor_inline_assist::InlineAssistState,\n"
+                "    pub generated_text: String,\n",
+            )
+        ]
+
+    @case("a scanned file is deleted rather than reclassified", "missing-file")
+    def _deleted_file(root: Path) -> list[tuple[Path, str]]:
+        path = root / "crates/codegg-tui/src/app/state/editor.rs"
+        text = path.read_text()
+        path.unlink()
+        return [(path, text)]
+
+    if len(cases) != EXPECTED_INJECTIONS:
+        failures.append(
+            f"the self-test declares {len(cases)} injected defects, the guard "
+            f"documents {EXPECTED_INJECTIONS}; a deleted case is a vacuous self-test"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="codegg-editor-text-") as raw:
+        tree = Path(raw) / "tree"
+        copy_guard_tree(REPO_ROOT, tree)
+
+        baseline = check(tree)
+        if baseline.violations:
+            failures.append(
+                "the guard reports violations on an unmodified copy, so its rules "
+                "are not measuring what they claim: "
+                + "; ".join(f.rule for f in baseline.violations)
+            )
+        else:
+            print("  ok: the unmodified copy passes")
+
+        for name, inject, expected in cases:
+            try:
+                undo = inject(tree)
+            except AssertionError as error:
+                failures.append(f"{name}: fixture could not be injected: {error}")
+                continue
+            try:
+                report = check(tree)
+            finally:
+                restore(undo)
+            rules = [finding.rule for finding in report.violations]
+            if expected is None:
+                if rules:
+                    failures.append(
+                        f"{name}: a permitted shape was reported as a violation: {rules}"
+                    )
+                else:
+                    print(f"  ok: permitted — {name}")
+                continue
+            if not any(expected in rule for rule in rules):
+                failures.append(
+                    f"{name}: the injected defect was not reported (expected a "
+                    f"violation containing {expected!r}, got {rules})"
+                )
+            else:
+                print(f"  ok: rejected {name}")
+
+    if failures:
+        for failure in failures:
+            print(f"self-test failed: {failure}", file=sys.stderr)
+        return 1
+    print(
+        "tui-editor-text-authority self-test passed: the unmodified copy is "
+        f"accepted and all {len(cases)} injected defects are rejected"
+    )
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    unknown = [argument for argument in argv if argument != "--self-test"]
+    if unknown:
+        print(f"unknown argument(s): {unknown}", file=sys.stderr)
+        return 2
+    if "--self-test" in argv:
+        return run_self_test()
+
+    return _render(check(REPO_ROOT), REPO_ROOT)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

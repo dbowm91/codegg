@@ -232,6 +232,74 @@ See `architecture/snapshot.md` for the `EditCheckpoint` storage
 contract and `architecture/agent.md` for the `ToolBatchExecutor`
 ownership.
 
+## Declared turn deliverables (`present`, M003)
+
+`present` is the one tool that lets the **model** state what a turn delivers,
+and it exists so that statement is *checked* rather than believed: "this turn
+delivered `src/foo.rs`" is three separate claims and each is verified before
+the declaration is recorded.
+
+| Claim | Check | Typed refusal |
+|---|---|---|
+| containment | `validate_path` (`src/tool/util.rs`) against the turn's `workspace_root` — the only resolver | `outside_workspace` |
+| existence | the path exists | `missing` |
+| shape | the path, and the target a symlink resolves to, is a regular file | `not_a_regular_file` |
+| authorship | the path is in the turn's durable edit checkpoint **with a changed recorded state** | `not_written_this_turn` |
+
+Two bounds are refusals as well — `too_many_files`
+(`MAX_PRESENTED_FILES` = 32) and `path_too_long`
+(`MAX_PRESENTED_PATH_LEN` = 512) — and every refusal names the path it is
+about. A declaration containing one bad entry is refused **in full**: the tool
+reports no partial success, because trimming the bad entry is how a deliverable
+list stops meaning anything. A malformed declaration (no `files`, or a wrong
+shape) is refused too, as a structured error rather than a per-path refusal.
+
+Authorship evidence is the durable edit checkpoint
+(`EditCheckpointManager::paths_written_for_turn`,
+`crates/codegg-core/src/snapshot/checkpoint.rs`), read scoped to
+`(workspace_id, session_id, turn_id)` and bounded by its own path cap. It is
+**not** derived from the global `AppEvent::FileChanged` stream: that stream is
+unscoped and not durable, and `src/agent/tool_batch.rs` already refused it for
+this purpose. Two consequences are deliberate:
+
+- the read returns only paths whose recorded `pre` and `post` state **differ**.
+  A batch persists every path it captured, including siblings it did not
+  change, so checkpoint *membership* alone is not authorship;
+- a path written by an earlier batch of the same turn is found through that
+  record; a path written by a different turn is not found at all, and a call
+  with no bound `turn_id` refuses every entry rather than falling back to a
+  weaker rule. An unreadable store is an unproven claim, never a permissive
+  default.
+
+The tool is `ToolCategory::ReadOnly` and classifies as `ToolEffectClass::
+ReadOnly` with caller policy `DirectOnly`, no cache and no retry. It reads
+metadata and the checkpoint record; it creates, modifies, deletes and moves
+nothing and takes no writer permit. `disclosure_for()` keeps it immediate
+(Core) so the model sees it without a discovery round trip. It is registered by
+`build_session_tool_registry()` (`src/tool/factory.rs`) and **not** by
+`ToolRegistry::with_options()`, so a delegated child — whose registry comes
+from `with_options` — is never offered it; the read-only child profile's
+`retain_only(["read", "list", "glob"])` keeps it out even when a parent
+registry holds one. A child's result is machine-derived from Git state, and a
+model-authored declaration about the same work would be a second, weaker claim.
+
+The record **is** the tool result: no table, no projection field, no second
+store. `PresentResult { delivered, refused }` rides the tool call's transcript
+row, and the display text is a canonical line format the TUI card parses back
+through `crate::tool::present::parse_present_display` — so the card and the
+record cannot disagree. A refusal is a structured error (`success: false`,
+terminal status `Error`), which renders as a failed tool call at its own
+position.
+
+Two boundaries are worth stating because they are not oversights:
+
+- the tool does **not** verify content — not correctness, not size, not a hash.
+  The claim is "this turn delivered this file", not "this file is right";
+- a declaration issued in the **same batch** as the write is refused with
+  `not_written_this_turn`: a batch persists its checkpoint after its tools
+  have run, so the authorship record does not exist yet when the sibling call
+  executes. Declare after the write completes.
+
 ## Tool Trait
 
 Defined in `src/tool/mod.rs:163-256`:
@@ -363,19 +431,19 @@ that set — see the todo section below.
 
 Two adjacent counts are load-bearing and easy to conflate with the above:
 
-- **75 distinct production tool names** — the `name()` values of the 67
+- **76 distinct production tool names** — the `name()` values of the 68
   production `impl Tool for` blocks under `src/` (5 of them resolve the name
   at runtime), **plus** the 13 `eggsact` deterministic validator names, which
   resolve at runtime from `self.codegg_name` and are therefore counted at
   their `EggsactTool::new()` call sites in `src/tool/deterministic.rs`
-  (62 literal + 13 runtime-named). The scan covers the **whole `src/` tree**,
+  (63 literal + 13 runtime-named). The scan covers the **whole `src/` tree**,
   not only `src/tool/` and `src/context/`: a production `Tool` impl may live
   with the subsystem that owns the tool's behaviour, and `python_script`
   (`src/python_script/tool.rs`) is one — it is registered unconditionally by
   `with_options()` yet lives outside the registry directory, so a scan scoped
   to `src/tool/` + `src/context/` undercounts the production surface by one.
   This set is a superset of the registered names: `lsp_preview_apply`,
-  `goal_get`, `goal_request_completion`, `goal_update_progress`, and
+  `goal_get`, `goal_request_completion`, `goal_update_progress`, `present`, and
   `work_order` are registered later by `build_session_tool_registry()`
   (`src/tool/factory.rs`), and `batch` (`src/tool/batch.rs`) has a
   production `Tool` impl but no production registration at all.
@@ -632,6 +700,14 @@ validation alone is not OS containment. Guard:
 `scripts/check_sandbox_policy_wiring.py`; integration:
 `tests/security_permission/sandbox_policy_wiring.inc`.
 
+Contained managed children prepend a per-run `bin` containing only links to
+available system file utilities, leaving unrelated inherited PATH tools
+untouched. This keeps `rm` from resolving to a desktop-installed Trash shim:
+CoreServices Trash moves may be denied outside the granted roots, and the shim
+may not fall back to system `rm`. Deletion uses system `rm` inside the
+existing writable workspace/scratch roots instead; no Trash, home, or system
+write grant is added. Non-contained children retain their original PATH.
+
 **Workspace root vs. child worktree ceiling:** `BashTool` keeps two
 independent roots. `workspace_root` is the ordinary session workspace —
 the default `workdir` when the model omits one, the command-intent
@@ -841,6 +917,24 @@ Python) the containment root. With no workspace authority they **refuse** an
 omitted `workdir` rather than inventing one. Both previously had no workspace
 root at all and fell back to `std::env::current_dir()`, so a session's tests and
 scripts ran in the daemon's launch directory.
+
+### The test tool's verdict is never inferred from a summary it did not get
+
+The `test` tool reports its verdict through a `CODEGG_VALIDATION_RESULT`
+marker. The runner's own verdict travels in the summary: a run that selected
+zero tests formats `no_tests: …` into it, and the tool reads that prefix.
+
+That only works while the summary *is* the runner's. When the scheduler cannot
+recover it — the durable-state fallback in `wait_for_completion`, which
+answers from the job row when the completion cache has been evicted — it used
+to synthesise `"job finished in Completed"` instead. That string is not a
+verdict, but it was not empty, so the tool read it as a pass and reported a
+vacuous run as `passed`: the same failure mode the
+`check_test_self_reexec_paths.py` guard warns about, inside the product.
+
+The fallback now marks what it has: the summary is prefixed
+`result summary unavailable:`, and the tool maps that to `unknown` — never
+`passed`. A run whose verdict is not known is not a pass.
 
 ## Missing workspace root is typed, not defaulted
 
@@ -1113,7 +1207,7 @@ unchanged by that commit: the disclosed tool set, the
 `off`/`observe`/`rerank`/`promote` semantics, and every tool name in the tables.
 
 Corrected 2026-10-23: the production tool-name count was **75**, not 62. The
-count is the `name()` values of the 67 production `impl Tool for` blocks under
+count is the `name()` values of the 68 production `impl Tool for` blocks under
 `src/` **plus** the 13 `eggsact` deterministic validator names, which resolve
 at runtime from `self.codegg_name` and so are invisible to a literal-name scan
 of the impl blocks. They are counted instead at their `EggsactTool::new()`

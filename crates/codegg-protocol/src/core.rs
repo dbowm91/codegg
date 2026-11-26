@@ -1313,8 +1313,6 @@ pub enum CommandOutcomeStatusDto {
 
 /// The structured report of one command execution.
 ///
-/// It mirrors [`AssetRefreshReportDto`] so that `/reload` satisfies
-/// `plans/000-long-term-specification.md:379` unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandReportDto {
     #[serde(default)]
@@ -1374,6 +1372,52 @@ pub struct EventEnvelope<T> {
     pub payload: T,
 }
 
+/// The language-server publication state of a document snapshot.
+///
+/// ADR-0065: an interactive `DocumentOpen` returns after document
+/// authority, before language-server publication completes. `lsp_degraded`
+/// alone could not carry that distinction — `false` used to mean "the sync
+/// this response waited for succeeded", which every caller could misread as
+/// "the server has the file and is healthy".
+///
+/// `lsp_degraded` is derived from this state: it is true for
+/// [`DocumentLspSync::Degraded`] and [`DocumentLspSync::Unavailable`] only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentLspSync {
+    /// Legacy payload that omitted the field: the sender awaited the sync and
+    /// `lsp_degraded: false` meant that wait completed without error.
+    ///
+    /// New responses never serialize this. It exists so a missing field is
+    /// decoded as the old meaning instead of [`Self::Pending`].
+    #[default]
+    Legacy,
+    /// Publication has not completed. The snapshot is authoritative for the
+    /// document text; it does not claim the server has this revision.
+    Pending,
+    /// The revision in this payload reached a server.
+    Synced,
+    /// Publication failed. The server may hold older text.
+    Degraded,
+    /// No language server can serve this document: the service is not
+    /// configured, no server claims the language, or the document is
+    /// intentionally outside publication (a global-agent config).
+    Unavailable,
+}
+
+impl DocumentLspSync {
+    /// Whether this state is a language-server failure or absence, which is
+    /// what `lsp_degraded` reports.
+    pub fn is_degraded(self) -> bool {
+        matches!(self, Self::Degraded | Self::Unavailable)
+    }
+
+    /// Whether the revision in this payload provably reached a server.
+    pub fn is_synced(self) -> bool {
+        matches!(self, Self::Synced)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 // Snapshot variants carry bounded session/message payloads by design;
@@ -1415,7 +1459,20 @@ pub enum CoreResponse {
     DocumentSnapshot {
         snapshot: DocumentSnapshotDto,
         writer_lease: Option<String>,
+        /// `true` only for a language-server failure or absence
+        /// (`lsp_sync` is `Degraded` or `Unavailable`).
         lsp_degraded: bool,
+        /// ADR-0065: the language-server publication state. A new response
+        /// always serializes it; a payload that omits it decodes as
+        /// `DocumentLspSync::Legacy` (the sender awaited the sync).
+        #[serde(default)]
+        lsp_sync: DocumentLspSync,
+    },
+    EditorInlineGenerated {
+        request_id: String,
+        document_id: String,
+        document_revision: u64,
+        outcome: EditorInlineOutcome,
     },
     DocumentWriterLease {
         document_id: String,
@@ -2658,6 +2715,21 @@ pub enum CoreRequest {
     DocumentClose {
         project_id: String,
         document_id: String,
+    },
+    EditorInlineGenerate {
+        request_id: String,
+        project_id: String,
+        workspace_id: String,
+        document_id: String,
+        document_revision: u64,
+        anchor: u64,
+        context_before: u32,
+        context_after: u32,
+        instruction: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        reasoning: Option<ReasoningOverride>,
     },
     /// C005 (ADR-0022 §3): one bounded daemon-owned workspace directory
     /// listing — inert metadata only (`direct_project` + `file.read`).
@@ -4384,6 +4456,38 @@ pub enum ReasoningOverride {
     Off,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EditorInlineOutcome {
+    Generated {
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        text: String,
+    },
+    Refused {
+        code: String,
+    },
+}
+
+pub mod editor_inline_refusal {
+    pub const UNSUPPORTED: &str = "unsupported";
+    pub const UNKNOWN_MODEL: &str = "unknown_model";
+    pub const MODEL_UNAVAILABLE: &str = "model_unavailable";
+    pub const REASONING_NOT_ADMITTED: &str = "reasoning_not_admitted";
+    pub const INSTRUCTION_TOO_LARGE: &str = "instruction_too_large";
+    pub const CONTEXT_TOO_LARGE: &str = "context_too_large";
+    pub const PROVIDER_ERROR: &str = "provider_error";
+    pub const EMPTY_GENERATION: &str = "empty_generation";
+    pub const TIMEOUT: &str = "timeout";
+    pub const DOCUMENT_MISMATCH: &str = "document_mismatch";
+    pub const DOCUMENT_UNAVAILABLE: &str = "document_unavailable";
+}
+
+pub const MAX_EDITOR_INLINE_INSTRUCTION_BYTES: usize = 4_096;
+
+pub const MAX_EDITOR_INLINE_CONTEXT_BYTES: u32 = 16_384;
+
 /// The known reasoning-effort labels, in the fallback escalation order.
 ///
 /// This is a **convenience set**, not a model's option set. It is the
@@ -4565,6 +4669,7 @@ pub enum TurnFailureCategory {
     ProviderTimeout,
     /// The provider answered with an API-level failure.
     ProviderApi,
+    ProviderRequestBudget,
     /// The turn was cancelled before it completed.
     Cancelled,
     /// The daemon restarted while the turn was active.
@@ -4584,6 +4689,7 @@ impl TurnFailureCategory {
             Self::ProviderRateLimit => "provider_rate_limit",
             Self::ProviderTimeout => "provider_timeout",
             Self::ProviderApi => "provider_api",
+            Self::ProviderRequestBudget => "provider_request_budget",
             Self::Cancelled => "cancelled",
             Self::DaemonRestarted => "daemon_restarted",
             Self::AgentInternal => "agent_internal",
@@ -5493,6 +5599,145 @@ mod tests {
         assert_eq!(PROTOCOL_VERSION, 2);
     }
 
+    #[test]
+    fn the_inline_generate_request_round_trips_on_the_wire() {
+        let request = CoreRequest::EditorInlineGenerate {
+            request_id: "request-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            workspace_id: "workspace-1".to_owned(),
+            document_id: "document-1".to_owned(),
+            document_revision: 7,
+            anchor: 42,
+            context_before: 2048,
+            context_after: 2048,
+            instruction: "add a doc comment".to_owned(),
+            model: Some("opencode_go/minimax-m3".to_owned()),
+            reasoning: Some(ReasoningOverride::Effort {
+                level: "high".to_owned(),
+            }),
+        };
+        let encoded = serde_json::to_value(&request).expect("the request encodes");
+        assert_eq!(encoded["type"], "editor_inline_generate");
+        let decoded: CoreRequest = serde_json::from_value(encoded).expect("the request decodes");
+        match decoded {
+            CoreRequest::EditorInlineGenerate {
+                request_id,
+                document_revision,
+                anchor,
+                instruction,
+                model,
+                reasoning,
+                ..
+            } => {
+                assert_eq!(request_id, "request-1");
+                assert_eq!(document_revision, 7);
+                assert_eq!(anchor, 42);
+                assert_eq!(instruction, "add a doc comment");
+                assert_eq!(model, Some("opencode_go/minimax-m3".to_owned()));
+                assert_eq!(
+                    reasoning,
+                    Some(ReasoningOverride::Effort {
+                        level: "high".to_owned()
+                    })
+                );
+            }
+            other => panic!("expected EditorInlineGenerate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_inline_generate_request_without_a_model_or_reasoning_still_decodes() {
+        let encoded = serde_json::json!({
+            "type": "editor_inline_generate",
+            "request_id": "request-1",
+            "project_id": "project-1",
+            "workspace_id": "workspace-1",
+            "document_id": "document-1",
+            "document_revision": 0,
+            "anchor": 0,
+            "context_before": 0,
+            "context_after": 0,
+            "instruction": "x",
+        });
+        let decoded: CoreRequest = serde_json::from_value(encoded).expect("the request decodes");
+        match decoded {
+            CoreRequest::EditorInlineGenerate {
+                model, reasoning, ..
+            } => {
+                assert_eq!(model, None);
+                assert_eq!(reasoning, None);
+            }
+            other => panic!("expected EditorInlineGenerate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_inline_generated_response_round_trips_on_the_wire() {
+        let response = CoreResponse::EditorInlineGenerated {
+            request_id: "request-1".to_owned(),
+            document_id: "document-1".to_owned(),
+            document_revision: 7,
+            outcome: EditorInlineOutcome::Generated {
+                model: "opencode_go/minimax-m3".to_owned(),
+                effort: Some("high".to_owned()),
+                text: "/// the answer".to_owned(),
+            },
+        };
+        let encoded = serde_json::to_value(&response).expect("the response encodes");
+        assert_eq!(encoded["type"], "editor_inline_generated");
+        let decoded: CoreResponse = serde_json::from_value(encoded).expect("the response decodes");
+        match decoded {
+            CoreResponse::EditorInlineGenerated {
+                request_id,
+                document_id,
+                document_revision,
+                outcome,
+            } => {
+                assert_eq!(request_id, "request-1");
+                assert_eq!(document_id, "document-1");
+                assert_eq!(document_revision, 7);
+                match outcome {
+                    EditorInlineOutcome::Generated {
+                        model,
+                        effort,
+                        text,
+                    } => {
+                        assert_eq!(model, "opencode_go/minimax-m3");
+                        assert_eq!(effort, Some("high".to_owned()));
+                        assert_eq!(text, "/// the answer");
+                    }
+                    other => panic!("expected Generated, got {other:?}"),
+                }
+            }
+            other => panic!("expected EditorInlineGenerated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_inline_refusal_round_trips_with_its_named_code() {
+        let response = CoreResponse::EditorInlineGenerated {
+            request_id: "request-1".to_owned(),
+            document_id: "document-1".to_owned(),
+            document_revision: 7,
+            outcome: EditorInlineOutcome::Refused {
+                code: editor_inline_refusal::MODEL_UNAVAILABLE.to_owned(),
+            },
+        };
+        let encoded = serde_json::to_value(&response).expect("the response encodes");
+        assert_eq!(encoded["outcome"]["kind"], "refused");
+        assert_eq!(encoded["outcome"]["code"], "model_unavailable");
+        let decoded: CoreResponse = serde_json::from_value(encoded).expect("the response decodes");
+        match decoded {
+            CoreResponse::EditorInlineGenerated { outcome, .. } => match outcome {
+                EditorInlineOutcome::Refused { code } => {
+                    assert_eq!(code, editor_inline_refusal::MODEL_UNAVAILABLE);
+                }
+                other => panic!("expected Refused, got {other:?}"),
+            },
+            other => panic!("expected EditorInlineGenerated, got {other:?}"),
+        }
+    }
+
     /// The summary is derived from the facts it describes, so it can never
     /// contradict the field it summarises.
     #[test]
@@ -5633,6 +5878,10 @@ mod tests {
             ),
             (TurnFailureCategory::ProviderTimeout, "provider_timeout"),
             (TurnFailureCategory::ProviderApi, "provider_api"),
+            (
+                TurnFailureCategory::ProviderRequestBudget,
+                "provider_request_budget",
+            ),
             (TurnFailureCategory::Cancelled, "cancelled"),
             (TurnFailureCategory::DaemonRestarted, "daemon_restarted"),
             (TurnFailureCategory::AgentInternal, "agent_internal"),
@@ -6432,5 +6681,156 @@ mod tests {
             reasoning.is_none(),
             "an omitted field must decode as inherit"
         );
+    }
+
+    // ADR-0065: `lsp_sync` is the witness for "the server has this
+    // revision", and a payload that omits it keeps the old meaning.
+
+    fn snapshot_dto() -> crate::document::DocumentSnapshotDto {
+        crate::document::DocumentSnapshotDto {
+            document_id: "doc-1".to_owned(),
+            project_id: "proj-1".to_owned(),
+            workspace_id: "ws-1".to_owned(),
+            relative_path: "src/main.rs".to_owned(),
+            revision: 7,
+            text: "fn main() {}\n".to_owned(),
+            dirty: false,
+            conflicted: false,
+            writer: false,
+            disk_base_digest: "digest".to_owned(),
+            scope: crate::document::DocumentScope::Workspace,
+        }
+    }
+
+    /// A `document_snapshot` payload as JSON, optionally *with* the new
+    /// field. `None` produces the pre-ADR-0065 shape.
+    fn snapshot_payload(lsp_sync: Option<DocumentLspSync>) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "type": "document_snapshot",
+            "snapshot": {
+                "document_id": "doc-1",
+                "project_id": "proj-1",
+                "workspace_id": "ws-1",
+                "relative_path": "src/main.rs",
+                "revision": 7,
+                "text": "fn main() {}\n",
+                "dirty": false,
+                "conflicted": false,
+                "writer": false,
+                "disk_base_digest": "digest"
+            },
+            "writer_lease": null,
+            "lsp_degraded": false
+        });
+        if let Some(state) = lsp_sync {
+            value["lsp_sync"] = serde_json::to_value(state).expect("state serializes");
+        }
+        value
+    }
+
+    fn decode_snapshot(value: serde_json::Value) -> (DocumentLspSync, bool) {
+        match serde_json::from_value::<CoreResponse>(value).expect("payload decodes") {
+            CoreResponse::DocumentSnapshot {
+                lsp_sync,
+                lsp_degraded,
+                ..
+            } => (lsp_sync, lsp_degraded),
+            other => panic!("expected a document snapshot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_payload_without_lsp_sync_decodes_as_the_legacy_awaited_meaning() {
+        let (state, degraded) = decode_snapshot(snapshot_payload(None));
+        assert_eq!(
+            state,
+            DocumentLspSync::Legacy,
+            "a missing field must not decode as Pending: the sender awaited \
+             its sync, and `lsp_degraded: false` meant that wait succeeded"
+        );
+        assert!(!degraded, "a legacy success payload is not degraded");
+        assert!(
+            !state.is_synced(),
+            "legacy says nothing about the current revision's publication"
+        );
+    }
+
+    #[test]
+    fn pending_is_not_synced_and_not_degraded() {
+        let (state, degraded) = decode_snapshot(snapshot_payload(Some(DocumentLspSync::Pending)));
+        assert_eq!(state, DocumentLspSync::Pending);
+        assert!(
+            !degraded,
+            "publication that has not finished is not a failure"
+        );
+        assert!(
+            !state.is_synced(),
+            "a pending publication must never read as synced"
+        );
+    }
+
+    #[test]
+    fn degraded_and_unavailable_are_the_only_degraded_states() {
+        for state in [
+            DocumentLspSync::Legacy,
+            DocumentLspSync::Pending,
+            DocumentLspSync::Synced,
+        ] {
+            assert!(!state.is_degraded(), "{state:?} must not report degraded");
+        }
+        for state in [DocumentLspSync::Degraded, DocumentLspSync::Unavailable] {
+            assert!(state.is_degraded(), "{state:?} must report degraded");
+        }
+        assert!(DocumentLspSync::Synced.is_synced());
+        assert!(!DocumentLspSync::Legacy.is_synced());
+    }
+
+    #[test]
+    fn a_new_snapshot_always_serializes_its_lsp_sync_state() {
+        let response = CoreResponse::DocumentSnapshot {
+            snapshot: snapshot_dto(),
+            writer_lease: None,
+            lsp_degraded: false,
+            lsp_sync: DocumentLspSync::Pending,
+        };
+        let value = serde_json::to_value(&response).expect("response serializes");
+        assert_eq!(
+            value.get("lsp_sync").and_then(serde_json::Value::as_str),
+            Some("pending"),
+            "a new daemon response must carry the field; omitting it would \
+             decode as the legacy awaited meaning"
+        );
+        let (state, degraded) = decode_snapshot(value);
+        assert_eq!(state, DocumentLspSync::Pending);
+        assert!(!degraded);
+    }
+
+    #[test]
+    fn the_awaited_document_responses_carry_no_lsp_sync_state() {
+        // ADR-0065 §7: change, save, and reload were not made asynchronous,
+        // so their `lsp_degraded` keeps its awaited meaning and the witness
+        // field must not appear on them.
+        for response in [
+            CoreResponse::DocumentChanged {
+                revision: 3,
+                lsp_degraded: false,
+            },
+            CoreResponse::DocumentSaved {
+                revision: 3,
+                disk_base_digest: "digest".to_owned(),
+                lsp_degraded: false,
+            },
+            CoreResponse::DocumentReloaded {
+                revision: 3,
+                lsp_degraded: false,
+            },
+        ] {
+            let value = serde_json::to_value(&response).expect("response serializes");
+            assert!(
+                value.get("lsp_sync").is_none(),
+                "{response:?} must not carry lsp_sync: it would claim a \
+                 publication deadline this response still awaits"
+            );
+        }
     }
 }

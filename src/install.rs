@@ -78,16 +78,10 @@ impl EggsearchResolution {
 
 /// Resolve the installation directory for a given executable path.
 ///
-/// Canonicalizes the executable, takes its parent, then maps that parent to
-/// the Cargo profile directory that holds the sibling binaries. Test
-/// executables live in `deps/`, the `codegg` binary lives directly in the
-/// profile directory, and a build-script output lives under
-/// `build/<pkg>/<hash>/out/`. Lifting only `deps/` found the first two and
-/// missed the third, so a helper resolved from a build-script output was
-/// sought in `<pkg>/<hash>/out/` and never existed there.
-///
-/// An installed binary has none of those shapes, so it keeps using its own
-/// directory — which is what the installation-sibling rule means.
+/// Cargo executables can run from `deps/`, the profile directory itself, or
+/// `build/<pkg>/<hash>/out/`. Resolve those Cargo layouts to the profile
+/// directory containing sibling binaries. Installed binaries keep using their
+/// own executable directory when no Cargo profile layout matches.
 pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
     let current = current
         .canonicalize()
@@ -140,24 +134,42 @@ pub fn installation_dir() -> Result<PathBuf, String> {
 /// indirection outside the directory).
 pub fn validate_installation_sibling(install_root: &Path, name: &str) -> Result<PathBuf, String> {
     let candidate = install_root.join(name);
-    let resolved = candidate
-        .canonicalize()
-        .map_err(|e| format!("installation-owned {name} could not be resolved: {e}"))?;
+    // Every arm names the candidate path. A refusal that says only "could not
+    // be resolved" cannot be told apart from a wrong installation directory,
+    // and the difference decides whether the build or the launch is at fault.
+    let resolved = candidate.canonicalize().map_err(|e| {
+        format!(
+            "installation-owned {name} could not be resolved: {e} (looked for {})",
+            candidate.display()
+        )
+    })?;
     if resolved.parent() != Some(install_root) {
         return Err(format!(
-            "installation-owned {name} escaped the installation directory"
+            "installation-owned {name} escaped the installation directory: {} is not inside {}",
+            resolved.display(),
+            install_root.display()
         ));
     }
-    let metadata = std::fs::metadata(&resolved)
-        .map_err(|e| format!("installation-owned {name} metadata unavailable: {e}"))?;
+    let metadata = std::fs::metadata(&resolved).map_err(|e| {
+        format!(
+            "installation-owned {name} metadata unavailable: {e} ({})",
+            resolved.display()
+        )
+    })?;
     if !metadata.file_type().is_file() {
-        return Err(format!("installation-owned {name} is not a regular file"));
+        return Err(format!(
+            "installation-owned {name} is not a regular file: {}",
+            resolved.display()
+        ));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(format!("installation-owned {name} is not executable"));
+            return Err(format!(
+                "installation-owned {name} is not executable: {}",
+                resolved.display()
+            ));
         }
     }
     Ok(resolved)
@@ -179,7 +191,16 @@ pub fn managed_eggsearch_path_for(current_exe: &Path) -> Result<PathBuf, String>
 /// Resolve the trusted sandbox helper sibling (strict; no PATH fallback).
 pub fn trusted_sandbox_helper_path() -> Result<PathBuf, String> {
     let dir = installation_dir()?;
-    validate_installation_sibling(&dir, &sandbox_helper_name())
+    // The derived directory can be wrong without being invalid, so the
+    // sibling check is where a bad derivation surfaces. Name the executable
+    // that produced it: the candidate path alone cannot distinguish "derived
+    // from the wrong executable" from "correctly derived and absent".
+    validate_installation_sibling(&dir, &sandbox_helper_name()).map_err(|e| {
+        let running = std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "unavailable".to_string());
+        format!("{e} (running executable: {running})")
+    })
 }
 
 /// Resolve the trusted helper for an explicit executable location.

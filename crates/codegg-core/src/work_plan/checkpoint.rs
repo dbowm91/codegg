@@ -1,18 +1,5 @@
-//! Bounded WorkPlan checkpoint provenance (long-horizon M004).
-//!
-//! The continuation checkpoint remains a bounded handoff, not WorkPlan
-//! storage. Checkpoints capture the current WorkPlan ID/revision plus a
-//! bounded active-work projection; rollover revalidates the revision before
-//! an epoch handoff becomes active. The full durable plan stays in
-//! `codegg-core::work_plan` and remains reachable through WorkPlan
-//! tools/recovery handles.
-//!
-//! Long-term references: ADR-0003 §12-§13 and
-//! `plans/implementation/long-horizon-work-execution/004-*.md` §6.
-//!
-//! Ownership: `codegg-core::work_plan` owns these types. Serialization is
-//! additive: checkpoints without `work_plan` (pre-M004) remain readable and
-//! render safely; presence of `work_plan` never embeds the full plan.
+//! Bounded WorkPlan checkpoints carry an active-work summary and revalidate the plan revision at handoff.
+//! The full plan remains in `codegg-core::work_plan`; see `architecture/work_plan.md`.
 
 use serde::{Deserialize, Serialize};
 

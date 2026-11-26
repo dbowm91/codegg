@@ -1475,6 +1475,34 @@ impl CoreDaemon {
             }
         };
 
+        let family = super::daemon_family::DaemonRequestFamily::of(&inner);
+        // Chat, Team, Interactive, HumanShell and Work Orders are served by
+        // the dispatch pre-routers, and the family match deliberately treats
+        // them as unreachable. A command effect still has to reach them — the
+        // terminal's `terminal_attach` builds an `InteractiveProcessAttach` —
+        // so it re-enters the one path that runs the pre-routers instead of
+        // falling through to `unimplemented`. The inner request is authorized
+        // there on its own operation, exactly as it would be on the wire.
+        if matches!(
+            family,
+            super::daemon_family::DaemonRequestFamily::Chat
+                | super::daemon_family::DaemonRequestFamily::Team
+                | super::daemon_family::DaemonRequestFamily::Interactive
+                | super::daemon_family::DaemonRequestFamily::HumanShell
+                | super::daemon_family::DaemonRequestFamily::WorkOrders
+        ) {
+            let envelope = crate::core::new_request(request_id.to_string(), inner);
+            let response = self
+                .handle_request_for_client(envelope, trusted_client_id)
+                .await
+                .unwrap_or_else(|error| CoreResponse::Error {
+                    code: "command_effect_failed".to_string(),
+                    message: format!("the command's effect failed: {error}"),
+                });
+            let outcome = summarize(&response);
+            return (outcome, Some(response));
+        }
+
         // The inner request is authorized on its own operation and
         // capability. `command.execute` is the authority to run a command,
         // never a widening of what the command may touch.
@@ -1493,7 +1521,6 @@ impl CoreDaemon {
             }
         };
 
-        let family = super::daemon_family::DaemonRequestFamily::of(&inner);
         let response = match self
             .dispatch_family_request(
                 family,
@@ -2693,6 +2720,16 @@ mod tests {
                     if handle == "handle-1" && *from_seq == Some(42) && max_bytes.is_none()
             ),
             "the attach row must resume the handle from the cursor the frontend holds"
+        );
+        // The family the command executor must route through the pre-router.
+        // Dispatching it straight to the family match is what returned
+        // `unimplemented` for every attach.
+        assert!(
+            matches!(
+                crate::core::daemon_family::DaemonRequestFamily::of(request.as_ref()),
+                crate::core::daemon_family::DaemonRequestFamily::Interactive
+            ),
+            "the attach must reach the interactive pre-router, not the family match"
         );
 
         // An attach with no cursor starts at the oldest retained output.

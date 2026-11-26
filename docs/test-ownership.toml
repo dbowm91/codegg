@@ -46,11 +46,11 @@
 #
 #   lib-test-target = "<member's library test target name>"
 #       The name cargo gives the member's library unit-test harness (cargo
-#       names it after the crate, with underscores). An affected member
-#       ALWAYS contributes this target. A member with no integration test
-#       targets therefore needs no `[[groups]]` entry at all: its lib test
-#       target is owned by the member entry itself.
-#
+#       names it after the crate, with underscores). Set it to an empty string
+#       for a bin-only package; scoped verification then omits --lib and runs
+#       that package's default test targets. An affected member with a library
+#       ALWAYS contributes this target.
+
 # [[groups]]
 #     One coverage group per subject. A group names the member it belongs to,
 #     the source paths its subject covers, and the test targets that cover
@@ -115,10 +115,11 @@
 # A changed file that matches no group's `paths` widens the scope to its whole
 # member rather than being skipped. The `root_catch_all` group is the
 # documented catch-all for the root package: its `paths` name the root
-# package's remaining top-level source paths (`src/lib.rs`, `src/main.rs`,
-# `src/bin/**`), and its `targets` name the root package's library test
-# target. It exists so that the root package always contributes its lib test
-# target to a scoped run, and so that a change to a root source file that no
+# package's remaining library path (`src/lib.rs`), and its `targets` name
+# the root package's library test target. The product binary is owned by
+# `codegg-cli`, not the root. It exists so that the root package always
+# contributes its library test target to a scoped run, and so that a change
+# to a root source file that no
 # precise group claims is visibly attributed rather than silently dropped.
 #
 # ---------------------------------------------------------------------
@@ -168,16 +169,18 @@
 # Group inventory
 # ---------------------------------------------------------------------
 #
-# The root package's test targets are grouped into 21 subject groups: twenty
-# precise subject groups and one documented catch-all. Before M004's
-# consolidation the root package had 288 test targets and a twenty-second
-# group for the legacy shared helper; that helper was dead and was removed,
-# and the 288 targets are now 21 family targets.
+# M004's consolidation reduced the historical root-package inventory from
+# 288 test targets to 21 families. M002 then moved the TUI-facing families
+# into `codegg-tui`; the current manifest has 27 root groups covering 28
+# owned targets, three `codegg-cli` groups covering five integration-test
+# targets, and four `codegg-tui` groups covering seven integration families.
+# The `codegg-tui` library test target is owned by its `[[members]]` entry.
+# `codegg-cli` is bin-only and owns those five targets.
 #
-# The other four members that own integration test targets (`codegg-client`,
-# `codegg-core`, `codegg-document`, `egglsp`) have their own groups below. The
-# seven remaining members own no integration test targets; their lib test
-# target is owned by their `[[members]]` entry.
+# Six members own integration-test groups: `codegg-client`, `codegg-core`,
+# `codegg-document`, `codegg-cli`, `egglsp`, and `codegg-tui`. The remaining
+# eleven non-root members have no integration-family groups; any library test
+# target is owned by the member's `[[members]]` entry.
 #
 # Run the guard after every change:
 #
@@ -194,6 +197,26 @@ schema-version = 1
 name = "codegg"
 root = "src"
 lib-test-target = "codegg"
+
+[[members]]
+name = "codegg-tui"
+root = "crates/codegg-tui/src"
+lib-test-target = "codegg_tui"
+
+[[members]]
+name = "codegg-cli"
+root = "crates/codegg-cli/src"
+lib-test-target = ""
+
+[[members]]
+name = "codegg-sandbox"
+root = "crates/codegg-sandbox/src"
+lib-test-target = "codegg_sandbox"
+
+[[members]]
+name = "codegg-sandbox-helper"
+root = "crates/codegg-sandbox-helper/src"
+lib-test-target = ""
 
 [[members]]
 name = "codegg-host-protocol"
@@ -288,10 +311,10 @@ targets = ["interactive_process_attach_resume"]
 # The TUI-side controller that drives an attached interactive terminal.
 [[groups]]
 id = "interactive_terminal_controller"
-member = "codegg"
+member = "codegg-tui"
 paths = [
-  "src/tui/interactive_terminal.rs",
-  "src/tui/terminal.rs",
+  "crates/codegg-tui/src/interactive_terminal.rs",
+  "crates/codegg-tui/src/terminal.rs",
 ]
 targets = ["interactive_process_attach_resume"]
 
@@ -348,7 +371,6 @@ member = "codegg"
 paths = [
   "src/managed_process/windows.rs",
   "src/managed_process/windows_acl_lease.rs",
-  "src/security/sandbox/**",
 ]
 targets = ["windows_sandbox_test_support"]
 
@@ -368,9 +390,9 @@ targets = ["linux_git_test_support"]
 # surfaces that hang off them.
 [[groups]]
 id = "tui_render"
-member = "codegg"
+member = "codegg-tui"
 paths = [
-  "src/tui/**",
+  "crates/codegg-tui/src/**",
   "src/theme/**",
 ]
 targets = ["tui_render"]
@@ -385,13 +407,20 @@ targets = ["tui_render"]
 # family too.
 [[groups]]
 id = "frontend_parity"
-member = "codegg"
+member = "codegg-tui"
 paths = [
-  "src/tui/app/state/projection_client.rs",
-  "src/tui/app/state/session_work.rs",
-  "src/tui/app/render.rs",
+  "crates/codegg-tui/src/app/state/projection_client.rs",
+  "crates/codegg-tui/src/app/state/session_work.rs",
+  "crates/codegg-tui/src/app/render.rs",
 ]
 targets = ["frontend_parity"]
+
+# TUI-facing daemon, security, server, and LSP integration families moved with the frontend.
+[[groups]]
+id = "tui_service_integration_families"
+member = "codegg-tui"
+paths = ["crates/codegg-tui/src/**"]
+targets = ["core_daemon", "lsp_test_support", "security_permission", "server_feature"]
 
 # The agent loop, its context ledger, skills, plugins, and work-plan surface.
 [[groups]]
@@ -415,6 +444,44 @@ paths = [
   "crates/codegg-core/src/writer_permit.rs",
 ]
 targets = ["agent_loop"]
+
+# The recorded-session replay tier (harness-practice-adoption M001). It drives
+# the shipped agent loop from a committed fixture with no key and no network,
+# so a change to prompt assembly, tool admission, the context projection or
+# compaction is exactly what it exists to fail. The scenarios read the real
+# `read` tool, which is why that surface selects the family too.
+[[groups]]
+id = "session_replay"
+member = "codegg"
+paths = [
+  "src/agent/**",
+  "src/context/**",
+  "src/tool/read.rs",
+]
+targets = ["session_replay"]
+
+# The generated tool-surface catalog (harness-practice-adoption M004). The
+# family builds `ToolRegistry::with_options` for each declared surface and
+# compares the render to `architecture/tool-catalog.md`, so a registration, a
+# backend gate, a disclosure-state change or the hand-written surface prose is
+# exactly what it exists to fail.
+[[groups]]
+id = "tool_catalog"
+member = "codegg"
+paths = [
+  "src/tool/mod.rs",
+  "src/tool/backend.rs",
+  "src/tool/codesearch.rs",
+  "src/tool/disabled.rs",
+  "src/tool/disclosure.rs",
+  "src/tool/git_read.rs",
+  "src/tool/invalid.rs",
+  "src/tool/lsp_read.rs",
+  "architecture/tool-catalog.md",
+  "architecture/agent-tool-surface.md",
+  "scripts/check_tool_catalog.py",
+]
+targets = ["tool_catalog"]
 
 # Durable jobs, admission, background execution, and scratch management.
 [[groups]]
@@ -575,7 +642,6 @@ id = "root_macos_shared_checkout_containment"
 member = "codegg"
 paths = [
   "src/security/sandbox.rs",
-  "src/security/sandbox/**",
   "src/managed_process.rs",
 ]
 targets = ["macos_native_shared_checkout_containment"]
@@ -583,9 +649,27 @@ targets = ["macos_native_shared_checkout_containment"]
 # Headless entry points must bind workspace tools and broker policy to the same root.
 [[groups]]
 id = "root_headless_workspace_path_policy"
-member = "codegg"
-paths = ["src/exec.rs", "src/main.rs", "src/tool/mod.rs"]
+member = "codegg-cli"
+paths = ["src/exec.rs", "src/tool/mod.rs"]
 targets = ["exec_workspace_path_policy"]
+
+# The ACP process contract is exercised through the CLI-owned binary.
+[[groups]]
+id = "cli_acp_stdio_protocol"
+member = "codegg-cli"
+paths = ["src/ide/**", "src/document_service.rs", "src/acp.rs", "src/client/**"]
+targets = ["acp_stdio"]
+
+# Tool Program daemon-recovery process tests exercise root tool services.
+[[groups]]
+id = "cli_tool_program_process_recovery"
+member = "codegg-cli"
+paths = ["src/tool/**", "src/python_script/**", "src/eggsact/**"]
+targets = [
+  "tool_program_m015_daemon_failpoints",
+  "tool_program_m016_notification_replay",
+  "tool_program_m017_notification_confirmation",
+]
 
 # The contained managed-worktree creation (C008): the creation seam, the
 # contained child, the grant it runs with, and the mount view. The hosted
@@ -658,12 +742,9 @@ targets = ["git_consistency_consumers_c005"]
 [[groups]]
 id = "root_catch_all"
 member = "codegg"
-paths = [
-  "src/lib.rs",
-  "src/main.rs",
-  "src/bin/**",
-]
+paths = ["src/lib.rs"]
 targets = ["codegg"]
+
 
 # ---------------------------------------------------------------------
 # `codegg-client` coverage groups
@@ -720,6 +801,7 @@ paths = [
 targets = [
   "cached_models_composite_key",
   "continuation_checkpoint",
+  "message_store_concurrency",
   "session_working_directory",
   "session_title_slug",
 ]
@@ -878,14 +960,13 @@ targets = [
 # "which tests are affected by this file?" for a file that lives in a
 # crate another crate depends on.
 #
-# The mechanism is simple and unavoidable: the root package depends on
-# **all eleven** other workspace crates, and it re-exports several of
-# them (`codegg::security::*` is `eggsentry`, `codegg::lsp::*` is
-# `egglsp`, `codegg::scheduler::config::*` is `codegg-config`, and so
-# on). A change to `crates/eggsentry/src/command.rs` therefore changes
-# the behaviour of `codegg::security::scanner::inspect_text`, which the
-# root package's own security tool calls, which the root package's
-# integration tests call.
+# The root package has direct edges to 13 workspace crates and re-exports
+# several of them (`codegg::security::*` is `eggsentry`, `codegg::lsp::*` is
+# `egglsp`, `codegg::scheduler::config::*` is `codegg-config`, and so on).
+# It intentionally has no edge to `codegg-tui` or `codegg-cli`. A change to
+# `crates/eggsentry/src/command.rs` therefore changes the behaviour of
+# `codegg::security::scanner::inspect_text`, which the root package's own
+# security tool calls, which the root package's integration tests call.
 #
 # The coupling runs **through the dependent's own source**, so a
 # path-to-target rule cannot see it: the test file that calls the root's
@@ -910,11 +991,11 @@ targets = [
 # call graph from every test to every crate, which the repository does
 # not have and which this workstream exists to avoid paying for.
 #
-# The cost is stated plainly: a change to any non-root crate widens the
-# scope to the root package's whole integration surface, because the root
-# package depends on every other crate. A change confined to the root
-# package's own `src/` — the common case — stays precise, because the
-# root package has no dependents.
+# The cost is stated plainly: a change to a crate that the root depends on
+# widens to the root's full test surface and then to its dependents. Root
+# changes also widen to `codegg-tui` and `codegg-cli`; TUI changes widen to
+# the CLI. A change confined to a leaf package does not flow backward into
+# the root, because the dependency direction is one-way.
 #
 # The edge set is **mechanically verifiable**: the guard compares it
 # against `cargo metadata`'s workspace-local dependency edges and fails
@@ -982,6 +1063,18 @@ member = "codegg-providers"
 dependent = "codegg-core"
 
 [[dependencies]]
+member = "codegg-core"
+dependent = "codegg-sandbox"
+
+[[dependencies]]
+member = "codegg-sandbox"
+dependent = "codegg"
+
+[[dependencies]]
+member = "codegg-sandbox"
+dependent = "codegg-sandbox-helper"
+
+[[dependencies]]
 member = "eggcontext"
 dependent = "codegg"
 
@@ -1021,3 +1114,51 @@ dependent = "codegg"
 [[dependencies]]
 member = "codegg-host-protocol"
 dependent = "codegg-sdk"
+
+[[dependencies]]
+member = "codegg"
+dependent = "codegg-cli"
+
+[[dependencies]]
+member = "codegg-client"
+dependent = "codegg-cli"
+
+[[dependencies]]
+member = "codegg-core"
+dependent = "codegg-cli"
+
+[[dependencies]]
+member = "codegg-protocol"
+dependent = "codegg-cli"
+
+[[dependencies]]
+member = "codegg"
+dependent = "codegg-tui"
+
+[[dependencies]]
+member = "codegg-client"
+dependent = "codegg-tui"
+
+[[dependencies]]
+member = "codegg-core"
+dependent = "codegg-tui"
+
+[[dependencies]]
+member = "codegg-document"
+dependent = "codegg-tui"
+
+[[dependencies]]
+member = "codegg-protocol"
+dependent = "codegg-tui"
+
+[[dependencies]]
+member = "codegg-tui"
+dependent = "codegg-cli"
+
+[[dependencies]]
+member = "egggit"
+dependent = "codegg-tui"
+
+[[dependencies]]
+member = "egglsp"
+dependent = "codegg-tui"

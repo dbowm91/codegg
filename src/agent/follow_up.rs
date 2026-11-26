@@ -13,6 +13,7 @@ use crate::agent::coordinator::TurnPhase;
 use crate::agent::processor::EventProcessor;
 use crate::agent::progress_recovery::AutonomyState;
 use crate::bus::events::AppEvent;
+use crate::error::AppError;
 use crate::provider::text_tool_parser::repair_text_as_tool_calls;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
 use crate::tool::plan::detect_plan_mode_change;
@@ -266,18 +267,10 @@ impl AgentLoop {
                         }),
                     ))
                 }
-                // M007: the coarse, scheduler-owned job status for a
-                // peer group member. The predicate is the same
-                // authorization the other peer hints use: the event must
-                // be scoped to this session, the observer must be a
-                // member of a group in it, and the job must not be the
-                // observer's own.
-                //
-                // The payload carries the job id, the typed kind and the
-                // phase. It never carries the command line, the
-                // environment, the logs, the cache contents or an
-                // artifact path: the durable job record is the
-                // authority for those, and this hint is not it.
+                // M007 exposes coarse job status to same-session peer-group
+                // members, excluding the observer's own job. Commands,
+                // environment, logs and artifacts remain in the durable job
+                // record and are never included in this hint.
                 crate::bus::events::AppEvent::JobStatusObserved {
                     session_id,
                     turn_id,
@@ -452,9 +445,9 @@ impl AgentLoop {
         request: &mut ChatRequest,
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
-    ) {
+    ) -> Result<(), crate::error::AppError> {
         let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
-            .resolve(&request.model);
+            .resolve_for_provider(Some(self.services.provider.id()), &request.model);
         loop {
             // Check if a follow-up is already queued without blocking
             let prompt = match self.follow_up_rx.try_recv() {
@@ -465,11 +458,11 @@ impl AgentLoop {
                 Err(mpsc::error::TryRecvError::Empty) => {
                     // No follow-up queued, return immediately without blocking
                     tracing::debug!("No follow-up queued, skipping drain");
-                    return;
+                    return Ok(());
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     tracing::info!("Follow-up channel disconnected");
-                    return;
+                    return Ok(());
                 }
             };
 
@@ -484,9 +477,29 @@ impl AgentLoop {
             let mut autonomy = AutonomyState::default();
             let mut just_executed_tools = false;
             loop {
+                // The main loop checks the turn budget and cancellation before
+                // every provider call. This copy is a second provider/tool
+                // loop, so it obeys the same bound: otherwise a follow-up can
+                // outlive the turn that drained it and spend work the turn
+                // already reported as stopped.
+                if let Some(reason) = self.check_limits() {
+                    tracing::info!(
+                        session_id = %self.session_id,
+                        reason = %reason,
+                        "follow-up drain stopped: turn budget spent"
+                    );
+                    self.record_stop_reason(reason);
+                    return Ok(());
+                }
+                if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+                    tracing::info!(
+                        session_id = %self.session_id,
+                        "follow-up drain stopped: turn cancelled"
+                    );
+                    return Ok(());
+                }
                 self.lifecycle.set_phase(TurnPhase::ContextPreparation);
-                self.compact_if_needed(&mut request.messages, &model_profile)
-                    .await;
+                self.compact_if_needed(request, &model_profile).await;
                 // Phase 5: observe in follow-up loop after compaction and before provider call.
                 self.observe_context_pack(
                     request,
@@ -511,8 +524,8 @@ impl AgentLoop {
                     {
                         Ok(events) => events,
                         Err(e) => {
-                            tracing::error!("Follow-up stream error: {}", e);
-                            return;
+                            tracing::error!(error = %e, "Follow-up stream failed");
+                            return Err(e);
                         }
                     };
 
@@ -534,7 +547,7 @@ impl AgentLoop {
                     }
                     let adapter =
                         crate::model_profile::ModelProfileResolver::new(&self.services.config)
-                            .resolve_adapter(None, &request.model);
+                            .resolve_adapter(Some(self.services.provider.id()), &request.model);
                     if let Some(profile) = adapter.text_tool_repair.as_deref() {
                         if !autonomy.adapter_repair_allowed() {
                             // Repair budget exhausted: M002 permits at most one
@@ -595,16 +608,25 @@ impl AgentLoop {
                         } else {
                             preview
                         };
+                        let message = format!(
+                            "Model returned stop_reason=tool_calls without parseable structured tool calls after retries. Raw text: {}",
+                            preview
+                        );
                         tracing::warn!(
                             "Model returned stop_reason=tool_calls without parseable structured tool calls after retries; raw_text={}",
                             preview
                         );
                         crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                        message: format!(
-                            "Model returned stop_reason=tool_calls without parseable structured tool calls after retries. Raw text: {}",
-                            preview
-                        ),
-                    });
+                            session_id: Some(self.session_id.clone()),
+                            message: message.clone(),
+                        });
+                        // Same terminal as the main loop's arm: the model
+                        // asked to call tools and none could be parsed, so the
+                        // turn failed. Persist the evidence first so the
+                        // failure path does not also discard it.
+                        self.persist_turn_transcript(all_events.as_slice()).await;
+                        processor.reset();
+                        return Err(AppError::Agent(crate::error::AgentError::Invalid(message)));
                     }
                     processor.reset();
                     break;
@@ -621,9 +643,12 @@ impl AgentLoop {
                     {
                         Ok(results) => results,
                         Err(e) => {
+                            // The main loop propagates this with `?` into
+                            // `TurnFailed`. Returning `Ok(())` here reported a
+                            // failed tool dispatch as a finished turn.
                             tracing::error!("Tool execution error: {}", e);
                             processor.reset();
-                            return;
+                            return Err(e);
                         }
                     },
                 };
@@ -807,5 +832,175 @@ mod peer_observation_tests {
         assert!(path_claim_overlaps("src", "src/api.rs"));
         assert!(!path_claim_overlaps("src/api.rs", "src/api.rs.bak"));
         assert!(!path_claim_overlaps("src/api.rs", "tests/api.rs"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::processor::EventProcessor;
+    use crate::agent::r#loop::AgentLoop;
+    use crate::provider::{
+        ChatEvent, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
+        ProviderError, TokenUsage,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// One scripted provider response: the events a single `stream` call emits.
+    type ScriptedResponse = Vec<Result<ChatEvent, ProviderError>>;
+
+    #[derive(Clone)]
+    struct RecordingProvider {
+        calls: Arc<AtomicUsize>,
+        tools_seen: Arc<Mutex<Vec<bool>>>,
+        script: Arc<Mutex<std::collections::VecDeque<ScriptedResponse>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for RecordingProvider {
+        fn id(&self) -> &str {
+            "follow-up-recording"
+        }
+
+        fn name(&self) -> &str {
+            "follow-up-recording"
+        }
+
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+
+        async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.tools_seen
+                .lock()
+                .expect("tools_seen mutex")
+                .push(request.tools.is_some());
+            let events = self
+                .script
+                .lock()
+                .expect("script mutex")
+                .pop_front()
+                .unwrap_or_default();
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+
+        async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn recording_provider(
+        script: Vec<Vec<Result<ChatEvent, ProviderError>>>,
+    ) -> (RecordingProvider, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = RecordingProvider {
+            calls: calls.clone(),
+            tools_seen: Arc::new(Mutex::new(Vec::new())),
+            script: Arc::new(Mutex::new(script.into())),
+        };
+        (provider, calls)
+    }
+
+    fn test_loop(provider: Box<dyn Provider>) -> (AgentLoop, tempfile::TempDir) {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let session_id = format!("follow-up-{}", uuid::Uuid::new_v4());
+        let agent_loop = AgentLoop::new(
+            Vec::new(),
+            provider,
+            crate::permission::PermissionChecker::new(None, None),
+            crate::tool::ToolRegistry::default(),
+            crate::config::schema::Config::default(),
+            None,
+            None,
+            Arc::new(crate::context::InMemoryArtifactStore::new()),
+            workspace.path().to_path_buf(),
+            session_id,
+            None,
+            None,
+        );
+        (agent_loop, workspace)
+    }
+
+    fn test_request() -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: "initial test prompt".to_string().into(),
+                }],
+            }],
+            model: "test/model".to_string(),
+            tools: None,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_follow_up_drain_obeys_the_spent_budget() {
+        let (provider, calls) = recording_provider(Vec::new());
+        let (mut agent_loop, _workspace) = test_loop(Box::new(provider));
+        agent_loop.set_max_turns(0);
+        agent_loop
+            .follow_up_sender()
+            .try_send("follow-up".to_string())
+            .expect("follow-up is queued");
+        let mut request = test_request();
+        let mut all_events = Vec::new();
+        let mut processor = EventProcessor::new();
+
+        let result = agent_loop
+            .drain_follow_up(&mut request, &mut all_events, &mut processor)
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            agent_loop.turn_stop_reason().as_deref(),
+            Some("max turns (0) reached")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_tool_call_stop_fails_the_turn() {
+        let (provider, calls) = recording_provider(vec![vec![
+            Ok(ChatEvent::TextDelta(Arc::new(
+                "no structured tool payload".to_string(),
+            ))),
+            Ok(ChatEvent::Finish {
+                stop_reason: Arc::new("tool_calls".to_string()),
+                usage: TokenUsage::default(),
+            }),
+        ]]);
+        let (mut agent_loop, _workspace) = test_loop(Box::new(provider));
+        agent_loop.set_max_turns(1);
+        agent_loop
+            .follow_up_sender()
+            .try_send("follow-up".to_string())
+            .expect("follow-up is queued");
+        let mut request = test_request();
+        let mut all_events = Vec::new();
+        let mut processor = EventProcessor::new();
+
+        let error = agent_loop
+            .drain_follow_up(&mut request, &mut all_events, &mut processor)
+            .await
+            .expect_err("an unparseable tool-call stop is a failed turn");
+        match error {
+            crate::error::AppError::Agent(crate::error::AgentError::Invalid(message)) => {
+                assert!(message.contains("stop_reason=tool_calls"));
+            }
+            other => panic!("unexpected follow-up failure: {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(all_events
+            .iter()
+            .any(|event| matches!(event, ChatEvent::Finish { .. })));
     }
 }

@@ -1,0 +1,150 @@
+{
+  "attempt": 23,
+  "authorization": {
+    "combined_starts_authorized": 120,
+    "new_user_grant_for_additional_starts": 40,
+    "starts_consumed_after_attempt": 23,
+    "starts_remaining": 97
+  },
+  "autonomous_followup_count": 40,
+  "billed_usd": "unknown",
+  "causal_events": {
+    "count": 2598,
+    "dropped": 0,
+    "event_gap_count": 0,
+    "state": "observed_complete"
+  },
+  "continuation_stop_reason": "followup_limit",
+  "diagnosis": {
+    "corrective": "Raise H007 same-session follow-up ceiling to 100 while keeping provider requests, native calls, wall-clock, prompt-work, disk, and inactivity caps unchanged; report event measurement, verifier outcome, and task completion independently.",
+    "not_observed": [
+      "provider request failure or timeout",
+      "ACP event loss or unpaired tool call",
+      "native activity stall",
+      "disk-floor stop",
+      "daemon cleanup leak"
+    ],
+    "primary": "The harness stopped same-session continuation at the 40-follow-up ceiling even though native progress remained, 160 provider requests remained, and the 60-minute wall-clock cap had not fired.",
+    "secondary": "The task was still incomplete at stop: required stages/gates remained pending, the workspace and Clippy success jobs were not submitted, and one of 18 submitted test jobs remained running. The independent verifier did not establish correctness (setup_error, zero unittest tests reported)."
+  },
+  "disk": {
+    "after_run_free_bytes": 26557034496,
+    "hard_floor_bytes": 10737418240,
+    "lowest_free_bytes": 24404971520,
+    "triggered": false
+  },
+  "duration": {
+    "active_work_span_ms": 2506166,
+    "maximum_activity_gap_ms": 18757,
+    "minimum_ms": 1800000,
+    "stall_triggered": false,
+    "wallclock_seconds": 2524.101
+  },
+  "independent_verifier": {
+    "exit_code": 1,
+    "failure_counts": {
+      "errors": 1,
+      "failures": 0
+    },
+    "passed_count": 44,
+    "raw_output_retained": false,
+    "setup_failure_reason": "unclassified_setup_failure",
+    "state": "setup_error",
+    "tests_run": 0,
+    "traceback_retained": false,
+    "verbose_tests_observed": 45
+  },
+  "manifest_sha256": "372808b5538f0237479caca637acd21c92c62daeca4c44fe20f27a979de2d6e3",
+  "model": "opencode_go/muse-spark-1.3-contributor",
+  "native_calls": {
+    "count": 1127,
+    "limit": 1600,
+    "started": 1127,
+    "terminal": 1127,
+    "unpaired": 0
+  },
+  "outcome": {
+    "corrected_event_measurement_complete": true,
+    "corrected_horizon_reason": "verifier_setup_error",
+    "horizon_outcome": "not_qualified",
+    "old_horizon_reason": "measurement_incomplete",
+    "solved": false,
+    "task_outcome": "inconclusive"
+  },
+  "provider_allowance_usd": 0.013153,
+  "provider_requests": {
+    "admitted": 1040,
+    "attempts_failed": 0,
+    "attempts_started": 1040,
+    "attempts_succeeded": 1040,
+    "limit": 1200,
+    "remaining_at_stop": 160,
+    "source": "codegg_provider_boundary_receipt",
+    "timeout_events": 0
+  },
+  "receipt_sha256": "742b7b5df73513d21e9ffb242c226745d672e7243e7a10bb854c9a76423918f4",
+  "route": "opencode_go",
+  "schema_version": 1,
+  "stop_reason": "end_turn",
+  "task": {
+    "completion_diagnostic": {
+      "raw_job_ids_retained": false,
+      "raw_note_retained": false,
+      "reasons": [
+        "continuation_not_confirmed",
+        "required_stages_incomplete",
+        "required_gates_incomplete",
+        "required_success_jobs_incomplete",
+        "test_jobs_nonterminal",
+        "required_review_unobserved"
+      ],
+      "schema": "h007_task_completion_diagnostic_v1",
+      "state": "incomplete",
+      "verifier_outcome": "setup_error"
+    },
+    "continuation_valid": false,
+    "incomplete_gates": [
+      "release_scale_overlap",
+      "provenance_queries",
+      "cli_contract",
+      "acceptance_audit",
+      "workspace_qualification",
+      "independent_review"
+    ],
+    "incomplete_required_success_jobs": [
+      "workspace_tests",
+      "clippy"
+    ],
+    "incomplete_stages": [
+      "provenance_queries",
+      "cli_contract",
+      "acceptance_audit",
+      "workspace_qualification"
+    ],
+    "public_artifacts_present": true,
+    "release_overlap_confirmed": true,
+    "repair_cycles": 4,
+    "reviewer": {
+      "durable_state": "completed",
+      "exact_terminal_observations": 1,
+      "failure_class": null,
+      "get_count": 1,
+      "spawn_count": 1,
+      "status": "completed"
+    },
+    "test_jobs": {
+      "submission_count": 18,
+      "terminal_observed_count": 17,
+      "terminal_status_counts": {
+        "cancelled": 1,
+        "completed": 12,
+        "failed": 4
+      },
+      "unobserved_count": 1,
+      "unobserved_status_counts": {
+        "running": 1
+      }
+    }
+  },
+  "terminal": "completed"
+}

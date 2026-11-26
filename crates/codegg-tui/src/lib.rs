@@ -1,0 +1,2943 @@
+//! # Terminal User Interface (TUI)
+
+pub use codegg::{bus, goal, plugin};
+
+pub mod app;
+pub mod async_cmd;
+pub mod chat_browser;
+pub mod command;
+pub mod command_route;
+pub mod commands;
+pub mod components;
+pub mod composer_claims;
+pub mod composer_geometry;
+pub mod composer_text;
+#[cfg(all(test, unix))]
+mod daemon_socket_integration_tests;
+pub mod file_diff;
+pub mod file_icons;
+pub mod helix_selection;
+pub mod input;
+pub mod interactive_terminal;
+pub mod layout;
+pub mod panel_resize;
+pub mod panels;
+pub mod render_cost;
+pub mod route;
+pub(crate) mod runtime;
+pub mod selection;
+pub mod task_lifecycle;
+pub mod terminal;
+pub mod text_geometry;
+pub mod theme;
+mod theme_projection;
+pub mod ui_builders;
+pub mod wrap;
+
+pub use app::{App, Dialog, SessionMutationOp, ShellPromotionStageResult, TuiCommand};
+pub use input::InputAction;
+pub use route::Route;
+pub use terminal::{create_terminal, AppTerminal};
+pub use theme::Theme;
+pub use theme_projection::ThemeRegistryTuiExt;
+
+pub use runtime::event_loop::run_event_loop;
+
+#[cfg(test)]
+mod shell_dispatch_tests {
+    use crate::app::App;
+    use crate::app::TuiCommand;
+    use crate::commands::shell::{
+        handle_run_human_shell, handle_shell_ask, handle_shell_include, handle_shell_kill,
+        handle_shell_list, handle_shell_show,
+    };
+    use crate::components::messages::MessageRole;
+    use codegg::shell::types::{
+        ShellCapturePolicy, ShellCommandId, ShellEnvPolicy, ShellOrigin, ShellRequest,
+    };
+    use std::time::Duration;
+
+    struct CapturingTurnClient(
+        tokio::sync::mpsc::UnboundedSender<codegg::protocol::core::CoreRequest>,
+    );
+
+    #[async_trait::async_trait]
+    impl codegg::core::CoreClient for CapturingTurnClient {
+        async fn request(
+            &self,
+            request: codegg::protocol::core::RequestEnvelope<codegg::protocol::core::CoreRequest>,
+        ) -> Result<codegg::protocol::core::CoreResponse, codegg::error::AppError> {
+            let _ = self.0.send(request.payload.clone());
+            match request.payload {
+                codegg::protocol::core::CoreRequest::HumanShellPromotionStage {
+                    session_id,
+                    promotion_id,
+                    source_id,
+                    projection,
+                } => Ok(
+                    codegg::protocol::core::CoreResponse::HumanShellPromotionStaged {
+                        promotion: codegg::protocol::core::HumanShellPromotionDto {
+                            id: promotion_id,
+                            source_id,
+                            session_id,
+                            projection_bytes: projection.len(),
+                            projection,
+                            status: "pending".into(),
+                            created_at_ms: 1,
+                            expires_at_ms: 2,
+                            consumed_turn_id: None,
+                        },
+                        duplicate: false,
+                    },
+                ),
+                _ => Ok(codegg::protocol::core::CoreResponse::Ack),
+            }
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            codegg::protocol::core::EventEnvelope<codegg::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
+    fn make_test_app() -> App {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.session_state.session = Some(codegg::session::Session {
+            id: "shell-test-session".into(),
+            project_id: "/tmp".into(),
+            directory: "/tmp".into(),
+            ..Default::default()
+        });
+        app
+    }
+
+    fn acknowledge_composer_shell_promotion(app: &mut App, source_id: u64) {
+        let projection = app.prompt_state.prompt.get_text().to_owned();
+        assert!(
+            !projection.is_empty(),
+            "prepared shell projection is available"
+        );
+        app.prompt_state.prompt.clear();
+        let session_id = app
+            .active_session_id()
+            .map(str::to_owned)
+            .or_else(|| {
+                app.session_state
+                    .session
+                    .as_ref()
+                    .map(|session| session.id.clone())
+            })
+            .unwrap_or_default();
+        let workspace_id = app.active_workspace_id().map(str::to_owned).or_else(|| {
+            app.session_state
+                .session
+                .as_ref()
+                .and_then(|session| session.workspace_id.clone())
+        });
+        app.apply_shell_promotion_staged(crate::ShellPromotionStageResult {
+            source_id,
+            promotion_id: uuid::Uuid::new_v4(),
+            session_id,
+            workspace_id,
+            projection,
+            duplicate: false,
+            status: Some("pending".into()),
+            error: None,
+        });
+    }
+
+    #[test]
+    fn disabled_human_shell_refuses_direct_run_command() {
+        let mut app = make_test_app();
+        app.shell_enabled = false;
+        handle_run_human_shell(
+            &mut app,
+            "echo must-not-run".to_string(),
+            false,
+            std::env::temp_dir(),
+            false,
+        );
+        assert!(app.shell_store.list_recent(1).is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("disabled by configuration")));
+    }
+
+    #[test]
+    fn private_shell_cell_previews_never_enter_provider_context() {
+        let mut app = make_test_app();
+        app.messages_state
+            .messages
+            .add_shell_cell(1, "printf secret", "/tmp");
+        app.messages_state.messages.update_shell_cell(1, |update| {
+            update.stdout_preview = Some("private-output-secret".into());
+            update.stderr_preview = Some("private-stderr-secret".into());
+            update.status = Some("exited".into());
+        });
+
+        let provider_context = format!("{:?}", app.build_provider_context());
+        assert!(!provider_context.contains("printf secret"));
+        assert!(!provider_context.contains("private-output-secret"));
+        assert!(!provider_context.contains("private-stderr-secret"));
+    }
+
+    fn insert_completed_entry(
+        app: &mut App,
+        id: u64,
+        command: &str,
+        stdout: &[u8],
+        stderr: &[u8],
+        exit_code: Option<i32>,
+    ) {
+        let cmd_id = ShellCommandId(id);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: command.to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+        app.shell_store.append_stdout(cmd_id, stdout);
+        app.shell_store.append_stderr(cmd_id, stderr);
+        let exit = exit_code.unwrap_or(0);
+        app.shell_store
+            .mark_exited(cmd_id, Some(exit), Duration::from_secs(1));
+        crate::commands::shell::capture_shell_binding(app, id);
+    }
+
+    fn published_run(
+        run_id: &str,
+        command: &str,
+        status: &str,
+        exit_code: Option<i32>,
+    ) -> codegg::protocol::projection::dto::ShellRunProjection {
+        codegg::protocol::projection::dto::ShellRunProjection {
+            run_id: run_id.to_string(),
+            command: command.to_string(),
+            cwd: "/tmp".to_string(),
+            origin: "bang".to_string(),
+            status: status.to_string(),
+            started_at_ms: Some(1_000),
+            completed_at_ms: Some(1_200),
+            exit_code,
+        }
+    }
+
+    fn app_with_published_runs(
+        runs: Vec<codegg::protocol::projection::dto::ShellRunProjection>,
+    ) -> App {
+        let mut app = make_test_app();
+        let mut snapshot = codegg::protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+            "shell-test-session",
+            "/tmp",
+            "/tmp",
+        );
+        for run in runs {
+            snapshot.upsert_shell_run(run);
+        }
+        app.projection_client.controller_mut().install_subscription(
+            codegg::protocol::projection::replay::ProjectionSubscriptionId::new("sub-1"),
+            codegg::protocol::projection::replay::ProjectionStreamDescriptor {
+                stream_id: codegg::protocol::projection::replay::ProjectionStreamId::new(
+                    "stream-1",
+                )
+                .expect("a valid stream id"),
+                kind: codegg::protocol::projection::replay::ProjectionStreamKind::Session,
+                project_id: "/tmp".into(),
+                workspace_id: Some("/tmp".into()),
+                session_id: Some("shell-test-session".into()),
+                projection_version: 1,
+                retention_floor_seq: 0,
+                high_water_seq: 0,
+                latest_checkpoint_seq: None,
+            },
+            snapshot,
+        );
+        app
+    }
+
+    fn get_toasts(app: &App) -> Vec<String> {
+        app.messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect()
+    }
+
+    fn get_user_messages(app: &App) -> Vec<String> {
+        app.messages_state
+            .messages
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::User)
+            .map(|m| m.text_content())
+            .collect()
+    }
+
+    #[test]
+    fn shell_list_empty_shows_toast() {
+        let mut app = app_with_published_runs(Vec::new());
+        handle_shell_list(&mut app);
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("No shell commands")),
+            "should show empty message, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_list_with_entries_shows_recent() {
+        let mut app = app_with_published_runs(vec![
+            published_run("run-1", "echo hello", "exited", Some(0)),
+            published_run("run-2", "cargo test", "exited", Some(1)),
+        ]);
+        handle_shell_list(&mut app);
+        let toasts = get_toasts(&app);
+        let text = toasts.join("\n");
+        assert!(
+            text.contains("echo hello"),
+            "should list command, got: {text}"
+        );
+        assert!(
+            text.contains("cargo test"),
+            "should list command, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_include_unknown_id_shows_warning() {
+        let mut app = make_test_app();
+        handle_shell_include(&mut app, 999, "all".to_string(), None);
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("not found")),
+            "should show not-found warning, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_include_without_session_keeps_output_private() {
+        let mut app = make_test_app();
+        app.session_state.session = None;
+        insert_completed_entry(&mut app, 1, "echo private", b"private", b"", Some(0));
+
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+
+        assert!(get_user_messages(&app).is_empty());
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("session before promoting")));
+    }
+
+    #[test]
+    fn shell_include_after_session_switch_keeps_output_private() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "echo old session", b"old-output", b"", Some(0));
+        app.session_state.session.as_mut().unwrap().id = "new-session".into();
+
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+
+        assert!(get_user_messages(&app).is_empty());
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("different session")));
+    }
+
+    #[test]
+    fn shell_include_full_mode_promotes_output() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "echo hello", b"hello\n", b"", Some(0));
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        let projection = app.prompt_state.prompt.get_text().to_owned();
+        assert!(
+            !projection.is_empty(),
+            "without an owner, output remains a draft"
+        );
+        app.prompt_state.prompt.clear();
+        app.apply_shell_promotion_staged(crate::ShellPromotionStageResult {
+            source_id: 1,
+            promotion_id: uuid::Uuid::new_v4(),
+            session_id: "shell-test-session".into(),
+            workspace_id: None,
+            projection,
+            duplicate: false,
+            status: Some("pending".into()),
+            error: None,
+        });
+        let msgs = get_user_messages(&app);
+        assert!(
+            msgs.iter().any(|m| m.contains("echo hello")),
+            "should include command in promoted message, got: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("hello")),
+            "should include stdout in promoted message, got: {msgs:?}"
+        );
+        let provider_context = app.build_provider_context();
+        let staged_user_text: Vec<&str> = provider_context
+            .iter()
+            .flat_map(|message| match message {
+                codegg::provider::Message::User { content } => content
+                    .iter()
+                    .filter_map(|part| match part {
+                        codegg::provider::ContentPart::Text { text } if text.contains("hello") => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(
+            staged_user_text.len(),
+            0,
+            "the frontend omits the projection because the daemon appends it from durable staging"
+        );
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("staged")),
+            "should show staging toast, got: {toasts:?}"
+        );
+        let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
+        assert!(!entry.promoted, "staging is not daemon acceptance");
+        assert_eq!(app.pending_shell_promotions.len(), 1);
+        assert_eq!(app.pending_shell_promotions[0].source_id, 1);
+        let receipt = (app.pending_shell_promotions[0].id, 1);
+        app.apply_shell_promotions_submitted(&[receipt], Some("busy".into()));
+        assert!(!app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
+        assert_eq!(app.pending_shell_promotions.len(), 1);
+        app.apply_shell_promotions_submitted(&[receipt], None);
+        assert!(app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
+        assert!(app.pending_shell_promotions.is_empty());
+        let later_context = app.build_provider_context();
+        assert_eq!(
+            later_context
+                .iter()
+                .flat_map(|message| match message {
+                    codegg::provider::Message::User { content } => content
+                        .iter()
+                        .filter_map(|part| match part {
+                            codegg::provider::ContentPart::Text { text }
+                                if text.contains("echo hello") =>
+                            {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .count(),
+            1,
+            "consumed evidence remains once as conversation history"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_turn_carries_one_redacted_shell_projection_to_provider_context() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "echo accepted",
+            b"provider-shell-marker Authorization: Bearer secret-value-1234567890\n",
+            b"",
+            Some(0),
+        );
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        let projection = app.prompt_state.prompt.get_text().to_owned();
+        assert!(!projection.is_empty());
+        app.prompt_state.prompt.clear();
+        app.apply_shell_promotion_staged(crate::ShellPromotionStageResult {
+            source_id: 1,
+            promotion_id: uuid::Uuid::new_v4(),
+            session_id: "shell-test-session".into(),
+            workspace_id: None,
+            projection,
+            duplicate: false,
+            status: Some("pending".into()),
+            error: None,
+        });
+        let staged_id = app.pending_shell_promotions[0].id.to_string();
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.attach_core_client(std::sync::Arc::new(CapturingTurnClient(request_tx)));
+        let (tui_tx, mut tui_rx) = tokio::sync::mpsc::channel(4);
+        app.tui_cmd_tx = Some(tui_tx);
+
+        app.dispatch_turn_submit_request("next user turn".into());
+
+        let request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("turn request arrives")
+            .expect("captured request");
+        let wire = serde_json::to_string(&request).expect("serialize provider-facing request");
+        assert!(!wire.contains("provider-shell-marker"));
+        assert!(!wire.contains("[REDACTED:bearer-token]"));
+        assert!(!wire.contains("secret-value-1234567890"));
+        assert!(
+            matches!(request, codegg::protocol::core::CoreRequest::TurnSubmit { human_shell_promotion_ids, .. } if human_shell_promotion_ids == vec![staged_id])
+        );
+        match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
+            .await
+            .expect("acceptance completion arrives")
+            .expect("completion command")
+        {
+            TuiCommand::TurnSubmissionFinished { outcome, .. } => {
+                assert!(
+                    !outcome.is_failure(),
+                    "the daemon accepted the turn: {outcome:?}"
+                );
+            }
+            other => panic!("unexpected turn completion command: {other:?}"),
+        }
+        match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
+            .await
+            .expect("promotion completion arrives")
+            .expect("promotion completion command")
+        {
+            TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
+                assert!(error.is_none());
+                app.apply_shell_promotions_submitted(&promotions, error);
+            }
+            other => panic!("unexpected completion command: {other:?}"),
+        }
+        assert!(app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
+    }
+
+    #[tokio::test]
+    async fn shell_ask_submits_one_question_turn_with_redacted_evidence() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            2,
+            "echo ask",
+            b"ask-shell-marker Authorization: Bearer ask-secret-value-1234567890\n",
+            b"",
+            Some(0),
+        );
+        // The daemon's run binding. The frontend names the **run**; the
+        // daemon reads its own bytes and redacts them.
+        app.remote_shell_runs.insert(
+            2,
+            codegg::shell::daemon::RemoteShellRunBinding {
+                run_id: "daemon-run-2".into(),
+                project_id: "/tmp".into(),
+                workspace_id: "workspace-1".into(),
+                session_id: Some("shell-test-session".into()),
+            },
+        );
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.attach_core_client(std::sync::Arc::new(CapturingTurnClient(request_tx)));
+        let (tui_tx, mut tui_rx) = tokio::sync::mpsc::channel(4);
+        app.tui_cmd_tx = Some(tui_tx);
+
+        handle_shell_ask(&mut app, 2, "explain this result".into());
+
+        // **One** request. The frontend names the daemon's run and the
+        // question; it never carries the evidence bytes, so it never
+        // redacts them either.
+        let request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("the ask request arrives")
+            .expect("captured request");
+        let wire = serde_json::to_string(&request).expect("serialize the ask request");
+        assert!(
+            !wire.contains("ask-shell-marker"),
+            "the frontend must not carry the evidence bytes: {wire}"
+        );
+        assert!(
+            !wire.contains("ask-secret-value-1234567890"),
+            "the frontend must not carry the evidence bytes: {wire}"
+        );
+        match request {
+            codegg::protocol::core::CoreRequest::SessionPromptSubmitWithHumanShellPromotions {
+                session_id,
+                text,
+                human_shell_promotions,
+                ..
+            } => {
+                assert_eq!(session_id, "shell-test-session");
+                assert_eq!(
+                    text,
+                    "Answer the question contained in the attached human-shell evidence."
+                );
+                assert_eq!(human_shell_promotions.len(), 1);
+                assert_eq!(human_shell_promotions[0].source_id, "daemon-run-2");
+                assert_eq!(human_shell_promotions[0].question, "explain this result");
+            }
+            other => panic!("expected the atomic ask, got {other:?}"),
+        }
+        match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
+            .await
+            .expect("acceptance completion arrives")
+            .expect("completion command")
+        {
+            TuiCommand::ShellAskSubmitted {
+                id: 2,
+                promotion_id,
+                text,
+                error,
+            } => {
+                assert!(error.is_none());
+                crate::commands::shell::apply_shell_ask_submitted(
+                    &mut app,
+                    2,
+                    promotion_id,
+                    text,
+                    error,
+                );
+            }
+            other => panic!("unexpected completion command: {other:?}"),
+        }
+        // The ask is one request: a second request would already be queued
+        // by the time the completion arrives.
+        assert!(
+            request_rx.try_recv().is_err(),
+            "the ask must be one request: the daemon stages the evidence and \
+             admits the turn together"
+        );
+        assert!(app.shell_store.get(ShellCommandId(2)).unwrap().promoted);
+        assert!(app.pending_shell_promotions.is_empty());
+    }
+
+    #[test]
+    fn remote_shell_include_places_evidence_in_composer_without_claiming_acceptance() {
+        let mut app = make_test_app();
+        app.ui_state.mode = crate::app::state::AppMode::RemoteCore {
+            endpoint: "ws://127.0.0.1:8080".into(),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+        insert_completed_entry(&mut app, 1, "echo remote", b"remote-output\n", b"", Some(0));
+
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+
+        let composer = app.prompt_state.prompt.get_text();
+        assert!(composer.contains("remote-output"));
+        assert!(get_user_messages(&app)
+            .iter()
+            .all(|message| !message.contains("remote-output")));
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(!app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
+    }
+
+    #[test]
+    fn unsupported_staging_acknowledgement_leaves_evidence_as_composer_draft() {
+        let mut app = make_test_app();
+        app.apply_shell_promotion_staged(crate::ShellPromotionStageResult {
+            source_id: 1,
+            promotion_id: uuid::Uuid::new_v4(),
+            session_id: "shell-test-session".into(),
+            workspace_id: None,
+            projection: "redacted evidence".into(),
+            duplicate: false,
+            status: None,
+            error: Some("connected daemon does not support durable human-shell staging".into()),
+        });
+        assert_eq!(app.prompt_state.prompt.get_text(), "redacted evidence");
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(get_user_messages(&app).is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("does not support durable human-shell staging")));
+    }
+
+    #[test]
+    fn shell_include_stdout_mode() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo check",
+            b"checking...\n",
+            b"warning: unused\n",
+            Some(0),
+        );
+        handle_shell_include(&mut app, 1, "stdout".to_string(), None);
+        acknowledge_composer_shell_promotion(&mut app, 1);
+        let msgs = get_user_messages(&app);
+        assert!(
+            msgs.iter().any(|m| m.contains("checking...")),
+            "should include stdout, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn shell_include_stderr_mode() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo check",
+            b"checking...\n",
+            b"error[E0308]: mismatched\n",
+            Some(1),
+        );
+        handle_shell_include(&mut app, 1, "stderr".to_string(), None);
+        acknowledge_composer_shell_promotion(&mut app, 1);
+        let msgs = get_user_messages(&app);
+        assert!(
+            msgs.iter().any(|m| m.contains("error[E0308]")),
+            "should include stderr, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn shell_include_tail_mode() {
+        let mut app = make_test_app();
+        let big_stderr = (0..500).map(|i| format!("line {i}\n")).collect::<String>();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "big output",
+            b"",
+            big_stderr.as_bytes(),
+            Some(1),
+        );
+        handle_shell_include(&mut app, 1, "tail 5".to_string(), None);
+        acknowledge_composer_shell_promotion(&mut app, 1);
+        let msgs = get_user_messages(&app);
+        let included = msgs.iter().find(|m| m.contains("tail 5")).unwrap();
+        assert!(
+            included.contains("line 499"),
+            "tail should include last lines, got: {included}"
+        );
+        assert!(
+            !included.contains("line 0"),
+            "tail should not include first lines"
+        );
+    }
+
+    #[test]
+    fn shell_ask_unknown_id_shows_warning() {
+        let mut app = make_test_app();
+        handle_shell_ask(&mut app, 999, "why did this fail?".to_string());
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("not found")),
+            "should show not-found warning, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_ask_includes_question_and_output() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo test",
+            b"",
+            b"test result: FAILED\n",
+            Some(101),
+        );
+        handle_shell_ask(&mut app, 1, "why did this fail?".to_string());
+        let prompt = app.prompt_state.prompt.get_text();
+        assert!(prompt.contains("why did this fail?"), "prompt: {prompt}");
+        assert!(prompt.contains("cargo test"), "prompt: {prompt}");
+        let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
+        assert!(!entry.promoted, "failed submit must not claim promotion");
+    }
+
+    #[test]
+    fn shell_kill_nonexistent_shows_error() {
+        let mut app = make_test_app();
+        handle_shell_kill(&mut app, 999);
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("No running")),
+            "should show error for unknown id, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_kill_running_command() {
+        let mut app = make_test_app();
+        let cmd_id = ShellCommandId(1);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: "sleep 999".to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let abort_handle = rt.block_on(async { tokio::spawn(async {}).abort_handle() });
+        let handle = codegg::shell::runtime::ShellHandle::new_for_test(cmd_id, abort_handle);
+        app.shell_handles.insert(1, handle);
+
+        handle_shell_kill(&mut app, 1);
+        assert!(
+            !app.shell_handles.contains_key(&1),
+            "handle should be removed"
+        );
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("Killed")),
+            "should show kill confirmation, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_include_without_owner_keeps_unsubmitted_composer_draft() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "echo test", b"test\n", b"", Some(0));
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        assert!(app.prompt_state.prompt.get_text().contains("echo test"));
+        assert!(get_user_messages(&app).is_empty());
+        let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
+        assert!(!entry.promoted, "entry awaits a connected owner and turn");
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("unsubmitted composer draft")));
+    }
+
+    #[test]
+    fn shell_list_shows_status_labels() {
+        let mut app = app_with_published_runs(vec![
+            published_run("run-1", "cmd1", "exited", Some(0)),
+            published_run("run-2", "cmd2", "running", None),
+        ]);
+        handle_shell_list(&mut app);
+        let toasts = get_toasts(&app);
+        let text = toasts.join("\n");
+        assert!(
+            text.contains("done"),
+            "should show done status, got: {text}"
+        );
+        assert!(
+            text.contains("running"),
+            "should show running status, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_list_shows_exit_code() {
+        let mut app = app_with_published_runs(vec![
+            published_run("run-1", "passing", "exited", Some(0)),
+            published_run("run-2", "failing", "exited", Some(101)),
+        ]);
+        handle_shell_list(&mut app);
+        let toasts = get_toasts(&app);
+        let text = toasts.join("\n");
+        assert!(
+            text.contains("exit=0"),
+            "should show exit=0 for passing cmd, got: {text}"
+        );
+        assert!(
+            text.contains("exit=101"),
+            "should show exit=101 for failing cmd, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_include_preserves_nonzero_exit_code() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo test",
+            b"",
+            b"test result: FAILED\n",
+            Some(101),
+        );
+        handle_shell_include(&mut app, 1, "summary".to_string(), None);
+        acknowledge_composer_shell_promotion(&mut app, 1);
+        let msgs = get_user_messages(&app);
+        let included = msgs.iter().find(|m| m.contains("cargo test")).unwrap();
+        assert!(
+            included.contains("Exit code: 101"),
+            "should show actual exit code 101, got: {included}"
+        );
+    }
+
+    #[test]
+    fn shell_ask_preserves_nonzero_exit_code() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo check",
+            b"",
+            b"error[E0308]: mismatched\n",
+            Some(1),
+        );
+        handle_shell_ask(&mut app, 1, "fix this error".to_string());
+        let msgs = get_user_messages(&app);
+        assert!(msgs.iter().all(|m| !m.contains("fix this error")));
+        let included = app.prompt_state.prompt.get_text();
+        assert!(
+            included.contains("Exit code: 1"),
+            "unbound ask should retain actual exit code 1 in composer, got: {included}"
+        );
+        assert!(included.contains("fix this error"));
+    }
+
+    #[test]
+    fn shell_kill_marks_entry_exited() {
+        let mut app = make_test_app();
+        let cmd_id = ShellCommandId(1);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: "sleep 999".to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let abort_handle = rt.block_on(async { tokio::spawn(async {}).abort_handle() });
+        let handle = codegg::shell::runtime::ShellHandle::new_for_test(cmd_id, abort_handle);
+        app.shell_handles.insert(1, handle);
+
+        handle_shell_kill(&mut app, 1);
+        let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
+        assert_eq!(
+            entry.status,
+            codegg::shell::types::ShellStatus::Killed,
+            "killed entry should be marked as killed"
+        );
+        assert_eq!(
+            entry.exit_code, None,
+            "killed entry should have no exit code"
+        );
+    }
+
+    #[test]
+    fn shell_show_unknown_id_shows_warning() {
+        let mut app = make_test_app();
+        handle_shell_show(&mut app, 999);
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts
+                .iter()
+                .any(|t| t.contains("No shell command with id 999")),
+            "should show not-found warning, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_show_opens_dialog_with_metadata() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo test",
+            b"running 1 test\nok\n",
+            b"warning: unused\n",
+            Some(0),
+        );
+        handle_shell_show(&mut app, 1);
+        assert_eq!(
+            app.ui_state.dialog,
+            crate::Dialog::ShellShow,
+            "dialog should be set to ShellShow"
+        );
+        let content = app
+            .focus_manager
+            .with_component::<crate::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().to_vec()
+            })
+            .expect("shell detail should be mounted in FocusManager");
+        let text = content.join("\n");
+        assert!(
+            text.contains("cargo test"),
+            "should show command, got: {text}"
+        );
+        assert!(
+            text.contains("Exit:     0"),
+            "should show exit code, got: {text}"
+        );
+        assert!(text.contains("exited"), "should show status, got: {text}");
+        assert!(
+            text.contains("running 1 test"),
+            "should show stdout, got: {text}"
+        );
+        assert!(
+            text.contains("warning: unused"),
+            "should show stderr, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_show_nonzero_exit_code() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 2, "cargo check", b"", b"error[E0308]\n", Some(1));
+        handle_shell_show(&mut app, 2);
+        let text = app
+            .focus_manager
+            .with_component::<crate::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().join("\n")
+            })
+            .expect("shell detail should be mounted in FocusManager");
+        assert!(
+            text.contains("Exit:     1"),
+            "should show exit code 1, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_show_running_command() {
+        let mut app = make_test_app();
+        let cmd_id = ShellCommandId(3);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: "sleep 999".to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+        handle_shell_show(&mut app, 3);
+        let text = app
+            .focus_manager
+            .with_component::<crate::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().join("\n")
+            })
+            .expect("shell detail should be mounted in FocusManager");
+        assert!(
+            text.contains("running"),
+            "should show running status, got: {text}"
+        );
+        assert!(
+            text.contains("sleep 999"),
+            "should show command, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_show_empty_output() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 4, "true", b"", b"", Some(0));
+        handle_shell_show(&mut app, 4);
+        let text = app
+            .focus_manager
+            .with_component::<crate::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().join("\n")
+            })
+            .expect("shell detail should be mounted in FocusManager");
+        assert!(
+            text.contains("no output captured"),
+            "should show no-output message, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_show_repeated_does_not_stack_focus_entries() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            5,
+            "cargo test",
+            b"running 1 test\nok\n",
+            b"",
+            Some(0),
+        );
+        handle_shell_show(&mut app, 5);
+        let len_after_first = app.focus_manager.len();
+        assert_eq!(
+            len_after_first, 1,
+            "first /shell-show should push exactly one focus entry"
+        );
+        handle_shell_show(&mut app, 5);
+        assert_eq!(
+            app.focus_manager.len(),
+            len_after_first,
+            "subsequent /shell-show must reuse the existing focus entry, not stack duplicates"
+        );
+    }
+}
+
+#[cfg(test)]
+mod async_cmd_tests {
+    use super::*;
+    use crate::app::App;
+    use crate::app::SessionStatus;
+    use crate::commands::diagnostics::apply_doctor_result;
+    use crate::commands::import::apply_import_preview_loaded;
+    use crate::commands::memory::apply_memory_result;
+    use crate::commands::research::apply_research_run_loaded;
+    use crate::commands::sessions::{
+        apply_new_session_created, apply_session_messages_loaded, apply_session_mutation_finished,
+        apply_sessions_reloaded, apply_template_session_created,
+    };
+    use crate::commands::tasks::{
+        apply_task_operation_finished, apply_tasks_listed, apply_worktree_listed,
+    };
+    use codegg::protocol::core::CoreEvent;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct RecordingTurnSubmitClient(std::sync::Mutex<Vec<codegg::protocol::core::CoreRequest>>);
+
+    #[async_trait::async_trait]
+    impl codegg::core::CoreClient for RecordingTurnSubmitClient {
+        async fn request(
+            &self,
+            request: codegg::protocol::core::RequestEnvelope<codegg::protocol::core::CoreRequest>,
+        ) -> Result<codegg::protocol::core::CoreResponse, codegg::error::AppError> {
+            self.0.lock().unwrap().push(request.payload);
+            Ok(codegg::protocol::core::CoreResponse::Ack)
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            codegg::protocol::core::EventEnvelope<codegg::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
+    fn make_test_app() -> App {
+        App::new_for_testing("/tmp".into())
+    }
+
+    fn test_session() -> codegg::session::Session {
+        codegg::session::Session {
+            id: "test-session-1".into(),
+            project_id: "/tmp".into(),
+            workspace_id: None,
+            parent_id: None,
+            slug: "test".into(),
+            directory: "/tmp".into(),
+            title: "Test Session".into(),
+            version: "1".into(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+            agent: None,
+            model: None,
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        }
+    }
+
+    #[test]
+    fn apply_sessions_reloaded_with_error_shows_toast() {
+        let mut app = make_test_app();
+        let request_id = app.dialog_state.session_reload_request.begin();
+        apply_sessions_reloaded(
+            &mut app,
+            request_id,
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+            Some("test error".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("test error")),
+            "should show error toast, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn apply_sessions_reloaded_clears_loading() {
+        let mut app = make_test_app();
+        let request_id = app.dialog_state.session_reload_request.begin();
+        apply_sessions_reloaded(
+            &mut app,
+            request_id,
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        assert!(!app.dialog_state.session_reload_request.is_loading());
+    }
+
+    #[test]
+    fn an_empty_load_does_not_erase_the_prompt_a_new_session_just_sent() {
+        // Regression: `send_prompt` renders the user's message immediately and
+        // only then asks the daemon for the transcript. A brand-new session has
+        // no persisted rows yet, so that first load returns zero — and an
+        // unconditional `clear()` deleted the prompt the user had just sent,
+        // so the transcript went blank mid-turn and the message looked lost.
+        let mut app = make_test_app();
+        app.session_state.session = Some(codegg::session::Session {
+            id: "session-new".into(),
+            ..test_session()
+        });
+        let request_id = app.dialog_state.session_messages_request.begin();
+        app.messages_state
+            .messages
+            .add_user_message("first message".to_string(), None);
+
+        apply_session_messages_loaded(&mut app, request_id, "session-new".into(), Vec::new(), None);
+
+        assert_eq!(
+            app.messages_state.messages.message_count(),
+            1,
+            "an empty load must not destroy the prompt still in flight"
+        );
+    }
+
+    #[test]
+    fn an_empty_load_never_discards_local_rows() {
+        // The other half of the guard: the fix above must not degenerate into
+        // "only clear when the session is empty", which would make a stale
+        // transcript permanent. Any load that carries nothing leaves the local
+        // rows alone; only a load with rows replaces them.
+        let mut app = make_test_app();
+        app.session_state.session = Some(codegg::session::Session {
+            id: "session-old".into(),
+            ..test_session()
+        });
+        let request_id = app.dialog_state.session_messages_request.begin();
+        app.messages_state
+            .messages
+            .add_user_message("stale local message".to_string(), None);
+
+        apply_session_messages_loaded(&mut app, request_id, "session-old".into(), Vec::new(), None);
+
+        assert_eq!(
+            app.messages_state.messages.message_count(),
+            1,
+            "an empty load carries no authority to delete local rows"
+        );
+    }
+
+    #[test]
+    fn apply_session_messages_loaded_with_error_preserves_old_messages() {
+        let mut app = make_test_app();
+        let request_id = app.dialog_state.session_messages_request.begin();
+        app.messages_state
+            .messages
+            .add_user_message("old message".to_string(), None);
+        apply_session_messages_loaded(
+            &mut app,
+            request_id,
+            "session-1".into(),
+            Vec::new(),
+            Some("load failed".into()),
+        );
+        assert_eq!(
+            app.messages_state.messages.message_count(),
+            1,
+            "old messages should be preserved on error"
+        );
+    }
+
+    #[test]
+    fn apply_memory_result_shows_info_toast() {
+        let mut app = make_test_app();
+        apply_memory_result(&mut app, "operation succeeded".to_string(), false);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(toasts.iter().any(|t| t.contains("operation succeeded")));
+    }
+
+    #[test]
+    fn apply_memory_result_error_shows_error_toast() {
+        let mut app = make_test_app();
+        apply_memory_result(&mut app, "something failed".to_string(), true);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(toasts.iter().any(|t| t.contains("something failed")));
+    }
+
+    #[test]
+    fn apply_doctor_result_shows_summary() {
+        let mut app = make_test_app();
+        apply_doctor_result(&mut app, "doctor: OK (mcp, provider)".to_string(), false);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(toasts.iter().any(|t| t.contains("doctor: OK")));
+    }
+
+    #[test]
+    fn import_stale_preview_is_ignored() {
+        let mut app = make_test_app();
+        app.dialog_state.import_dialog =
+            Some(crate::components::dialogs::import::ImportDialog::default());
+
+        // Start preview A
+        let id_a = app.dialog_state.import_request.begin();
+        // Start preview B (supersedes A)
+        let id_b = app.dialog_state.import_request.begin();
+
+        // Apply A's result -- should be ignored (stale)
+        apply_import_preview_loaded(&mut app, id_a, Some(test_session()), 10, None);
+        // Import dialog's preview should still be None (A was ignored, B hasn't arrived)
+        let import = app.dialog_state.import_dialog.as_ref().unwrap();
+        assert!(
+            import.preview_session.is_none(),
+            "preview A should be ignored, preview_session should still be None"
+        );
+
+        // Apply B's result -- should succeed
+        apply_import_preview_loaded(&mut app, id_b, Some(test_session()), 5, None);
+        let import = app.dialog_state.import_dialog.as_ref().unwrap();
+        assert!(
+            import.preview_session.is_some(),
+            "preview B should be applied"
+        );
+    }
+
+    #[test]
+    fn import_cancelled_result_is_ignored() {
+        let mut app = make_test_app();
+        app.dialog_state.import_dialog =
+            Some(crate::components::dialogs::import::ImportDialog::default());
+
+        let id = app.dialog_state.import_request.begin();
+        app.dialog_state.import_request.cancel();
+
+        // Apply result after cancel -- should be ignored
+        apply_import_preview_loaded(&mut app, id, Some(test_session()), 5, None);
+        let import = app.dialog_state.import_dialog.as_ref().unwrap();
+        assert!(
+            import.preview_session.is_none(),
+            "result after cancel should be ignored"
+        );
+    }
+
+    #[test]
+    fn research_stale_run_is_ignored() {
+        let mut app = make_test_app();
+        app.dialog_state.research_browser =
+            Some(crate::components::dialogs::research::ResearchBrowserDialog::new());
+
+        // Start load run A
+        let id_a = app.dialog_state.research_request.begin();
+        // Simulate A setting browser.loading = true
+        if let Some(ref mut b) = app.dialog_state.research_browser {
+            b.loading = true;
+        }
+        // Start load run B (supersedes A)
+        let id_b = app.dialog_state.research_request.begin();
+
+        // Apply A -- stale, should be ignored (loading stays true from B's perspective)
+        apply_research_run_loaded(&mut app, id_a, "run-a".into(), None, None);
+        assert!(
+            app.dialog_state.research_browser.as_ref().unwrap().loading,
+            "research should still be loading (A was stale)"
+        );
+
+        // Apply B -- should succeed and clear loading
+        apply_research_run_loaded(&mut app, id_b, "run-b".into(), None, None);
+        assert!(
+            !app.dialog_state.research_browser.as_ref().unwrap().loading,
+            "research should not be loading after B applied"
+        );
+    }
+
+    #[test]
+    fn close_dialog_cancels_import_request() {
+        let mut app = make_test_app();
+        app.dialog_state.import_dialog =
+            Some(crate::components::dialogs::import::ImportDialog::default());
+        app.ui_state.dialog = Dialog::Import;
+        app.open_dialog(Dialog::Import);
+
+        let id = app.dialog_state.import_request.begin();
+        assert!(app.dialog_state.import_request.is_loading());
+
+        app.close_dialog();
+
+        assert!(!app.dialog_state.import_request.is_loading());
+        assert!(app.dialog_state.import_request.is_cancelled());
+        // Old request ID should be stale
+        assert!(!app.dialog_state.import_request.is_current(id));
+    }
+
+    #[test]
+    fn close_dialog_cancels_research_request() {
+        let mut app = make_test_app();
+        app.dialog_state.research_browser =
+            Some(crate::components::dialogs::research::ResearchBrowserDialog::new());
+        app.ui_state.dialog = Dialog::ResearchBrowser;
+        app.open_dialog(Dialog::ResearchBrowser);
+
+        let id = app.dialog_state.research_request.begin();
+        assert!(app.dialog_state.research_request.is_loading());
+
+        app.close_dialog();
+
+        assert!(!app.dialog_state.research_request.is_loading());
+        assert!(app.dialog_state.research_request.is_cancelled());
+        assert!(!app.dialog_state.research_request.is_current(id));
+    }
+
+    #[test]
+    fn session_messages_stale_result_ignored() {
+        let mut app = make_test_app();
+        // Begin a request for session A
+        let id_a = app.dialog_state.session_messages_request.begin();
+
+        // Simulate user switching to session B (supersedes request A)
+        let id_b = app.dialog_state.session_messages_request.begin();
+        app.session_state.session = Some(codegg::session::Session {
+            id: "session-b".into(),
+            project_id: String::new(),
+            workspace_id: None,
+            parent_id: None,
+            slug: String::new(),
+            directory: String::new(),
+            title: String::new(),
+            version: String::new(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+            agent: None,
+            model: None,
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        });
+
+        // Apply stale result for session A (should be ignored by staleness guard)
+        apply_session_messages_loaded(&mut app, id_a, "session-a".into(), Vec::new(), None);
+
+        // Apply current result for session B (should succeed)
+        apply_session_messages_loaded(&mut app, id_b, "session-b".into(), Vec::new(), None);
+
+        // Messages should be empty (no messages provided)
+        assert_eq!(
+            app.messages_state.messages.message_count(),
+            0,
+            "stale result should not overwrite current session"
+        );
+    }
+
+    #[test]
+    fn apply_session_messages_loaded_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.session_messages_request.begin();
+        let id_b = app.dialog_state.session_messages_request.begin();
+
+        // Stale error with id_a should NOT show a toast.
+        apply_session_messages_loaded(
+            &mut app,
+            id_a,
+            "session-a".into(),
+            Vec::new(),
+            Some("stale messages error".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale messages error")),
+            "stale messages error should not surface, got {toasts:?}"
+        );
+        assert!(app.dialog_state.session_messages_request.is_loading());
+
+        // Current success with id_b.
+        apply_session_messages_loaded(&mut app, id_b, "session-b".into(), Vec::new(), None);
+        assert!(!app.dialog_state.session_messages_request.is_loading());
+    }
+
+    #[test]
+    fn session_mutation_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id1 = app.dialog_state.session_mutation_request.begin();
+        let id2 = app.dialog_state.session_mutation_request.begin();
+
+        // Apply mutation with stale id1 -- should be ignored
+        apply_session_mutation_finished(
+            &mut app,
+            id1,
+            SessionMutationOp::Delete,
+            vec!["session-1".into()],
+            "deleted".into(),
+            false,
+            None,
+        );
+        // No toast should appear for stale result
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("deleted")),
+            "stale mutation result should not show toast"
+        );
+
+        // Apply with current id2 -- should succeed
+        apply_session_mutation_finished(
+            &mut app,
+            id2,
+            SessionMutationOp::Delete,
+            vec!["session-2".into()],
+            "deleted".into(),
+            false,
+            None,
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("deleted")),
+            "current mutation result should show toast"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_shutdown_cancels_registered_tasks() {
+        use crate::task_lifecycle::TuiTaskKind;
+        let mut app = make_test_app();
+
+        // Spawn a few tasks that would block forever
+        app.task_registry
+            .spawn(TuiTaskKind::Command, "cmd1", async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            });
+        app.task_registry
+            .spawn(TuiTaskKind::Research, "research1", async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            });
+        assert_eq!(app.task_registry.active_count(), 2);
+
+        app.prepare_shutdown();
+
+        // All registered tasks should be cancelled
+        assert_eq!(app.task_registry.cancelled_count(), 2);
+        assert_eq!(app.task_registry.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn prepare_shutdown_drains_shell_handles() {
+        let mut app = make_test_app();
+
+        // Insert a shell handle (aborts a task on kill)
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        });
+        app.shell_handles.insert(
+            42,
+            codegg::shell::runtime::ShellHandle::new_for_test(
+                codegg::shell::types::ShellCommandId(42),
+                handle.abort_handle(),
+            ),
+        );
+        assert_eq!(app.shell_handles.len(), 1);
+
+        app.prepare_shutdown();
+
+        // Shell handles should be drained
+        assert!(app.shell_handles.is_empty());
+    }
+
+    // -- Stale-completion guards for the remaining five handlers --
+    // Each of these tests starts two requests, applies the stale
+    // completion first (with old id), then the current completion.
+    // The canonical finish/fail guard must drop the stale one.
+
+    fn empty_session_dto() -> codegg::protocol::dto::Session {
+        codegg::protocol::dto::Session {
+            id: String::new(),
+            project_id: String::new(),
+            workspace_id: None,
+            binding: None,
+            parent_id: None,
+            slug: String::new(),
+            directory: String::new(),
+            title: String::new(),
+            version: String::new(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+            agent: None,
+            model: None,
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        }
+    }
+
+    fn dummy_task_json(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "message": "background task",
+            "interval_secs": 60u64,
+        })
+    }
+
+    #[test]
+    fn apply_sessions_reloaded_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.session_reload_request.begin();
+        let id_b = app.dialog_state.session_reload_request.begin();
+
+        // Stale error result with id_a should NOT show a toast.
+        apply_sessions_reloaded(
+            &mut app,
+            id_a,
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+            Some("stale error".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale error")),
+            "stale error should not surface to user, got {toasts:?}"
+        );
+        // Current request is still loading because stale was dropped.
+        assert!(app.dialog_state.session_reload_request.is_loading());
+
+        // Current success with id_b clears loading.
+        apply_sessions_reloaded(
+            &mut app,
+            id_b,
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        assert!(!app.dialog_state.session_reload_request.is_loading());
+    }
+
+    #[test]
+    fn apply_tasks_listed_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.task_list_request.begin();
+        let id_b = app.dialog_state.task_list_request.begin();
+
+        // Stale success with id_a should NOT show a toast.
+        apply_tasks_listed(&mut app, id_a, vec![dummy_task_json("a")], None);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.is_empty(),
+            "stale task list should not surface to user, got {toasts:?}"
+        );
+        assert!(app.dialog_state.task_list_request.is_loading());
+
+        // Current success with id_b succeeds.
+        apply_tasks_listed(&mut app, id_b, vec![dummy_task_json("b")], None);
+        assert!(!app.dialog_state.task_list_request.is_loading());
+    }
+
+    #[test]
+    fn apply_tasks_listed_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.task_list_request.begin();
+        let id_b = app.dialog_state.task_list_request.begin();
+
+        // Stale error with id_a should NOT show a toast.
+        apply_tasks_listed(&mut app, id_a, Vec::new(), Some("stale err".into()));
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale err")),
+            "stale task error should not surface, got {toasts:?}"
+        );
+
+        // Current success with id_b clears loading.
+        apply_tasks_listed(&mut app, id_b, Vec::new(), None);
+        assert!(!app.dialog_state.task_list_request.is_loading());
+    }
+
+    #[test]
+    fn apply_task_operation_finished_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.task_delete_request.begin();
+        let id_b = app.dialog_state.task_delete_request.begin();
+
+        // Stale success with id_a should NOT show "Task deleted" toast.
+        apply_task_operation_finished(
+            &mut app,
+            id_a,
+            "delete".to_string(),
+            Some("42".to_string()),
+            None,
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.is_empty(),
+            "stale delete success should not surface, got {toasts:?}"
+        );
+        assert!(app.dialog_state.task_delete_request.is_loading());
+
+        // Current success with id_b.
+        apply_task_operation_finished(
+            &mut app,
+            id_b,
+            "delete".to_string(),
+            Some("43".to_string()),
+            None,
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("Task deleted")),
+            "current delete success should surface, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn apply_task_operation_finished_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.task_delete_request.begin();
+        let id_b = app.dialog_state.task_delete_request.begin();
+
+        // Stale error with id_a should NOT show a toast.
+        apply_task_operation_finished(
+            &mut app,
+            id_a,
+            "delete".to_string(),
+            Some("42".to_string()),
+            Some("stale delete error".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale delete error")),
+            "stale delete error should not surface, got {toasts:?}"
+        );
+
+        // Current success with id_b.
+        apply_task_operation_finished(
+            &mut app,
+            id_b,
+            "delete".to_string(),
+            Some("43".to_string()),
+            None,
+        );
+        assert!(!app.dialog_state.task_delete_request.is_loading());
+    }
+
+    #[test]
+    fn apply_worktree_listed_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.worktree_list_request.begin();
+        let id_b = app.dialog_state.worktree_list_request.begin();
+
+        // Stale success with id_a should NOT show a toast.
+        apply_worktree_listed(&mut app, id_a, vec!["wt-a".into()], None);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.is_empty(),
+            "stale worktree list should not surface, got {toasts:?}"
+        );
+        assert!(app.dialog_state.worktree_list_request.is_loading());
+
+        // Current success with id_b.
+        apply_worktree_listed(&mut app, id_b, vec!["wt-b".into()], None);
+        assert!(!app.dialog_state.worktree_list_request.is_loading());
+    }
+
+    #[test]
+    fn apply_worktree_listed_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.worktree_list_request.begin();
+        let id_b = app.dialog_state.worktree_list_request.begin();
+
+        // Stale error with id_a should NOT show a toast.
+        apply_worktree_listed(&mut app, id_a, Vec::new(), Some("stale err".into()));
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale err")),
+            "stale worktree error should not surface, got {toasts:?}"
+        );
+
+        // Current success with id_b.
+        apply_worktree_listed(&mut app, id_b, Vec::new(), None);
+        assert!(!app.dialog_state.worktree_list_request.is_loading());
+    }
+
+    #[test]
+    fn apply_template_session_created_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.template_create_request.begin();
+        let id_b = app.dialog_state.template_create_request.begin();
+
+        // Stale success with id_a should NOT navigate to a session route.
+        let mut session_a = empty_session_dto();
+        session_a.id = "session-a".into();
+        apply_template_session_created(
+            &mut app,
+            id_a,
+            Some(session_a),
+            None,
+            None,
+            "tpl-a".to_string(),
+            None,
+        );
+        // Stale guard: route stays at Home, no toast, request still loading.
+        assert_eq!(
+            app.ui_state.routes.current(),
+            &crate::Route::Home,
+            "stale template create must not navigate"
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.is_empty(),
+            "stale template success should not toast, got {toasts:?}"
+        );
+        assert!(app.dialog_state.template_create_request.is_loading());
+
+        // Current success with id_b should navigate and toast.
+        let mut session_b = empty_session_dto();
+        session_b.id = "session-b".into();
+        apply_template_session_created(
+            &mut app,
+            id_b,
+            Some(session_b),
+            None,
+            None,
+            "tpl-b".to_string(),
+            None,
+        );
+        assert!(!app.dialog_state.template_create_request.is_loading());
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("tpl-b")),
+            "current template create should toast, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn apply_template_session_created_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.template_create_request.begin();
+        let id_b = app.dialog_state.template_create_request.begin();
+
+        // Stale error with id_a should NOT show an error toast.
+        apply_template_session_created(
+            &mut app,
+            id_a,
+            None,
+            None,
+            None,
+            "tpl-a".to_string(),
+            Some("stale template err".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale template err")),
+            "stale template error should not surface, got {toasts:?}"
+        );
+
+        // Current success with id_b clears loading.
+        let mut session_b = empty_session_dto();
+        session_b.id = "session-b".into();
+        apply_template_session_created(
+            &mut app,
+            id_b,
+            Some(session_b),
+            None,
+            None,
+            "tpl-b".to_string(),
+            None,
+        );
+        assert!(!app.dialog_state.template_create_request.is_loading());
+    }
+
+    #[test]
+    fn apply_new_session_created_starts_authoritative_activation() {
+        // Create replies carry compatibility fields only. The tab must stay
+        // on its current binding until SessionLoad returns an authoritative
+        // workspace binding.
+        let mut app = make_test_app();
+        assert!(app.session_state.session.is_none());
+        let id = app.dialog_state.new_session_request.begin();
+
+        let mut session = empty_session_dto();
+        session.id = "new-session-1".into();
+        apply_new_session_created(&mut app, id, Some(session), None);
+
+        assert!(
+            !app.dialog_state.new_session_request.is_loading(),
+            "the request must be settled"
+        );
+        assert!(app.session_state.session.is_none());
+        assert!(app.dialog_state.session_activation_request.is_loading());
+    }
+
+    #[test]
+    fn apply_new_session_created_stale_is_ignored() {
+        // A slow completion from a superseded Ctrl+N must not clobber the
+        // session the user is now in.
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.new_session_request.begin();
+        let id_b = app.dialog_state.new_session_request.begin();
+
+        let mut session_a = empty_session_dto();
+        session_a.id = "session-a".into();
+        apply_new_session_created(&mut app, id_a, Some(session_a), None);
+        assert!(
+            app.session_state.session.is_none(),
+            "stale completion must not attach a session"
+        );
+
+        let mut session_b = empty_session_dto();
+        session_b.id = "session-b".into();
+        apply_new_session_created(&mut app, id_b, Some(session_b), None);
+        assert!(app.session_state.session.is_none());
+        assert!(app.dialog_state.session_activation_request.is_loading());
+    }
+
+    #[test]
+    fn apply_new_session_created_failure_surfaces_error() {
+        let mut app = make_test_app();
+        let id = app.dialog_state.new_session_request.begin();
+        apply_new_session_created(&mut app, id, None, Some("daemon unavailable".into()));
+
+        assert!(!app.dialog_state.new_session_request.is_loading());
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("daemon unavailable")),
+            "the failure must be visible to the user, got {toasts:?}"
+        );
+        assert!(
+            app.session_state.session.is_none(),
+            "a failed creation must not fabricate a session"
+        );
+    }
+
+    // --- Daemon event bridge (socket mode) -------------------------------
+    //
+    // Regression: in socket mode the agent loop runs inside the daemon, so
+    // turn outcomes only ever reach the TUI through the core event stream.
+    // When that stream was ignored, a failed turn left the optimistic
+    // `Working` status pinned forever with no error text anywhere.
+
+    #[test]
+    fn turn_failed_clears_working_and_surfaces_the_error() {
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+
+        let changed = app.apply_core_event(CoreEvent::TurnFailed {
+            session_id: "s1".into(),
+            turn_id: Some("t1".into()),
+            message: "provider stream framing or decoding failed".into(),
+            category: None,
+            usage: None,
+        });
+
+        assert!(changed, "a turn failure must trigger a redraw");
+        assert_eq!(
+            app.session_state.session_status,
+            SessionStatus::Error,
+            "a failed turn must not stay pinned on Working"
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("provider stream")),
+            "the failure message must be visible, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_stops_emitting_events_leaves_working_instead_of_spinning_forever() {
+        let mut app = make_test_app();
+        app.set_session_status(SessionStatus::Working);
+
+        // A turn that has just started is not stalled yet.
+        assert!(!app.check_turn_stall());
+
+        // Any incoming event proves the turn is alive, so the watchdog rearms.
+        app.apply_core_event(CoreEvent::TurnTextDelta {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            delta: "thinking".into(),
+        });
+        assert!(!app.check_turn_stall());
+
+        // Simulate the core going silent for longer than the bound.
+        app.session_state.working_since = Some(
+            std::time::Instant::now()
+                - crate::app::TURN_STALL_TIMEOUT
+                - std::time::Duration::from_secs(1),
+        );
+
+        assert!(
+            app.check_turn_stall(),
+            "a turn silent past the bound must be reported"
+        );
+        assert_eq!(
+            app.session_state.session_status,
+            SessionStatus::Error,
+            "a stalled turn must not stay pinned on Working"
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("stalled")),
+            "the stall must be visible, got {toasts:?}"
+        );
+        // The watchdog disarms so it cannot re-fire on every tick.
+        assert!(!app.check_turn_stall());
+    }
+
+    // --- Prompt transport selection (socket-daemon mode) ----------------
+    //
+    // Regression: the socket-daemon frontend sets `AppMode::RemoteCore` but
+    // never installs a `remote_send_tx` — only the WebSocket attach path owns
+    // one. `send_prompt` branched on the mode alone and pushed every prompt
+    // into the absent channel: a silent no-op that pinned the session on
+    // `Working` forever, for every model and provider.
+
+    /// Build a socket-daemon app with an open project tab, so a prompt with no
+    /// session has somewhere to create one.
+    fn socket_daemon_app_with_tab() -> App {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state.mode = crate::app::state::AppMode::RemoteCore {
+            endpoint: "unix:///tmp/core.sock".into(),
+        };
+        // Socket-daemon mode carries requests through CoreClient. Keep the
+        // client present even though this fixture has no event loop to execute
+        // the eventual async request.
+        app.set_core_client(std::sync::Arc::new(
+            codegg::core::InprocCoreClient::default(),
+        ));
+        let mut tab = crate::app::state::ProjectTabState::empty(
+            crate::app::state::ProjectTabId::new(),
+            "test".into(),
+        );
+        tab.project_id = Some("/tmp".into());
+        tab.workspace_root = Some(std::path::PathBuf::from("/tmp"));
+        app.project_tabs.add_and_activate(tab);
+        app
+    }
+
+    #[tokio::test]
+    async fn socket_daemon_mode_never_takes_the_remote_input_path() {
+        let mut app = socket_daemon_app_with_tab();
+        // The socket path owns a core client, never a remote TUI channel.
+        assert!(app.remote_send_tx.is_none());
+        let client = std::sync::Arc::new(RecordingTurnSubmitClient::default());
+        app.attach_core_client(client.clone());
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
+        app.tui_cmd_tx = Some(command_tx);
+        // Pre-existing session: submit straight into it.
+        app.session_state.session = Some(codegg::session::Session {
+            id: "shell-test-session".into(),
+            project_id: "/tmp".into(),
+            directory: "/tmp".into(),
+            ..Default::default()
+        });
+
+        app.prompt_state.prompt.set_text("hello".into());
+        app.send_prompt();
+
+        assert!(
+            !app.prompt_state.pending_send,
+            "a submitted prompt must not stay latched on pending_send"
+        );
+        assert!(
+            app.prompt_state.pending_session_submit.is_none(),
+            "an existing session needs no creation continuation"
+        );
+        assert_ne!(
+            app.session_state.session_status,
+            SessionStatus::Error,
+            "a bound session must submit instead of erroring"
+        );
+
+        let command = tokio::time::timeout(std::time::Duration::from_secs(1), command_rx.recv())
+            .await
+            .expect("the core submission should finish")
+            .expect("the UI command channel should remain open");
+        assert!(matches!(
+            command,
+            crate::app::TuiCommand::TurnSubmissionFinished {
+                outcome: crate::app::turn_submit::TurnSubmitOutcome::Accepted,
+                ..
+            }
+        ));
+        let requests = client.0.lock().unwrap();
+        assert!(matches!(
+            requests.as_slice(),
+            [codegg::protocol::core::CoreRequest::TurnSubmit {
+                session_id,
+                text,
+                ..
+            }] if session_id == "shell-test-session" && text == "hello"
+        ));
+    }
+
+    #[test]
+    fn socket_daemon_new_repo_creates_a_session_instead_of_deadlocking() {
+        let mut app = socket_daemon_app_with_tab();
+        assert!(app.session_state.session.is_none());
+
+        app.prompt_state.prompt.set_text("hello".into());
+        app.send_prompt();
+
+        // A fresh repo on the socket path must capture a session-create
+        // continuation rather than reporting "no session bound": that error
+        // was terminal, leaving a brand-new repo unable to submit anything.
+        assert!(
+            app.prompt_state.pending_session_submit.is_some(),
+            "a sessionless socket prompt must arm the create continuation"
+        );
+        assert!(
+            app.prompt_state.pending_send,
+            "the prompt must stay pending until the session exists"
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("not submitted")),
+            "session creation must not report a dropped prompt, got {toasts:?}"
+        );
+    }
+
+    /// The event loop's gate must admit the socket path, or the armed
+    /// continuation is never started and the prompt hangs forever.
+    #[test]
+    fn socket_daemon_is_not_the_ws_attach_transport() {
+        let mut app = socket_daemon_app_with_tab();
+        assert!(
+            !app.is_ws_attach_transport(),
+            "the socket path must be admitted by the transport gate"
+        );
+
+        // Adding a remote channel is what makes it the attach transport.
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+        assert!(
+            app.is_ws_attach_transport(),
+            "owning remote_send_tx is exactly what defines the attach transport"
+        );
+    }
+
+    #[test]
+    fn attach_mode_without_a_remote_channel_creates_a_session() {
+        // A RemoteCore frontend that owns no `remote_send_tx` is the socket
+        // path, whatever its endpoint string says. It must create a session.
+        let mut app = socket_daemon_app_with_tab();
+        app.ui_state.mode = crate::app::state::AppMode::RemoteCore {
+            endpoint: "ws://127.0.0.1:8080".into(),
+        };
+        assert!(app.remote_send_tx.is_none());
+
+        app.prompt_state.prompt.set_text("hello".into());
+        app.send_prompt();
+
+        assert!(
+            app.prompt_state.pending_session_submit.is_some(),
+            "the endpoint string must not decide session-creation capability"
+        );
+    }
+
+    /// Regression: a permission answer from the socket-daemon frontend must
+    /// reach the daemon through `core_client`.
+    ///
+    /// That routed the answer into `send_remote_message`, whose `None` arm
+    /// dropped it after only a `tracing::warn!`. The dialog was torn down,
+    /// the daemon-side waiter stayed parked on an unbounded human wait, and
+    /// the turn hung forever with no visible error — approving did nothing.
+    ///
+    /// The local path is observable: with no core client it reports a visible
+    /// delivery failure instead of silently discarding the answer. Reaching
+    /// that toast proves the answer took the local route; before the fix this
+    /// app took the remote route and produced no toast at all.
+    #[test]
+    fn socket_daemon_permission_answer_takes_the_local_delivery_path() {
+        let mut app = socket_daemon_app_with_tab();
+        app.core_client = None;
+        app.dialog_state.permission_perm_id =
+            Some("perm:sess:turn:chatcmpl-tool-abc-bash".to_string());
+
+        app.process_msg(crate::app::TuiMsg::SubmitPermission { choice_index: 0 });
+
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|m| m.contains("Cannot deliver approval")),
+            "the socket path must route the answer locally; toasts were {toasts:?}"
+        );
+        assert!(
+            app.dialog_state.permission_perm_id.is_none(),
+            "the dialog must still be torn down after answering"
+        );
+    }
+
+    fn approval(
+        tool: &str,
+        args: Option<serde_json::Value>,
+    ) -> codegg::permission::PermissionRequest {
+        codegg::permission::PermissionRequest {
+            tool: tool.to_string(),
+            path: None,
+            args,
+        }
+    }
+
+    /// Regression: a batch of tools can raise several approvals at once, and
+    /// `show_permission_dialog` assigned straight into `permission_dialog`.
+    /// The second request therefore destroyed the first along with its
+    /// `perm_id`, leaving a daemon waiter parked on a human answer that no
+    /// longer had any UI pointing at it.
+    #[test]
+    fn a_second_approval_does_not_evict_the_one_on_screen() {
+        let mut app = make_test_app();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+        app.show_permission_dialog("perm-2".into(), approval("edit", None));
+
+        assert_eq!(
+            app.dialog_state.permission_perm_id.as_deref(),
+            Some("perm-1"),
+            "the request the user is looking at must not be replaced"
+        );
+        assert_eq!(
+            app.dialog_state
+                .permission_queue
+                .iter()
+                .map(|p| p.perm_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["perm-2"],
+            "the later request must be held, not dropped"
+        );
+    }
+
+    /// Answering one approval hands the screen to the next instead of leaving
+    /// the rest of the batch with no visible way back.
+    #[test]
+    fn answering_promotes_the_next_queued_approval() {
+        let mut app = make_test_app();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+        app.show_permission_dialog("perm-2".into(), approval("edit", None));
+
+        app.dialog_state.permission_dialog = None;
+        app.dialog_state.permission_perm_id = None;
+        app.close_dialog();
+        app.promote_next_permission();
+
+        assert_eq!(
+            app.dialog_state.permission_perm_id.as_deref(),
+            Some("perm-2")
+        );
+        assert!(
+            app.dialog_state.permission_queue.is_empty(),
+            "the promoted request must leave the queue exactly once"
+        );
+    }
+
+    /// Regression: `close_dialog` had no `Dialog::Permission` arm, so a
+    /// dismissal popped the dialog while leaving `permission_perm_id` set. The
+    /// next approval then queued behind a dialog that no longer existed, and
+    /// nothing could ever be answered again.
+    #[test]
+    fn a_dismissed_approval_is_requeued_rather_than_lost() {
+        let mut app = make_test_app();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+
+        app.close_dialog();
+
+        assert!(
+            app.dialog_state.permission_dialog.is_none(),
+            "the dismissed dialog must actually close"
+        );
+        assert!(
+            app.dialog_state.permission_perm_id.is_none(),
+            "a dismissed dialog must not keep claiming the screen"
+        );
+        assert_eq!(
+            app.pending_permission_for_tool("bash").as_deref(),
+            Some("perm-1"),
+            "the unanswered request must still be answerable"
+        );
+
+        app.promote_next_permission();
+        assert_eq!(
+            app.dialog_state.permission_perm_id.as_deref(),
+            Some("perm-1"),
+            "the requeued request must come back on demand"
+        );
+    }
+
+    /// A duplicate resend of the same request must not double-queue it.
+    #[test]
+    fn a_resent_approval_is_ignored_rather_than_queued_twice() {
+        let mut app = make_test_app();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+        app.close_dialog();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+
+        assert_eq!(app.dialog_state.permission_queue.len(), 1);
+    }
+
+    /// `CoreEvent::PermissionPending` carries no arguments, so an approval that
+    /// crossed the daemon used to render "No additional details" — you cannot
+    /// meaningfully approve a command you cannot read. The transcript already
+    /// holds them.
+    #[test]
+    fn a_reopened_approval_shows_the_command_it_is_about() {
+        let mut app = make_test_app();
+        app.messages_state.messages.add_tool_call(
+            "call-1".into(),
+            "bash".into(),
+            serde_json::json!({ "command": "rm -rf build" }),
+        );
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+
+        let dialog = app
+            .dialog_state
+            .permission_dialog
+            .as_ref()
+            .expect("the approval must be on screen");
+        let command = dialog
+            .request
+            .args
+            .as_ref()
+            .and_then(|a| a.get("command"))
+            .and_then(|c| c.as_str());
+        assert_eq!(
+            command,
+            Some("rm -rf build"),
+            "the dialog must carry the command being approved"
+        );
+    }
+
+    /// The backup path the missing dialog left no alternative to: activating
+    /// the queued row in the transcript reopens its approval.
+    #[test]
+    fn activating_a_queued_row_reopens_its_approval() {
+        let mut app = make_test_app();
+        app.messages_state.messages.add_tool_call(
+            "call-1".into(),
+            "bash".into(),
+            serde_json::json!({ "command": "ls" }),
+        );
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+        app.close_dialog();
+        assert!(app.dialog_state.permission_dialog.is_none());
+
+        assert!(
+            app.open_pending_permission_for_message(0),
+            "the queued row must be actionable"
+        );
+        assert_eq!(
+            app.dialog_state.permission_perm_id.as_deref(),
+            Some("perm-1"),
+            "the approval behind the row must be the one that opens"
+        );
+    }
+
+    /// A row with nothing pending keeps its old text — the affordance must
+    /// only appear when there is genuinely something to approve.
+    #[test]
+    fn a_row_with_no_approval_offers_no_action() {
+        let mut app = make_test_app();
+        app.messages_state.messages.add_tool_call(
+            "call-1".into(),
+            "bash".into(),
+            serde_json::json!({ "command": "ls" }),
+        );
+        assert!(
+            !app.open_pending_permission_for_message(0),
+            "nothing is waiting, so the row must fall through to disclosure"
+        );
+    }
+
+    /// The WebSocket attach frontend is the one that owns `remote_send_tx`, so
+    /// its permission answers must keep going out over that channel.
+    #[test]
+    fn ws_attach_permission_answer_still_uses_the_remote_channel() {
+        let mut app = make_test_app();
+        app.ui_state.mode = crate::app::state::AppMode::RemoteCore {
+            endpoint: "ws://127.0.0.1:8080".into(),
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+        app.dialog_state.permission_perm_id =
+            Some("perm:sess:turn:chatcmpl-tool-abc-bash".to_string());
+
+        app.process_msg(crate::app::TuiMsg::SubmitPermission { choice_index: 0 });
+
+        let sent = rx
+            .try_recv()
+            .expect("the attach frontend must send the answer");
+        match sent {
+            codegg::protocol::tui::TuiMessage::PermissionResponse { id, choice } => {
+                assert_eq!(id, "perm:sess:turn:chatcmpl-tool-abc-bash");
+                assert_eq!(choice, "allow");
+            }
+            other => panic!("expected a PermissionResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_mode_with_a_remote_channel_still_uses_the_remote_input_path() {
+        let mut app = make_test_app();
+        app.ui_state.mode = crate::app::state::AppMode::RemoteCore {
+            endpoint: "ws://127.0.0.1:8080".into(),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+
+        app.prompt_state.prompt.set_text("hello".into());
+        app.send_prompt();
+
+        assert_eq!(
+            app.session_state.session_status,
+            SessionStatus::Working,
+            "the remote attach path owns the prompt once a channel exists"
+        );
+        assert!(!app.prompt_state.pending_send);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("not submitted")),
+            "the attach path must not be treated as socket-daemon, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn attaching_the_core_client_always_establishes_an_event_stream() {
+        struct StubClient;
+
+        #[async_trait::async_trait]
+        impl codegg::core::CoreClient for StubClient {
+            async fn request(
+                &self,
+                _request: codegg::protocol::core::RequestEnvelope<
+                    codegg::protocol::core::CoreRequest,
+                >,
+            ) -> Result<codegg::protocol::core::CoreResponse, codegg::error::AppError> {
+                Ok(codegg::protocol::core::CoreResponse::Error {
+                    code: "stub".into(),
+                    message: "stub".into(),
+                })
+            }
+
+            fn subscribe(
+                &self,
+            ) -> tokio::sync::mpsc::Receiver<
+                codegg::protocol::core::EventEnvelope<codegg::protocol::core::CoreEvent>,
+            > {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                rx
+            }
+        }
+
+        let mut app = make_test_app();
+        assert!(
+            app.core_event_rx.is_none(),
+            "precondition: the app starts with no event stream"
+        );
+
+        app.attach_core_client(std::sync::Arc::new(StubClient));
+
+        assert!(app.core_client.is_some());
+        assert!(
+            app.core_event_rx.is_some(),
+            "a client attached without an event stream leaves the TUI blind to turn \
+             outcomes, so a finished turn stays pinned on Working"
+        );
+    }
+
+    #[tokio::test]
+    async fn narrowing_the_event_stream_reaches_the_client_with_the_session_id() {
+        struct RecordingClient(tokio::sync::mpsc::UnboundedSender<String>);
+
+        #[async_trait::async_trait]
+        impl codegg::core::CoreClient for RecordingClient {
+            async fn request(
+                &self,
+                _request: codegg::protocol::core::RequestEnvelope<
+                    codegg::protocol::core::CoreRequest,
+                >,
+            ) -> Result<codegg::protocol::core::CoreResponse, codegg::error::AppError> {
+                Ok(codegg::protocol::core::CoreResponse::Error {
+                    code: "stub".into(),
+                    message: "stub".into(),
+                })
+            }
+
+            fn subscribe(
+                &self,
+            ) -> tokio::sync::mpsc::Receiver<
+                codegg::protocol::core::EventEnvelope<codegg::protocol::core::CoreEvent>,
+            > {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                rx
+            }
+
+            async fn subscribe_session_events(
+                &self,
+                session_id: String,
+                _from_event_seq: Option<u64>,
+            ) -> Result<(), codegg::error::AppError> {
+                let _ = self.0.send(session_id);
+                Ok(())
+            }
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = make_test_app();
+        app.attach_core_client(std::sync::Arc::new(RecordingClient(tx)));
+
+        app.ensure_session_event_stream("s-42");
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the client must be asked to narrow the filter")
+            .expect("the channel must stay open");
+        assert_eq!(
+            got, "s-42",
+            "the daemon filter must name the session whose events the TUI needs"
+        );
+    }
+
+    // A refreshed catalog that does not know the current model must not
+    // silently replace it. Adopting `models[0]` made the session's model a
+    // function of provider iteration order, which differed per process.
+    #[test]
+    fn refreshing_models_does_not_discard_an_existing_selection() {
+        let mut app = make_test_app();
+        app.agent_state.current_model = "opencode_go/space-bunny".to_string();
+
+        app.set_models(vec![
+            "generalcompute/deepseek-v3.1".to_string(),
+            "openai/gpt-4.1".to_string(),
+        ]);
+
+        assert_eq!(
+            app.agent_state.current_model, "opencode_go/space-bunny",
+            "a selection missing from a refreshed catalog must be preserved"
+        );
+    }
+
+    #[test]
+    fn refreshing_models_adopts_a_catalog_entry_when_none_is_selected() {
+        let mut app = make_test_app();
+        app.agent_state.current_model = String::new();
+
+        app.set_models(vec![
+            "generalcompute/deepseek-v3.1".to_string(),
+            "openai/gpt-4.1".to_string(),
+        ]);
+
+        assert_eq!(
+            app.agent_state.current_model, "generalcompute/deepseek-v3.1",
+            "with no selection at all the first catalog entry is the only choice"
+        );
+    }
+
+    /// The daemon resolves a turn's model from the durable session
+    /// selection, so the displayed model must converge on it.
+    ///
+    /// The TUI previously showed a manifest-sourced model while the
+    /// provider received a different one; the only symptom was an
+    /// upstream error naming a model the operator never picked.
+    #[test]
+    fn the_durable_selection_overrides_a_diverging_displayed_model() {
+        let mut app = make_test_app();
+        app.set_models(vec![
+            "opencode_go/mimo-v2.6-flash".to_string(),
+            "opencode_go/muse-spark-1.3-contributor".to_string(),
+        ]);
+        // The tab manifest restored a model that is NOT what the daemon runs.
+        app.agent_state.current_model = "opencode_go/mimo-v2.6-flash".to_string();
+
+        // provider_kind is connection-scoped ("other:opencode_go").
+        let applied =
+            app.reconcile_durable_selection_model("other:opencode_go/muse-spark-1.3-contributor");
+
+        assert!(applied, "the durable selection must be applied");
+        assert_eq!(
+            app.agent_state.current_model, "opencode_go/muse-spark-1.3-contributor",
+            "the displayed model must match the model the daemon runs"
+        );
+        assert_eq!(app.agent_state.model_idx, 1);
+    }
+
+    #[test]
+    fn a_durable_selection_absent_from_the_catalog_leaves_the_display_alone() {
+        let mut app = make_test_app();
+        app.set_models(vec!["opencode_go/mimo-v2.6-flash".to_string()]);
+        app.agent_state.current_model = "opencode_go/mimo-v2.6-flash".to_string();
+
+        let applied =
+            app.reconcile_durable_selection_model("other:opencode_go/model-not-in-catalog");
+
+        assert!(
+            !applied,
+            "an uncatalogued durable selection cannot be applied"
+        );
+        assert_eq!(app.agent_state.current_model, "opencode_go/mimo-v2.6-flash");
+    }
+
+    #[test]
+    fn restoring_a_tab_adopts_its_persisted_model() {
+        let mut app = make_test_app();
+        app.agent_state.current_model = "opencode_zen/big-pickle".to_string();
+
+        let mut tab = crate::app::state::project_tabs::ProjectTabState::empty(
+            crate::app::state::project_tabs::ProjectTabId::new(),
+            "codegg".to_string(),
+        );
+        tab.model = "opencode_go/space-bunny".to_string();
+        let tab_id = app.project_tabs.add_tab(tab);
+        app.project_tabs.set_active(&tab_id);
+
+        app.adopt_persisted_tab_model();
+
+        assert_eq!(
+            app.agent_state.current_model, "opencode_go/space-bunny",
+            "the persisted per-tab choice must become the active model"
+        );
+    }
+
+    #[test]
+    fn the_command_channel_exists_before_the_event_loop_runs() {
+        let mut app = make_test_app();
+        assert!(app.tui_cmd_tx.is_none(), "precondition: not wired yet");
+
+        app.ensure_tui_cmd_channel();
+
+        assert!(
+            app.tui_cmd_tx.is_some() && app.tui_cmd_rx.is_some(),
+            "startup work enqueued before run_event_loop must have a channel to land on"
+        );
+        // Idempotent: the event loop reuses this channel rather than replacing
+        // it, so anything queued during startup is still delivered.
+        let first = app.tui_cmd_tx.clone().expect("sender");
+        app.ensure_tui_cmd_channel();
+        assert!(
+            app.tui_cmd_tx.as_ref().map(|tx| tx.same_channel(&first)) == Some(true),
+            "a second call must reuse the existing channel"
+        );
+    }
+
+    #[test]
+    fn turn_completed_returns_to_idle() {
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+
+        app.apply_core_event(CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            stop_reason: "completed".into(),
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            provider_allowance_micros: None,
+            context_limit: None,
+        });
+
+        assert_eq!(app.session_state.session_status, SessionStatus::Idle);
+    }
+
+    #[test]
+    fn turn_completed_with_error_stop_reason_is_an_error() {
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+
+        app.apply_core_event(CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            stop_reason: "error".into(),
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            provider_allowance_micros: None,
+            context_limit: None,
+        });
+
+        assert_eq!(app.session_state.session_status, SessionStatus::Error);
+    }
+
+    #[test]
+    fn turn_completed_carries_usage_and_the_resolved_context_limit() {
+        let mut app = make_test_app();
+
+        app.apply_core_event(CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            stop_reason: "completed".into(),
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: Some(50),
+            reasoning_tokens: Some(30),
+            provider_allowance_micros: None,
+            context_limit: Some(200_000),
+        });
+
+        // Usage is the footer counters...
+        assert_eq!(app.session_state.token_in, 1_000);
+        assert_eq!(app.session_state.token_out, 200);
+        assert_eq!(app.session_state.cached_tokens, 50);
+        // ...and the limit is the window the meter measures against, so the
+        // percentage is meaningful rather than a fabricated 128k guess.
+        assert_eq!(app.session_state.context_tokens, 1_000);
+        assert_eq!(app.session_state.context_limit, 200_000);
+    }
+
+    #[test]
+    fn an_unresolved_context_limit_never_invents_a_window() {
+        // A fresh session starts with an UNKNOWN limit, not a hardcoded
+        // 128_000: seeding one would render a confident percentage for a
+        // model that may have a completely different window.
+        let app = make_test_app();
+        assert_eq!(app.session_state.context_limit, 0);
+
+        let mut app = app;
+        app.apply_core_event(CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            stop_reason: "completed".into(),
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: None,
+            reasoning_tokens: None,
+            provider_allowance_micros: None,
+            // Provider omitted it / turn cancelled before resolution.
+            context_limit: None,
+        });
+
+        assert_eq!(app.session_state.context_tokens, 1_000);
+        // Still unknown - and the footer renders "unknown" for a zero limit
+        // rather than a bogus percentage.
+        assert_eq!(app.session_state.context_limit, 0);
+    }
+
+    #[test]
+    fn core_error_event_is_surfaced() {
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+
+        app.apply_core_event(CoreEvent::Error {
+            code: "ambiguous_provider".into(),
+            message: "Multiple connections match".into(),
+        });
+
+        assert_eq!(app.session_state.session_status, SessionStatus::Error);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("ambiguous_provider")),
+            "the error code must be visible, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn app_error_from_another_session_does_not_change_the_active_view() {
+        let mut app = make_test_app();
+        app.session_state.session = Some(test_session());
+        app.session_state.session_status = SessionStatus::Working;
+
+        let handled = crate::runtime::app_events::handle_app_event_batch(
+            &mut app,
+            vec![codegg::bus::events::AppEvent::Error {
+                session_id: Some("previous-session".into()),
+                message: "stale turn error".into(),
+            }],
+        );
+
+        assert!(!handled);
+        assert_eq!(app.session_state.session_status, SessionStatus::Working);
+        assert!(app
+            .messages_state
+            .toasts
+            .iter()
+            .all(|toast| !toast.message.contains("stale turn error")));
+    }
+
+    #[test]
+    fn text_delta_is_appended_to_the_visible_transcript() {
+        let mut app = make_test_app();
+
+        app.apply_core_event(CoreEvent::TurnTextDelta {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            delta: "pong".into(),
+        });
+
+        assert!(
+            app.messages_state
+                .messages
+                .messages
+                .iter()
+                .any(|m| format!("{:?}", m.parts).contains("pong")),
+            "streamed text must reach the visible transcript"
+        );
+    }
+
+    #[test]
+    fn unknown_core_events_are_ignored_without_error() {
+        // A newer daemon may emit events an older TUI does not know. That must
+        // not panic or mark the turn failed.
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+        let changed = app.apply_core_event(CoreEvent::PresenceUpdated {
+            project_id: "p1".into(),
+        });
+        assert!(!changed);
+        assert_eq!(app.session_state.session_status, SessionStatus::Working);
+    }
+}
+pub mod document_session;
+pub mod editor;
+pub mod editor_completion;
+pub mod editor_effect;
+pub mod editor_highlight;
+pub mod editor_inline_assist;
+pub mod editor_keymap;
+pub mod editor_lsp;
+pub mod editor_match;
+pub mod editor_palette;
+pub mod file_tree;
+pub mod file_tree_coordinator;
+pub mod unified_diff;

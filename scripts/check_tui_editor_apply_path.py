@@ -22,7 +22,7 @@ precondition sets.
 
 ## What this guard reads
 
-Every `.rs` file under `src/tui/`, and nothing else. It looks for
+Every `.rs` file under `crates/codegg-tui/src/`, and nothing else. It looks for
 `CoreRequest::LspPreviewApply` — the request variant — and classifies each
 occurrence:
 
@@ -37,7 +37,7 @@ shape is not an apply path; a doc comment that *names* it is not one either.
 **Violations** (exit code 1):
 
 - **Rule 1 — the variant appears outside the one builder's file.** Any other
-  file under `src/tui/` that mentions `CoreRequest::LspPreviewApply` is
+  file under `crates/codegg-tui/src/` that mentions `CoreRequest::LspPreviewApply` is
   building or matching an apply request outside the builder. That is a second
   apply path, however small.
 - **Rule 2 — the builder's file does not contain exactly one construction.**
@@ -81,10 +81,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TUI_ROOT = REPO_ROOT / "src" / "tui"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rust_test_scan  # noqa: E402  (path is set above)
+
+TUI_ROOT = REPO_ROOT / "crates" / "codegg-tui" / "src"
 
 # The file that owns the one builder.
-THE_BUILDER_FILE = Path("src/tui/commands/change_review.rs")
+THE_BUILDER_FILE = Path("crates/codegg-tui/src/commands/change_review.rs")
 # The one builder's name.
 THE_BUILDER_FN = "build_apply_request"
 # The request variant. Matched exactly, so `LspPreviewApplyRequestDto` and
@@ -186,40 +190,16 @@ def strip_comments(text: str) -> str:
 
 
 def strip_test_modules(text: str) -> str:
-    """Blank out `#[cfg(test)]` modules, keeping the line count.
+    """Blank the `#[cfg(test)]` module blocks, keeping every line in place.
 
     A test that matches on the request variant is not an apply path. The
-    module is removed by brace matching, so the removal is exact rather than
-    a guess about where the module ends. The attribute and the `mod` line
-    are often separate, so the search looks forward for the module's
-    opening brace rather than requiring them to share a line.
+    block boundaries are `rust_test_scan.production_mask`'s: the scanner's
+    mask blanks literals and comments, so a brace spelled in a fixture string
+    cannot end the module early, and the attributes governing the `mod` are
+    read as a run, so `#[cfg(test)] #[allow(..)] mod tests` is removed too.
+    The view keeps the original's length and newline count.
     """
-    lines = text.splitlines(keepends=True)
-    out = list(lines)
-    index = 0
-    while index < len(lines):
-        if "cfg(test)" not in lines[index]:
-            index += 1
-            continue
-        # Find the module's opening brace: the next line that opens one.
-        depth = 0
-        started = False
-        line_index = index
-        while line_index < len(lines):
-            line = lines[line_index]
-            if line_index != index:
-                out[line_index] = "\n" * line.count("\n")
-            for char in line:
-                if char == "{":
-                    depth += 1
-                    started = True
-                elif char == "}":
-                    depth -= 1
-            if started and depth <= 0:
-                break
-            line_index += 1
-        index = line_index + 1
-    return "".join(out)
+    return rust_test_scan.production_mask(text)
 
 
 def _matching_brace(text: str, open_index: int) -> int:
@@ -431,7 +411,7 @@ fn elsewhere(request: Request) -> CoreRequest {
         proves="a second file touching the variant is a second apply path",
         files={
             THE_BUILDER_FILE: BUILDER_BODY,
-            Path("src/tui/commands/editor.rs"): """
+            Path("crates/codegg-tui/src/commands/editor.rs"): """
 fn build_it(request: Request) -> CoreRequest {
     CoreRequest::LspPreviewApply { request }
 }

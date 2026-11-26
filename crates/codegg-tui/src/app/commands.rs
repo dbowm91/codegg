@@ -1,0 +1,1908 @@
+//! TUI effect requests and asynchronous completions.
+
+use super::types::{ConnectionLifecycleAction, TodoEntry};
+use codegg::config::schema::SessionTemplate;
+use codegg::protocol::core::CoreResponse;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+#[derive(Debug, Clone)]
+pub struct ShellPromotionStageResult {
+    pub source_id: u64,
+    pub promotion_id: uuid::Uuid,
+    pub session_id: String,
+    pub workspace_id: Option<String>,
+    pub projection: String,
+    pub duplicate: bool,
+    pub status: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Which bookkeeping slot a terminal resume completion belongs to.
+///
+/// `request` names the bookkeeping slot the answer belongs to. It is a
+/// distinct type rather than two parallel `Option`s because the difference is
+/// load-bearing: a `/terminal-resume` owns the one shared
+/// `dialog_state.terminal_request` generation, while a cadence pull owns a
+/// per-attachment read id and must never touch that slot. Encoding it here
+/// means a poll cannot be wired into the shared slot by mistake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalResumeRequest {
+    /// `/terminal-resume`: the shared single-slot generation.
+    User(u64),
+    /// The cadence pull: a per-attachment read id.
+    Pull { read_id: u64, attachment_id: String },
+}
+
+impl TerminalResumeRequest {
+    /// The per-attachment read this answer claims, if it claims one.
+    pub fn pull(&self) -> Option<(u64, &str)> {
+        match self {
+            TerminalResumeRequest::User(_) => None,
+            TerminalResumeRequest::Pull {
+                read_id,
+                attachment_id,
+            } => Some((*read_id, attachment_id)),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TuiCommand {
+    DeleteSession {
+        session_id: String,
+    },
+    ArchiveSession {
+        session_id: String,
+        unarchive: bool,
+    },
+    UndoDelete {
+        session_id: String,
+    },
+    ForkSession {
+        session_id: String,
+    },
+    ShareSession {
+        session_id: String,
+    },
+    UnshareSession {
+        session_id: String,
+    },
+    ExportSession {
+        session_id: String,
+    },
+    RenameSession {
+        session_id: String,
+        new_title: String,
+    },
+    BulkDelete {
+        session_ids: Vec<String>,
+    },
+    BulkArchive {
+        session_ids: Vec<String>,
+        unarchive: bool,
+    },
+    BulkExport {
+        session_ids: Vec<String>,
+    },
+    /// Refresh all project runtime assets through the daemon-owned
+    /// coordinator. Focused `/reload` aliases use this same variant.
+    RefreshAssets,
+    ProjectInitDraft,
+    ProjectInitDraftFinished {
+        draft: Option<codegg::protocol::core::ProjectInitDraftDto>,
+        error: Option<String>,
+    },
+    ProjectInitPublish {
+        project_id: String,
+        workspace_id: String,
+        draft_token: String,
+    },
+    ProjectInitPublishFinished {
+        project_id: String,
+        workspace_id: String,
+        error: Option<String>,
+    },
+    AssetRefreshFinished {
+        report: Option<codegg::protocol::core::AssetRefreshReportDto>,
+        error: Option<String>,
+    },
+    /// Completion of a permission or question response round trip.
+    PermissionResponseFinished {
+        /// Human-readable cause. `None` on a successful `Ack`.
+        error: Option<String>,
+    },
+    /// Completion of a daemon-owned controlled LSP preview application.
+    LspPreviewApplyFinished {
+        session_id: String,
+        result: Option<codegg::protocol::lsp::LspPreviewApplyResultDto>,
+        error: Option<String>,
+    },
+    ReloadSessions,
+    OpenTreeDialog,
+    /// Completion of a guarded `DocumentOpen` round trip for the M006-A
+    /// editor. Carries the request id and the editor generation so a
+    /// completion for a closed or switched document is discarded.
+    EditorOpened {
+        request_id: u64,
+        generation: u64,
+        result: Option<String>,
+        state: codegg_client::DocumentState,
+    },
+    /// Completion of the one-shot existing snapshot read that settles an
+    /// interactive open's `Pending` LSP witness. `None` preserves Pending.
+    EditorLspSyncSettled {
+        generation: u64,
+        document_id: String,
+        sync: Option<codegg_protocol::core::DocumentLspSync>,
+    },
+    /// Completion of a guarded editor lifecycle operation (save,
+    /// reload, resync, close). `operation` decides whether the
+    /// frontend undo history survives: save preserves it, every
+    /// reconciliation transition clears it.
+    EditorOperationFinished {
+        request_id: u64,
+        generation: u64,
+        operation: crate::app::state::EditorOperation,
+        error: Option<String>,
+        state: codegg_client::DocumentState,
+    },
+    /// Completion of a daemon-owned workspace file delete.
+    DocumentDeleted {
+        path: String,
+        /// Authority root the delete ran under, so the completion knows which
+        /// registry refresh the removal implies.
+        scope: codegg_protocol::document::DocumentScope,
+        error: Option<String>,
+    },
+    /// Completion of an authoritative current-file diagnostics pull.
+    EditorDiagnosticsFinished {
+        request_id: u64,
+        scope: crate::editor_lsp::EditorLspScope,
+        result: Option<codegg::protocol::lsp::LspDiagnosticsResultDto>,
+        error: Option<String>,
+    },
+    EditorDiagnosticsStreamUpdated {
+        scope: crate::editor_lsp::EditorLspScope,
+        result: codegg::protocol::lsp::LspDiagnosticsResultDto,
+        stale: bool,
+    },
+    /// Completion of one guarded existing LSP read operation.
+    EditorLspReadFinished {
+        request_id: u64,
+        scope: crate::editor_lsp::EditorLspScope,
+        operation: codegg::protocol::lsp::LspReadOperation,
+        document_revision: u64,
+        request_position: Option<(u32, u32)>,
+        result: Option<codegg::protocol::lsp::LspReadResultDto>,
+        error: Option<String>,
+    },
+    /// Completion of one M003 completion read. Carries the request id and
+    /// the full completion scope (document identity, revision, cursor), so
+    /// a result for a moved cursor or an old revision is discarded rather
+    /// than displayed.
+    EditorInlineGenerated {
+        request_id: String,
+        generation: u64,
+        document_id: String,
+        document_revision: u64,
+        outcome: codegg::protocol::core::EditorInlineOutcome,
+    },
+    EditorCompletionFinished {
+        request_id: u64,
+        /// Lifetime fencing epoch captured at request time (C003/F2).
+        /// Checked against the live state before anything renders, so a
+        /// pre-reset answer can never satisfy a post-reset request even
+        /// when scope and request id coincide.
+        completion_epoch: u64,
+        scope: crate::editor_completion::EditorCompletionScope,
+        result: Option<codegg::protocol::lsp::LspCompletionResultDto>,
+        error: Option<String>,
+    },
+    /// Completion of a bounded C005 daemon-owned directory listing. Carries
+    /// the request id, the tree generation, and the root the request was
+    /// issued for, so a completion for a superseded request or a workspace
+    /// the user has left is discarded rather than rendered. The listing
+    /// itself is daemon-origin metadata keyed to the echoed workspace
+    /// identity before dispatch.
+    FileTreeListed {
+        request_id: u64,
+        generation: u64,
+        root: std::path::PathBuf,
+        listing: crate::file_tree::TreeListing,
+    },
+    /// Failure of a C005 daemon-owned directory listing. Carries the same
+    /// fence as [`TuiCommand::FileTreeListed`] plus an explicit message.
+    /// Failures are fail-visible in the pane; there is no local walk that
+    /// could mask them.
+    FileTreeFailed {
+        request_id: u64,
+        generation: u64,
+        root: std::path::PathBuf,
+        message: String,
+    },
+    /// Completion of an M006-E change-review accept. Carries the request id
+    /// and review generation so a completion for a rejected or superseded
+    /// review is discarded. `error` carries the daemon's own refusal text
+    /// verbatim, including the unsaved-changes instruction.
+    ChangeReviewAccepted {
+        request_id: u64,
+        generation: u64,
+        written_files: Vec<String>,
+        checkpoint_id: String,
+        error: Option<String>,
+    },
+    /// Completion of an async project catalog refresh
+    /// (`Multi-Project TUI milestone 1`). Carries the request id so
+    /// stale completions (after a new refresh has begun) are dropped
+    /// at apply time.
+    ProjectCatalogRefreshed {
+        request_id: u64,
+        supported: bool,
+        entries: Vec<codegg::protocol::dto::ProjectSummaryDto>,
+        truncated: bool,
+        error: Option<String>,
+    },
+    /// Explicit user request to refresh the project catalog.
+    RefreshProjectCatalog,
+    PreviewImport {
+        source: crate::components::dialogs::import::ImportSource,
+    },
+    ConfirmImport {
+        source: crate::components::dialogs::import::ImportSource,
+    },
+    CreateFromTemplate {
+        key: String,
+        template: SessionTemplate,
+    },
+    LoadSessionMessages {
+        session_id: String,
+    },
+    SpawnSubagent {
+        agent_name: String,
+        prompt: String,
+    },
+    ListTasks,
+    DeleteTask {
+        id: String,
+    },
+    TaskSchedule {
+        interval_secs: u64,
+        message: String,
+    },
+    WorktreeList,
+    MemorySummary {
+        /// The catalog identity the user named.
+        ///
+        /// `/memory` and `/memory-list` are two commands that share one
+        /// effect, so the command that runs must be the one the user
+        /// typed: a command's name is addressable by its own identity.
+        command_id: String,
+    },
+    MemorySearch {
+        query: String,
+    },
+    MemoryRemember {
+        text: String,
+    },
+    MemoryForget {
+        id: String,
+    },
+    HabitList {
+        ready_only: bool,
+    },
+    HabitDismiss {
+        id: String,
+    },
+    /// M007-I (work packages B and C): the daemon's answer to one promotion
+    /// request. The frontend holds no promotion state of its own.
+    SkillPromotionFinished {
+        action: codegg::protocol::skill::SkillPromotionActionDto,
+        response: Option<codegg::protocol::core::CoreResponse>,
+        error: Option<String>,
+    },
+    HabitResult {
+        toast_message: String,
+        is_error: bool,
+    },
+    /// C002 (ADR-0060): the daemon's answer to a compaction request. The
+    /// frontend reports it and never claims a compaction it did not cause.
+    CompactSessionFinished {
+        /// The session this frontend asked about.
+        session_id: String,
+        response: Option<codegg::protocol::core::CoreResponse>,
+        error: Option<String>,
+    },
+    OpenDiffDialog {
+        old_content: Box<str>,
+        new_content: Box<str>,
+        title: Box<str>,
+    },
+    SendNotification {
+        notification_type: crate::components::notification::NotificationType,
+        body: String,
+    },
+    GoalSet {
+        session_id: String,
+        project_id: String,
+        objective: String,
+    },
+    GoalFromFile {
+        session_id: String,
+        project_id: String,
+        path: String,
+    },
+    GoalShow {
+        session_id: String,
+    },
+    GoalPause {
+        session_id: String,
+    },
+    GoalResume {
+        session_id: String,
+    },
+    GoalClear {
+        session_id: String,
+    },
+    GoalDone {
+        session_id: String,
+    },
+    GoalCheckpoint {
+        session_id: String,
+        project_id: String,
+    },
+    /// View or mutate the active goal's budget. Subcommands:
+    ///   "show" — render current budget/usage as a toast
+    ///   "raise tokens <n>"   — raise max_model_tokens
+    ///   "raise turns <n>"    — raise max_turns
+    ///   "raise tool-calls <n>" — raise max_tool_calls
+    ///   "raise wallclock <n>"  — raise max_wallclock_secs (seconds)
+    ///   "raise clear <axis>"   — clear a single axis (None)
+    GoalBudget {
+        session_id: String,
+        subcommand: String,
+    },
+    /// Hydrate the todo list and active goal for a session. Sent on
+    /// `set_session` so the sidebar renders live state immediately.
+    RefreshSessionState {
+        session_id: String,
+    },
+    UpdateModels(Vec<String>),
+    ResearchListRuns,
+    ResearchLoadRun {
+        run_id: String,
+    },
+    ResearchLoadSection {
+        run_id: String,
+        section: String,
+    },
+    OpenRunDetailLoaded {
+        dialog: crate::components::dialogs::run_detail::RunDetailDialog,
+    },
+    OpenRunDetailError {
+        error: String,
+    },
+    OpenJobDetailLoaded {
+        request_id: u64,
+        job_id: String,
+        job: Option<codegg::protocol::dto::JobRecordDto>,
+        attempts: Vec<codegg::protocol::dto::JobAttemptDto>,
+        error: Option<String>,
+        notice: Option<String>,
+    },
+    /// Completion for a daemon-owned historical run rerun request.
+    RunRerunFinished {
+        parent_run_id: String,
+        child_job_id: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: sessions have been reloaded from core.
+    SessionsReloaded {
+        request_id: u64,
+        sessions: Vec<codegg::protocol::dto::Session>,
+        message_counts: std::collections::HashMap<String, usize>,
+        /// M006: the managed checkouts the sessions may run in, keyed by
+        /// the checkout's path.
+        checkouts:
+            std::collections::HashMap<String, crate::components::dialogs::session::CheckoutInfo>,
+        error: Option<String>,
+    },
+    /// M006: launch a session into an isolated checkout.
+    SessionLaunch {
+        project_id: String,
+        intent: codegg::protocol::core::SessionLaunchIntentDto,
+        parent_session_id: Option<String>,
+        placement: codegg::protocol::core::SessionLaunchPlacementDto,
+        idempotency_key: String,
+    },
+    /// Completion: a single session's metadata was refreshed.
+    ///
+    /// Fallback for id-only `CoreEvent::SessionUpdated` events. Auto-title
+    /// events carry the title itself and are applied directly without this
+    /// round trip. Without either path the sidebar and header kept showing
+    /// "Untitled" until a manual session reload.
+    SessionRefreshed {
+        request_id: u64,
+        session_id: String,
+        title: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion of the daemon-authorized session binding read used before
+    /// changing the active tab's execution root.
+    SessionActivated {
+        request_id: u64,
+        tab_id: String,
+        session: Option<codegg::session::Session>,
+        workspace_root: Option<std::path::PathBuf>,
+        error: Option<String>,
+    },
+    /// Completion for daemon-owned Eggpool provisioning. The result is
+    /// secret-free; the API key is never carried in a TUI command.
+    EggpoolConnectionFinished {
+        operation_id: String,
+        result: Result<codegg::protocol::provider::CreateEggpoolConnectionResult, String>,
+    },
+    /// Completion for the daemon-owned setup catalog backing `/connect`.
+    /// Secret-free presentation metadata only; never carries credentials.
+    ConnectSetupLoaded {
+        providers: Vec<codegg::protocol::provider::ProviderSetupEntryDto>,
+        error: Option<String>,
+    },
+    /// Completion for daemon-owned provider-neutral provisioning. The result
+    /// is secret-free; the credential is never carried in a TUI command.
+    ProviderConnectionFinished {
+        operation_id: String,
+        provider_id: String,
+        display_name: String,
+        result: Result<codegg::protocol::provider::CreateProviderConnectionResult, String>,
+    },
+    ConnectionRotationFinished {
+        operation_id: String,
+        result: Result<codegg::protocol::provider::ConnectionRotateStatusDto, String>,
+    },
+    /// Completion: session messages have been loaded from core.
+    SessionMessagesLoaded {
+        request_id: u64,
+        session_id: String,
+        messages: Vec<codegg::session::message::Message>,
+        error: Option<String>,
+    },
+    /// Provider Connections Milestone 3: trigger the connection
+    /// selection dialog refresh flow. Emitted when the dialog opens or
+    /// when the user requests an explicit reload.
+    SessionSelectionRefresh {
+        focus_connection_id: Option<String>,
+    },
+    /// Provider Connections Milestone 3: trigger an explicit
+    /// selection-list load for a specific session ID. Handlers in the
+    /// command runner spawn the actual `CoreRequest` calls.
+    SessionSelectionLoad {
+        session_id: String,
+        focus_connection_id: Option<String>,
+    },
+    /// Persist an explicit model choice made in the `/model` dialog to
+    /// the daemon's durable session selection.
+    ///
+    /// The dialog used to mutate `App::agent_state` only. Because the
+    /// daemon resolves each turn from its *durable* `SessionSelection`,
+    /// the displayed model and the model that actually ran diverged:
+    /// picking a model in the UI changed the status line and nothing
+    /// else, so the next turn still ran whatever the daemon had stored.
+    ModelSelectPersist {
+        session_id: String,
+        model: String,
+    },
+    /// Completion for [`TuiCommand::ModelSelectPersist`]. `error` is
+    /// `None` only when the daemon durably accepted the choice.
+    ModelSelectPersisted {
+        model: String,
+        error: Option<String>,
+    },
+    ConnectionLifecycle {
+        action: ConnectionLifecycleAction,
+        connection_id: String,
+        expected_revision: u64,
+    },
+    /// Provider Connections Milestone 3: completion for the selection
+    /// refresh flow. Carries the resolved selection, the redacted
+    /// connection list, and (when known) the model catalog for the
+    /// currently focused connection.
+    SessionSelectionLoaded {
+        session_id: String,
+        selection: Option<codegg::protocol::provider::SessionSelectionDto>,
+        connections: Vec<codegg::protocol::provider::ProviderConnectionSummaryDto>,
+        models: Vec<codegg::protocol::provider::SelectedModelDto>,
+        focused_connection_id: Option<String>,
+        error: Option<String>,
+    },
+    ConnectionLifecycleFinished {
+        action: ConnectionLifecycleAction,
+        connection_id: String,
+        message: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: tree dialog nodes have been loaded from core.
+    TreeDialogLoaded {
+        current_session_id: Option<String>,
+        nodes: Vec<crate::components::dialogs::tree::TreeNode>,
+        error: Option<String>,
+    },
+    /// Completion: import preview has been loaded.
+    ImportPreviewLoaded {
+        request_id: u64,
+        session: Option<codegg::session::Session>,
+        msg_count: usize,
+        error: Option<String>,
+    },
+    /// Completion: import confirm has finished.
+    ImportConfirmed {
+        request_id: u64,
+        session: Option<codegg::session::Session>,
+        error: Option<String>,
+    },
+    /// Completion: research runs have been listed.
+    ResearchRunsLoaded {
+        request_id: u64,
+        runs: Vec<codegg::research::service::ResearchRunSummary>,
+        error: Option<String>,
+    },
+    /// Completion: a research run bundle has been loaded.
+    ResearchRunLoaded {
+        request_id: u64,
+        run_id: String,
+        bundle: Option<Box<codegg::research::types::ResearchBundle>>,
+        error: Option<String>,
+    },
+    /// Completion: a research section has been loaded.
+    ResearchSectionLoaded {
+        request_id: u64,
+        section: String,
+        content: Option<(crate::components::dialogs::research::ReportSection, String)>,
+        error: Option<String>,
+    },
+    /// Completion: a memory operation has finished.
+    MemoryResult {
+        toast_message: String,
+        is_error: bool,
+    },
+    /// Completion: the doctor diagnostic has finished.
+    DoctorResult {
+        summary: String,
+        is_error: bool,
+    },
+    /// Run diagnostics (search backend, MCP, providers). The result is
+    /// logged at `codegg::doctor` and surfaced as a toast. The
+    /// handler in `tui_cmd.rs` performs the actual async work.
+    RunDoctor,
+    /// Show tool contracts and broker status. Synchronous, no
+    /// background work needed.
+    ToolContracts,
+    /// Run `/security-review` asynchronously. Dispatched from the slash
+    /// command handler in `execute_command` so the TUI renderer stays
+    /// responsive while diff discovery, preflight, and optional LSP
+    /// enrichment run. The handler in `crates/codegg-tui/src/lib.rs` awaits
+    /// `run_security_review_background` and surfaces the result via the
+    /// message timeline + a toast. See
+    /// `architecture/security.md`.
+    ///
+    /// Kept for backward compatibility with any older dispatchers; new
+    /// code should use the spawn-and-finished path via
+    /// `SecurityReviewFinished`.
+    SecurityReviewRun {
+        id: String,
+        root: PathBuf,
+        args: codegg::security::workflow::SecurityReviewCommandArgs,
+        lsp_tool: Option<Arc<codegg::tool::lsp::LspTool>>,
+    },
+    /// Notification that a background security review task finished.
+    /// Sent by the spawned tokio task created from
+    /// `App::execute_command`'s `/security-review` branch. The
+    /// `cmd_rx` arm in `run_event_loop` matches the run id against
+    /// the active guard so stale completions are ignored.
+    SecurityReviewFinished {
+        id: String,
+        receipt: Option<Box<codegg::security::workflow::SecurityReviewReceipt>>,
+        error: Option<String>,
+    },
+    /// Notification that a background subagent spawn attempt finished.
+    /// Spawned from `handle_spawn_subagent` so the TUI dispatch loop
+    /// never awaits the subagent pool directly.
+    SubagentSpawnFinished {
+        agent_name: String,
+        task_id: u64,
+        prompt: String,
+        error: Option<String>,
+    },
+    /// Notification that a background git sidebar refresh finished.
+    /// The generation counter guards against stale completions
+    /// overwriting newer session/project state.
+    GitSidebarRefreshFinished {
+        generation: u64,
+        root: Option<String>,
+        branch: Option<String>,
+        dirty: bool,
+        staged_count: usize,
+        unstaged_count: usize,
+        untracked_count: usize,
+        conflicted_count: usize,
+        ahead: Option<i32>,
+        behind: Option<i32>,
+        error: Option<String>,
+        /// Phase F: active operation family (merge/rebase/cherry-pick/revert/
+        /// bisect/apply-mailbox/sequencer/unknown/none).
+        operation_state_label: Option<String>,
+        /// Phase F: legal recovery actions for the active state.
+        available_actions: Vec<String>,
+        /// Phase F: conflicted paths from the typed conflict model.
+        conflicted_paths: Vec<String>,
+    },
+    RunHumanShell {
+        command: String,
+        promote_after: bool,
+        cwd: PathBuf,
+        confirmed_dangerous: bool,
+    },
+    RemoteShellRunAccepted {
+        local_id: u64,
+        command: String,
+        cwd: PathBuf,
+        promote_after: bool,
+        shell_binding: (Option<String>, Option<String>),
+        binding: codegg::shell::daemon::RemoteShellRunBinding,
+    },
+    RemoteShellRunCancelResult {
+        message: String,
+    },
+    /// Run supervised tests from the /test slash command.
+    TestRun {
+        scope: String,
+        args: String,
+    },
+    /// Completion: a supervised test run has finished.
+    TestRunFinished {
+        request_id: u64,
+        report: Option<Box<codegg::test_runner::TestReport>>,
+        summary: Option<String>,
+        error: Option<String>,
+    },
+    ShellEvent(codegg::shell::ShellEvent),
+    RegisterShellHandle {
+        id: u64,
+        handle: codegg::shell::runtime::ShellHandle,
+    },
+    ShellInclude {
+        id: u64,
+        mode: String,
+        question: Option<String>,
+    },
+    ShellRerun {
+        id: u64,
+    },
+    ShellKill {
+        id: u64,
+    },
+    ShellList,
+    ShellShow {
+        id: u64,
+    },
+    ShellAsk {
+        id: u64,
+        question: String,
+    },
+    /// A session owner accepted or rejected one explicit shell evidence ask.
+    ShellAskSubmitted {
+        id: u64,
+        promotion_id: Option<uuid::Uuid>,
+        text: String,
+        error: Option<String>,
+    },
+    /// The daemon durably staged a redacted shell projection, or rejected it.
+    ShellPromotionStaged {
+        result: ShellPromotionStageResult,
+    },
+    /// Pending promotions recovered from the authoritative session owner.
+    ShellPromotionsLoaded {
+        session_id: String,
+        workspace_id: Option<String>,
+        promotions: Vec<codegg::protocol::core::HumanShellPromotionDto>,
+        error: Option<String>,
+    },
+    /// M002a (ADR-0035): the daemon's prompt-queue projection for one session.
+    ///
+    /// Carries an explicit `error` rather than only the list so the apply arm
+    /// can tell a failed read (keep the previous projection) from an empty
+    /// queue (replace it).
+    UserPromptQueueLoaded {
+        session_id: String,
+        entries: Vec<codegg::protocol::core::UserPromptQueueEntryDto>,
+        error: Option<String>,
+    },
+    /// M004: the daemon's answer to `UserPromptQueueDelete`.
+    ///
+    /// On success `entries` is the projection the **delete itself produced**
+    /// (`queue_projection` re-reads after a successful write), so the box
+    /// applies it instead of issuing a second read — one round trip, and the
+    /// rendered list cannot disagree with the write that produced it.
+    ///
+    /// `code` is carried separately from `error` because a `delivering` refusal
+    /// needs its own sentence: it is not a missing entry, and reporting it as
+    /// one would tell the user their prompt expired because a turn started.
+    /// `error` is the human-facing message and is already bounded; no prompt
+    /// text is ever placed in it.
+    UserPromptQueueDeleteFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<codegg::protocol::core::UserPromptQueueEntryDto>,
+        code: Option<String>,
+        error: Option<String>,
+    },
+    /// M005: an add finished. Carries the minted `entry_id` so the cursor can
+    /// follow the row it created, and the `text` so a bounds refusal can put
+    /// the user's own words back in the composer.
+    UserPromptQueueAddFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<codegg::protocol::core::UserPromptQueueEntryDto>,
+        code: Option<String>,
+        error: Option<String>,
+        entry_id: String,
+        text: String,
+    },
+    /// M005: an edit finished. `entry_id` is the pre-existing identity — an
+    /// edit never mints one.
+    UserPromptQueueEditFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<codegg::protocol::core::UserPromptQueueEntryDto>,
+        code: Option<String>,
+        error: Option<String>,
+        entry_id: String,
+        text: String,
+    },
+    /// M005: a reorder finished. `order_mismatch` here means the projection
+    /// moved underneath the client, which the applier re-reads once rather
+    /// than retrying.
+    UserPromptQueueReorderFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<codegg::protocol::core::UserPromptQueueEntryDto>,
+        code: Option<String>,
+        error: Option<String>,
+    },
+    /// M006: a send-now finished. Carries the daemon's **outcome** rather than a
+    /// wire `code` — a refusal arrives inside a successful response, because the
+    /// attempt itself always resolves and only its result varies.
+    UserPromptQueueSendNowFinished {
+        request_id: u64,
+        session_id: String,
+        entries: Vec<codegg::protocol::core::UserPromptQueueEntryDto>,
+        outcome: Option<codegg::protocol::core::UserPromptQueueSendNowResult>,
+        error: Option<String>,
+    },
+    /// C007: an addressed reply reached — or failed to reach — the turn that
+    /// owns the addressed subagent.
+    ///
+    /// Carries the daemon's **code** rather than its prose. `TurnSteer` answers
+    /// `CoreResponse::Error { code, message }`, and the frontend renders through
+    /// the queue's shared refusal vocabulary so the two steering paths cannot
+    /// drift; the daemon's own sentence is only kept as a transport-error
+    /// fallback, and is scrubbed of turn ids first.
+    SubagentSteerFinished {
+        request_id: u64,
+        /// The name shown to the user, so the toast can say what it addressed.
+        addressee: String,
+        /// The user's own words, exactly as typed.
+        ///
+        /// Carried so a **refusal** can put them back. A bare addressed reply has
+        /// no durable queue behind it — the daemon hands it to the loop's
+        /// steering channel and stores nothing — so the composer is the only
+        /// copy that will ever exist. Clearing it on dispatch and not carrying
+        /// it here would destroy the text on every refusal.
+        body: String,
+        code: Option<String>,
+        error: Option<String>,
+    },
+    /// A normal next turn accepted or rejected staged shell evidence.
+    ShellPromotionsSubmitted {
+        promotions: Vec<(uuid::Uuid, u64)>,
+        error: Option<String>,
+    },
+    /// A `TurnSubmit` request finished.
+    ///
+    /// Carries a typed outcome rather than a formatted string: the completion
+    /// arm has to tell contention (a turn is running, so turn state must be
+    /// left alone) from a dead socket and from a daemon refusal, and it cannot
+    /// do that by parsing prose. `generation` is the frontend's local
+    /// staleness marker; `request_id` stays the daemon's idempotency key.
+    TurnSubmissionFinished {
+        request_id: String,
+        generation: u64,
+        outcome: crate::app::turn_submit::TurnSubmitOutcome,
+    },
+    /// A `TurnCancel` request finished. Carries the addressed turn so a
+    /// completion for a turn that has already been superseded is dropped
+    /// rather than applied to whatever is running now.
+    TurnCancelRequested {
+        session_id: String,
+        turn_id: String,
+        error: Option<String>,
+    },
+    ShellExpand {
+        id: u64,
+        stream: String,
+        range: Option<String>,
+    },
+    /// Render one interactive terminal view (M003). Synchronous: projects
+    /// the controller state for `handle` into the terminal dialog.
+    TerminalShow {
+        handle: String,
+    },
+    /// Completion: an interactive terminal create has finished.
+    TerminalCreateFinished {
+        request_id: u64,
+        handle: Option<String>,
+        workspace_id: Option<String>,
+        command_label: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: an interactive terminal list has finished.
+    TerminalListFinished {
+        request_id: u64,
+        processes: Option<Vec<codegg::protocol::interactive_process::InteractiveProcessMetadata>>,
+        error: Option<String>,
+    },
+    /// Completion: an interactive terminal attach has finished. Carries
+    /// the caller-owned attachment plus the initial bounded chunk and/or
+    /// a typed resync.
+    TerminalAttachFinished {
+        request_id: u64,
+        handle: String,
+        attachment_id: Option<String>,
+        chunk: Option<codegg::protocol::interactive_process::InteractiveOutputChunk>,
+        resync: Option<codegg::protocol::interactive_process::InteractiveResync>,
+        error: Option<String>,
+    },
+    /// Completion: an interactive terminal resume has finished.
+    TerminalResumeFinished {
+        request: TerminalResumeRequest,
+        handle: String,
+        chunk: Option<codegg::protocol::interactive_process::InteractiveOutputChunk>,
+        resync: Option<codegg::protocol::interactive_process::InteractiveResync>,
+        error: Option<String>,
+    },
+    /// Completion: an interactive terminal input/resize/detach/terminate/
+    /// remove operation has finished. `cols`/`rows` carry the daemon
+    /// echo for resize; `exit_code`/`exit_signal` carry the outcome for
+    /// terminate.
+    TerminalOpFinished {
+        request_id: u64,
+        op: String,
+        handle: String,
+        exit_code: Option<i32>,
+        exit_signal: Option<i32>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        error: Option<String>,
+    },
+    FileDiffStatsReady {
+        path: PathBuf,
+        generation: u64,
+        result: crate::file_diff::FileDiffStatsResult,
+    },
+    /// Completion: share operation finished.
+    ShareSessionFinished {
+        session_id: String,
+        session: Option<codegg::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Completion: unshare operation finished.
+    UnshareSessionFinished {
+        session_id: String,
+        session: Option<codegg::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Completion: export operation finished.
+    ExportSessionFinished {
+        session_id: String,
+        json: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: a goal operation finished (show, checkpoint, budget).
+    GoalOperationFinished {
+        session_id: String,
+        op: String,
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: the daemon's preview read for `/review-change` finished.
+    ///
+    /// M007-H (D4): the candidate comes from the daemon's preview store,
+    /// so the TUI reads the daemon's answer and never a local copy.
+    ChangeReviewOpened {
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: the daemon's `/revert` finished.
+    ///
+    /// M007-H (work package C): the response is the daemon's own answer —
+    /// its typed refusal included. The TUI renders it and never restores a
+    /// file itself.
+    RevertFinished {
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: the daemon's diff read finished.
+    ///
+    /// M007-I (work package A): the response is the daemon's own answer —
+    /// its typed refusal included. The TUI renders it and never reads the
+    /// working tree itself.
+    DiffFinished {
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: session state (todos + active goal) refreshed.
+    SessionStateRefreshed {
+        /// `Some` when the core produced an authoritative todo list. `None`
+        /// means the read failed and the caller must leave the visible list
+        /// untouched — conflating that with "empty" blanked the todo strip.
+        todos: Option<Vec<TodoEntry>>,
+        active_goal: Option<crate::bus::events::GoalSnapshot>,
+        error: Option<String>,
+    },
+    /// Completion: background task list has been fetched from core.
+    TasksListed {
+        request_id: u64,
+        tasks: Vec<serde_json::Value>,
+        error: Option<String>,
+    },
+    /// Completion: a task operation (delete, schedule) has finished.
+    TaskOperationFinished {
+        request_id: u64,
+        op: String,
+        task_id: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: worktree list has been fetched from core.
+    WorktreeListed {
+        request_id: u64,
+        worktrees: Vec<String>,
+        error: Option<String>,
+    },
+    /// Completion: a session has been created from a template.
+    TemplateSessionCreated {
+        request_id: u64,
+        session: Option<codegg::protocol::dto::Session>,
+        agent: Option<String>,
+        model: Option<String>,
+        template_name: String,
+        error: Option<String>,
+    },
+    /// Completion of a user-initiated new session (Ctrl+N, `/new`).
+    ///
+    /// `NewSession` used to only clear `session_state.session`, which left the
+    /// TUI permanently session-less: `/models`, `/sessions` and every
+    /// session-scoped command were unusable and Ctrl+N looked like a dead key.
+    /// Creating the session eagerly is what makes those surfaces work before
+    /// the first prompt.
+    NewSessionCreated {
+        request_id: u64,
+        session: Option<codegg::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Completion of the nonblocking session creation required by a prompt
+    /// submitted before a session existed.  The route and prompt are carried
+    /// in the completion so apply never consults mutable current prompt state.
+    PromptSessionCreated {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        prompt: String,
+        session: Option<codegg::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Completion: a desktop notification has been sent.
+    NotificationSent {
+        error: Option<String>,
+    },
+    /// Request to display TUI diagnostics stats.
+    TuiStats,
+    /// Completion: a session mutation (delete, archive, fork, rename, etc.) has finished.
+    SessionMutationFinished {
+        request_id: u64,
+        op: SessionMutationOp,
+        affected_ids: Vec<String>,
+        message: String,
+        reload_after: bool,
+        error: Option<String>,
+    },
+    /// Request to run a process-backed plugin command.
+    PluginCommandRun {
+        spec: codegg::command::ProcessCommandSpec,
+        args: Vec<String>,
+        session_id: Option<String>,
+        model: Option<String>,
+        workspace_root: PathBuf,
+    },
+    /// Completion: a plugin command has finished executing.
+    PluginCommandFinished {
+        invocation_id: String,
+        command: String,
+        response: Option<Box<codegg::protocol::plugin::PluginResponse>>,
+        stdout: Option<String>,
+        stderr: Option<String>,
+        error: Option<String>,
+    },
+    /// Apply a single plugin UI effect directly (without going through a command response).
+    PluginUiEffect {
+        effect: codegg::protocol::ui::UiEffect,
+    },
+    /// List all registered plugins.
+    PluginList,
+    /// Show detailed info for a single plugin.
+    PluginInfo {
+        selector: String,
+    },
+    /// Enable a plugin by selector.
+    PluginEnable {
+        selector: String,
+    },
+    /// Disable a plugin by selector.
+    PluginDisable {
+        selector: String,
+    },
+    /// Run diagnostic checks on a plugin (or all plugins).
+    PluginDoctor {
+        selector: Option<String>,
+    },
+    /// Remove (uninstall) a local plugin by selector.
+    PluginRemove {
+        selector: String,
+    },
+    /// Install a plugin from a local path.
+    PluginInstall {
+        path: String,
+    },
+    /// Completion: plugin list has been fetched from the marketplace.
+    PluginListFinished {
+        lines: Vec<String>,
+        error: Option<String>,
+    },
+    /// Completion: plugin info has been fetched.
+    PluginInfoFinished {
+        plugin_id: String,
+        lines: Vec<String>,
+        error: Option<String>,
+    },
+    /// Completion: a plugin enable operation has finished.
+    PluginEnableFinished {
+        plugin_id: String,
+        error: Option<String>,
+    },
+    /// Completion: a plugin disable operation has finished.
+    PluginDisableFinished {
+        plugin_id: String,
+        error: Option<String>,
+    },
+    /// Completion: plugin diagnostics have finished.
+    PluginDoctorFinished {
+        lines: Vec<String>,
+        error: Option<String>,
+    },
+    /// Completion: a plugin remove operation has finished.
+    PluginRemoveFinished {
+        plugin_id: String,
+        removed_files: bool,
+        install_path: Option<String>,
+        warning: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: a plugin install operation has finished.
+    PluginInstallFinished {
+        source: String,
+        lines: Vec<String>,
+        error: Option<String>,
+    },
+    /// Project Picker (Milestone 2): load project detail via ProjectGet.
+    StartGetProject {
+        request_id: u64,
+        project_id: String,
+        picker_generation: u64,
+        picker_request_id: u64,
+    },
+    /// Project Picker (Milestone 2): ProjectGet completion.
+    ProjectGetLoaded {
+        request_id: u64,
+        target_project_id: String,
+        picker_generation: u64,
+        picker_request_id: u64,
+        result: Option<codegg::protocol::dto::ProjectDetailsDto>,
+        error: Option<String>,
+    },
+    /// Completion of the `ProjectGet` used to build a permanent-destroy
+    /// confirmation. It is picker-generation scoped and has no side effects.
+    ProjectDestroyConfirmationLoaded {
+        picker_request_id: u64,
+        project_id: String,
+        display_name: Option<String>,
+        session_count: Option<usize>,
+        error: Option<String>,
+    },
+    /// Completion of recoverable archive/restore.
+    ProjectLifecycleFinished {
+        picker_request_id: u64,
+        project_id: String,
+        restored: bool,
+        error: Option<String>,
+    },
+    /// Completion of permanent project destruction.
+    ProjectDeleteFinished {
+        picker_request_id: u64,
+        project_id: String,
+        deleted_session_count: Option<usize>,
+        error: Option<String>,
+    },
+    /// Project/workspace detail loaded for a rename/repath form.
+    ProjectEditLoaded {
+        picker_request_id: u64,
+        project_id: String,
+        display_name: Option<String>,
+        root: Option<String>,
+        expected_updated_at: Option<i64>,
+        error: Option<String>,
+    },
+    /// Completion of a rename/repath update.
+    ProjectUpdateFinished {
+        picker_request_id: u64,
+        project: Option<codegg::protocol::dto::ProjectSummaryDto>,
+        workspace: Option<codegg::protocol::dto::ProjectWorkspaceSummaryDto>,
+        previous_display_name: Option<String>,
+        previous_root: Option<String>,
+        error: Option<String>,
+    },
+    /// Project Picker (Milestone 2): load sessions for a project tab.
+    StartListProjectSessions {
+        tab_id: crate::app::state::ProjectTabId,
+        project_id: String,
+        workspace_id: String,
+    },
+    /// Project Picker (Milestone 2): session list completion.
+    ProjectSessionsLoaded {
+        request_id: u64,
+        tab_id: crate::app::state::ProjectTabId,
+        project_id: String,
+        workspace_id: String,
+        sessions: Vec<codegg::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Project Picker (Milestone 2): register a workspace by path.
+    StartRegisterWorkspace {
+        path: String,
+    },
+    /// Project Picker (Milestone 2): project registration completion.
+    ProjectRegistered {
+        request_id: u64,
+        picker_request_id: u64,
+        workspace_id: String,
+        workspace_root: String,
+        project_id: Option<String>,
+        error: Option<String>,
+    },
+    /// Switch to the next project tab.
+    NextProjectTab,
+    /// Switch to the previous project tab.
+    PreviousProjectTab,
+    /// Close the active project tab.
+    CloseProjectTab,
+    /// Presence M002: explicit refresh of one project's collaborator
+    /// presence. The handler performs capability negotiation + snapshot
+    /// fetch through `CoreClient`.
+    RefreshPresence {
+        project_id: String,
+    },
+    /// Presence M002: completion of a snapshot fetch. Stale completions
+    /// (wrong request id or reconnect epoch) are dropped at apply time.
+    /// `unauthorized` covers `project_not_found` denials (indistinguishable
+    /// from absent); `unsupported` covers older daemons without the
+    /// presence capability. Both render the identical unavailable panel.
+    PresenceSnapshotLoaded {
+        request_id: u64,
+        project_id: String,
+        snapshot: Option<codegg::protocol::core::PresenceSnapshotDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Presence M002: liveness hint (`CoreEvent::PresenceUpdated`).
+    /// Carries no collaborator detail; flags the project for a bounded
+    /// re-fetch when it is not already loading.
+    PresenceHint {
+        project_id: String,
+    },
+    /// Milestone 4: trigger a manifest restore attempt.
+    /// Dispatched at TUI startup after the manifest is loaded.
+    ManifestRestoreRequested,
+    /// Milestone 4: completion of a per-project ProjectGet fetch
+    /// during manifest restore. Carries the request_id, the project
+    /// id that was queried, and the result. Stale completions are
+    /// dropped at apply time.
+    ManifestRestoreProjectGetLoaded {
+        request_id: u64,
+        project_id: String,
+        result: Option<codegg::protocol::dto::ProjectDetailsDto>,
+        error: Option<String>,
+    },
+    /// Milestone 4: completion of the manifest restore pipeline.
+    /// Carries the restored plan as a list of (project_id,
+    /// workspace_id, session_id) triples so the TUI can transition
+    /// into the restored state without a separate async step.
+    ManifestRestoreFinished {
+        plan: crate::app::state::restore::RestorePlanWire,
+        pending_heavy_load: Option<String>,
+        diagnostics: Vec<crate::app::state::restore::RestoreDiagnosticWire>,
+        daemon_capability_supported: bool,
+    },
+    /// Milestone 4: operator requested disabling manifest
+    /// persistence.
+    ManifestPersistenceDisable,
+    /// Milestone 4: operator requested enabling manifest
+    /// persistence.
+    ManifestPersistenceEnable,
+    /// Milestone 4: operator requested resetting manifest
+    /// persistence.
+    ManifestPersistenceReset,
+    // M012 checked undo/reapply
+    EditUndoLatest {
+        session_id: String,
+        workspace_id: String,
+    },
+    EditReapplyLatest {
+        session_id: String,
+        workspace_id: String,
+    },
+    EditUndo {
+        checkpoint_id: String,
+        session_id: String,
+        workspace_id: String,
+    },
+    EditReapply {
+        checkpoint_id: String,
+        session_id: String,
+        workspace_id: String,
+    },
+    EditCheckpointList {
+        session_id: String,
+        workspace_id: String,
+    },
+    EditUndoFinished {
+        session_id: String,
+        result: Option<codegg::protocol::dto::EditRestoreResultDto>,
+        error: Option<String>,
+    },
+    EditReapplyFinished {
+        session_id: String,
+        result: Option<codegg::protocol::dto::EditRestoreResultDto>,
+        error: Option<String>,
+    },
+    EditCheckpointListFinished {
+        session_id: String,
+        checkpoints: Vec<codegg::protocol::dto::EditCheckpointSummaryDto>,
+        error: Option<String>,
+    },
+    /// Presence M003: start an authorized read-only observation of one
+    /// session. The handler performs capability negotiation + session
+    /// subscribe through `CoreClient` on a registered task.
+    StartObserve {
+        project_id: String,
+        session_id: String,
+    },
+    /// Presence M003: subscribe completion. Stale completions (wrong
+    /// request id or reconnect epoch) are dropped at apply time.
+    /// `unauthorized` covers `project_not_found` denials
+    /// (indistinguishable from absent); `unsupported` covers older
+    /// daemons without projection support. Both render identically.
+    ObserveSubscribed {
+        request_id: u64,
+        project_id: String,
+        session_id: String,
+        subscription_id: Option<codegg::protocol::projection::replay::ProjectionSubscriptionId>,
+        cursor: Option<codegg::protocol::projection::replay::ProjectionCursor>,
+        /// Authoritative snapshot returned by the daemon with the
+        /// subscription. Discarding it leaves the projection controller
+        /// empty until a live event happens to arrive, which is why
+        /// derived status surfaces had nothing to read.
+        projection: Option<(
+            codegg::protocol::projection::replay::ProjectionStreamDescriptor,
+            codegg::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Presence M003: resume/replay continuation for the active
+    /// observation (reconnect/lag/resync path).
+    ObserveResumed {
+        request_id: u64,
+        session_id: String,
+        cursor: Option<codegg::protocol::projection::replay::ProjectionCursor>,
+        last_delivered_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// Presence M003: explicit stop of the active observation. Carries
+    /// the observer-owned subscription id (when present) so the handler
+    /// can issue the authoritative unsubscribe best-effort.
+    StopObserving,
+    /// Presence M003: unsubscribe completion (best-effort; stale
+    /// completions are ignored).
+    ObserveUnsubscribed {
+        subscription_id: Option<codegg::protocol::projection::replay::ProjectionSubscriptionId>,
+    },
+    /// Default socket TUI session projection subscription completion.
+    PrimaryProjectionSubscribed {
+        request_id: u64,
+        project_id: String,
+        session_id: String,
+        tab_id: Option<String>,
+        subscription_id: Option<codegg::protocol::projection::replay::ProjectionSubscriptionId>,
+        cursor: Option<codegg::protocol::projection::replay::ProjectionCursor>,
+        projection: Option<(
+            codegg::protocol::projection::replay::ProjectionStreamDescriptor,
+            codegg::protocol::projection::replay::ProjectionSnapshotBundle,
+        )>,
+        error: Option<String>,
+        unsupported: bool,
+    },
+    /// M003: one bounded page of a delegated run's recorded transcript.
+    ///
+    /// The completion of one authorized `AgentRunTranscriptRead`. It carries
+    /// the fence the read was issued under — the per-tab request id, the
+    /// route token, the tab it belongs to, the run it names, and the cursor
+    /// it asked from — so a completion that arrives after a session switch,
+    /// a project switch, a reconnect, a tab close, a task-id reuse or a run
+    /// replacement can be recognised as stale and dropped.
+    SubagentTranscriptPage {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        tab_id: String,
+        run_id: String,
+        from_ordinal: i64,
+        page: Option<codegg::protocol::projection::dto::AgentRunTranscriptPageDto>,
+        error: Option<String>,
+        error_code: Option<String>,
+    },
+    /// C001: the next bounded catch-up pass for one delegated tab.
+    ///
+    /// A pass reads at most four pages. When the store still holds rows
+    /// beyond the page that was last read, the tab yields and schedules
+    /// another pass through the event loop, so a long transcript is walked
+    /// over several passes instead of dead-ending at the fourth page. The
+    /// command carries the tab it belongs to; the tab's own cache holds
+    /// the cursor the pass reads from.
+    SubagentTranscriptPass {
+        tab_id: String,
+    },
+    /// Project Collaboration M002: explicit refresh of one project's
+    /// chat window (channel ensure + history through `CoreClient`).
+    RefreshChat {
+        project_id: String,
+    },
+    /// Project Collaboration M002: history-page completion for the
+    /// active channel window.
+    ChatHistoryLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<codegg::protocol::core::ChatMessageDto>,
+        next_cursor: u64,
+        truncated: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Backward-page completion. Serves both the window's initial
+    /// newest-first load (`before_seq = None`) and its `u` paging, since
+    /// both ask for "the page just older than what I hold".
+    ChatHistoryOlderLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<codegg::protocol::core::ChatMessageDto>,
+        has_older: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: incremental-sync completion from the
+    /// cached M001 cursor (or a bounded resync page).
+    ChatSyncLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<codegg::protocol::core::ChatMessageDto>,
+        next_cursor: u64,
+        resync_required: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: send completion. `draft` echoes the
+    /// attempted body so failures retain it; `duplicate` marks idempotent
+    /// retry convergence. No task-per-message spinner: stale protection
+    /// is the reconnect epoch plus merge-by-id.
+    ChatMessageSent {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        message: Option<codegg::protocol::core::ChatMessageDto>,
+        duplicate: bool,
+        draft: String,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: edit completion (new revision).
+    ChatEditFinished {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        message: Option<codegg::protocol::core::ChatMessageDto>,
+        message_id: String,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: redact completion (identity +
+    /// revision; the body is `[REDACTED]` daemon-side).
+    ChatRedactFinished {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+        revision: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: read-marker completion
+    /// (forward-only; failures keep the local unread badge).
+    ChatReadMarkerSet {
+        project_id: String,
+        channel_id: String,
+        last_read_seq: u64,
+        error: Option<String>,
+    },
+    /// Project Collaboration M002: composing-snapshot completion
+    /// (content-free leases).
+    ChatComposingLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        composing: Vec<codegg::protocol::core::ChatComposingDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: liveness hint (`ChatMessageCommitted`
+    /// / `ChatComposingUpdated`). Carries no message detail; flags the
+    /// project for a bounded re-fetch when it is not already loading.
+    ChatHint {
+        project_id: String,
+        channel_id: String,
+    },
+    /// Project Collaboration M003: structured-action submit completion.
+    /// Explicit typed operation only; free text never produces this.
+    /// `duplicate` marks idempotent retry convergence (no second job).
+    ChatActionSubmitted {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        action: Option<codegg::protocol::core::ChatActionDto>,
+        duplicate: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M003: bounded action-list completion for
+    /// the active channel (optionally filtered to one message).
+    ChatActionListLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        actions: Vec<codegg::protocol::core::ChatActionDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M003: action liveness hint
+    /// (`ChatActionUpdated`). Flags the project for a bounded action
+    /// re-fetch; receivers re-fetch through the authorized list path.
+    ChatActionHint {
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+    },
+    /// Request a refresh of the cached one-line LSP status shown in the
+    /// footer. The status is computed from the live LSP service, so it must
+    /// be fetched off the render path: the completion carries the rendered
+    /// string and the render pass only reads the cache.
+    LspStatusRefreshRequested,
+    /// Completion of an [`TuiCommand::LspStatusRefreshRequested`] round
+    /// trip. `status` is `None` when no LSP server is connected.
+    LspStatusRefreshed {
+        status: Option<String>,
+    },
+    /// Request the multi-line LSP detail summary for the `/lsp-status`
+    /// toast. Awaiting the LSP service is off the render path.
+    LspStatusDetailRequested,
+    /// Completion of a [`TuiCommand::LspStatusDetailRequested`] round trip.
+    LspStatusDetailLoaded {
+        detail: Option<String>,
+    },
+    LspErrorsRequested {
+        server_id: String,
+    },
+    LspServersRequested,
+    LspCapabilitiesRequested {
+        server_id: String,
+    },
+    LspRestartRequested {
+        server_id: String,
+    },
+    LspControlRequested {
+        command_id: &'static str,
+        argument: String,
+    },
+    LspWorkflowRequested {
+        command_id: &'static str,
+        argument: String,
+    },
+    /// Eggwork M002: request the host telemetry of the configured remote
+    /// nodes. Awaiting the daemon is off the render path.
+    NodeTelemetryRequested,
+    /// Eggwork M002: completion of a [`TuiCommand::NodeTelemetryRequested`]
+    /// round trip.
+    ///
+    /// `nodes` carries the daemon's snapshots verbatim, including the nodes
+    /// that could not be read; the TUI never fills in a missing dimension.
+    NodeTelemetryLoaded {
+        nodes: Vec<codegg::protocol::dto::NodeTelemetryDto>,
+        error: Option<String>,
+    },
+    /// M007: request a daemon-resolved policy snapshot
+    /// (`ApprovalPreferenceGet` + `ExecutionPolicyGet`). The completion
+    /// carries daemon DTOs only; the TUI never invents effective state.
+    PolicySnapshotRequested {
+        request_id: u64,
+        reason: crate::commands::policy::PolicySnapshotReason,
+    },
+    /// M007: completion of a policy snapshot round-trip. Stale
+    /// completions (mismatched request id) are dropped at apply time.
+    PolicySnapshotLoaded {
+        request_id: u64,
+        reason: crate::commands::policy::PolicySnapshotReason,
+        preference: Option<codegg::protocol::core::RuntimePreferenceDto>,
+        snapshot: Option<codegg::protocol::core::ExecutionPolicySnapshotDto>,
+        error: Option<String>,
+    },
+    /// M007: completion of a `RuntimePolicySet` round-trip (followed by
+    /// a snapshot refresh in the same task). Failed updates leave the
+    /// previous effective policy cached and report the error.
+    PolicyUpdateFinished {
+        request_id: u64,
+        preference: Option<codegg::protocol::core::RuntimePreferenceDto>,
+        snapshot: Option<codegg::protocol::core::ExecutionPolicySnapshotDto>,
+        error: Option<String>,
+    },
+    /// Provider reasoning control M004: completion of a
+    /// `ReasoningPreferenceSet` round-trip.
+    ReasoningPreferenceUpdated {
+        request_id: u64,
+        preference: Option<codegg::protocol::core::RuntimePreferenceDto>,
+        previous: codegg::protocol::core::ReasoningMode,
+        error: Option<String>,
+    },
+    /// Provider reasoning control M004: completion of a
+    /// `ReasoningPreferenceGet` read. The selection is daemon state, so a
+    /// frontend that reconnects receives it from the daemon rather than
+    /// from local state.
+    ReasoningPreferenceLoaded {
+        request_id: u64,
+        preference: Option<codegg::protocol::core::RuntimePreferenceDto>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: scheduling-sheet prefetch completion
+    /// (lanes, summary, capabilities, Task-model preference). Stale
+    /// completions (newer prefetch, tab switch, rebind, reconnect) are
+    /// dropped at apply time; the prompt text is never moved by this
+    /// completion.
+    TaskSheetPrefetched {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        project_id: String,
+        data: Option<crate::commands::work_orders::SheetPrefetchData>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: `WorkOrderCreate` completion. A late
+    /// success may have committed daemon state even if the frontend
+    /// route is stale: the WorkOrder is never deleted to "undo", and
+    /// the projection refreshes when next foregrounded.
+    WorkOrderCreated {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        project_id: String,
+        prompt: String,
+        work_order: Option<codegg::protocol::work_order::WorkOrderDto>,
+        duplicate: bool,
+        schedule_summary: String,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: Task view list refresh completion.
+    /// `generation` invalidates completions from superseded refreshes,
+    /// reorders, and mutations.
+    TaskViewRefreshed {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        generation: u64,
+        project_id: String,
+        work_orders: Vec<codegg::protocol::work_order::WorkOrderDto>,
+        summary: Option<codegg::protocol::work_order::WorkOrderSummaryDto>,
+        lanes: Vec<codegg::protocol::work_order::SequenceLaneDto>,
+        capabilities_supported: bool,
+        truncated: bool,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: lazy single-row occurrence detail.
+    /// Never issued N+1 per row — only for the selected row.
+    TaskOccurrenceLoaded {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        generation: u64,
+        work_order_id: String,
+        occurrence: Option<codegg::protocol::work_order::WorkOrderOccurrenceDto>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: CAS lane reorder completion. Conflicts
+    /// refresh the lane and display "queue changed; retry" instead of
+    /// applying local speculative order.
+    LaneReordered {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        generation: u64,
+        lane_id: String,
+        revision: u64,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: cancel/resume mutation completion for
+    /// waiting tasks only. Running sessions use session/job control.
+    TaskMutationFinished {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        generation: u64,
+        op: String,
+        work_order_id: String,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: materialized-session focus lookup
+    /// completion. The session opens through canonical project-tab /
+    /// session-loading machinery with stale-completion guards.
+    TaskSessionFocus {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        generation: u64,
+        project_id: String,
+        session_id: String,
+        sessions: Vec<codegg::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: Task-model preference prefetch
+    /// completion (principal-scoped convenience default).
+    TaskModelPrefetched {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        connection: Option<String>,
+        model: Option<String>,
+        revision: u64,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: best-effort Task-model persist after a
+    /// successful create. Failures warn only; the WorkOrder already
+    /// snapshotted its model.
+    TaskModelPrefSaved {
+        request_id: u64,
+        error: Option<String>,
+    },
+    /// Project Work Orders M004: global dashboard page completion. One
+    /// bounded aggregate replaces the whole cache when `generation`
+    /// and `reconnect_epoch` are current; stale completions drop.
+    /// Revoked projects vanish via whole-page replacement.
+    WorkspaceDashboardLoaded {
+        request_id: u64,
+        generation: u64,
+        reconnect_epoch: u64,
+        rows: Vec<codegg::protocol::work_order::ProjectActivitySummaryDto>,
+        truncated: bool,
+        next_cursor: Option<String>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M004: lazy inline expansion for the
+    /// selected project (one bounded `WorkOrderList`, never N+1).
+    WorkspaceDashboardExpanded {
+        request_id: u64,
+        generation: u64,
+        reconnect_epoch: u64,
+        project_id: String,
+        tasks: Vec<codegg::protocol::work_order::WorkOrderDto>,
+        error: Option<String>,
+    },
+    /// C001: `WorkOrderTriggerCreate` completion. `secret` carries the
+    /// one-time bearer only on a fresh creation; converged retries and
+    /// all other paths set it to `None`. Stale routes drop foreground
+    /// display without logging the secret; metadata drives recovery.
+    WorkOrderTriggerCreated {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        project_id: String,
+        work_order_id: String,
+        trigger: Option<codegg::protocol::work_order::TaskTriggerMetadataDto>,
+        secret: Option<String>,
+        duplicate: bool,
+        error: Option<String>,
+    },
+    /// C001: trigger metadata listing for one WorkOrder (never secrets).
+    /// Used for ambiguous-timeout reconciliation and Task-view status.
+    WorkOrderTriggersListed {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        generation: u64,
+        project_id: String,
+        work_order_id: String,
+        triggers: Vec<codegg::protocol::work_order::TaskTriggerMetadataDto>,
+        truncated: bool,
+        error: Option<String>,
+    },
+    /// C001: `WorkOrderTriggerRevoke` completion (monotonic). Rotation
+    /// chains revoke then create; the revoke half never displays a secret.
+    WorkOrderTriggerRevoked {
+        request_id: u64,
+        route: crate::app::state::UiRouteToken,
+        project_id: String,
+        work_order_id: String,
+        trigger_id: String,
+        trigger: Option<codegg::protocol::work_order::TaskTriggerMetadataDto>,
+        error: Option<String>,
+    },
+    /// Team Collaboration Corrective M003: project membership + chat
+    /// policy view completion for the `/team` administration surface.
+    /// Stale completions (newer request, tab switch, reconnect) are
+    /// dropped at apply time; the dialog renders only for the captured
+    /// project. `unauthorized` covers `project_not_found` denials
+    /// (indistinguishable from absent); `unsupported` covers older
+    /// daemons without the team surface. Both render identically.
+    TeamMembershipLoaded {
+        request_id: u64,
+        project_id: String,
+        memberships: Option<Vec<codegg::protocol::core::TeamMembershipDto>>,
+        policy: Option<codegg::protocol::core::ChatProjectPolicyDto>,
+        truncated: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// M003: principal listing completion (LocalOwner-only). Carries
+    /// metadata only, never secrets.
+    TeamPrincipalsLoaded {
+        request_id: u64,
+        principals: Option<Vec<codegg::protocol::core::TeamPrincipalDto>>,
+        truncated: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// M003: token metadata listing completion for one principal
+    /// (LocalOwner-only, never secrets).
+    TeamTokensLoaded {
+        request_id: u64,
+        principal_id: String,
+        tokens: Option<Vec<codegg::protocol::core::TeamTokenDto>>,
+        truncated: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// M003: team mutation completion (membership add/update/revoke,
+    /// principal create/status, token revoke, chat policy set). Success
+    /// refreshes the `/team` view; `message` is the structural summary
+    /// (ids/revisions, never secrets).
+    TeamMutationFinished {
+        request_id: u64,
+        project_id: Option<String>,
+        message: Option<String>,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// M003: `TeamTokenCreate` completion. `plaintext` carries the
+    /// one-time `cggt_...` credential only on a fresh creation; all
+    /// other paths set it to `None`. Stale routes drop foreground
+    /// display without logging the credential; metadata drives rotation.
+    TeamTokenCreated {
+        request_id: u64,
+        project_id: Option<String>,
+        principal_id: String,
+        token: Option<codegg::protocol::core::TeamTokenDto>,
+        plaintext: Option<String>,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// M004: `SessionControlGet` completion for the `/control` lease
+    /// view. Stale completions are dropped at apply time; the dialog
+    /// renders only for the captured session. Carries ids/revisions/
+    /// reasons only, never secrets.
+    ControlLoaded {
+        request_id: u64,
+        session_id: String,
+        controller: Option<codegg::protocol::core::SessionControllerDto>,
+        requests: Vec<codegg::protocol::core::SessionControlRequestDto>,
+        truncated: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// M004: control mutation completion (request/transfer/release/
+    /// takeover). Success refreshes the `/control` view; `message` is
+    /// the structural summary (ids/revisions, never secrets).
+    ControlMutationFinished {
+        request_id: u64,
+        session_id: Option<String>,
+        message: Option<String>,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+}
+
+/// Send a command on the bounded TUI effect channel.
+pub(crate) fn send_tui(tx: &mpsc::Sender<TuiCommand>, cmd: TuiCommand) -> bool {
+    match tx.try_send(cmd) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!("TUI command channel full; dropping command");
+            false
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            tracing::warn!("TUI command channel closed; dropping command");
+            false
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionMutationOp {
+    Delete,
+    /// M006: a session was launched into an isolated checkout.
+    Launch,
+    Archive,
+    Unarchive,
+    Fork,
+    BulkDelete,
+    BulkArchive,
+    BulkExport,
+    Rename,
+    UndoDelete,
+}

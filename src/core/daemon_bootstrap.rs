@@ -16,7 +16,7 @@
 //!   5. reconcile_git_index_publications (C007: unresolved index publications
 //!      -> committed / aborted / ambiguous, from the recorded evidence)
 //!
-//! Socket/daemon entry points (`src/main.rs`) currently run steps 2-4 without
+//! Socket/daemon entry points (`crates/codegg-cli/src/main.rs`) currently run steps 2-4 without
 //! step 1. Do not reorder startup merely because extraction makes it possible.
 //! ```
 
@@ -27,6 +27,31 @@ use super::event_log::EventFilter;
 use crate::error::AppError;
 use chrono::Utc;
 use sqlx::Row;
+
+/// Notification classification for a finished agent turn.
+///
+/// A spent budget is not an ordinary completion: the task did not finish.
+/// Reuse the existing awaiting-input kind rather than adding a variant — the
+/// message still names the reason, and a provider `error` keeps its own
+/// failure announcement.
+fn completion_notification(
+    stop_reason: &str,
+) -> (
+    super::notification::NotificationKind,
+    super::notification::NotificationPriority,
+) {
+    use super::notification::{NotificationKind, NotificationPriority};
+    if stop_reason == "error" {
+        (NotificationKind::TurnFailed, NotificationPriority::High)
+    } else if crate::agent::turn_completion::is_budget_stop_reason(stop_reason) {
+        (
+            NotificationKind::AwaitingInput,
+            NotificationPriority::Normal,
+        )
+    } else {
+        (NotificationKind::TurnCompleted, NotificationPriority::Low)
+    }
+}
 
 impl CoreDaemon {
     /// Rehydrate the workspace registry from its backing store. Daemon
@@ -165,8 +190,10 @@ impl CoreDaemon {
         Option<String>,
         crate::protocol::core::CoreEvent,
     )> {
+        let app_event_session_id = super::app_event_session_scope(&app_event);
         let mut core_event = super::map_app_event_to_core_event(app_event)?;
         let (session_id, mut turn_id) = super::core_event_metadata(&core_event);
+        let session_id = session_id.or(app_event_session_id);
         // A session update publishes the session's own summary, so a
         // reader is not left with a stub that erases what it holds.
         if let crate::protocol::core::CoreEvent::SessionUpdated {
@@ -585,16 +612,13 @@ impl CoreDaemon {
                                     *runtime.last_output_tokens.write().await = *output_tokens;
                                 }
                                 use super::notification::*;
-                                let kind = if stop_reason == "error" {
-                                    NotificationKind::TurnFailed
-                                } else {
-                                    NotificationKind::TurnCompleted
-                                };
-                                let priority = if stop_reason == "error" {
-                                    NotificationPriority::High
-                                } else {
-                                    NotificationPriority::Low
-                                };
+                                // A spent budget is not an ordinary
+                                // completion: the task did not finish. Reuse
+                                // the existing awaiting-input kind rather than
+                                // adding a variant — the message still names
+                                // the reason, and a provider `error` keeps its
+                                // own failure announcement.
+                                let (kind, priority) = completion_notification(stop_reason);
                                 // Resolve the session name for the announcement. The
                                 // rendered message is spoken aloud, so it must not
                                 // carry a raw uuid; the fallback is a short prefix.
@@ -677,11 +701,14 @@ impl CoreDaemon {
                                         .await;
                                 }
                             }
-                            crate::bus::events::AppEvent::Error { message } => {
+                            crate::bus::events::AppEvent::Error {
+                                message,
+                                session_id,
+                            } => {
                                 use super::notification::*;
                                 let event = NotificationEvent {
                                     id: format!("notif-{}", uuid::Uuid::new_v4()),
-                                    session_id: None,
+                                    session_id: session_id.clone(),
                                     turn_id: None,
                                     kind: NotificationKind::Error,
                                     priority: NotificationPriority::High,
@@ -1002,6 +1029,39 @@ mod tests {
             .await
             .expect("migrate");
         pool
+    }
+
+    #[test]
+    fn a_spent_budget_is_not_announced_as_an_ordinary_completion() {
+        use super::super::notification::{NotificationKind, NotificationPriority};
+        assert_eq!(
+            super::completion_notification("max turns (100) reached"),
+            (
+                NotificationKind::AwaitingInput,
+                NotificationPriority::Normal
+            )
+        );
+        assert_eq!(
+            super::completion_notification("timeout (600s) reached"),
+            (
+                NotificationKind::AwaitingInput,
+                NotificationPriority::Normal
+            )
+        );
+        // A provider failure keeps its own kind and priority; a genuine
+        // finish keeps the ordinary completion announcement.
+        assert_eq!(
+            super::completion_notification("error"),
+            (NotificationKind::TurnFailed, NotificationPriority::High)
+        );
+        assert_eq!(
+            super::completion_notification("stop"),
+            (NotificationKind::TurnCompleted, NotificationPriority::Low)
+        );
+        assert_eq!(
+            super::completion_notification("completed"),
+            (NotificationKind::TurnCompleted, NotificationPriority::Low)
+        );
     }
 
     #[test]

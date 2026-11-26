@@ -16,6 +16,7 @@ pub enum TextRepairProfile {
     HermesXml,
     InvokeJson,
     RawJsonEnvelope,
+    FencedCode,
 }
 
 impl TextRepairProfile {
@@ -24,6 +25,7 @@ impl TextRepairProfile {
             "hermes_xml" => Some(Self::HermesXml),
             "invoke_json" => Some(Self::InvokeJson),
             "raw_json_envelope" => Some(Self::RawJsonEnvelope),
+            "fenced_code" => Some(Self::FencedCode),
             _ => None,
         }
     }
@@ -53,8 +55,6 @@ pub fn repair_text_as_tool_calls(
     if text.len() > MAX_REPAIR_INPUT_BYTES {
         return Err(TextRepairError::InputTooLarge);
     }
-    // An enabled adapter may explicitly support normal `stop`; all other
-    // profiles still require a provider indication of malformed tool output.
     if !matches!(
         stop_reason,
         Some("stop" | "tool_calls" | "length" | "max_tokens")
@@ -62,10 +62,16 @@ pub fn repair_text_as_tool_calls(
         return Ok(None);
     }
 
+    let surface: std::collections::HashMap<&str, &ToolDefinition> = tools
+        .iter()
+        .map(|tool| (tool.name.as_str(), tool))
+        .collect();
+
     let candidates = match profile {
         TextRepairProfile::HermesXml => parse_hermes_xml(text)?,
         TextRepairProfile::InvokeJson => parse_invoke_response(text)?,
         TextRepairProfile::RawJsonEnvelope => parse_raw_json_envelope(text)?,
+        TextRepairProfile::FencedCode => parse_fenced_code_calls(text, &surface),
     };
     if candidates.is_empty() {
         return Ok(None);
@@ -73,11 +79,6 @@ pub fn repair_text_as_tool_calls(
     if candidates.len() > MAX_REPAIRED_CALLS {
         return Err(TextRepairError::CallLimitExceeded);
     }
-
-    let surface: std::collections::HashMap<&str, &ToolDefinition> = tools
-        .iter()
-        .map(|tool| (tool.name.as_str(), tool))
-        .collect();
     let mut seen = HashSet::new();
     let mut repaired = Vec::with_capacity(candidates.len());
     for (name, arguments) in candidates {
@@ -132,10 +133,6 @@ fn parse_hermes_xml(text: &str) -> Result<Vec<(String, Value)>, TextRepairError>
     if !remaining.trim().is_empty() && out.is_empty() {
         return Ok(Vec::new());
     }
-    if !remaining.trim().is_empty() && !remaining.trim().is_empty() {
-        // Trailing prose is allowed by the explicit Hermes compatibility
-        // profile; it is never independently parsed.
-    }
     Ok(out)
 }
 
@@ -188,6 +185,95 @@ fn parse_raw_json_envelope(text: &str) -> Result<Vec<(String, Value)>, TextRepai
         .cloned()
         .ok_or(TextRepairError::MalformedEnvelope)?;
     Ok(vec![(name.to_string(), args)])
+}
+
+/// Recover tool calls from fenced code blocks whose info string names a tool.
+fn parse_fenced_code_calls(
+    text: &str,
+    surface: &std::collections::HashMap<&str, &ToolDefinition>,
+) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    for (info, body) in fenced_blocks(text) {
+        let Some(name) = info.split_whitespace().next() else {
+            continue;
+        };
+        let name = name.trim_end_matches(':').to_ascii_lowercase();
+        let Some(definition) = surface.get(name.as_str()).copied() else {
+            continue;
+        };
+        let arguments = match serde_json::from_str::<Value>(body.trim()) {
+            Ok(value) if value.is_object() => value,
+            _ => {
+                let Some(parameter) = single_string_parameter(&definition.parameters) else {
+                    continue;
+                };
+                let mut object = Map::new();
+                object.insert(
+                    parameter.to_string(),
+                    Value::String(body.trim().to_string()),
+                );
+                Value::Object(object)
+            }
+        };
+        out.push((name, arguments));
+    }
+    out
+}
+
+fn fenced_blocks(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        let Some(marker) = fence_marker(trimmed) else {
+            continue;
+        };
+        let info = trimmed[marker.len()..].trim().to_string();
+        let mut body = String::new();
+        let mut closed = false;
+        for inner in lines.by_ref() {
+            let inner_trimmed = inner.trim_start();
+            if inner_trimmed.starts_with(marker) && inner_trimmed[marker.len()..].trim().is_empty()
+            {
+                closed = true;
+                break;
+            }
+            body.push_str(inner);
+            body.push('\n');
+        }
+        if !closed {
+            break;
+        }
+        out.push((info, body));
+    }
+    out
+}
+
+fn fence_marker(line: &str) -> Option<&'static str> {
+    if line.starts_with("```") {
+        Some("```")
+    } else if line.starts_with("~~~") {
+        Some("~~~")
+    } else {
+        None
+    }
+}
+
+fn single_string_parameter(schema: &Value) -> Option<&str> {
+    let object = schema.as_object()?;
+    let required = object.get("required")?.as_array()?;
+    if required.len() != 1 {
+        return None;
+    }
+    let name = required.first()?.as_str()?;
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        if let Some(property) = properties.get(name) {
+            if property.get("type").and_then(Value::as_str) != Some("string") {
+                return None;
+            }
+        }
+    }
+    Some(name)
 }
 
 fn extract_first_json_object(input: &str) -> Option<(Value, usize)> {
@@ -310,5 +396,57 @@ mod tests {
     fn schema_validation_rejects_non_object_arguments_without_panicking() {
         let result = validate_object_schema("bash", &json!(null), &tools()[0].parameters);
         assert!(matches!(result, Err(TextRepairError::SchemaViolation(_))));
+    }
+
+    #[test]
+    fn a_fenced_block_that_names_a_tool_is_repaired() {
+        let result = repair_text_as_tool_calls(
+            "fenced_code",
+            "```bash\ncat > probe.txt <<'EOF'\nhello\nEOF\n```",
+            Some("stop"),
+            &tools(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name.as_ref(), "bash");
+        assert_eq!(
+            result[0]
+                .arguments
+                .get("command")
+                .and_then(|value| value.as_str()),
+            Some("cat > probe.txt <<'EOF'\nhello\nEOF")
+        );
+    }
+
+    #[test]
+    fn a_fenced_block_that_names_no_tool_is_not_a_call() {
+        let result = repair_text_as_tool_calls(
+            "fenced_code",
+            "Here is an example:\n```python\nprint('hi')\n```",
+            Some("stop"),
+            &tools(),
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn a_fenced_block_with_json_arguments_is_repaired() {
+        let result = repair_text_as_tool_calls(
+            "fenced_code",
+            "```bash\n{\"command\":\"ls -la\"}\n```",
+            Some("stop"),
+            &tools(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result[0]
+                .arguments
+                .get("command")
+                .and_then(|value| value.as_str()),
+            Some("ls -la")
+        );
     }
 }

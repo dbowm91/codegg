@@ -22,5 +22,7 @@ pub mod isolated_env;
 pub mod linked_worktree;
 pub mod pool;
 pub mod projection_replay;
+pub mod replay_recorder;
 pub mod scripted_provider;
 pub mod secret_scan;
+pub mod session_replay;

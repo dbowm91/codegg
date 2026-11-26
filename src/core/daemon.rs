@@ -65,6 +65,7 @@ pub struct CoreDaemon {
     pub workspace_services: Arc<WorkspaceServiceRegistry>,
     /// M003: durable managed worktree ownership and lease service.
     pub worktree_service: Arc<codegg_core::worktree_service::WorktreeService>,
+    pub(crate) scheduler_run_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Bounded startup reconciliation against Git's actual worktree list.
     pub(crate) _worktree_reconcile_handle: Option<tokio::task::JoinHandle<()>>,
     /// M005 corrective C002: the startup reconciliation of checkout writer
@@ -1710,6 +1711,7 @@ impl CoreDaemon {
             | CoreRequest::DocumentSave { project_id, .. }
             | CoreRequest::DocumentReload { project_id, .. }
             | CoreRequest::DocumentClose { project_id, .. }
+            | CoreRequest::EditorInlineGenerate { project_id, .. }
             | CoreRequest::ProjectInitDraftGet { project_id, .. }
             | CoreRequest::ProjectInitPublish { project_id, .. } => Some(project_id),
             CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),
@@ -4631,7 +4633,6 @@ impl CoreDaemon {
         if Self::is_interactive_process_request(&request.payload) {
             let protocol = self.interactive_processes.clone();
             let workspaces = self.workspaces.clone();
-            let pool = self.pool.clone();
             let event_log = self.event_log.clone();
             let authority = self.interactive_authority_for(trusted_client_id);
             let owned_client = trusted_client_id.to_string();
@@ -4643,7 +4644,6 @@ impl CoreDaemon {
                 let out = Self::run_interactive_request(
                     protocol,
                     workspaces,
-                    pool,
                     event_log,
                     authority,
                     owned_client,
@@ -4872,7 +4872,14 @@ impl CoreDaemon {
                 // pre-router paths above, which preserve their stack and
                 // cancellation semantics. Keep the historical
                 // unimplemented contract as defense in depth.
-                tracing::warn!("Unhandled CoreRequest variant");
+                // Name the variant and nothing else: the payload may carry
+                // paths or content, and this line exists to make an
+                // unreachable arm diagnosable rather than to summarize it.
+                let variant: String = format!("{payload:?}")
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                tracing::warn!(request = %variant, "Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {
                     code: "unimplemented".to_string(),
                     message: "This request type is not yet implemented".to_string(),
@@ -4920,7 +4927,6 @@ impl CoreDaemon {
     async fn run_interactive_request(
         protocol: Arc<crate::interactive_process_attach::InteractiveProcessProtocol>,
         workspaces: Arc<codegg_core::workspace::WorkspaceRegistry>,
-        pool: Option<sqlx::SqlitePool>,
         event_log: Arc<super::event_log::EventLog>,
         authority: crate::interactive_process_attach::InteractiveAuthority,
         client_id: String,
@@ -4935,55 +4941,18 @@ impl CoreDaemon {
                 Ok(protocol.capabilities(&current))
             }
             CoreRequest::InteractiveProcessCreate { request } => {
-                // PTY creation is a production execution owner. Resolve the
-                // requested profile from daemon-owned principal preferences;
-                // the request DTO cannot select FullHost or a constrained
-                // profile. The protocol transfers this decision to the M004
-                // owner, which fails closed if required setup is unavailable.
-                let principal_id = audit_hook
-                    .as_ref()
-                    .map(|hook| hook.context.principal().principal_id().as_str().to_owned());
-                let (profile, network_intent) = match (pool, principal_id) {
-                    (Some(pool), Some(principal_id)) => {
-                        match codegg_core::approval::RuntimePreferenceStore::new(pool)
-                            .get(&principal_id)
-                            .await
-                        {
-                            // An absent preference is not a request to
-                            // constrain an independent human PTY. Preserve
-                            // the legacy FullHost terminal path unless the
-                            // principal explicitly stored a profile.
-                            Ok(Some(preference)) => (
-                                preference
-                                    .sandbox_profile
-                                    .unwrap_or(codegg_core::approval::SandboxProfile::FullHost),
-                                preference.effective_network_intent(),
-                            ),
-                            Ok(None) => (
-                                codegg_core::approval::SandboxProfile::FullHost,
-                                codegg_core::approval::NetworkIntent::LegacyUnrestricted,
-                            ),
-                            Err(error) => {
-                                return Ok(CoreResponse::Error {
-                                    code: "interactive_policy_unavailable".into(),
-                                    message: format!(
-                                        "cannot resolve PTY execution policy: {error}"
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                    (None, _) => (
-                        codegg_core::approval::SandboxProfile::FullHost,
-                        codegg_core::approval::NetworkIntent::LegacyUnrestricted,
-                    ),
-                    (_, None) => {
-                        return Ok(CoreResponse::Error {
-                            code: "interactive_policy_unavailable".into(),
-                            message: "cannot resolve PTY execution principal".into(),
-                        });
-                    }
-                };
+                // The interactive PTY is the **operator's own shell**: an IDE
+                // terminal, not an agent effect. Agent surfaces run shells
+                // through bash/terminal on ManagedProcessService with their
+                // resolved profile and are unaffected by this route. A human
+                // shell is therefore never constrained and its input is never
+                // filtered: the operator's keystrokes reach the PTY byte for
+                // byte. Applying the stored turn profile here was what made
+                // every terminal spawn fail on macOS, and a sandbox would have
+                // been the only remaining way to refuse the operator's own
+                // commands.
+                let profile = codegg_core::approval::SandboxProfile::FullHost;
+                let network_intent = codegg_core::approval::NetworkIntent::LegacyUnrestricted;
                 let ctx =
                     match Self::interactive_execution_context(&workspaces, &request.workspace_id)
                         .await
@@ -5458,7 +5427,6 @@ mod tests {
     use crate::core::event_log::EventFilter;
     use crate::core::CoreEvent;
     use crate::session::schema::migrate;
-    use crate::tui::commands::{resolve_schedule_id, schedule_display_id, schedule_label};
 
     /// Build a fresh in-memory SQLite pool with the full session
     /// schema. No on-disk tempdir is created, so the pool's memory is
@@ -5786,116 +5754,6 @@ mod tests {
             deleted,
             CoreResponse::ScheduleDeleted { schedule_id: deleted_id }
                 if deleted_id == schedule_id
-        ));
-    }
-
-    #[tokio::test]
-    async fn durable_schedule_tui_display_token_resolves_and_deletes_in_workspace() {
-        let daemon = test_daemon().await;
-        let root = tempfile::tempdir().unwrap();
-        let (_project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
-        let prompt = "check the build from the TUI";
-        let session_id = "tui-schedule-session".to_string();
-        let kind = codegg_core::jobs::ScheduleKind::Interval {
-            every: std::time::Duration::from_secs(300),
-            anchor: chrono::Utc::now(),
-        };
-        let template = codegg_core::jobs::schedule::JobTemplate::for_subagent(
-            codegg_core::jobs::JobKind::Subagent,
-            prompt.to_string(),
-            "build".to_string(),
-            Some(session_id.clone()),
-        );
-        let spec = crate::protocol::dto::ScheduleCreateDto {
-            workspace_id: workspace_id.clone(),
-            session_id: Some(session_id),
-            kind: serde_json::to_value(kind).unwrap(),
-            job_template: serde_json::to_value(template).unwrap(),
-            overlap_policy: "skip_if_running".to_string(),
-            missed_run_policy: serde_json::to_value(codegg_core::jobs::MissedRunPolicy::RunOnceNow)
-                .unwrap(),
-            labels: std::collections::HashMap::new(),
-        };
-
-        let schedule_id = match daemon
-            .handle_request(crate::core::new_request(
-                "tui-schedule-create".into(),
-                CoreRequest::ScheduleCreate { spec },
-            ))
-            .await
-            .unwrap()
-        {
-            CoreResponse::ScheduleCreated { schedule_id } => schedule_id,
-            other => panic!("unexpected schedule creation response: {other:?}"),
-        };
-
-        let schedules = match daemon
-            .handle_request(crate::core::new_request(
-                "tui-schedule-list".into(),
-                CoreRequest::ScheduleList {
-                    workspace_id: Some(workspace_id.clone()),
-                    include_archived: false,
-                },
-            ))
-            .await
-            .unwrap()
-        {
-            CoreResponse::ScheduleList { schedules } => schedules,
-            other => panic!("unexpected schedule list response: {other:?}"),
-        };
-        let summary = schedules
-            .iter()
-            .find(|schedule| schedule.schedule_id == schedule_id)
-            .expect("created schedule is listed in its workspace");
-
-        let detail = match daemon
-            .handle_request(crate::core::new_request(
-                "tui-schedule-get".into(),
-                CoreRequest::ScheduleGet {
-                    schedule_id: schedule_id.clone(),
-                },
-            ))
-            .await
-            .unwrap()
-        {
-            CoreResponse::ScheduleGet { schedule } => schedule,
-            other => panic!("unexpected schedule get response: {other:?}"),
-        };
-        assert_eq!(schedule_label(summary, Some(&detail)), prompt);
-
-        let displayed_token = schedule_display_id(&schedule_id);
-        let resolved_id = resolve_schedule_id(&displayed_token, &schedules).unwrap();
-        assert_eq!(resolved_id, schedule_id);
-
-        let deleted = daemon
-            .handle_request(crate::core::new_request(
-                "tui-schedule-delete".into(),
-                CoreRequest::ScheduleDelete {
-                    schedule_id: resolved_id,
-                },
-            ))
-            .await
-            .unwrap();
-        assert!(matches!(
-            deleted,
-            CoreResponse::ScheduleDeleted { schedule_id: deleted_id }
-                if deleted_id == schedule_id
-        ));
-
-        let remaining = daemon
-            .handle_request(crate::core::new_request(
-                "tui-schedule-list-after-delete".into(),
-                CoreRequest::ScheduleList {
-                    workspace_id: Some(workspace_id),
-                    include_archived: false,
-                },
-            ))
-            .await
-            .unwrap();
-        assert!(matches!(
-            remaining,
-            CoreResponse::ScheduleList { schedules }
-                if schedules.iter().all(|schedule| schedule.schedule_id != schedule_id)
         ));
     }
 

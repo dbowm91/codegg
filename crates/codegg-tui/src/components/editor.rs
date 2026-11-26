@@ -1,0 +1,6942 @@
+//! M006-A: document editor widget.
+//!
+//! ## Hard wrap
+//!
+//! ## Bounded work (C002)
+//!
+//! Only the visible slice is materialized, bounded by the viewport height,
+//! and each visible line examines at most
+//! [`MAX_RENDER_LINE_BYTES`](crate::editor::MAX_RENDER_LINE_BYTES)
+//! (32 KiB) with the frame total capped at
+//! [`MAX_FRAME_SOURCE_BYTES`](crate::editor::MAX_FRAME_SOURCE_BYTES)
+//! (256 KiB). A line past the per-line budget renders from its prefix with
+//! a visible `…[too long]` marker and a banner note — never a silent
+//! prefix. Cursor and selection byte offsets stay exact; horizontal motion
+//! past the prefix clamps to it. See `docs/tui.md` for the exact contract.
+//!
+//! The widget never reads a file: every byte arrives through
+//! `DocumentController::try_snapshot()`, which is daemon-authorized.
+
+use std::sync::Arc;
+
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::Frame;
+
+use codegg_document::DocumentSnapshot;
+
+use crate::document_session::MAX_JUMPLIST_ENTRIES;
+use crate::editor::{self, EditorMode, EditorPrefix, EditorViewport};
+use crate::editor_inline_assist::{InlineAssistRegion, InlineAssistState, InlinePromptField};
+use crate::editor_palette::PaletteRow;
+use crate::theme::Theme;
+
+/// Rows of chrome reserved at the **bottom** of the editor block.
+///
+/// One row, and only one. It carries the mode badge first, then the path,
+/// with the status cluster fitted at the right.
+///
+/// It used to be two: a banner row and a coordinate readout. The readout's
+/// line and column were the cursor restated, and everything else it carried
+/// moved down here. The banner row went with them — the disclosures it held
+/// (the pending prefix, the find note, the notice) are transient, and a
+/// transient signal belongs in the row that is always there rather than in a
+/// row that has to be allocated to hold it.
+const CHROME_ROWS: u16 = 1;
+
+/// How readily a chrome-cluster element may be dropped when the row is too
+/// narrow to hold all of it.
+///
+/// Higher survives longer, and the order is a reading of *what hurts most to
+/// lose*:
+///
+/// - **busy** is self-evident — the reader can see the work happening;
+/// - the **modified** state is a status, not a safety signal;
+/// - the **server state** outranks the modified marker, so a warming editor
+///   cannot read as healthy by silence;
+/// - the **writability** marker and the **scope badge** say what an edit
+///   *here* will do, which is why they outrank the server-state word;
+/// - the **disclosure** is what just happened;
+/// - a **caveat** ("line too long", "highlighting truncated") outranks even
+///   that, because dropping it is not a smaller truth — it is a *misleading*
+///   one: a truncated prefix that looks like the whole line is worse than a
+///   missing footnote;
+/// - the **notice** and the **armed prefix** are the two things that must be
+///   on screen at the instant they happen.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum ClusterWeight {
+    Busy,
+    Modified,
+    Server,
+    Writable,
+    Scope,
+    Disclosure,
+    Caveat,
+    Notice,
+    Prefix,
+}
+
+/// One element of the chrome cluster: a weight, and the spans it draws.
+struct ClusterGroup<'a> {
+    weight: ClusterWeight,
+    spans: Vec<Span<'a>>,
+}
+
+impl<'a> ClusterGroup<'a> {
+    /// A group that draws one string.
+    fn one(weight: ClusterWeight, text: String, style: Style) -> Self {
+        Self {
+            weight,
+            spans: vec![Span::styled(text, style)],
+        }
+    }
+
+    /// The group's display width.
+    fn width(&self) -> usize {
+        self.spans.iter().map(|span| span.width()).sum()
+    }
+}
+
+/// Fit the chrome cluster into `budget` columns, dropping what matters least.
+///
+/// The row has one line and a fixed width, and the cluster is a set of
+/// answers that do not all fit in it. Something has to go, and the question
+/// is *what*.
+///
+/// The answer is a **rank**, not a position: the least important group is
+/// dropped first, whatever order it was rendered in. A cluster that dropped
+/// from one end would take the scope badge before the "line too long"
+/// footnote, or the armed prefix before the note that explains it, and both
+/// are worse than the other.
+fn fit_cluster(mut groups: Vec<ClusterGroup<'_>>, budget: usize) -> Vec<Span<'_>> {
+    let width = |groups: &[ClusterGroup<'_>]| groups.iter().map(ClusterGroup::width).sum::<usize>();
+    while groups.len() > 1 && width(&groups) > budget {
+        // The lowest rank goes first; among equals the leftmost, so what is
+        // left is the right end of the row.
+        let victim = groups
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, group)| group.weight)
+            .map(|(index, _)| index)
+            .expect("the loop keeps at least one group");
+        groups.remove(victim);
+    }
+    if groups.len() == 1 && groups[0].width() > budget {
+        let weight = groups[0].weight;
+        let cut = cut_group(&groups[0], budget);
+        groups.clear();
+        groups.push(ClusterGroup { weight, spans: cut });
+    }
+    groups.into_iter().flat_map(|group| group.spans).collect()
+}
+
+/// Cut a group down to `budget` columns, keeping the head of it.
+fn cut_group<'a>(group: &ClusterGroup<'a>, budget: usize) -> Vec<Span<'a>> {
+    let mut out: Vec<Span<'_>> = Vec::new();
+    let mut used = 0usize;
+    for span in &group.spans {
+        let width = span.width();
+        if used + width <= budget {
+            out.push(span.clone());
+            used += width;
+            continue;
+        }
+        // This span straddles the budget: cut it, and stop.
+        let remaining = budget.saturating_sub(used);
+        if remaining > 0 {
+            let text = crate::wrap::ellipsize_to_width(&span.content, remaining);
+            out.push(Span::styled(text, span.style));
+        }
+        break;
+    }
+    out
+}
+
+/// Document editor view.
+///
+/// `snapshot` is borrowed for the duration of one `render` call and is
+/// dropped with it; the widget stores no text.
+pub struct EditorWidget<'a> {
+    /// Workspace-relative path shown in the title.
+    pub path: &'a str,
+    /// Controller state label.
+    pub status: &'a str,
+    /// Whether `status` is a safety caveat (`EditorStatus::is_caveat`).
+    ///
+    /// A caveat outranks the informational groups, so a conflict or a lost
+    /// document is never dropped in favour of the server-state word.
+    pub status_caveat: bool,
+    /// Surfaced error banner, if any.
+    pub notice: Option<&'a str>,
+    /// Why the last find-char motion did not land, already rendered to text
+    /// by [`FindNote::label`], or `""`.
+    ///
+    /// A pre-rendered `&str` like `status` and `notice`, because the widget
+    /// holds no domain state: the disclosure belongs to the motion that
+    /// produced it, and the caller already had it in hand.
+    pub find_note: &'a str,
+    /// The count being typed, already rendered to text by
+    /// [`pending_count_label`](crate::editor::pending_count_label), or
+    /// `""` when no count is pending.
+    ///
+    /// A pre-rendered `&str` like `find_note`, and for the same reason. It
+    /// renders immediately before the armed prefix — `3g` is one gesture, read
+    /// left to right — and never in the notice slot.
+    pub count_label: &'a str,
+    /// Buffer mode.
+    pub mode: EditorMode,
+    /// Which region owns keyboard input.
+    /// Whether the document owns the keyboard.
+    ///
+    /// One fact, derived from the route's `input_mode` by the caller: INS
+    /// puts the cursor in the text, NOR leaves the Helix verbs on the buffer.
+    /// The editor route has no composer; this is the buffer's own focus.
+    pub buffer_focused: bool,
+    /// The armed multi-key prefix, rendered as its pending indicator.
+    pub pending_prefix: EditorPrefix,
+    pub menu: Option<&'a crate::editor_keymap::EditorMenuView>,
+    /// Whether the `:` command line is open.
+    pub command_active: bool,
+    /// Authority root the open document is confined to. Drives the global /
+    /// project badge in the status row, so a user editing a shared agent
+    /// config can see at a glance that a `:wq` will affect every project.
+    pub scope: codegg_protocol::document::DocumentScope,
+    /// The `:` line without its leading colon.
+    pub command_line: &'a str,
+    /// Highlighted palette row index.
+    pub command_selection: usize,
+    /// Whether the `/` search line is open.
+    pub search_active: bool,
+    /// The `/` line without its leading slash.
+    pub search_line: &'a str,
+    /// Retained match count for the current search.
+    pub search_count: usize,
+    /// Whether the current search is known to be partial.
+    pub search_partial: bool,
+    /// Cursor byte offset into `snapshot`.
+    pub cursor_byte: usize,
+    /// Whether the attachment holds the writer lease.
+    pub writable: bool,
+    /// Whether a lifecycle operation is in flight.
+    pub busy: bool,
+    /// The controller replica. Borrowed, never retained.
+    pub snapshot: &'a DocumentSnapshot,
+    /// Bounded diagnostics and semantic spans for this document generation.
+    pub lsp: &'a crate::editor_lsp::EditorLspState,
+    /// Bounded completion popup state for this document generation.
+    pub completion: &'a crate::editor_completion::EditorCompletionState,
+    /// Server-free syntax highlighting for this document generation.
+    ///
+    /// Mutated only to resolve spans for the rows this frame paints; the
+    /// LSP layer in `lsp.semantic_tokens` stays authoritative wherever the
+    /// two overlap.
+    pub highlight: &'a mut crate::editor_highlight::EditorHighlight,
+    /// Focused editor presentation, mutated only to resolve the viewport.
+    pub presentation: &'a mut crate::document_session::TuiDocumentPresentation,
+    pub theme: Arc<Theme>,
+}
+
+/// The `space j` picker's window: rows it will draw, at most.
+///
+/// The same bound the LSP result panel uses, so a full jumplist is a window
+/// the reader scrolls rather than a box that leaves no document on screen.
+const PICKER_MAX_ROWS: usize = 12;
+
+/// Columns reserved for the picker's line number.
+const PICKER_LINE_DIGITS: usize = 5;
+
+/// Bytes read from one line to label a picker row.
+///
+/// A line beyond this renders from its prefix: a picker row is a label, not
+/// the document, and a frame must not read a whole 32 KiB line per row.
+const PICKER_ROW_BYTES: usize = 512;
+
+/// Characters of a line a picker row shows.
+const PICKER_ROW_CHARS: usize = 60;
+
+/// The inline prompt's document-flow rows, measured once.
+struct InlinePromptLayout<'a> {
+    instruction_lines: Vec<&'a str>,
+    height: u16,
+}
+
+impl<'a> InlinePromptLayout<'a> {
+    fn new(field: &'a InlinePromptField) -> Self {
+        let mut instruction_lines = field.lines();
+        if instruction_lines.is_empty() {
+            instruction_lines.push("");
+        }
+        let instruction_rows = instruction_lines.len().clamp(1, 8);
+        Self {
+            instruction_lines,
+            height: (instruction_rows + 3) as u16,
+        }
+    }
+}
+
+/// Move only this frame's viewport window so the band fits below the cursor.
+fn fit_inline_prompt_below_cursor(
+    viewport: &mut EditorViewport,
+    cursor_line: usize,
+    band_height: u16,
+) -> bool {
+    let Some(cursor_row) = cursor_line.checked_sub(viewport.first_line) else {
+        return false;
+    };
+    let visible_lines = viewport.visible_lines as usize;
+    if cursor_row >= visible_lines {
+        return false;
+    }
+    let deficit = cursor_row
+        .saturating_add(1)
+        .saturating_add(band_height as usize)
+        .saturating_sub(visible_lines);
+    viewport.first_line = viewport.first_line.saturating_add(deficit);
+    cursor_line
+        .checked_sub(viewport.first_line)
+        .is_some_and(|row| {
+            row.saturating_add(1).saturating_add(band_height as usize) <= visible_lines
+        })
+}
+
+impl EditorWidget<'_> {
+    /// Paint the editor into `area`.
+    pub fn render(self, frame: &mut Frame, area: Rect) {
+        self.render_with_inline_assist(frame, area, None, false);
+    }
+
+    pub fn render_with_inline_assist(
+        mut self,
+        frame: &mut Frame,
+        area: Rect,
+        inline_assist: Option<&InlineAssistState>,
+        region_applies: bool,
+    ) {
+        let theme = Arc::clone(&self.theme);
+        let focused = self.buffer_focused;
+        // The block's top border carries **no label**. It used to carry
+        // `{path} · {mode} · {status}`, and all three moved: the path and the
+        // status to the single bottom row, the mode to that row's own badge.
+        // An empty border is the honest result — every signal the title
+        // carried is still on screen, and none of it is on screen twice.
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if focused { theme.primary } else { theme.border }))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        let text_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: inner.height.saturating_sub(CHROME_ROWS),
+        };
+        let is_generating = inline_assist.is_some_and(InlineAssistState::is_generating);
+        self.render_chrome(frame, inner, is_generating);
+        let region = inline_assist.and_then(InlineAssistState::region);
+        let inline_field = inline_assist.and_then(InlineAssistState::field);
+        let viewport = if text_area.height > 0 {
+            let viewport = self.render_text(frame, text_area, region, region_applies, inline_field);
+            if let Some(viewport) = viewport {
+                if let Some(region) = region {
+                    let in_region =
+                        inline_assist.is_some_and(|state| state.cursor_in_region(self.cursor_byte));
+                    let field_open = inline_assist.is_some_and(InlineAssistState::is_field_open);
+                    if in_region && !is_generating && !field_open && region_applies {
+                        self.render_inline_review_menu(frame, text_area, viewport, region);
+                    }
+                }
+            }
+            viewport
+        } else {
+            None
+        };
+        // After the text: the match list is a floating overlay, and an overlay
+        // painted before the document would be painted over by it.
+        self.render_command_matches(frame, text_area);
+        self.render_space_menu(frame, text_area);
+        if self.presentation.jumplist.picker_open() {
+            self.render_jumplist_picker(frame, text_area);
+        }
+        self.render_lsp_panel(frame, area);
+        self.render_completion_popup(frame, area, text_area, viewport);
+        self.render_command_palette(frame, text_area);
+    }
+
+    /// The `space j` **jumplist picker**, in the keymap box's corner.
+    ///
+    /// Newest first, one row per recorded position: its line number and the
+    /// line's own text, so two entries on one line are still tellable apart.
+    /// The title carries the count against
+    /// [`MAX_JUMPLIST_ENTRIES`](crate::document_session::MAX_JUMPLIST_ENTRIES),
+    /// and at the bound it also says the oldest entry is dropped — the
+    /// disclosure the bound owes the reader, in the place the list is read and
+    /// where a short window cannot clip it.
+    ///
+    /// The text is read from the frame's snapshot and dropped with the
+    /// borrow: the picker holds offsets, never document bytes.
+    fn render_jumplist_picker(&self, frame: &mut Frame, text_area: Rect) {
+        let jumplist = &self.presentation.jumplist;
+        let theme = Arc::clone(&self.theme);
+        // Bounded by the panel the LSP results use, so a long history is a
+        // window rather than a box the height of the screen.
+        let rows_available = text_area
+            .height
+            .saturating_sub(2)
+            .min(PICKER_MAX_ROWS as u16)
+            .max(1) as usize;
+        let len = jumplist.len();
+        let visible = len.min(rows_available);
+        let start = jumplist
+            .cursor()
+            .saturating_sub(visible.saturating_sub(1))
+            .min(len.saturating_sub(visible));
+        // `(gutter, row index, line text)`: the gutter fixes the column and
+        // the row index says which entry the highlight belongs to, so a
+        // window that scrolled still marks the highlighted row.
+        let mut rows: Vec<(String, usize, String)> = Vec::with_capacity(visible);
+        for index in start..start + visible {
+            let Some(entry) = jumplist.row(index) else {
+                continue;
+            };
+            let line = crate::editor::cursor_line(self.snapshot, entry.byte) + 1;
+            let gutter = format!("{line:>width$}  ", width = PICKER_LINE_DIGITS);
+            let text = self.picker_line_text(entry.byte);
+            rows.push((gutter, index, text));
+        }
+        // The bound is disclosed in the **title**, not in a footer row: a
+        // short editor window clips a row off the bottom of the box, and a
+        // disclosure nobody can see is not a disclosure. The title is part of
+        // the width calculation below, so it survives at full size.
+        let title = if jumplist.at_bound() {
+            format!(
+                " jumplist · {len}/{max} · oldest dropped at the bound ",
+                max = MAX_JUMPLIST_ENTRIES
+            )
+        } else {
+            format!(" jumplist · {len}/{max} ", max = MAX_JUMPLIST_ENTRIES)
+        };
+        let body_width = rows
+            .iter()
+            .map(|(gutter, _, text)| gutter.chars().count() + text.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(title.chars().count());
+        let width = (body_width + 2).min(text_area.width as usize) as u16;
+        let height = (rows.len() + 2).min(text_area.height as usize) as u16;
+        if width == 0 || height == 0 {
+            return;
+        }
+        let rect = Rect {
+            x: text_area.x + text_area.width - width,
+            y: text_area.y + text_area.height - height,
+            width,
+            height,
+        };
+        let lines: Vec<Line> = rows
+            .iter()
+            .map(|(gutter, index, text)| {
+                let (gutter_style, text_style) = if *index == jumplist.cursor() {
+                    let selected = Style::default()
+                        .fg(theme.background)
+                        .bg(theme.primary)
+                        .add_modifier(Modifier::BOLD);
+                    (selected, selected)
+                } else {
+                    (
+                        Style::default().fg(theme.muted),
+                        Style::default().fg(theme.foreground),
+                    )
+                };
+                Line::from(vec![
+                    Span::styled(gutter.clone(), gutter_style),
+                    Span::styled(text.clone(), text_style),
+                ])
+            })
+            .collect();
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
+            inner,
+        );
+    }
+
+    /// One picker row's text: the line the entry lands on, from its start.
+    fn picker_line_text(&self, byte: usize) -> String {
+        let line = crate::editor::cursor_line(self.snapshot, byte);
+        let Some(start) = crate::editor::line_start(self.snapshot, line) else {
+            return String::new();
+        };
+        let end = crate::editor::line_content_end(self.snapshot, line).unwrap_or(start);
+        let bounded =
+            crate::editor::clamp_offset(self.snapshot, start.saturating_add(PICKER_ROW_BYTES))
+                .min(end);
+        self.snapshot
+            .read_bytes(start, bounded)
+            .map(|text| {
+                text.chars()
+                    .take(PICKER_ROW_CHARS)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The editor's single bottom row: the mode badge at left, the path or
+    /// modal input beside it, and the status cluster at right.
+    ///
+    /// The right slot is the **cluster**: the persistent signals, then the
+    /// transient disclosure, then the notice, then the armed prefix. It is
+    /// right-aligned rather than wrapped, so the row is always exactly one
+    /// row tall and the text area never changes height.
+    ///
+    /// The badge's width is reserved first. The path and cluster then share the
+    /// rest as before: a third to the path, the cluster dropping elements.
+    fn render_chrome(&self, frame: &mut Frame, inner: Rect, is_generating: bool) {
+        let theme = Arc::clone(&self.theme);
+        let row = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(CHROME_ROWS),
+            width: inner.width,
+            height: CHROME_ROWS.min(inner.height),
+        };
+        if row.height == 0 || row.width == 0 {
+            return;
+        }
+        let available = row.width as usize;
+        let mode = match self.mode {
+            EditorMode::Normal => "NOR",
+            EditorMode::Insert => "INS",
+            EditorMode::Select => "SEL",
+        };
+        // The mode is the row's first fact and is never muted; `SEL` most of all.
+        let mode_style = match self.mode {
+            EditorMode::Normal => Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+            EditorMode::Insert => Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+            EditorMode::Select => Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        };
+        let mode_width = unicode_width::UnicodeWidthStr::width(mode);
+        let badge_width = mode_width
+            .saturating_add(usize::from(available > mode_width))
+            .min(available);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(mode, mode_style),
+                Span::raw(if badge_width > mode_width { " " } else { "" }),
+            ]))
+            .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            Rect {
+                width: badge_width as u16,
+                ..row
+            },
+        );
+        if badge_width == available {
+            return;
+        }
+
+        // The badge is reserved before either text slot; the path and cluster
+        // keep their existing relative budget in the columns that remain.
+        let content_x = row.x + badge_width as u16;
+        let content_width = available.saturating_sub(badge_width);
+        let (left_text, left_style) = self.chrome_input();
+        let path_width = unicode_width::UnicodeWidthStr::width(left_text.as_str());
+        let path_share = path_width.min((content_width / 3).max(1));
+        let cluster_budget = content_width.saturating_sub(path_share).saturating_sub(1);
+        let right = fit_cluster(self.chrome_cluster(&theme, is_generating), cluster_budget);
+        let right_width = right.iter().map(|span| span.width()).sum::<usize>();
+        let left_budget = content_width.saturating_sub(right_width + 1).max(1);
+        let left_text = crate::wrap::ellipsize_to_width(&left_text, left_budget);
+        // Themed like the text area. The block paints its background first,
+        // but anything the user has typed into the composer underneath can
+        // leave the terminal's own default behind on this row.
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(left_text, left_style)))
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            Rect {
+                x: content_x,
+                width: left_budget.min(content_width) as u16,
+                ..row
+            },
+        );
+        if right_width == 0 {
+            return;
+        }
+        let right_x = content_x + (content_width - right_width) as u16;
+        frame.render_widget(
+            Paragraph::new(Line::from(right))
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            Rect {
+                x: right_x,
+                width: right_width.min(content_width) as u16,
+                ..row
+            },
+        );
+    }
+
+    /// The text following the bottom-row mode badge: the modal input line
+    /// when one is open, and the file's path when none is.
+    fn chrome_input(&self) -> (String, Style) {
+        let theme = Arc::clone(&self.theme);
+        if self.search_active {
+            return (
+                format!("/{}_", self.search_line),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        if self.command_active {
+            return (
+                format!(":{}_", self.command_line),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        (self.path.to_string(), Style::default().fg(theme.muted))
+    }
+
+    /// The right slot of the bottom row, in the order it is read.
+    ///
+    /// The persistent signals come first because they never move: the
+    /// **modified** state, the scope the document is confined to, writable or
+    /// read-only, the LSP semantic coverage, and the "line too long" marker.
+    /// The line number and the column are gone — they restated the cursor,
+    /// which is already on screen.
+    fn chrome_cluster(&self, theme: &Theme, is_generating: bool) -> Vec<ClusterGroup<'_>> {
+        // A modal line **owns** the row. The reader is looking at what they
+        // are typing, and a cluster of status beside it is a second answer to
+        // a question nobody asked — and the row is only one row tall.
+        if self.search_active || self.command_active {
+            return Vec::new();
+        }
+        let mut groups: Vec<ClusterGroup<'_>> = Vec::new();
+        // ── The persistent cluster ──────────────────────────────────────
+        // A **notice** replaces the persistent signals rather than joining
+        // them. A surfaced error ("edit queue is full") is more urgent than
+        // the dirty state, and a row that says both is a row that says
+        // neither clearly.
+        let notice = self.notice;
+        if notice.is_none() {
+            if self.busy {
+                groups.push(ClusterGroup::one(
+                    ClusterWeight::Busy,
+                    "working… ".to_string(),
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            // The **modified** state, moved down from the title rather than
+            // dropped: it is the only unsaved-changes signal the editor has.
+            groups.push(ClusterGroup::one(
+                if self.status_caveat {
+                    ClusterWeight::Caveat
+                } else {
+                    ClusterWeight::Modified
+                },
+                format!("{} ", self.status),
+                Style::default().fg(if self.status_caveat {
+                    theme.warning
+                } else {
+                    theme.muted
+                }),
+            ));
+            // Server readiness is a separate fact from the local document's
+            // modified state. It shares this row and its existing drop-order.
+            if let Some(word) = crate::editor_lsp::editor_server_status_word(
+                self.lsp.lsp_sync,
+                self.lsp.diagnostics_status,
+                self.lsp.scope.is_none(),
+            ) {
+                let style = match word {
+                    "lsp" => Style::default().fg(theme.success),
+                    "lsp degraded" => Style::default().fg(theme.warning),
+                    "lsp unavailable" => Style::default().fg(theme.error),
+                    _ => Style::default().fg(theme.muted),
+                };
+                groups.push(ClusterGroup::one(
+                    ClusterWeight::Server,
+                    format!("{word} "),
+                    style,
+                ));
+            }
+            // Always show which root this document is confined to. The difference
+            // is invisible in the path itself (`build.toml` reads the same at
+            // either scope) but it decides who sees the edit, so it must not be
+            // something the user has to remember.
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Scope,
+                format!(
+                    "[{}] ",
+                    crate::commands::agent_editor::scope_label(self.scope)
+                ),
+                Style::default().fg(if self.scope.is_global_agent() {
+                    theme.warning
+                } else {
+                    theme.muted
+                }),
+            ));
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Writable,
+                if !self.writable {
+                    "read-only — edits refused ".to_string()
+                } else if crate::commands::agent_editor::is_agent_config_path(self.path, self.scope)
+                {
+                    // In an agent file the interesting command is the one that
+                    // publishes the agent, so say so here rather than making the
+                    // user read `/help` for it.
+                    format!("{} ", crate::commands::agent_editor::AGENT_EDITOR_HINT)
+                } else {
+                    "writable ".to_string()
+                },
+                Style::default().fg(if self.writable {
+                    theme.muted
+                } else {
+                    theme.warning
+                }),
+            ));
+            // A truncated or partially validated semantic result is never
+            // represented as complete coverage.
+            if let Some(note) = self.lsp.semantic_coverage_note() {
+                groups.push(ClusterGroup::one(
+                    ClusterWeight::Caveat,
+                    format!("· {note} "),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            // C002: a huge line under the cursor renders from its 32 KiB prefix
+            // with a `…[too long]` marker on the row itself. The chrome repeats
+            // the signal so the degradation is visible even when the row marker
+            // scrolls out of view.
+            if editor::line_is_truncated(
+                self.snapshot,
+                editor::cursor_line(self.snapshot, self.cursor_byte),
+            ) || editor::display_column_truncated(self.snapshot, self.cursor_byte)
+            {
+                groups.push(ClusterGroup::one(
+                    ClusterWeight::Caveat,
+                    "· line too long — showing prefix ".to_string(),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+        }
+        // ── The transient disclosure ────────────────────────────────────
+        // "What did my last keystroke do?" — the find, the search, the history
+        // cursor. It is one group: a count and its "partial" marker are one
+        // answer, and half of it would say "3 matches" about a partial search.
+        let mut disclosure: Vec<Span<'_>> = Vec::new();
+        if is_generating {
+            disclosure.push(Span::styled(
+                "· generating ",
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if self.search_active || self.search_count > 0 {
+            let plural = if self.search_count == 1 { "" } else { "es" };
+            if self.search_line.is_empty() {
+                // A `/` with nothing typed yet is not a failed search.
+                disclosure.push(Span::styled(
+                    "type to search ".to_string(),
+                    Style::default().fg(theme.muted),
+                ));
+            } else if self.search_count == 0 {
+                disclosure.push(Span::styled(
+                    "no matches ".to_string(),
+                    Style::default().fg(theme.error),
+                ));
+            } else {
+                disclosure.push(Span::styled(
+                    format!("{} match{} ", self.search_count, plural),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            if self.search_partial {
+                // Never let a truncated match list read as a complete one.
+                disclosure.push(Span::styled(
+                    "· partial ".to_string(),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            if !self.search_active && self.search_count > 0 {
+                disclosure.push(Span::styled(
+                    "· n/N next/prev ".to_string(),
+                    Style::default().fg(theme.muted),
+                ));
+            }
+        } else if !self.find_note.is_empty() {
+            disclosure.push(Span::styled(
+                format!("· {} ", self.find_note),
+                Style::default().fg(theme.muted),
+            ));
+        } else if let Some((position, length)) = self.presentation.history_position() {
+            // A time cursor nobody can see is a rename, so the position is
+            // disclosed whenever the reader is standing somewhere other than
+            // the newest change.
+            disclosure.push(Span::styled(
+                format!("· history {position}/{length} "),
+                Style::default().fg(theme.muted),
+            ));
+        } else if self.presentation.history_trimmed {
+            // The oldest undo point is being dropped to stay under the bound.
+            // Derived from the last edit, so it stops when the pruning does.
+            disclosure.push(Span::styled(
+                "· history trimmed at its bound ".to_string(),
+                Style::default().fg(theme.muted),
+            ));
+        } else if self.presentation.history_bound_cleared {
+            // The row explains the `u` that finds nothing.
+            disclosure.push(Span::styled(
+                "· history cleared at its bound ".to_string(),
+                Style::default().fg(theme.muted),
+            ));
+        }
+        if !disclosure.is_empty() {
+            groups.push(ClusterGroup {
+                weight: ClusterWeight::Disclosure,
+                spans: disclosure,
+            });
+        }
+        if let Some(notice) = notice {
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Notice,
+                format!("{notice} "),
+                Style::default().fg(theme.error),
+            ));
+        }
+        // The pending count, then the armed prefix. They are **one** gesture —
+        // `3gg` is a count and a prefix — so the count goes immediately before
+        // the prefix and carries the prefix's weight and style rather than the
+        // disclosure's: both answer "what is my next key about to do?".
+        if !self.count_label.is_empty() {
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Prefix,
+                self.count_label.to_string(),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        // The armed prefix is **last**: it is the one thing that must be
+        // visible at the instant the key is pressed, and the end of the row
+        // is where a reader's eye arrives after reading what came before.
+        let pending = self.pending_prefix.display();
+        if !pending.is_empty() {
+            groups.push(ClusterGroup::one(
+                ClusterWeight::Prefix,
+                format!("{pending} "),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        groups
+    }
+
+    /// The `:` command's fuzzy match list, floating on the row **above** the
+    /// command line.
+    ///
+    /// It is an overlay rather than an allocated row on purpose: allocating
+    /// one would change the text area's height, which changes the visible
+    /// line count, which re-resolves the viewport and can move the cursor's
+    /// screen row. The reader's first keystroke on the `:` line would then
+    /// reflow the document under them. An overlay covers one row of text
+    /// instead, and the text area's height never changes.
+    fn render_command_matches(&self, frame: &mut Frame, text_area: Rect) {
+        if !self.command_active || text_area.height == 0 {
+            return;
+        }
+        let theme = Arc::clone(&self.theme);
+        let matches = editor::complete_editor_command(self.command_line);
+        let mut spans: Vec<Span<'_>> = Vec::new();
+        if matches.is_empty() {
+            spans.push(Span::styled(
+                "no matching command",
+                Style::default().fg(theme.error),
+            ));
+        }
+        for (index, candidate) in matches.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::raw("  "));
+            }
+            let selected = index == self.command_selection;
+            let command = candidate.command;
+            spans.push(Span::styled(
+                format!(":{}", command.spec()),
+                if selected {
+                    Style::default()
+                        .fg(theme.background)
+                        .bg(theme.primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.foreground)
+                },
+            ));
+            spans.push(Span::styled(
+                format!(" {}", command.help()),
+                Style::default().fg(theme.muted),
+            ));
+        }
+        let row = Rect {
+            x: text_area.x,
+            y: text_area.y + text_area.height - 1,
+            width: text_area.width,
+            height: 1,
+        };
+        frame.render_widget(Clear, row);
+        frame.render_widget(
+            Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            row,
+        );
+    }
+
+    /// Gutter plus horizontally scrolled text for the visible slice.
+    fn render_text(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        region: Option<&InlineAssistRegion>,
+        region_applies: bool,
+        field: Option<&InlinePromptField>,
+    ) -> Option<EditorViewport> {
+        let theme = Arc::clone(&self.theme);
+        let prompt_layout = field.map(InlinePromptLayout::new);
+        let mut prompt_band_height = prompt_layout
+            .as_ref()
+            .filter(|layout| area.height >= layout.height.saturating_add(1))
+            .map_or(0, |layout| layout.height);
+        // Too little room for the band and a document row: omit it, never float it.
+        let valid_region =
+            region.filter(|region| self.inline_region_is_valid(region, region_applies));
+        let anchor_line = valid_region.and_then(|region| {
+            let anchor = usize::try_from(region.anchor).ok()?;
+            Some(editor::cursor_line(self.snapshot, anchor))
+        });
+        let region_capacity = area
+            .height
+            .saturating_sub(prompt_band_height)
+            .saturating_sub(1) as usize;
+        let requested_region_height = valid_region
+            .map(|region| region.height().min(region_capacity))
+            .unwrap_or(0);
+        let viewport_height = area
+            .height
+            .saturating_sub(prompt_band_height)
+            .saturating_sub(requested_region_height as u16);
+        let mut viewport = editor::resolve_viewport(
+            self.presentation,
+            self.snapshot,
+            area.width,
+            viewport_height,
+        );
+        let region_is_visible = |viewport: EditorViewport| {
+            anchor_line.is_some_and(|line| {
+                line >= viewport.first_line
+                    && line
+                        < viewport
+                            .first_line
+                            .saturating_add(viewport.visible_lines as usize)
+            })
+        };
+        let mut visible_region_height =
+            if requested_region_height > 0 && region_is_visible(viewport) {
+                requested_region_height
+            } else {
+                0
+            };
+        if requested_region_height > 0 && visible_region_height == 0 {
+            viewport = editor::resolve_viewport(
+                self.presentation,
+                self.snapshot,
+                area.width,
+                area.height.saturating_sub(prompt_band_height),
+            );
+        }
+        let cursor_line = editor::cursor_line(self.snapshot, self.cursor_byte);
+        if prompt_band_height > 0
+            && !fit_inline_prompt_below_cursor(&mut viewport, cursor_line, prompt_band_height)
+        {
+            // A scrolled viewport can leave the cursor off-screen; omit the field.
+            prompt_band_height = 0;
+            viewport = editor::resolve_viewport(
+                self.presentation,
+                self.snapshot,
+                area.width,
+                area.height.saturating_sub(visible_region_height as u16),
+            );
+        }
+        if visible_region_height > 0 && !region_is_visible(viewport) {
+            // The band adjustment moved the assist anchor out of view; drop it.
+            visible_region_height = 0;
+            viewport = editor::resolve_viewport(
+                self.presentation,
+                self.snapshot,
+                area.width,
+                area.height.saturating_sub(prompt_band_height),
+            );
+            if prompt_band_height > 0
+                && !fit_inline_prompt_below_cursor(&mut viewport, cursor_line, prompt_band_height)
+            {
+                prompt_band_height = 0;
+                viewport = editor::resolve_viewport(
+                    self.presentation,
+                    self.snapshot,
+                    area.width,
+                    area.height,
+                );
+            }
+        }
+        let visible_region_line = if visible_region_height > 0 {
+            anchor_line.filter(|_| region_is_visible(viewport))
+        } else {
+            None
+        };
+        let region_lines = visible_region_line
+            .and(valid_region)
+            .map(|region| inline_region_lines(region, viewport, visible_region_height, &theme))
+            .unwrap_or_default();
+        // Resolved once per frame, not per row: `selection_range` clamps and
+        // resolves lines, and doing that per row would re-walk the selection
+        // for every visible line.
+        let selection = editor::selection_ranges(self.presentation, self.snapshot);
+        let gutter_style = Style::default().fg(theme.muted);
+        let current_gutter = Style::default()
+            .fg(theme.primary)
+            .add_modifier(Modifier::BOLD);
+        // The current line is a **tint, not a highlight**. The position
+        // indicators are the cursor block and the held selection; the line
+        // itself only has to say "this one".
+        //
+        // It used to set `fg(theme.alternate_bg)` — a *background* colour
+        // used as a foreground — so on every dark theme the cursor's own
+        // line rendered near-black on near-black. Since a file opens in
+        // Normal mode, that made the one line a reader is guaranteed to be
+        // looking at the one line they could not read. A background keeps
+        // the syntax colours, which a foreground overrode.
+        let current_style = Style::default().bg(theme.alternate_bg);
+
+        let total_lines = self.snapshot.len_lines();
+        let mut lines: Vec<Line> = Vec::with_capacity(
+            viewport.visible_lines as usize + prompt_band_height as usize + visible_region_height,
+        );
+        let mut prompt_band_top_row = None;
+        // C002 frame budget: content reads across all visible rows cost at
+        // most 256 KiB. Rows past the budget render as a marker without
+        // reading a single content byte, so a viewport full of huge lines
+        // stays bounded. Row byte sizes come from the cheap length check,
+        // never from a content read.
+        let mut frame_remaining = editor::MAX_FRAME_SOURCE_BYTES;
+        for row in 0..viewport.visible_lines as usize {
+            let line_index = viewport.first_line + row;
+            if line_index >= total_lines {
+                break;
+            }
+            let row_bytes = editor::line_byte_len(self.snapshot, line_index)
+                .unwrap_or(0)
+                .min(editor::MAX_RENDER_LINE_BYTES);
+            let is_current = line_index == cursor_line;
+            let number = format!(
+                "{:>width$} ",
+                line_index + 1,
+                width = viewport.gutter as usize - 1
+            );
+            let diagnostics_path_matches = self
+                .lsp
+                .scope
+                .as_ref()
+                .is_none_or(|scope| scope.path == self.path);
+            let marker = if diagnostics_path_matches {
+                self.lsp
+                    .diagnostics
+                    .iter()
+                    .filter(|diagnostic| {
+                        diagnostic.range.path == self.path
+                            && diagnostic.range.start_line as usize == line_index
+                    })
+                    .map(|diagnostic| diagnostic.severity)
+                    .min()
+            } else {
+                None
+            };
+            let marker = match marker {
+                Some(1) => "!",
+                Some(2) => "▲",
+                Some(_) => "·",
+                None => " ",
+            };
+            let mut spans = vec![Span::styled(
+                format!("{number}{marker}"),
+                if is_current {
+                    current_gutter
+                } else {
+                    gutter_style
+                },
+            )];
+            let text_style = if is_current {
+                current_style
+            } else {
+                Style::default()
+            };
+            if row_bytes > frame_remaining {
+                // Frame budget exhausted: no content read for this row, just
+                // the honest marker. The banner note (cursor line) and the
+                // per-row markers on the lines that did render already say
+                // the frame is partial.
+                spans.push(Span::styled(
+                    crate::editor::TRUNCATED_LINE_SUFFIX,
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                frame_remaining = frame_remaining.saturating_sub(row_bytes);
+                spans.extend(self.line_spans(
+                    line_index,
+                    viewport,
+                    text_style,
+                    &selection,
+                    cursor_line,
+                ));
+            }
+            lines.push(Line::from(spans));
+            if prompt_band_height > 0 && line_index == cursor_line {
+                prompt_band_top_row = Some(lines.len() as u16);
+                lines.extend(
+                    std::iter::repeat_with(Line::default).take(prompt_band_height as usize),
+                );
+            }
+            if visible_region_line == Some(line_index) {
+                lines.extend(region_lines.iter().cloned());
+            }
+        }
+        // An empty document still has one logical line, so `lines` is
+        // non-empty. Test the text, not the line count.
+        if self.snapshot.is_empty() {
+            lines.clear();
+            prompt_band_top_row = None;
+            lines.push(Line::from(Span::styled(
+                "(empty document)",
+                Style::default().fg(theme.muted),
+            )));
+            if prompt_band_height > 0 && cursor_line == 0 {
+                prompt_band_top_row = Some(lines.len() as u16);
+                lines.extend(
+                    std::iter::repeat_with(Line::default).take(prompt_band_height as usize),
+                );
+            }
+            if visible_region_line == Some(0) {
+                lines.extend(region_lines.iter().cloned());
+            }
+        }
+        frame.render_widget(Clear, area);
+        // `Clear` resets every cell to the terminal's own default, so the
+        // themed background the block painted a moment ago is gone by the
+        // time the text lands. Restating it here is what actually makes the
+        // document area theme-colored rather than whatever the user's shell
+        // profile happened to leave behind.
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
+            area,
+        );
+        self.render_scrollbar(frame, area, &viewport);
+        if let (Some(field), Some(layout), Some(top_row)) =
+            (field, prompt_layout.as_ref(), prompt_band_top_row)
+        {
+            if prompt_band_height > 0 {
+                self.render_inline_prompt_band(
+                    frame,
+                    area,
+                    field,
+                    &layout.instruction_lines,
+                    prompt_band_height,
+                    top_row,
+                );
+            }
+        }
+        Some(viewport)
+    }
+
+    fn inline_region_is_valid(&self, region: &InlineAssistRegion, region_applies: bool) -> bool {
+        region_applies
+            && usize::try_from(region.anchor).is_ok_and(|anchor| {
+                anchor <= self.snapshot.len_bytes()
+                    && editor::clamp_offset(self.snapshot, anchor) == anchor
+            })
+    }
+
+    fn cursor_screen_position(&self, area: Rect, viewport: EditorViewport) -> Option<(u16, u16)> {
+        let line = editor::cursor_line(self.snapshot, self.cursor_byte);
+        let row = line.checked_sub(viewport.first_line)?;
+        if row >= viewport.visible_lines as usize {
+            return None;
+        }
+        let line_start = editor::line_start(self.snapshot, line)?;
+        let line_end = editor::line_content_end(self.snapshot, line).unwrap_or(line_start);
+        let Ok(line_text) = self.snapshot.read_bytes(line_start, line_end) else {
+            return None;
+        };
+        let mut offset = self
+            .cursor_byte
+            .saturating_sub(line_start)
+            .min(line_text.len());
+        while offset > 0 && !line_text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let prefix = line_text.get(..offset)?;
+        let raw_column = display_width_str(prefix);
+        if raw_column < viewport.column {
+            return None;
+        }
+        let column = raw_column - viewport.column;
+        if column >= viewport.text_columns as usize {
+            return None;
+        }
+        Some((
+            area.x + viewport.gutter + 1 + column as u16,
+            area.y + row as u16,
+        ))
+    }
+
+    fn render_space_menu(&self, frame: &mut Frame, text_area: Rect) {
+        let Some(menu) = self.menu.filter(|menu| !menu.entries.is_empty()) else {
+            return;
+        };
+        let theme = Arc::clone(&self.theme);
+        let key_width = menu
+            .entries
+            .iter()
+            .map(|entry| {
+                display_width_str(&entry.key).saturating_add(if entry.is_menu { 2 } else { 0 })
+            })
+            .max()
+            .unwrap_or(0);
+        let desc_width = menu
+            .entries
+            .iter()
+            .map(|entry| display_width_str(&entry.label))
+            .max()
+            .unwrap_or(0);
+        let Ok(width) = u16::try_from(
+            key_width
+                .saturating_add(desc_width)
+                .saturating_add(5)
+                .min(text_area.width as usize),
+        ) else {
+            return;
+        };
+        let Ok(height) = u16::try_from(menu.entries.len().saturating_add(2)) else {
+            return;
+        };
+        if width == 0 || height == 0 || height > text_area.height {
+            return;
+        }
+        let rect = Rect {
+            x: text_area.x + text_area.width - width,
+            y: text_area.y + text_area.height - height,
+            width,
+            height,
+        };
+        let block = Block::default()
+            .title(format!(" {} ", menu.path))
+            .title_bottom(" <space> ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        let lines = menu
+            .entries
+            .iter()
+            .map(|entry| {
+                let key = if entry.is_menu {
+                    format!("{} >", entry.key)
+                } else {
+                    entry.key.clone()
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {key:>key_width$}  "),
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        entry.label.as_str(),
+                        Style::default().fg(if entry.available {
+                            theme.foreground
+                        } else {
+                            theme.muted
+                        }),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
+            inner,
+        );
+    }
+
+    fn render_command_palette(&self, frame: &mut Frame, area: Rect) {
+        let Some(palette) = self.presentation.command_palette.as_ref() else {
+            return;
+        };
+        if area.width < 24 || area.height < 6 {
+            return;
+        }
+        let theme = Arc::clone(&self.theme);
+        let rows = palette.rows();
+        let width = area.width.min(72);
+        let height = area.height.min(20);
+        let rect = Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height - height) / 2,
+            width,
+            height,
+        };
+        let block = Block::default()
+            .title(" commands ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let count = format!("{}/{}", rows.len(), palette.total());
+        let pad = (inner.width as usize)
+            .saturating_sub(display_width_str(&palette.query))
+            .saturating_sub(1)
+            .saturating_sub(display_width_str(&count));
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled(
+                palette.query.as_str(),
+                Style::default().fg(theme.foreground),
+            ),
+            Span::styled("█", Style::default().fg(theme.primary)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(count, Style::default().fg(theme.muted)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(theme.border),
+        )));
+        let name_width = rows
+            .iter()
+            .map(|row| match row {
+                PaletteRow::Command(command) => command.config_name().len(),
+                PaletteRow::Key { keys, .. } => keys.len(),
+            })
+            .max()
+            .unwrap_or(0);
+        let binding_width = rows
+            .iter()
+            .map(|row| match row {
+                PaletteRow::Command(command) => command.spec().len(),
+                PaletteRow::Key { .. } => 0,
+            })
+            .max()
+            .unwrap_or(0);
+        let visible = (inner.height as usize).saturating_sub(2).max(1);
+        let start = palette
+            .selected
+            .saturating_sub(visible / 2)
+            .min(rows.len().saturating_sub(visible));
+        for (index, row) in rows.iter().enumerate().skip(start).take(visible) {
+            let (name, binding, description) = match row {
+                PaletteRow::Command(command) => (
+                    command.config_name().to_string(),
+                    command.spec().to_string(),
+                    command.help(),
+                ),
+                PaletteRow::Key { keys, description } => {
+                    (keys.to_string(), String::new(), *description)
+                }
+            };
+            let selected = index == palette.selected;
+            let marker = if selected { ">" } else { " " };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {marker} "),
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{name:<name_width$}"),
+                    Style::default().fg(theme.primary),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    format!("{binding:<binding_width$}"),
+                    Style::default().fg(theme.muted),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    description,
+                    Style::default().fg(if selected {
+                        theme.foreground
+                    } else {
+                        theme.muted
+                    }),
+                ),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn render_inline_review_menu(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        viewport: EditorViewport,
+        region: &InlineAssistRegion,
+    ) {
+        let theme = Arc::clone(&self.theme);
+        let Some(anchor) = usize::try_from(region.anchor).ok() else {
+            return;
+        };
+        let line = editor::cursor_line(self.snapshot, anchor);
+        let Some(row) = line.checked_sub(viewport.first_line) else {
+            return;
+        };
+        if row >= viewport.visible_lines as usize {
+            return;
+        }
+        let Some(line_start) = editor::line_start(self.snapshot, line) else {
+            return;
+        };
+        let line_end = editor::line_content_end(self.snapshot, line).unwrap_or(line_start);
+        let Ok(line_text) = self.snapshot.read_bytes(line_start, line_end) else {
+            return;
+        };
+        let mut offset = anchor.saturating_sub(line_start).min(line_text.len());
+        while offset > 0 && !line_text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let Some(prefix) = line_text.get(..offset) else {
+            return;
+        };
+        let raw_column = display_width_str(prefix);
+        if raw_column < viewport.column {
+            return;
+        }
+        let column = raw_column - viewport.column;
+        let label = " [a] accept  [d] deny  [e] edit ";
+        let width = label.chars().count() as u16;
+        if width + 2 > area.width {
+            return;
+        }
+        let cursor_x = area.x + viewport.gutter + 1 + column as u16;
+        let cursor_y = area.y + row as u16;
+        let below_region = cursor_y.saturating_add(region.height() as u16 + 1);
+        let Some(rect) = inline_menu_placement(
+            area,
+            cursor_x,
+            below_region,
+            cursor_y.saturating_sub(1),
+            width,
+            1,
+        ) else {
+            return;
+        };
+        let x = rect.x;
+        let y = rect.y;
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                label,
+                Style::default()
+                    .fg(theme.background)
+                    .bg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            Rect {
+                x,
+                y,
+                width,
+                height: 1,
+            },
+        );
+    }
+
+    fn render_inline_prompt_band(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        field: &InlinePromptField,
+        instruction_lines: &[&str],
+        height: u16,
+        top_row: u16,
+    ) {
+        if area.width == 0 || height == 0 || top_row.saturating_add(height) > area.height {
+            return;
+        }
+        let theme = Arc::clone(&self.theme);
+        let rect = Rect {
+            x: area.x,
+            y: area.y + top_row,
+            width: area.width,
+            height,
+        };
+        let block = Block::default()
+            .title(format!(" inline [{}] ", field.mode().badge()))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let choices = Line::from(vec![
+            Span::styled(" model ", Style::default().fg(theme.muted)),
+            Span::styled(
+                field.model_label().to_string(),
+                Style::default().fg(theme.primary),
+            ),
+            Span::styled("  effort ", Style::default().fg(theme.muted)),
+            Span::styled(field.effort_label(), Style::default().fg(theme.primary)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(choices)
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            Rect {
+                height: 1.min(inner.height),
+                ..inner
+            },
+        );
+        let prompt_area = Rect {
+            y: inner.y.saturating_add(1),
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
+        if prompt_area.width == 0 || prompt_area.height == 0 {
+            return;
+        }
+        let caret_line = field.caret_line().min(instruction_lines.len() - 1);
+        let caret_source = instruction_lines[caret_line];
+        let caret_line_start = instruction_lines
+            .iter()
+            .take(caret_line)
+            .map(|line| line.len().saturating_add(1))
+            .sum::<usize>();
+        let mut caret_byte = field
+            .caret()
+            .saturating_sub(caret_line_start)
+            .min(caret_source.len());
+        while !caret_source.is_char_boundary(caret_byte) {
+            caret_byte = caret_byte.saturating_sub(1);
+        }
+        let caret_column = unicode_width::UnicodeWidthStr::width(&caret_source[..caret_byte]);
+        let horizontal_scroll =
+            caret_column.saturating_sub(prompt_area.width.saturating_sub(1) as usize);
+        let row_count = prompt_area.height as usize;
+        let max_scroll = instruction_lines.len().saturating_sub(row_count);
+        let mut first_line = field.scroll().min(max_scroll);
+        if caret_line < first_line {
+            first_line = caret_line;
+        } else if caret_line >= first_line.saturating_add(row_count) {
+            first_line = caret_line.saturating_add(1).saturating_sub(row_count);
+        }
+        first_line = first_line.min(max_scroll);
+        let body_style = Style::default().fg(theme.foreground);
+        let caret_style = Style::default()
+            .fg(theme.background)
+            .bg(theme.primary)
+            .add_modifier(Modifier::BOLD);
+        let prompt_lines = instruction_lines
+            .iter()
+            .enumerate()
+            .skip(first_line)
+            .take(row_count)
+            .map(|(line_index, line)| {
+                let visible_start = display_byte_index(line, horizontal_scroll);
+                let visible_end = display_byte_index(
+                    line,
+                    horizontal_scroll.saturating_add(prompt_area.width as usize),
+                );
+                let visible = line.get(visible_start..visible_end).unwrap_or("");
+                let mut spans = Vec::new();
+                let is_caret_line = line_index == caret_line
+                    && caret_column >= horizontal_scroll
+                    && caret_column < horizontal_scroll.saturating_add(prompt_area.width as usize)
+                    && caret_byte >= visible_start
+                    && caret_byte <= visible_end;
+                if is_caret_line {
+                    let local_caret = caret_byte.saturating_sub(visible_start).min(visible.len());
+                    if local_caret > 0 {
+                        spans.push(Span::styled(visible[..local_caret].to_string(), body_style));
+                    }
+                    if local_caret < visible.len() {
+                        let caret_end = visible[local_caret..]
+                            .char_indices()
+                            .nth(1)
+                            .map(|(offset, _)| local_caret + offset)
+                            .unwrap_or(visible.len());
+                        spans.push(Span::styled(
+                            visible[local_caret..caret_end].to_string(),
+                            caret_style,
+                        ));
+                        if caret_end < visible.len() {
+                            spans.push(Span::styled(visible[caret_end..].to_string(), body_style));
+                        }
+                    } else {
+                        spans.push(Span::styled(" ", caret_style));
+                    }
+                } else {
+                    spans.push(Span::styled(visible.to_string(), body_style));
+                }
+                Line::from(spans)
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(prompt_lines)
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            prompt_area,
+        );
+    }
+
+    /// The scrollbar, in the column the viewport already reserves for it.
+    ///
+    /// The column was always reserved — `text_columns` subtracts one, and
+    /// the field doc has always said "after the gutter and scrollbar" — and
+    /// nothing ever drew in it. The editor therefore looked like it had no
+    /// scrollbar at all, and "how far down am I" had no answer on screen.
+    fn render_scrollbar(&self, frame: &mut Frame, area: Rect, viewport: &EditorViewport) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = Arc::clone(&self.theme);
+        let total = self.snapshot.len_lines().max(1);
+        let visible = (viewport.visible_lines as usize).max(1);
+        let track = area.height as usize;
+        // The thumb is never shorter than a row, or a document that fits on
+        // screen would have no scrollbar to see at all.
+        let thumb = visible.min(total).clamp(1, track);
+        let max_first = total.saturating_sub(visible);
+        let first = viewport.first_line.min(max_first);
+        // `checked_div` rather than a `max_first == 0` branch: the divisor is
+        // zero exactly when the whole document fits on screen, and then the
+        // thumb belongs at the top of the track.
+        let offset = first
+            .saturating_mul(track - thumb)
+            .checked_div(max_first)
+            .unwrap_or(0);
+        let thumb_style = Style::default().fg(theme.primary);
+        let track_style = Style::default().fg(theme.border);
+        let lines: Vec<Line> = (0..track)
+            .map(|row| {
+                let in_thumb = row >= offset && row < offset + thumb;
+                Line::from(Span::styled(
+                    if in_thumb { "█" } else { "│" },
+                    if in_thumb { thumb_style } else { track_style },
+                ))
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background)),
+            Rect {
+                x: area.x + area.width - 1,
+                y: area.y,
+                width: 1,
+                height: area.height,
+            },
+        );
+    }
+
+    fn render_lsp_panel(&self, frame: &mut Frame, area: Rect) {
+        use crate::editor_lsp::{DiagnosticsViewStatus, EditorLspPanel};
+        let Some(panel) = self.lsp.panel else { return };
+        let height = area.height.min(12);
+        let width = area.width.min(100);
+        if height < 3 || width < 12 {
+            return;
+        }
+        let rect = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        let theme = Arc::clone(&self.theme);
+        // The scroll offset is the payload's own, because one payload is a
+        // **picker** over a list longer than the panel is tall: the
+        // code-action list scrolls its window to the selected action, so
+        // `Enter` can never offer to apply a change the reader cannot see.
+        // Every other payload keeps the panel's standing behaviour.
+        let (title, mut lines, scroll) = match panel {
+            EditorLspPanel::Diagnostics => {
+                let status = match self.lsp.diagnostics_status {
+                    DiagnosticsViewStatus::Idle => "not requested".to_string(),
+                    DiagnosticsViewStatus::Loading => "refreshing".to_string(),
+                    DiagnosticsViewStatus::Ready => "current".to_string(),
+                    DiagnosticsViewStatus::NotReady => "language server not ready".to_string(),
+                    DiagnosticsViewStatus::Unavailable => "unavailable".to_string(),
+                };
+                let stale = if self.lsp.diagnostics_stale {
+                    " · showing stale results"
+                } else {
+                    ""
+                };
+                let mut lines = vec![Line::from(Span::styled(
+                    format!("{status}{stale}"),
+                    Style::default().fg(theme.warning),
+                ))];
+                lines.extend(self.lsp.diagnostics.iter().take(8).enumerate().map(
+                    |(index, item)| {
+                        Line::from(format!(
+                            "{}{}:{} [{}] {}",
+                            if index == self.lsp.selected_index {
+                                "> "
+                            } else {
+                                "  "
+                            },
+                            item.range.start_line + 1,
+                            item.range.start_column + 1,
+                            severity_label(item.severity),
+                            crate::editor_lsp::truncate_chars(&item.message, 120)
+                        ))
+                    },
+                ));
+                if self.lsp.diagnostics.is_empty()
+                    && self.lsp.diagnostics_status == DiagnosticsViewStatus::Ready
+                {
+                    lines.push(Line::from("No diagnostics"));
+                }
+                (
+                    " Diagnostics · Enter jump · r refresh · Esc close ",
+                    lines,
+                    self.lsp.selected_index,
+                )
+            }
+            EditorLspPanel::ReadResult => {
+                let mut lines = Vec::new();
+                // The title names what `Enter` does, and the two read-result
+                // kinds differ: a location opens a file, a code action opens
+                // a change review.
+                let mut title = " LSP result · Enter opens safe target · Esc close ";
+                // The standing scroll for the read-result panel; the
+                // code-action payload overrides it with its own window's
+                // offset.
+                let mut scroll = self.lsp.selected_index;
+                if self.lsp.read_loading {
+                    lines.push(Line::from("Request in progress…"));
+                }
+                if let Some(error) = &self.lsp.read_error {
+                    lines.push(Line::from(crate::editor_lsp::truncate_chars(error, 120)));
+                }
+                if let Some(result) = &self.lsp.read_result {
+                    use codegg_protocol::lsp::{LspReadPayloadDto, LspReadStatus};
+                    if matches!(result.payload, Some(LspReadPayloadDto::CodeActions { .. })) {
+                        title = " LSP code actions · Enter reviews · Esc close ";
+                    }
+                    if result.status == LspReadStatus::NotReady {
+                        lines.push(Line::from("Language server not ready"));
+                    }
+                    if result.status == LspReadStatus::Ambiguous {
+                        // Not an empty result. Falling through to "No results"
+                        // would tell the user the workspace is clean at this
+                        // position, when in fact the daemon declined to
+                        // choose between two healthy servers.
+                        lines.push(Line::from(
+                            "Several language servers are running for this workspace",
+                        ));
+                    }
+                    if result.status == LspReadStatus::Unsupported {
+                        // A live server that simply does not do this. Reporting
+                        // it as "not ready" would send the user looking for a
+                        // server that is already running and already answered.
+                        let capability = match result.payload.as_ref() {
+                            Some(LspReadPayloadDto::UnsupportedCapability { capability }) => {
+                                capability.as_str()
+                            }
+                            _ => "this operation",
+                        };
+                        lines.push(Line::from(format!(
+                            "The language server does not support this ({capability})"
+                        )));
+                    }
+                    match result.payload.as_ref() {
+                        Some(LspReadPayloadDto::Hover { text, .. }) => {
+                            lines.push(Line::from(crate::editor_lsp::truncate_chars(text, 240)))
+                        }
+                        Some(LspReadPayloadDto::Locations { locations, .. }) => lines.extend(
+                            locations.iter().take(8).enumerate().map(|(index, loc)| {
+                                Line::from(format!(
+                                    "{}{}:{} · {}",
+                                    if index == self.lsp.selected_index {
+                                        "> "
+                                    } else {
+                                        "  "
+                                    },
+                                    loc.path,
+                                    loc.start_line + 1,
+                                    loc.workspace_relative_path
+                                        .as_deref()
+                                        .unwrap_or("outside workspace; display only")
+                                ))
+                            }),
+                        ),
+                        Some(LspReadPayloadDto::Symbols { symbols, .. }) => lines.extend(
+                            symbols.iter().take(8).enumerate().map(|(index, symbol)| {
+                                Line::from(format!(
+                                    "{}{} · {}:{}",
+                                    if index == self.lsp.selected_index {
+                                        "> "
+                                    } else {
+                                        "  "
+                                    },
+                                    crate::editor_lsp::truncate_chars(&symbol.name, 80),
+                                    symbol.range.path,
+                                    symbol.range.start_line + 1
+                                ))
+                            }),
+                        ),
+                        Some(LspReadPayloadDto::AmbiguousClients { candidates }) => {
+                            lines.push(Line::from("Name one to answer:"));
+                            lines.extend(candidates.iter().take(8).map(|candidate| {
+                                Line::from(format!(
+                                    "  · {}",
+                                    crate::editor_lsp::truncate_chars(candidate, 80)
+                                ))
+                            }));
+                        }
+                        Some(LspReadPayloadDto::Highlights { highlights, .. }) => {
+                            lines.extend(highlights.iter().take(8).enumerate().map(
+                                |(index, entry)| {
+                                    Line::from(format!(
+                                        "{}{}:{} · {}",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        entry.range.start_line + 1,
+                                        entry.range.start_column + 1,
+                                        // The server's own read/write
+                                        // classification, carried rather than
+                                        // reinterpreted — the same contract
+                                        // `LspSymbolDto::kind` follows.
+                                        match entry.kind {
+                                            Some(2) => "read",
+                                            Some(3) => "write",
+                                            Some(_) => "text",
+                                            None => "occurrence",
+                                        }
+                                    ))
+                                },
+                            ))
+                        }
+                        Some(LspReadPayloadDto::SelectionRanges { ranges, truncated }) => {
+                            lines.extend(ranges.iter().take(8).enumerate().map(
+                                |(index, range)| {
+                                    Line::from(format!(
+                                        "{}{}:{}–{}:{}{}",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        range.start_line + 1,
+                                        range.start_column + 1,
+                                        range.end_line + 1,
+                                        range.end_column + 1,
+                                        if index == 0 { " · innermost" } else { "" },
+                                    ))
+                                },
+                            ));
+                            if *truncated {
+                                lines.push(Line::from("  … larger structural ranges omitted"));
+                            }
+                        }
+                        Some(LspReadPayloadDto::SignatureHelp {
+                            signatures,
+                            active_signature,
+                            active_parameter,
+                        }) => {
+                            if signatures.is_empty() {
+                                lines.push(Line::from("No signature at this position"));
+                            }
+                            lines.extend(signatures.iter().take(8).enumerate().map(
+                                |(index, signature)| {
+                                    Line::from(format!(
+                                        "{}{}",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        crate::editor_lsp::truncate_chars(&signature.label, 200,)
+                                    ))
+                                },
+                            ));
+                            // Which overload the server considers live, if it
+                            // said. Left as a separate line rather than
+                            // spliced into the label: the label is the
+                            // server's text and rewriting it would make the
+                            // panel disagree with what was returned.
+                            if let Some(active) = active_signature {
+                                let active = *active as usize;
+                                let parameter = active_parameter.map(|p| p.to_string());
+                                lines.push(Line::from(format!(
+                                    "active signature {}{}",
+                                    active + 1,
+                                    parameter
+                                        .map(|p| format!(" · argument {p}"))
+                                        .unwrap_or_default()
+                                )));
+                            }
+                        }
+                        Some(LspReadPayloadDto::FormatPreview(preview)) => {
+                            if preview.diff.is_empty() {
+                                lines.push(Line::from("Already formatted — no changes"));
+                            } else {
+                                if preview.base_stale {
+                                    lines.push(Line::from(
+                                        "The file changed while this preview was built; it is stale",
+                                    ));
+                                }
+                                lines.push(Line::from(format!(
+                                    "{} edit(s) · {}",
+                                    preview.edit_count,
+                                    preview_disposition(
+                                        preview.truncated,
+                                        preview.candidate.is_some()
+                                    )
+                                )));
+                                lines.extend(preview.diff.lines().take(16).map(|line| {
+                                    Line::from(crate::editor_lsp::truncate_chars(line, 200))
+                                }));
+                            }
+                        }
+                        Some(LspReadPayloadDto::RenamePreview(preview)) => {
+                            lines.push(Line::from(format!(
+                                "{} → {} · {} edit(s) in {} file(s) · {}",
+                                preview.old_name.as_deref().unwrap_or("(symbol)"),
+                                preview.new_name,
+                                preview.edit_count,
+                                preview.files.len(),
+                                preview_disposition(preview.truncated, preview.candidate.is_some())
+                            )));
+                            if preview.base_stale {
+                                lines.push(Line::from(
+                                    "A file changed while this preview was built; it is stale",
+                                ));
+                            }
+                            lines.extend(preview.files.iter().take(8).enumerate().map(
+                                |(index, file)| {
+                                    Line::from(format!(
+                                        "{}{} · {} edit(s)",
+                                        if index == self.lsp.selected_index {
+                                            "> "
+                                        } else {
+                                            "  "
+                                        },
+                                        file.path,
+                                        file.edit_count
+                                    ))
+                                },
+                            ));
+                            lines.extend(preview.warnings.iter().take(4).map(|warning| {
+                                Line::from(format!(
+                                    "  ! {}",
+                                    crate::editor_lsp::truncate_chars(warning, 120)
+                                ))
+                            }));
+                        }
+                        Some(LspReadPayloadDto::CodeActions { actions, truncated }) => {
+                            if actions.is_empty() {
+                                lines.push(Line::from("No code actions at this position"));
+                            } else {
+                                // The window **follows the selection**.
+                                //
+                                // A code action is a choice and the panel is
+                                // where the choice is made, so the selected
+                                // action has to be *readable*: `Enter` on an
+                                // action the reader cannot see would offer to
+                                // apply a change they did not read. The
+                                // window ends on the selected action, and the
+                                // scroll below moves the view to it.
+                                const VISIBLE_ACTIONS: usize = 8;
+                                let selected = self.lsp.selected_index.min(actions.len() - 1);
+                                let start = selected.saturating_sub(VISIBLE_ACTIONS - 1);
+                                lines.extend(
+                                    actions[start..]
+                                        .iter()
+                                        .take(VISIBLE_ACTIONS)
+                                        .enumerate()
+                                        .map(|(offset, action)| {
+                                            let index = start + offset;
+                                            let kind = action.kind.as_deref().unwrap_or("action");
+                                            let preferred = if action.preferred {
+                                                " · preferred"
+                                            } else {
+                                                ""
+                                            };
+                                            // The disposition is the *same*
+                                            // words `Enter` will give if the
+                                            // action turns out to be
+                                            // unappliable.
+                                            let disposition = match crate::editor_lsp::
+                                                code_action_unavailable_reason(action)
+                                            {
+                                                Some(reason) => reason,
+                                                None => "ready to apply".to_string(),
+                                            };
+                                            Line::from(format!(
+                                                "{}{} · {kind}{preferred} · {disposition}",
+                                                if index == selected { "> " } else { "  " },
+                                                crate::editor_lsp::truncate_chars(
+                                                    &action.title,
+                                                    80
+                                                )
+                                            ))
+                                        }),
+                                );
+                                scroll = selected - start;
+                                if *truncated {
+                                    lines.push(Line::from(
+                                        "  … the server offered more actions than the result carries",
+                                    ));
+                                } else if actions.len() > VISIBLE_ACTIONS {
+                                    lines.push(Line::from(format!(
+                                        "  … {} actions offered; the panel shows {VISIBLE_ACTIONS} at a time",
+                                        actions.len()
+                                    )));
+                                }
+                            }
+                        }
+                        // Two payloads whose explanation is rendered above, next to
+                        // the status it belongs to, rather than here: semantic
+                        // tokens are a presentation overlay consumed by
+                        // `request_editor_semantic_tokens`, and an unsupported
+                        // capability already printed its own line. Explicit
+                        // arms rather than a wildcard, so a new payload cannot
+                        // slip through unrendered and print "No results".
+                        Some(LspReadPayloadDto::SemanticTokens { .. }) => {}
+                        Some(LspReadPayloadDto::UnsupportedCapability { .. }) => {}
+                        None => {}
+                    }
+                }
+                if lines.is_empty() {
+                    lines.push(Line::from("No results"));
+                }
+                (title, lines, scroll)
+            }
+        };
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        lines.truncate(inner.height as usize);
+        frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
+    }
+
+    /// Bounded completion popup for the M003 read.
+    ///
+    /// Renders typed candidates and explicit non-ready states only; it never
+    /// reads document text, so it cannot paint stale content. Untrusted
+    /// server strings arrive pre-sanitized by
+    /// [`crate::editor_completion::sanitize_completion_text`] and are
+    /// rendered as literal spans. On terminals too narrow to fit, the popup
+    /// stays hidden while its keys keep working.
+    fn render_completion_popup(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        placement_area: Rect,
+        viewport: Option<EditorViewport>,
+    ) {
+        use crate::editor_completion::{
+            sanitize_completion_text, CompletionViewStatus, MAX_COMPLETION_DETAIL_CHARS,
+            MAX_COMPLETION_LABEL_CHARS, MAX_COMPLETION_POPUP_ROWS, MAX_COMPLETION_POPUP_WIDTH,
+        };
+        let state = self.completion;
+        if !state.is_open()
+            || (matches!(state.status, CompletionViewStatus::Ready) && state.candidates.is_empty())
+        {
+            return;
+        }
+        let Some(status) = state.status_line() else {
+            return;
+        };
+        let theme = Arc::clone(&self.theme);
+        let mut lines: Vec<Line> = Vec::new();
+        match state.status {
+            CompletionViewStatus::Loading => {
+                lines.push(Line::from("Requesting…"));
+            }
+            CompletionViewStatus::Ready => {
+                if !state.candidates.is_empty() {
+                    let rows = MAX_COMPLETION_POPUP_ROWS;
+                    let start = state
+                        .selected
+                        .min(state.candidates.len().saturating_sub(1))
+                        .saturating_sub(rows / 2)
+                        .min(state.candidates.len().saturating_sub(rows));
+                    for (offset, candidate) in
+                        state.candidates.iter().skip(start).take(rows).enumerate()
+                    {
+                        let index = start + offset;
+                        let applicable = matches!(
+                            candidate.applicability,
+                            codegg_protocol::lsp::LspCompletionApplicabilityDto::Applicable { .. }
+                        );
+                        let mut row = format!(
+                            "{} {}",
+                            if index == state.selected { ">" } else { " " },
+                            sanitize_completion_text(&candidate.label, MAX_COMPLETION_LABEL_CHARS),
+                        );
+                        if let Some(kind) = &candidate.kind {
+                            row.push_str("  (");
+                            row.push_str(&sanitize_completion_text(kind, 24));
+                            row.push(')');
+                        }
+                        if let Some(detail) = &candidate.detail {
+                            let detail =
+                                sanitize_completion_text(detail, MAX_COMPLETION_DETAIL_CHARS);
+                            if !detail.is_empty() {
+                                row.push_str("  ");
+                                row.push_str(&detail);
+                            }
+                        }
+                        if !applicable {
+                            row.push_str("  · ");
+                            row.push_str(completion_unavailable_reason(&candidate.applicability));
+                        }
+                        let style = if index == state.selected {
+                            Style::default().bg(theme.selection).fg(theme.foreground)
+                        } else if applicable {
+                            Style::default().fg(theme.foreground)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        };
+                        lines.push(Line::from(Span::styled(row, style)));
+                    }
+                }
+            }
+            CompletionViewStatus::NotReady => {
+                lines.push(Line::from("Language server warming — retry shortly"));
+            }
+            CompletionViewStatus::Stale => {
+                lines.push(Line::from("Document changed — press F8 to refresh"));
+            }
+            CompletionViewStatus::Unsynced => {
+                lines.push(Line::from("Server hasn't seen this revision yet"));
+            }
+            CompletionViewStatus::Unsupported => {
+                lines.push(Line::from("Server has no completion provider"));
+            }
+            CompletionViewStatus::Error => {
+                lines.push(Line::from(sanitize_completion_text(
+                    state.error.as_deref().unwrap_or("completion failed"),
+                    120,
+                )));
+            }
+            CompletionViewStatus::Idle => return,
+        }
+        if state.truncated {
+            lines.push(Line::from(Span::styled(
+                "…list truncated",
+                Style::default().fg(theme.warning),
+            )));
+        } else if state.incomplete {
+            lines.push(Line::from(Span::styled(
+                "…more may exist server-side",
+                Style::default().fg(theme.warning),
+            )));
+        }
+        let title = format!(" Completion · {status} ");
+        let footer = " ↑↓ select · Enter apply · Esc ";
+        let content_width = lines
+            .iter()
+            .map(|line| line.width())
+            .max()
+            .unwrap_or(0)
+            .max(display_width_str(&title))
+            .max(display_width_str(footer));
+        let height = ((lines.len() + 2) as u16).min(area.height).min(16);
+        let width = content_width
+            .saturating_add(2)
+            .max(24)
+            .min(MAX_COMPLETION_POPUP_WIDTH as usize)
+            .min(area.width as usize) as u16;
+        if height < 3 || width < 24 {
+            return;
+        }
+        let Some(viewport) = viewport else {
+            return;
+        };
+        let Some((cursor_x, cursor_y)) = self.cursor_screen_position(placement_area, viewport)
+        else {
+            return;
+        };
+        let Some(rect) =
+            completion_popup_placement(placement_area, cursor_x, cursor_y, width, height)
+        else {
+            return;
+        };
+        let block = Block::default()
+            .title(title)
+            .title_bottom(footer)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        lines.truncate(inner.height as usize);
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// The visible display-column slice of `line_index`, truncated to the
+    /// viewport width.
+    ///
+    /// C002: examines at most the 32 KiB prefix window
+    /// (`bounded_prefix_end`), never the whole logical line, so a
+    /// pathologically long line costs a bounded window per frame. The
+    /// truncation marker itself is added by [`Self::line_spans`]; this
+    /// returns the text window only.
+    fn line_slice(&self, line_index: usize, viewport: EditorViewport) -> String {
+        let Some(start) = editor::line_start(self.snapshot, line_index) else {
+            return String::new();
+        };
+        let end = editor::line_content_end(self.snapshot, line_index).unwrap_or(start);
+        let window_end = editor::bounded_prefix_end(self.snapshot, start, end);
+        let text = match self.snapshot.read_bytes(start, window_end) {
+            Ok(text) => text,
+            Err(_) => return String::new(),
+        };
+        let width = viewport.text_columns as usize;
+        if viewport.column == 0 && display_width_str(&text) <= width {
+            return text;
+        }
+        let mut out = String::new();
+        let mut consumed = 0usize;
+        for ch in text.chars() {
+            let char_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if consumed + char_width > viewport.column + width {
+                break;
+            }
+            if consumed >= viewport.column {
+                out.push(ch);
+            }
+            consumed += char_width;
+        }
+        out
+    }
+
+    /// The bytes this row's spans are built from.
+    ///
+    /// The read is the **column window's** bytes, not the logical line's:
+    /// `(window end + 2) x 4` is the worst-case UTF-8 cost of everything up
+    /// to the window's last column, plus the character that may straddle it.
+    /// The window is counted from the line's start rather than from the
+    /// scroll column because every offset the row builds is line-relative —
+    /// the token columns, the search matches, the cell ranges — so a window
+    /// that did not begin at the line's start could not be resolved against
+    /// any of them.
+    ///
+    /// A window that is not settled within that — a run of zero-width marks,
+    /// whose bytes cost columns they do not advance — grows until it is, up
+    /// to the line's end, which is exactly the read this replaces. The C002
+    /// bounds are unchanged: `MAX_RENDER_LINE_BYTES` still caps one line and
+    /// `MAX_FRAME_SOURCE_BYTES` still caps the frame. What changes is that an
+    /// ordinary long line costs the columns a reader can see.
+    fn row_window(
+        &self,
+        start: usize,
+        end: usize,
+        column: usize,
+        limit: usize,
+    ) -> Option<RowWindow> {
+        let head_reach = self.head_reach(start, end);
+        // The furthest byte this row can paint, so a head cell outside the
+        // window stays readable; one character of headroom covers the cell's
+        // own character.
+        let mut budget = start
+            .saturating_add(limit.saturating_add(2).saturating_mul(4))
+            .max(start.saturating_add(head_reach.map_or(0, |reach| reach.saturating_add(4))))
+            .min(end);
+        loop {
+            // The budget is a byte count, and a byte count that lands inside
+            // a character is not a readable range: the read ends at the last
+            // character boundary at or below it. That is one character of
+            // under-read, never a lost row — a range that splits a character
+            // is `InvalidBoundary`, which would leave the row blank.
+            let read_end = self.boundary_at_or_before(start, budget);
+            let text = self.snapshot.read_bytes(start, read_end).ok()?;
+            crate::render_cost::count_editor_row_read(text.len());
+            let window = visible_window(&text, column, limit);
+            if window.settled || read_end >= end {
+                return Some(RowWindow {
+                    window_bytes: text,
+                    start: window.start,
+                    end: window.end,
+                    started: window.started,
+                });
+            }
+            // Not settled within the budget: double it. The number of reads is
+            // logarithmic and the bytes examined stay linear in the window.
+            let grown = start
+                .saturating_add(budget.saturating_sub(start).saturating_mul(2))
+                .max(start.saturating_add(64));
+            budget = end.min(grown);
+        }
+    }
+
+    /// The largest character boundary at or below `budget`, never below
+    /// `start`.
+    fn boundary_at_or_before(&self, start: usize, budget: usize) -> usize {
+        let mut candidate = budget.max(start);
+        while candidate > start && !self.snapshot.is_byte_boundary(candidate) {
+            candidate -= 1;
+        }
+        candidate
+    }
+
+    /// The furthest byte a head cell can paint on this row, relative to the
+    /// line's start, or `None` when no head is on it.
+    ///
+    /// A head is the cursor or an extra selection's head. The view can be
+    /// scrolled away from both (Helix's view mode), so a head may sit outside
+    /// the column window and still be painted: its cell is built from the
+    /// byte at its offset, so the row's read has to cover it.
+    fn head_reach(&self, line_start: usize, line_end: usize) -> Option<usize> {
+        std::iter::once(self.cursor_byte)
+            .chain(
+                self.presentation
+                    .selections
+                    .iter()
+                    .map(|selection| selection.head.byte),
+            )
+            .filter(|byte| *byte >= line_start && *byte < line_end)
+            .map(|byte| byte - line_start)
+            .max()
+    }
+
+    /// Build the styled spans for one row.
+    ///
+    /// Four layers resolve into one set of spans, in this order, each one
+    /// overriding only the fields it owns:
+    ///
+    /// 1. **Syntax** — an LSP semantic token where a language server
+    ///    supplied one, otherwise the built-in [`EditorHighlight`] scan. The
+    ///    server wins because it knows the real grammar; the scan is the
+    ///    floor that keeps files coloured on a machine with no server.
+    /// 2. **Search** — a `/` match, background only.
+    /// 3. **Selection** — a held Helix selection, background and foreground.
+    /// 4. **Diagnostic** — a Ready range, severity foreground and underline.
+    /// 5. **Cursor** — the block in Normal, the bar in Insert.
+    ///
+    /// Every background layer pins the foreground to `theme.foreground` at
+    /// the same time. A themed background with a syntax foreground chosen
+    /// for a *different* background is exactly the dark-on-dark case that
+    /// made selected and cursor-line text unreadable, so a selection that
+    /// painted only its background was not a safe compromise — it was the
+    /// same bug one layer down.
+    fn line_spans(
+        &mut self,
+        line_index: usize,
+        viewport: EditorViewport,
+        base: Style,
+        selection: &[std::ops::Range<usize>],
+        cursor_line: usize,
+    ) -> Vec<Span<'static>> {
+        use crate::editor_lsp::utf16_column_to_byte;
+        let Some(start) = editor::line_start(self.snapshot, line_index) else {
+            return vec![];
+        };
+        let end = editor::line_content_end(self.snapshot, line_index).unwrap_or(start);
+        // C002 bounded fallback: a line past the 32 KiB budget renders its
+        // prefix as plain text with a visible marker. Per-token spans are
+        // skipped on this path — mapping them would cost the whole line —
+        // and ordinary short lines keep their exact highlighting below.
+        if editor::bounded_prefix_end(self.snapshot, start, end) < end {
+            // A whole-row highlight: the row's bytes are unavailable in full,
+            // so a partial range would need per-byte slicing to be exact. The
+            // row is a 32 KiB marker either way; highlighting all of it says
+            // "selected" honestly and costs nothing.
+            let whole_line_selected = selection
+                .iter()
+                .any(|range| range.start <= start && range.end > start);
+            let base = if whole_line_selected {
+                base.patch(Style::default().bg(self.theme.selection))
+            } else {
+                base
+            };
+            let mut spans = vec![Span::styled(self.line_slice(line_index, viewport), base)];
+            spans.push(Span::styled(
+                crate::editor::TRUNCATED_LINE_SUFFIX,
+                Style::default()
+                    .fg(self.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            return spans;
+        }
+        // The line's own content length. The read below is the *window's*
+        // bytes, not this whole range, so anything that asks "is this at the
+        // end of the line" has to ask this rather than the read's length.
+        let line_len = end.saturating_sub(start);
+        let limit = viewport
+            .column
+            .saturating_add(viewport.text_columns as usize);
+        let Some(window) = self.row_window(start, end, viewport.column, limit) else {
+            return vec![];
+        };
+        let line = window.window_bytes;
+        // Is this **row** selected?
+        //
+        // A line-mode selection is a row-level fact, and the byte range of an
+        // empty line is a single terminator byte the row has no cell for. So
+        // the range alone cannot say "this row is selected", and `x` on an
+        // empty line highlighted nothing at all.
+        let row_selected = self.presentation.selections.iter().any(|selection| {
+            editor::line_selection_covers_line(self.snapshot, selection, line_index)
+        });
+        if !window.started && viewport.column > 0 {
+            // Nothing on the row reaches the scrolled-to column.
+            return vec![Span::styled(String::new(), base)];
+        }
+        // A row whose characters are all zero-width — an empty line, or one
+        // of only combining marks — never "starts", and is drawn whole. That
+        // is the one case the walk cannot settle, and it is why the read for
+        // such a row is the line rather than the window.
+        let (visible_start, visible_end) = if window.started {
+            (window.start, window.end)
+        } else {
+            (0, line.len())
+        };
+        let visible_end = visible_end.max(visible_start).min(line.len());
+        let diagnostic_ranges = if self
+            .lsp
+            .scope
+            .as_ref()
+            .is_none_or(|scope| scope.path == self.path)
+        {
+            diagnostic_ranges_for_line(
+                self.path,
+                line_index,
+                &line,
+                line_len,
+                visible_start..visible_end,
+                &self.lsp.diagnostics,
+            )
+        } else {
+            Vec::new()
+        };
+        let mut boundaries = vec![visible_start, visible_end];
+        for (range, _) in &diagnostic_ranges {
+            boundaries.push(range.start);
+            boundaries.push(range.end);
+        }
+        // Foreground sources, in priority order: an LSP semantic token
+        // first, the built-in scan second. `find` takes the first covering
+        // range, so a server that knows the grammar overrides the scan
+        // wherever the two agree, and the scan fills in everything the
+        // server said nothing about.
+        let mut syntax_ranges: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
+        // The row's tokens are one ascending run of a vector the language
+        // server sorted by `(line, character)`, so a partition point finds
+        // the run's first token in `O(log tokens)` and the walk stops at the
+        // run's end. The linear filter this replaces visited **every** token
+        // in the document for every visible row.
+        let mut token_scan_steps = 0u64;
+        let mut token_cursor = self.lsp.semantic_tokens.partition_point(|token| {
+            token_scan_steps += 1;
+            (token.line as usize) < line_index
+        });
+        // The row read a **prefix** of its line, so a token whose end lies
+        // past those bytes has no byte offset to map to. That is not a
+        // malformed token: it is a token that runs past the window, and its
+        // clipped end is the window's end either way. Distinguishing the two
+        // needs the read's length in UTF-16 units, which only a row that
+        // actually carries tokens pays for.
+        let read_units: usize = match self.lsp.semantic_tokens.get(token_cursor) {
+            Some(token) if token.line as usize == line_index => {
+                line.chars().map(char::len_utf16).sum()
+            }
+            _ => 0,
+        };
+        while let Some(token) = self.lsp.semantic_tokens.get(token_cursor) {
+            if token.line as usize != line_index {
+                break;
+            }
+            token_scan_steps += 1;
+            token_cursor += 1;
+            // Well-formed unknown token types render plain (`base`) while
+            // valid neighbors keep their theme styles. This is what stops
+            // one legitimate `variable`/`parameter`/`property` span from
+            // erasing every other highlight on the line.
+            let Some(style) = token_style(&self.theme, &token.token_type) else {
+                continue;
+            };
+            let Some(token_end) = token.character.checked_add(token.length) else {
+                continue;
+            };
+            let Some(token_start) = utf16_column_to_byte(&line, token.character) else {
+                continue;
+            };
+            let token_end = match utf16_column_to_byte(&line, token_end) {
+                Some(end) => end,
+                // Past the read: the token continues beyond the drawn window,
+                // so the clipped range ends where the window does.
+                None if usize::try_from(token_end).is_ok_and(|column| column > read_units) => {
+                    line.len()
+                }
+                // A column inside the read that still has no byte offset is a
+                // token whose end splits a surrogate pair: dropped, as before.
+                None => continue,
+            };
+            let range = token_start.max(visible_start)..token_end.min(visible_end);
+            if range.start < range.end {
+                boundaries.push(range.start);
+                boundaries.push(range.end);
+                syntax_ranges.push((range, style));
+            }
+        }
+        crate::render_cost::count_editor_token_scan_steps(token_scan_steps);
+        // Where the server's run ends and the scan's begins. The two runs
+        // are separate on purpose: the server outranks the scan wherever
+        // both cover a segment, so the priority is the run's order and not
+        // the ranges' byte order. A segment that an LSP range *covers* takes
+        // the server's style even when a scan range starts earlier, which is
+        // what a pointer over a single merged, byte-sorted list would lose.
+        let lsp_ranges = syntax_ranges.len();
+        // Server-free layer. A no-op when a server is supplying tokens for
+        // this line, and the only colouring there is when one is not.
+        for span in self.highlight.spans_for_line(
+            self.snapshot,
+            self.path,
+            &self.theme.code_theme,
+            line_index,
+        ) {
+            let range = span.range.start.max(visible_start)..span.range.end.min(visible_end);
+            if range.start < range.end {
+                boundaries.push(range.start);
+                boundaries.push(range.end);
+                syntax_ranges.push((range, Style::default().fg(span.color)));
+            }
+        }
+        // `/` matches, clipped to this row. Match spans ascend and do not
+        // overlap, so a partition point finds the first one inside the line
+        // in O(log n) rather than walking every retained match for every
+        // visible row. Each span carries its own extent, so a wildcard match
+        // is painted exactly as wide as the text it covered.
+        let search_ranges = {
+            if self.presentation.search_line.is_empty() {
+                Vec::new()
+            } else {
+                let absolute_start = start;
+                let absolute_end = start + line_len;
+                let first = self
+                    .presentation
+                    .search_matches
+                    .partition_point(|span| span.start < absolute_start);
+                self.presentation
+                    .search_matches
+                    .iter()
+                    .skip(first)
+                    .take_while(|span| span.start < absolute_end)
+                    .map(|span| {
+                        let from = span
+                            .start
+                            .saturating_sub(start)
+                            .clamp(visible_start, visible_end);
+                        let to = span
+                            .end
+                            .saturating_sub(start)
+                            .clamp(visible_start, visible_end);
+                        from..to
+                    })
+                    .filter(|range| range.start < range.end)
+                    .collect::<Vec<_>>()
+            }
+        };
+        for range in &search_ranges {
+            boundaries.push(range.start);
+            boundaries.push(range.end);
+        }
+        // Every selection head on this row, primary and extras alike. They
+        // have to exist even when a head sits past the last character —
+        // otherwise "the cursor is at the end of the line" is the one
+        // position a reader cannot see.
+        let head_cells = self.head_cells(
+            start,
+            &line,
+            line_len,
+            line_index,
+            visible_start,
+            visible_end,
+            cursor_line,
+        );
+        for (from, to, _) in &head_cells {
+            boundaries.push(*from);
+            boundaries.push(*to);
+        }
+        let cursor_style = self.cursor_style();
+        let extra_head_style = self.extra_head_style();
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        // Both runs and the segments are ascending, so each run needs one
+        // cursor for the whole row. `find` from index 0 for every segment
+        // was `segments x ranges` on a dense line.
+        let mut lsp_cursor = 0usize;
+        let mut scan_cursor = lsp_ranges;
+        let mut spans: Vec<Span<'static>> = boundaries
+            .windows(2)
+            .filter_map(|pair| {
+                let range = pair[0]..pair[1];
+                if range.start == range.end {
+                    return None;
+                }
+                // The only byte range that legitimately misses the line is a
+                // head's virtual cell past its end; it renders as one space
+                // rather than disappearing.
+                let text = match line.get(range.clone()) {
+                    Some(text) => text.to_string(),
+                    None if head_cells.iter().any(|(from, _, _)| *from == range.start) => {
+                        " ".to_string()
+                    }
+                    None => return None,
+                };
+                let style =
+                    match covering_style(&syntax_ranges, &mut lsp_cursor, lsp_ranges, &range) {
+                        Some(token_style) => base.patch(token_style),
+                        None => match covering_style(
+                            &syntax_ranges,
+                            &mut scan_cursor,
+                            syntax_ranges.len(),
+                            &range,
+                        ) {
+                            Some(token_style) => base.patch(token_style),
+                            None => base,
+                        },
+                    };
+                // Absolute offsets back to line-relative, then clipped to the
+                // segment so a selection boundary can only colour part of it.
+                // Membership is over the whole **set**: a byte inside any
+                // member is selected, which is what makes two separate
+                // highlighted regions read as two selections.
+                let selected = row_selected
+                    || selection.iter().any(|member| {
+                        let from = member.start.saturating_sub(start);
+                        let to = member.end.saturating_sub(start);
+                        from < range.end && to > range.start
+                    });
+                let searched = search_ranges
+                    .iter()
+                    .any(|found| found.start <= range.start && found.end >= range.end);
+                let style = if searched {
+                    style.patch(
+                        Style::default()
+                            .bg(self.theme.selection_dim)
+                            .fg(self.theme.foreground),
+                    )
+                } else {
+                    style
+                };
+                let style = if selected {
+                    style.patch(
+                        Style::default()
+                            .bg(self.theme.selection)
+                            .fg(self.theme.foreground),
+                    )
+                } else {
+                    style
+                };
+                let diagnostic_severity = diagnostic_ranges
+                    .iter()
+                    .filter(|(diagnostic, _)| {
+                        diagnostic.start <= range.start && diagnostic.end >= range.end
+                    })
+                    .map(|(_, severity)| *severity)
+                    .min_by_key(|severity| diagnostic_severity_rank(*severity));
+                let style = if let Some(severity) = diagnostic_severity {
+                    let color = match severity {
+                        1 => self.theme.error,
+                        2 => self.theme.warning,
+                        _ => self.theme.muted,
+                    };
+                    style.patch(
+                        Style::default()
+                            .fg(color)
+                            .add_modifier(Modifier::UNDERLINED),
+                    )
+                } else {
+                    style
+                };
+                // Heads are painted last so nothing can bury them: a
+                // selection or a search hit that happened to cover a
+                // cursor's own cell must not make the position unreadable.
+                //
+                // Each *patches* rather than replaces. Replacing dropped the
+                // base outright, and since the Insert caret only carries a
+                // foreground and a modifier, that punched an untinted
+                // one-cell hole in the current line — the caret cell was the
+                // one cell on the row that did not belong to the row.
+                //
+                // The primary wins over an extra head sharing its cell: it is
+                // the one the keyboard is on, so it is the one that must stay
+                // readable.
+                let at_primary = head_cells
+                    .iter()
+                    .any(|(from, _, is_primary)| *is_primary && *from == range.start);
+                let at_extra = head_cells
+                    .iter()
+                    .any(|(from, _, is_primary)| !*is_primary && *from == range.start);
+                let style = if at_primary {
+                    style.patch(cursor_style)
+                } else if at_extra {
+                    style.patch(extra_head_style)
+                } else {
+                    style
+                };
+                Some(Span::styled(text, style))
+            })
+            .collect();
+        if row_selected {
+            // The **whole row** is selected, not just the text on it. The
+            // selection background runs to the end of the text area, so an
+            // empty line — which has no text at all — is still visibly
+            // selected rather than looking untouched.
+            let painted: usize = spans.iter().map(|span| span.width()).sum();
+            let filler = (viewport.text_columns as usize).saturating_sub(painted);
+            if filler > 0 {
+                spans.push(Span::styled(
+                    " ".repeat(filler),
+                    base.patch(
+                        Style::default()
+                            .bg(self.theme.selection)
+                            .fg(self.theme.foreground),
+                    ),
+                ));
+            }
+        }
+        spans
+    }
+
+    /// The cell a byte offset occupies on this row, as a line-relative byte
+    /// range, or `None` when the offset is scrolled out of the horizontal
+    /// window.
+    ///
+    /// A position past the last character on an otherwise fully visible row
+    /// still owns a cell: it is rendered as a single space one column past the
+    /// end of the text. That is the position a reader reaches most often — the
+    /// end of a line they are about to append to — so it is the one that must
+    /// never be invisible.
+    fn cell_for_offset(
+        &self,
+        byte: usize,
+        line_start: usize,
+        line: &str,
+        line_len: usize,
+        visible_start: usize,
+        visible_end: usize,
+    ) -> Option<(usize, usize)> {
+        let at = byte.saturating_sub(line_start).min(line_len);
+        // Past the last character on an otherwise fully visible row: the
+        // virtual cell. Anywhere else it means the position is simply scrolled
+        // out of the window, and inventing a cell there would paint a ghost
+        // marker somewhere the viewport has already decided not to show.
+        if at == visible_end && visible_end < line_len {
+            return None;
+        }
+        if at < visible_start {
+            return None;
+        }
+        let end = line[at..]
+            .chars()
+            .next()
+            .map_or(at + 1, |ch| at + ch.len_utf8());
+        Some((at, end.max(at + 1)))
+    }
+
+    /// Every selection head that lands on this row, as line-relative byte
+    /// ranges paired with whether that head **is the cursor**.
+    ///
+    /// The flag means "the keyboard is here", not "this member is primary".
+    /// Those coincide on every Helix path — `cursor_byte` *is* the primary's
+    /// head — and they come apart only when a motion moved the cursor without
+    /// consulting the selection machine, such as a goto. Painting a member
+    /// head with the cursor's reverse video in that state would put a second
+    /// block exactly where the reader reads "the keyboard is here", which is
+    /// the one thing a cursor must never do. So every head that is not the
+    /// cursor is drawn as an extra, and the cursor alone carries cursor styling.
+    fn head_cells(
+        &self,
+        line_start: usize,
+        line: &str,
+        line_len: usize,
+        line_index: usize,
+        visible_start: usize,
+        visible_end: usize,
+        cursor_line: usize,
+    ) -> Vec<(usize, usize, bool)> {
+        let mut cells: Vec<(usize, usize, bool)> = self
+            .presentation
+            .selections
+            .iter()
+            .filter(|selection| {
+                editor::cursor_line(self.snapshot, selection.head.byte) == line_index
+                    // The cursor's own cell joins this partition below, so a
+                    // head that coincides with it must not be drawn twice.
+                    && selection.head.byte != self.cursor_byte
+            })
+            .filter_map(|selection| {
+                self.cell_for_offset(
+                    selection.head.byte,
+                    line_start,
+                    line,
+                    line_len,
+                    visible_start,
+                    visible_end,
+                )
+                .map(|(from, to)| (from, to, false))
+            })
+            .collect();
+        // The cursor's own cell joins the same partition as the heads, so it
+        // is folded in here rather than handled by a separate code path — two
+        // code paths for "which cell is marked" is how they drift apart.
+        if let Some((from, to)) = self.cursor_cell(
+            line_start,
+            line,
+            line_len,
+            line_index,
+            visible_start,
+            visible_end,
+            cursor_line,
+        ) {
+            cells.push((from, to, true));
+        }
+        cells
+    }
+
+    /// The cell the cursor occupies on this row, as a line-relative byte
+    /// range, or `None` when the cursor is on another line or scrolled out of
+    /// the horizontal window.
+    fn cursor_cell(
+        &self,
+        line_start: usize,
+        line: &str,
+        line_len: usize,
+        line_index: usize,
+        visible_start: usize,
+        visible_end: usize,
+        cursor_line: usize,
+    ) -> Option<(usize, usize)> {
+        if line_index != cursor_line {
+            return None;
+        }
+        self.cell_for_offset(
+            self.cursor_byte,
+            line_start,
+            line,
+            line_len,
+            visible_start,
+            visible_end,
+        )
+    }
+
+    /// How an **extra** selection head paints itself.
+    ///
+    /// Distinct from both neighbours by construction. The primary cursor swaps
+    /// the theme's own foreground and background; a selected cell wears
+    /// `theme.selection` as its background. An extra head therefore takes the
+    /// accent colour as its background, which is already the "you are here"
+    /// signal the current-line gutter uses — a reader who cannot tell an extra
+    /// cursor from a highlight has no way to know how many selections they are
+    /// about to destroy with `d`.
+    fn extra_head_style(&self) -> Style {
+        Style::default()
+            .fg(self.theme.background)
+            .bg(self.theme.primary)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// How the cursor paints itself.
+    ///
+    /// **Normal** is reverse video. The cursor must stay legible over
+    /// whatever the highlighter painted underneath it, and a fixed accent
+    /// background cannot promise that — a dark syntax foreground over a dark
+    /// accent is the same unreadable pairing as the selection bug, one layer
+    /// down. Swapping the theme's own foreground and background guarantees
+    /// contrast for every token color, every theme, without the renderer
+    /// having to know which of them is light.
+    fn cursor_style(&self) -> Style {
+        if self.buffer_focused {
+            Style::default()
+                .fg(self.theme.primary)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(self.theme.background)
+                .bg(self.theme.foreground)
+        }
+    }
+}
+
+/// The severity precedence used for overlapping inline diagnostics.
+fn diagnostic_severity_rank(severity: u32) -> u8 {
+    match severity {
+        1 => 0, // error
+        2 => 1, // warning
+        _ => 2, // informational and unknown severities
+    }
+}
+
+/// Project the diagnostics covering one visible line slice into byte ranges.
+///
+/// `line` is the bounded prefix the row already read, always from the logical
+/// line start. Columns beyond that prefix clip only when more source bytes
+/// exist; malformed UTF-16 positions and out-of-line positions are refused.
+/// This borrows no document state beyond the caller's existing row window.
+fn diagnostic_ranges_for_line(
+    path: &str,
+    line_index: usize,
+    line: &str,
+    full_line_len: usize,
+    visible: std::ops::Range<usize>,
+    diagnostics: &[codegg_protocol::lsp::LspDiagnosticDto],
+) -> Vec<(std::ops::Range<usize>, u32)> {
+    use crate::editor_lsp::utf16_column_to_byte;
+
+    if visible.start >= visible.end || visible.end > line.len() {
+        return Vec::new();
+    }
+    let read_units = line.chars().map(char::len_utf16).sum::<usize>();
+    let byte_at_column = |column: u32| {
+        let target = usize::try_from(column).ok()?;
+        utf16_column_to_byte(line, column)
+            .or_else(|| (line.len() < full_line_len && target > read_units).then_some(line.len()))
+    };
+    let mut ranges = Vec::new();
+    for diagnostic in diagnostics {
+        let range = &diagnostic.range;
+        let Ok(start_line) = usize::try_from(range.start_line) else {
+            continue;
+        };
+        let Ok(end_line) = usize::try_from(range.end_line) else {
+            continue;
+        };
+        if range.path != path
+            || start_line > end_line
+            || line_index < start_line
+            || line_index > end_line
+        {
+            continue;
+        }
+        let start = if line_index == start_line {
+            let Some(start) = byte_at_column(range.start_column) else {
+                continue;
+            };
+            start
+        } else {
+            0
+        };
+        let end = if line_index == end_line {
+            let Some(end) = byte_at_column(range.end_column) else {
+                continue;
+            };
+            end
+        } else {
+            line.len()
+        };
+        let clipped = start.max(visible.start)..end.min(visible.end);
+        if clipped.start < clipped.end {
+            ranges.push((clipped, diagnostic.severity));
+        }
+    }
+    ranges
+}
+
+fn severity_label(severity: u32) -> &'static str {
+    match severity {
+        1 => "error",
+        2 => "warning",
+        3 => "info",
+        _ => "hint",
+    }
+}
+
+/// Map one LSP semantic-token class to a theme slot.
+///
+/// Returns `None` for well-formed but unstyled token types, which the caller
+/// renders as plain text (`base`) while keeping valid neighbors. Only the
+/// style mapping returns `None`; structural validation in
+/// `crate::editor_lsp::validate_semantic_tokens` never rejects a token
+/// for its type name.
+///
+/// All colors come from `Theme` so highlighting stays legible on both dark
+/// and light themes. No hardcoded ANSI colors: patching a theme slot over
+/// `base` preserves the current-line background and diagnostic gutter while
+/// changing only the foreground.
+pub(crate) fn token_style(theme: &Theme, token_type: &str) -> Option<Style> {
+    Some(match token_type {
+        "keyword" | "modifier" => Style::default()
+            .fg(theme.primary)
+            .add_modifier(Modifier::BOLD),
+        "string" | "regexp" => Style::default().fg(theme.success),
+        "number" => Style::default().fg(theme.warning),
+        "comment" => Style::default()
+            .fg(theme.muted)
+            .add_modifier(Modifier::ITALIC),
+        "function" | "method" | "macro" => Style::default().fg(theme.secondary),
+        "type" | "class" | "enum" | "struct" | "interface" | "typeParameter" | "namespace" => {
+            Style::default().fg(theme.primary)
+        }
+        "variable" | "parameter" | "property" | "enumMember" | "event" | "operator"
+        | "decorator" | "label" => Style::default().fg(theme.foreground),
+        _ => return None,
+    })
+}
+
+fn inline_menu_placement(
+    area: Rect,
+    cursor_x: u16,
+    preferred_y: u16,
+    fallback_y: u16,
+    width: u16,
+    height: u16,
+) -> Option<Rect> {
+    if width > area.width || height > area.height {
+        return None;
+    }
+    let right = area.x + area.width;
+    let bottom = area.y + area.height;
+    let mut x = cursor_x.saturating_add(1);
+    if x.saturating_add(width) > right {
+        x = cursor_x.saturating_sub(width);
+    }
+    if x < area.x {
+        x = area.x;
+    }
+    if x.saturating_add(width) > right {
+        x = right - width;
+    }
+    let mut y = preferred_y;
+    if y.saturating_add(height) > bottom {
+        y = fallback_y;
+    }
+    if y < area.y {
+        y = area.y;
+    }
+    if y.saturating_add(height) > bottom {
+        return None;
+    }
+    Some(Rect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn completion_unavailable_reason(
+    applicability: &codegg_protocol::lsp::LspCompletionApplicabilityDto,
+) -> &'static str {
+    use codegg_protocol::lsp::LspCompletionApplicabilityDto as Applicability;
+    use codegg_protocol::lsp::LspCompletionUnsupportedReason as Reason;
+    match applicability {
+        Applicability::Applicable { .. } => "",
+        Applicability::NonApplicable { reason } => match reason {
+            Reason::Snippet => "snippet",
+            Reason::AdditionalEdits => "needs extra edits",
+            Reason::Command => "has a server command",
+            Reason::OutOfRange => "out of range",
+            Reason::EditTooLarge => "too large",
+            Reason::InsertAndReplace => "insert and replace",
+        },
+    }
+}
+
+fn completion_popup_placement(
+    area: Rect,
+    cursor_x: u16,
+    cursor_y: u16,
+    width: u16,
+    height: u16,
+) -> Option<Rect> {
+    if width > area.width || height > area.height {
+        return None;
+    }
+    let right = area.x + area.width;
+    let bottom = area.y + area.height;
+    let mut x = cursor_x;
+    if x.saturating_add(width) > right {
+        x = cursor_x.saturating_sub(width);
+    }
+    if x < area.x {
+        x = area.x;
+    }
+    if x.saturating_add(width) > right {
+        x = right - width;
+    }
+    let mut y = cursor_y.saturating_add(1);
+    if y.saturating_add(height) > bottom {
+        y = cursor_y.saturating_sub(height);
+    }
+    if y < area.y {
+        y = area.y;
+    }
+    if y.saturating_add(height) > bottom {
+        return None;
+    }
+    Some(Rect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn display_width_str(text: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    UnicodeWidthStr::width(text)
+}
+
+/// Where the horizontal window falls within a row's bytes.
+#[derive(Debug, Clone, Copy)]
+struct VisibleWindow {
+    /// The first byte whose character ends past the scroll column.
+    start: usize,
+    /// The exclusive end of the last byte whose character begins before the
+    /// window's end.
+    end: usize,
+    /// Whether the walk found a first visible character at all.
+    started: bool,
+    /// Whether the walk stopped at the window's end rather than at the end of
+    /// the bytes it was given.
+    settled: bool,
+}
+
+/// The visible window of `text` for a scroll at `column` ending at `limit`
+/// columns.
+///
+/// The rule is the draw's, unchanged: a character is the **start** of the
+/// window when it ends past `column`, so a wide character that straddles the
+/// left edge is kept whole, and the window's **end** is the last character
+/// that begins before `limit`, so a character that straddles the right edge
+/// is kept whole too. The only addition is the early return: once the window
+/// has started and the walk has reached `limit`, nothing later can extend
+/// it — every later character begins at or after this column — so the rest
+/// of the row is not decoded at all.
+fn visible_window(text: &str, column: usize, limit: usize) -> VisibleWindow {
+    let mut display = 0usize;
+    let mut visible_start = text.len();
+    let mut visible_end = text.len();
+    let mut started = false;
+    for (byte, ch) in text.char_indices() {
+        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        let next = display.saturating_add(width);
+        if !started && next > column {
+            visible_start = byte;
+            started = true;
+        }
+        if started && display < limit {
+            visible_end = byte + ch.len_utf8();
+        }
+        display = next;
+        if started && display >= limit {
+            return VisibleWindow {
+                start: visible_start,
+                end: visible_end,
+                started,
+                settled: true,
+            };
+        }
+    }
+    VisibleWindow {
+        start: visible_start,
+        end: visible_end,
+        started,
+        settled: false,
+    }
+}
+
+/// The bytes one row needs, and where the visible window falls inside them.
+///
+/// A value, not state: it is built by [`EditorWidget::row_window`] and dropped
+/// with the spans that were drawn from it, so it never outlives the row that
+/// asked. Its `window_bytes` is that row's read — bounded by
+/// `MAX_RENDER_LINE_BYTES` and, on an ordinary line, by the drawn columns —
+/// and it is the same `String` the row builder used to hold anonymously.
+struct RowWindow {
+    /// The line's bytes from its start. Ends at the window's end, or further
+    /// when the row paints a head cell past the window.
+    window_bytes: String,
+    /// The visible window, relative to the line's start.
+    start: usize,
+    /// The visible window's exclusive end, relative to the line's start.
+    end: usize,
+    /// Whether the walk found a first visible character.
+    started: bool,
+}
+
+/// The style of the first range in `ranges[*cursor..end]` that covers
+/// `segment`, advancing `cursor` past the ranges that end before it.
+///
+/// The ranges of one run ascend and the row's segments ascend, so one cursor
+/// per run finds every segment's covering range in a single sweep: a range
+/// that ends at or before this segment's start cannot cover a later segment
+/// either, which is what makes discarding it safe. The call is the `find` it
+/// replaces, without the rescan from index 0.
+fn covering_style(
+    ranges: &[(std::ops::Range<usize>, Style)],
+    cursor: &mut usize,
+    end: usize,
+    segment: &std::ops::Range<usize>,
+) -> Option<Style> {
+    while *cursor < end {
+        if ranges[*cursor].0.end > segment.start {
+            break;
+        }
+        *cursor += 1;
+    }
+    if *cursor >= end {
+        return None;
+    }
+    let (range, style) = &ranges[*cursor];
+    (range.start <= segment.start && range.end >= segment.end).then_some(*style)
+}
+
+/// What the panel says will happen to the change.
+///
+/// A preview that carries a candidate is **ready to apply**: the review is
+/// open on it, and the review is where the user decides. A preview without
+/// one is still a preview — and a *truncated* preview says so, because a
+/// partial change is not the change that was previewed, and offering it as
+/// applicable would be a lie.
+fn preview_disposition(truncated: bool, has_candidate: bool) -> &'static str {
+    if has_candidate {
+        "ready to apply"
+    } else if truncated {
+        "not applied — the preview is truncated"
+    } else {
+        "not applied"
+    }
+}
+
+fn inline_region_lines(
+    region: &InlineAssistRegion,
+    viewport: EditorViewport,
+    height: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if height == 0 {
+        return Vec::new();
+    }
+    let style = Style::default()
+        .fg(theme.background)
+        .bg(theme.primary)
+        .add_modifier(Modifier::BOLD | Modifier::ITALIC);
+    let prefix = format!("{:width$}▎", "", width = viewport.gutter as usize);
+    let width = viewport.text_columns as usize;
+    let mut source_lines = region
+        .generated_text
+        .lines()
+        .take(height)
+        .collect::<Vec<_>>();
+    if source_lines.is_empty() {
+        source_lines.push("");
+    }
+    source_lines
+        .into_iter()
+        .map(|source| {
+            let visible = display_window(source, viewport.column, width);
+            let visible_width = unicode_width::UnicodeWidthStr::width(visible.as_str());
+            Line::from(vec![
+                Span::styled(prefix.clone(), style),
+                Span::styled(visible, style),
+                Span::styled(" ".repeat(width.saturating_sub(visible_width)), style),
+            ])
+        })
+        .collect()
+}
+
+fn display_window(text: &str, offset: usize, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let mut column = 0usize;
+    let mut shown = 0usize;
+    let mut visible = String::new();
+    for character in text.chars() {
+        let character_width = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+        let next_column = column.saturating_add(character_width);
+        if next_column <= offset {
+            column = next_column;
+            continue;
+        }
+        if column < offset {
+            let partial_width = next_column.saturating_sub(offset);
+            if shown.saturating_add(partial_width) > width {
+                break;
+            }
+            visible.push_str(&" ".repeat(partial_width));
+            shown = shown.saturating_add(partial_width);
+            column = next_column;
+            continue;
+        }
+        if shown.saturating_add(character_width) > width {
+            break;
+        }
+        visible.push(character);
+        shown = shown.saturating_add(character_width);
+        column = next_column;
+    }
+    visible
+}
+
+fn display_byte_index(text: &str, column_limit: usize) -> usize {
+    let mut column = 0usize;
+    for (byte, character) in text.char_indices() {
+        let next_column =
+            column.saturating_add(unicode_width::UnicodeWidthChar::width(character).unwrap_or(0));
+        if next_column > column_limit {
+            return byte;
+        }
+        column = next_column;
+    }
+    text.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document_session::TuiDocumentPresentation;
+    use crate::editor::FindNote;
+    use codegg_document::DocumentBuffer;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Widget chrome that varies per test. The snapshot and presentation
+    /// are supplied separately so each test can vary either without
+    /// duplicating the terminal plumbing.
+    struct Options<'a> {
+        status: &'a str,
+        notice: Option<&'a str>,
+        status_caveat: bool,
+        find_note: &'a str,
+        count_label: &'a str,
+        mode: EditorMode,
+        buffer_focused: bool,
+        pending_prefix: EditorPrefix,
+        menu: Option<&'a crate::editor_keymap::EditorMenuView>,
+        command_active: bool,
+        command_line: &'a str,
+        command_selection: usize,
+        search_active: bool,
+        search_line: &'a str,
+        search_count: usize,
+        search_partial: bool,
+        /// The held selection **set**, for tests that need the renderer's
+        /// third background layer — or its extra head markers — painted.
+        selections: Vec<crate::helix_selection::Selection<editor::EditorPoint>>,
+        /// Retained `/` match spans, for the search highlight layer.
+        search_matches: Vec<std::ops::Range<usize>>,
+        /// The history position `(applied, retained)`, and whether the last
+        /// prune cleared it.
+        history: (usize, usize),
+        history_cleared: bool,
+        writable: bool,
+        busy: bool,
+        scope: codegg_protocol::document::DocumentScope,
+        /// The LSP state the widget renders.
+        ///
+        /// Owned rather than borrowed so a test can seed a **panel** — the
+        /// read results the widget draws — without reaching into the
+        /// widget's own fields.
+        lsp: crate::editor_lsp::EditorLspState,
+        /// The jumplist the widget renders, with its picker state.
+        ///
+        /// Owned for the same reason `lsp` is: a test seeds the store through
+        /// its real API rather than hand-setting a private field.
+        jumplist: crate::document_session::Jumplist,
+    }
+
+    fn defaults<'a>() -> Options<'a> {
+        Options {
+            status: "synced",
+            notice: None,
+            status_caveat: false,
+            find_note: "",
+            count_label: "",
+            mode: EditorMode::Normal,
+            buffer_focused: true,
+            pending_prefix: EditorPrefix::Idle,
+            menu: None,
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            selections: Vec::new(),
+            search_matches: Vec::new(),
+            history: (0, 0),
+            history_cleared: false,
+            writable: true,
+            busy: false,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            lsp: crate::editor_lsp::EditorLspState::default(),
+            jumplist: crate::document_session::Jumplist::default(),
+        }
+    }
+
+    /// Give the presentation a history of `length` entries and park the
+    /// cursor at `position`.
+    ///
+    /// The entries are built through the real history API, so a test that
+    /// asks for a position gets a history an ordinary editing session could
+    /// have produced — not a hand-set field that the widget would read but
+    /// nothing could have created.
+    fn seed_history(
+        presentation: &mut TuiDocumentPresentation,
+        (position, length): (usize, usize),
+    ) {
+        use codegg_document::{TextEdit, TextTransaction};
+        for _ in 0..length {
+            editor::push_undo(
+                presentation,
+                TextTransaction::new(vec![TextEdit::new(0..0, "x")]),
+                TextTransaction::new(vec![TextEdit::new(0..1, "")]),
+                1,
+                0,
+                Vec::new(),
+            );
+        }
+        presentation.history_cursor = position.min(presentation.history.len());
+    }
+
+    /// Paint one editor frame and return the rendered rows as plain text.
+    fn render(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        options: Options<'_>,
+    ) -> Vec<String> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            selections: options.selections,
+            search_line: options.search_line.to_string(),
+            search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
+            ..TuiDocumentPresentation::default()
+        };
+        seed_history(&mut presentation, options.history);
+        let lsp = &options.lsp;
+        let completion = crate::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    status_caveat: options.status_caveat,
+                    notice: options.notice,
+                    find_note: options.find_note,
+                    count_label: options.count_label,
+                    mode: options.mode,
+                    buffer_focused: options.buffer_focused,
+                    pending_prefix: options.pending_prefix,
+                    menu: options.menu,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    search_active: options.search_active,
+                    search_line: options.search_line,
+                    search_count: options.search_count,
+                    search_partial: options.search_partial,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp,
+                    completion: &completion,
+                    highlight: &mut highlight,
+                    presentation: &mut presentation,
+                    theme: Arc::new(Theme::default()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn render_assisted(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        view_scroll: Option<usize>,
+        assist: &InlineAssistState,
+    ) -> (ratatui::buffer::Buffer, TuiDocumentPresentation) {
+        let region_applies = assist
+            .region()
+            .is_some_and(|region| region.applies_to(&region.document_id, region.document_revision));
+        render_assisted_with(
+            text,
+            width,
+            height,
+            cursor,
+            view_scroll,
+            assist,
+            region_applies,
+        )
+    }
+
+    fn render_assisted_with(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        view_scroll: Option<usize>,
+        assist: &InlineAssistState,
+        region_applies: bool,
+    ) -> (ratatui::buffer::Buffer, TuiDocumentPresentation) {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            view_scroll,
+            ..TuiDocumentPresentation::default()
+        };
+        let lsp = crate::editor_lsp::EditorLspState::default();
+        let completion = crate::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: "synced",
+                    status_caveat: false,
+                    notice: None,
+                    find_note: "",
+                    count_label: "",
+                    mode: EditorMode::Normal,
+                    buffer_focused: true,
+                    pending_prefix: EditorPrefix::Idle,
+                    menu: None,
+                    command_active: false,
+                    command_line: "",
+                    command_selection: 0,
+                    search_active: false,
+                    search_line: "",
+                    search_count: 0,
+                    search_partial: false,
+                    scope: codegg_protocol::document::DocumentScope::Workspace,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: true,
+                    busy: false,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    completion: &completion,
+                    highlight: &mut highlight,
+                    presentation: &mut presentation,
+                    theme: Arc::new(Theme::default()),
+                }
+                .render_with_inline_assist(
+                    frame,
+                    Rect::new(0, 0, width, height),
+                    Some(assist),
+                    region_applies,
+                );
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), presentation)
+    }
+
+    fn generated_assist(document_revision: u64, anchor: u64, generated: &str) -> InlineAssistState {
+        let mut assist = InlineAssistState::default();
+        assist.begin_request(crate::editor_inline_assist::InlineAssistRequest {
+            request_id: "request-1".to_string(),
+            document_id: "document-1".to_string(),
+            document_revision,
+            generation: 1,
+            anchor,
+            instruction: "generate".to_string(),
+        });
+        let outcome = assist.apply_answer(
+            &crate::editor_inline_assist::InlineAnswer {
+                request_id: "request-1".to_string(),
+                document_id: "document-1".to_string(),
+                document_revision,
+                outcome: codegg_protocol::core::EditorInlineOutcome::Generated {
+                    model: "test-model".to_string(),
+                    effort: None,
+                    text: generated.to_string(),
+                },
+            },
+            1,
+        );
+        assert_eq!(
+            outcome,
+            crate::editor_inline_assist::InlineAnswerOutcome::Accepted
+        );
+        assist
+    }
+
+    fn row_containing(buffer: &ratatui::buffer::Buffer, text: &str) -> usize {
+        lines_of(buffer)
+            .iter()
+            .position(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("missing row {text:?}: {:?}", lines_of(buffer)))
+    }
+
+    /// The rendered rows of a painted frame, as plain text.
+    fn lines_of(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn paint(text: &str, width: u16, height: u16, cursor: usize) -> String {
+        render(text, width, height, cursor, defaults()).join("\n")
+    }
+
+    /// Paint one frame and hand back the raw buffer, so a test can assert on
+    /// colors rather than on glyphs.
+    ///
+    /// Every readability bug this file's tests cover was invisible to
+    /// `paint`: dark-on-dark text renders exactly like readable text, because
+    /// the *glyphs* are right and only the colors are wrong.
+    fn render_buffer(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        options: Options<'_>,
+    ) -> ratatui::buffer::Buffer {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            selections: options.selections,
+            search_line: options.search_line.to_string(),
+            search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
+            ..TuiDocumentPresentation::default()
+        };
+        seed_history(&mut presentation, options.history);
+        let lsp = &options.lsp;
+        let completion = crate::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    status_caveat: options.status_caveat,
+                    notice: options.notice,
+                    find_note: options.find_note,
+                    count_label: options.count_label,
+                    mode: options.mode,
+                    buffer_focused: options.buffer_focused,
+                    pending_prefix: options.pending_prefix,
+                    menu: options.menu,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    search_active: options.search_active,
+                    search_line: options.search_line,
+                    search_count: options.search_count,
+                    search_partial: options.search_partial,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp,
+                    completion: &completion,
+                    highlight: &mut highlight,
+                    presentation: &mut presentation,
+                    theme: Arc::new(Theme::default()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// Relative luminance of a color, used to assert a pairing is *readable*
+    /// rather than asserting which specific color was chosen.
+    fn luminance(color: ratatui::style::Color) -> f32 {
+        let (r, g, b) = match color {
+            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+            ratatui::style::Color::Reset => return 1.0,
+            _ => return 1.0,
+        };
+        (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) / 255.0
+    }
+
+    /// The colors and modifiers a body cell was painted with.
+    #[derive(Debug, Clone, Copy)]
+    struct CellStyle {
+        fg: ratatui::style::Color,
+        bg: ratatui::style::Color,
+        modifier: Modifier,
+    }
+
+    /// The painted style of a body cell.
+    fn body_style(buffer: &ratatui::buffer::Buffer, row: u16, column: u16) -> CellStyle {
+        let cell = &buffer[(4 + column, row + 1)];
+        CellStyle {
+            fg: cell.fg,
+            bg: cell.bg,
+            modifier: cell.modifier,
+        }
+    }
+
+    /// Buffer row of the editor's single chrome row: the path and the status
+    /// cluster, or the `:` / `/` line while one is open.
+    const fn banner_row(height: u16) -> u16 {
+        height - 2
+    }
+
+    /// Every painted body cell, in reading order.
+    ///
+    /// Tests that care about *a* cell rather than a specific one use this
+    /// instead of hardcoding `(x, y)`: the gutter width, the block border,
+    /// and the chrome rows are all things the layout can move, and a test
+    /// pinned to a literal coordinate then fails on the layout rather than on
+    /// the behavior it was written to pin.
+    fn body_cells(buffer: &ratatui::buffer::Buffer, height: u16) -> Vec<CellStyle> {
+        let mut cells = Vec::new();
+        for y in 1..height.saturating_sub(2) {
+            for x in TEXT_X..buffer.area.width.saturating_sub(1) {
+                let cell = &buffer[(x, y)];
+                cells.push(CellStyle {
+                    fg: cell.fg,
+                    bg: cell.bg,
+                    modifier: cell.modifier,
+                });
+            }
+        }
+        cells
+    }
+
+    /// Left edge of the text columns: the block's inner edge plus the
+    /// 3-column line-number gutter.
+    const TEXT_X: u16 = 4;
+
+    /// Buffer row of the editor's chrome row. There is **one**: the line
+    /// number and the column are gone, and the search match count rides on
+    /// the cluster with everything else.
+    const fn readout_row(height: u16) -> u16 {
+        height - 2
+    }
+
+    /// A held selection covering `byte_range`, as the renderer resolves it.
+    fn selection_over(
+        snapshot: &codegg_document::DocumentSnapshot,
+        byte_range: std::ops::Range<usize>,
+    ) -> crate::helix_selection::Selection<editor::EditorPoint> {
+        crate::helix_selection::Selection {
+            anchor: editor::EditorPoint {
+                byte: byte_range.start,
+                line: editor::cursor_line(snapshot, byte_range.start),
+            },
+            head: editor::EditorPoint {
+                byte: byte_range.end,
+                line: editor::cursor_line(snapshot, byte_range.end),
+            },
+            mode: crate::helix_selection::SelectionMode::Char,
+            growing: false,
+        }
+    }
+
+    /// A held **line** selection over `line_index`, as the renderer resolves
+    /// it.
+    ///
+    /// The line selection is a row-level fact: an empty line's byte range is
+    /// a single terminator byte the row has no cell for, so the renderer
+    /// cannot learn "this row is selected" from the range alone.
+    fn line_selection_over(
+        snapshot: &codegg_document::DocumentSnapshot,
+        line_index: usize,
+    ) -> crate::helix_selection::Selection<editor::EditorPoint> {
+        let byte = editor::line_start(snapshot, line_index).unwrap_or(0);
+        crate::helix_selection::Selection {
+            anchor: editor::EditorPoint {
+                byte,
+                line: line_index,
+            },
+            head: editor::EditorPoint {
+                byte,
+                line: line_index,
+            },
+            mode: crate::helix_selection::SelectionMode::Line,
+            growing: false,
+        }
+    }
+
+    /// `x` on an **empty** line has to look selected.
+    ///
+    /// An empty line has no bytes to tint, so a renderer that resolves
+    /// "selected" from the byte range paints nothing at all: the reader
+    /// presses `x` on a blank line and the line does not change. The row
+    /// question — "is this **row** selected?" — is a different question from
+    /// the byte question, and it is the one that decides what the reader sees.
+    #[test]
+    fn a_line_selection_paints_an_empty_row_across_its_whole_width() {
+        let theme = Theme::default();
+        // Line 1 is empty: "alpha", "", "beta".
+        let snapshot = DocumentBuffer::new("alpha\n\nbeta").snapshot();
+        let buffer = render_buffer(
+            "alpha\n\nbeta",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                selections: vec![line_selection_over(&snapshot, 1)],
+                ..defaults()
+            },
+        );
+        // The selection background runs to the end of the text area, so the
+        // blank row reads as selected instead of untouched.
+        let row = 1;
+        let painted = (0..20)
+            .map(|column| body_style(&buffer, row, column))
+            .filter(|style| style.bg == theme.selection)
+            .count();
+        assert!(
+            painted >= 10,
+            "the empty row must carry the selection background across its \
+             width, got {painted} tinted cells: {buffer:?}"
+        );
+        // And the line above it — not selected — must not be tinted.
+        let untouched = (0..5)
+            .map(|column| body_style(&buffer, 0, column))
+            .filter(|style| style.bg == theme.selection)
+            .count();
+        assert_eq!(
+            untouched, 0,
+            "a line that is not selected must not be tinted: {buffer:?}"
+        );
+    }
+
+    /// The row-level question must not leak into the byte-level one: a
+    /// character selection still highlights only the bytes it covers.
+    #[test]
+    fn a_character_selection_still_highlights_only_its_bytes() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha beta").snapshot();
+        let buffer = render_buffer(
+            "alpha beta",
+            30,
+            8,
+            5,
+            Options {
+                buffer_focused: false,
+                selections: vec![selection_over(&snapshot, 0..5)],
+                ..defaults()
+            },
+        );
+        let selected = (0..10)
+            .map(|column| body_style(&buffer, 0, column))
+            .filter(|style| style.bg == theme.selection)
+            .count();
+        assert_eq!(
+            selected, 5,
+            "a character selection tints its own bytes and nothing else: \
+             {buffer:?}"
+        );
+    }
+
+    #[test]
+    fn every_members_highlight_is_painted_not_just_the_primarys() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha beta gamma").snapshot();
+        // Two disjoint members, with the cursor parked on the *primary*'s
+        // head — the case where a renderer that still resolved one range would
+        // tint exactly one of the two.
+        let buffer = render_buffer(
+            "alpha beta gamma",
+            30,
+            8,
+            // Parked on the space at byte 5: a cursor is painted last, so
+            // parking it on byte 0 would have asserted the cursor's own style
+            // and passed for the wrong reason.
+            5,
+            Options {
+                buffer_focused: false,
+                selections: vec![
+                    selection_over(&snapshot, 0..1),
+                    selection_over(&snapshot, 6..10),
+                ],
+                ..defaults()
+            },
+        );
+        // Text byte N is body column N; the gutter is not counted.
+        assert_eq!(
+            body_style(&buffer, 0, 0).bg,
+            theme.selection,
+            "the primary's member paints"
+        );
+        assert_eq!(
+            body_style(&buffer, 0, 6).bg,
+            theme.selection,
+            "an extra member paints too, or the reader cannot see how many \
+             selections `d` is about to destroy"
+        );
+        assert_ne!(
+            body_style(&buffer, 0, 3).bg,
+            theme.selection,
+            "a byte outside every member stays untinted"
+        );
+    }
+
+    #[test]
+    fn an_extra_head_is_marked_differently_from_the_cursor() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha beta gamma").snapshot();
+        let mut extra = selection_over(&snapshot, 6..10);
+        extra.head = editor::EditorPoint { byte: 10, line: 0 };
+        let buffer = render_buffer(
+            "alpha beta gamma",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                selections: vec![selection_over(&snapshot, 0..1), extra],
+                ..defaults()
+            },
+        );
+        let cursor = body_style(&buffer, 0, 0);
+        // Byte 10 is the space after "beta" — the extra member's head.
+        let head = body_style(&buffer, 0, 10);
+        assert_eq!(cursor.bg, theme.foreground, "the cursor is reverse video");
+        assert_eq!(
+            head.bg, theme.primary,
+            "an extra head carries the accent background"
+        );
+        assert_ne!(
+            cursor.bg, head.bg,
+            "a reader who cannot tell a cursor from an extra has no way to \
+             know where the keyboard is"
+        );
+    }
+
+    #[test]
+    fn inline_prompt_band_splices_below_cursor_and_preserves_document_rows() {
+        let text = (0..20)
+            .map(|line| format!("line{line}\n"))
+            .collect::<String>();
+        let baseline_assist = InlineAssistState::default();
+        let (baseline, baseline_presentation) =
+            render_assisted(&text, 80, 20, 0, None, &baseline_assist);
+        let mut assist = InlineAssistState::default();
+        assist.open_field().set_instruction("ask".to_string());
+        let (rendered, presentation) = render_assisted(&text, 80, 20, 0, None, &assist);
+        let rows = lines_of(&rendered);
+        let cursor_row = row_containing(&rendered, "line0");
+        let band_row = row_containing(&rendered, "inline [INS]");
+        let band_height = 4;
+
+        assert_eq!(band_row, cursor_row + 1, "the band follows its cursor line");
+        assert_eq!(
+            rendered[(1, band_row as u16)].symbol(),
+            "┌",
+            "the border starts at the text area's left edge, including the gutter"
+        );
+        assert_eq!(
+            rendered[(78, band_row as u16)].symbol(),
+            "┐",
+            "the band spans the complete text-area width"
+        );
+        assert_eq!(
+            row_containing(&rendered, "line1"),
+            row_containing(&baseline, "line1") + band_height,
+            "the next document line moves down by the full band height"
+        );
+        for line in 1..=12 {
+            assert_eq!(
+                row_containing(&rendered, &format!("line{line}")),
+                row_containing(&baseline, &format!("line{line}")) + band_height,
+                "document row {line} remains visible below the inserted band"
+            );
+        }
+        assert_eq!(
+            baseline_presentation.visible_lines,
+            presentation.visible_lines + band_height,
+            "the field reserves its rows from the document viewport"
+        );
+        assert_eq!(baseline_presentation.view_scroll, presentation.view_scroll);
+        assert!(rows.join("\n").contains("inherit"), "choices are painted");
+
+        let instruction_row = row_containing(&rendered, "ask");
+        let ask_end = rows[instruction_row].find("ask").unwrap() + "ask".len();
+        let caret_column = unicode_width::UnicodeWidthStr::width(&rows[instruction_row][..ask_end]);
+        assert_eq!(
+            rendered[(caret_column as u16, instruction_row as u16)].bg,
+            Theme::default().primary,
+            "the block caret remains visible"
+        );
+    }
+
+    #[test]
+    fn inline_prompt_band_keeps_every_gutter_number_on_its_shifted_line() {
+        let text = (0..40)
+            .map(|line| format!("line{line:02}\n"))
+            .collect::<String>();
+        let mut assist = InlineAssistState::default();
+        assist
+            .open_field()
+            .set_instruction("alpha\nbravo\ncharlie".to_string());
+        let cursor = text.find("line20").expect("line 20");
+        let (rendered, _) = render_assisted(&text, 100, 24, cursor, None, &assist);
+        let rows = lines_of(&rendered);
+        let cursor_row = row_containing(&rendered, "line20");
+        let band_row = row_containing(&rendered, "inline [INS]");
+        let band_height = 6;
+
+        assert_eq!(band_row, cursor_row + 1, "the band follows its cursor line");
+        for offset in 0..4 {
+            let number = 21 + offset;
+            let row = row_containing(&rendered, &format!("line{number}"));
+            assert_eq!(
+                row,
+                band_row + band_height + offset,
+                "line{number} is shifted by the band's full height"
+            );
+            let gutter = format!("{} ", number + 1);
+            let number_at = rows[row]
+                .find(&gutter)
+                .unwrap_or_else(|| panic!("no gutter for line{number}: {}", rows[row]));
+            let text_at = rows[row].find(&format!("line{number}")).expect("text");
+            assert!(
+                number_at < text_at,
+                "the number and its text share the shifted row: {}",
+                rows[row]
+            );
+        }
+    }
+
+    #[test]
+    fn inline_prompt_band_fits_below_the_last_document_line() {
+        let text = "first\nlast";
+        let mut assist = InlineAssistState::default();
+        assist.open_field().set_instruction("ask".to_string());
+        let (rendered, _) =
+            render_assisted(text, 50, 12, text.find("last").unwrap(), None, &assist);
+        let last_row = row_containing(&rendered, "last");
+        let band_row = row_containing(&rendered, "inline [INS]");
+        assert_eq!(band_row, last_row + 1);
+        assert_eq!(rendered[(1, band_row as u16)].symbol(), "┌");
+        assert_eq!(rendered[(48, band_row as u16)].symbol(), "┐");
+    }
+
+    #[test]
+    fn inline_prompt_band_is_omitted_when_it_cannot_leave_a_document_row() {
+        let mut assist = InlineAssistState::default();
+        assist.open_field().set_instruction("ask".to_string());
+        let (rendered, _) = render_assisted("first\nlast", 50, 7, 0, None, &assist);
+        let rows = lines_of(&rendered);
+        assert!(!rows.join("\n").contains("inline [INS]"));
+        assert!(!rows.join("\n").contains("inherit"));
+        assert!(rows.join("\n").contains("first"));
+    }
+
+    #[test]
+    fn inline_generation_uses_the_existing_disclosure_slot() {
+        let mut assist = InlineAssistState::default();
+        assist.begin_request(crate::editor_inline_assist::InlineAssistRequest {
+            request_id: "request-1".to_string(),
+            document_id: "document-1".to_string(),
+            document_revision: 0,
+            generation: 1,
+            anchor: 0,
+            instruction: "generate".to_string(),
+        });
+        let (rendered, _) = render_assisted("alpha", 120, 12, 0, None, &assist);
+        assert!(lines_of(&rendered)[10].contains("generating"));
+    }
+
+    #[test]
+    fn inline_region_splices_after_its_anchor_without_changing_document_offsets() {
+        let text = "first\nanchor\nbelow\nlast";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let anchor = text.find("anchor").unwrap();
+        let assist = generated_assist(
+            snapshot.revision().get(),
+            anchor as u64,
+            "draft-one\ndraft-two",
+        );
+        let (baseline, _) =
+            render_assisted(text, 60, 14, anchor, Some(0), &InlineAssistState::default());
+        let (rendered, presentation) = render_assisted(text, 60, 14, anchor, Some(0), &assist);
+        let (without_menu, _) = render_assisted(text, 60, 14, anchor + 1, Some(0), &assist);
+        assert_eq!(
+            row_containing(&without_menu, "below"),
+            row_containing(&baseline, "below") + 2
+        );
+        assert_eq!(
+            row_containing(&rendered, "last"),
+            row_containing(&without_menu, "last"),
+            "the review menu does not move the document's rows"
+        );
+        assert_eq!(
+            row_containing(&rendered, "draft-one") + 1,
+            row_containing(&rendered, "draft-two")
+        );
+        assert_eq!(presentation.visible_lines, 9);
+        assert_eq!(presentation.view_scroll, Some(0));
+        assert_eq!(presentation.cursor_byte, anchor);
+        assert_eq!(snapshot.len_bytes(), text.len());
+        let anchor_row = row_containing(&rendered, "anchor");
+        let rows = lines_of(&rendered);
+        let anchor_text_start = rows[anchor_row].find("anchor").unwrap();
+        let ordinary_column =
+            unicode_width::UnicodeWidthStr::width(&rows[anchor_row][..anchor_text_start + 1]);
+        assert_eq!(
+            rendered[(ordinary_column as u16, anchor_row as u16)].fg,
+            baseline[(ordinary_column as u16, anchor_row as u16)].fg
+        );
+        let region_row = row_containing(&rendered, "draft-one");
+        assert_eq!(
+            rendered[(3, region_row as u16)].bg,
+            Theme::default().primary
+        );
+    }
+
+    #[test]
+    fn a_region_that_no_longer_applies_is_neither_drawn_nor_reviewable() {
+        let text = "first\nanchor\nbelow\nlast";
+        let anchor = text.find("anchor").unwrap();
+        let assist = generated_assist(0, anchor as u64, "draft-one");
+        let (drawn, _) = render_assisted_with(text, 60, 14, anchor, Some(0), &assist, true);
+        let (stale, _) = render_assisted_with(text, 60, 14, anchor, Some(0), &assist, false);
+        assert!(
+            lines_of(&drawn).join("\n").contains("draft-one"),
+            "a region that applies is drawn"
+        );
+        assert!(
+            !lines_of(&stale).join("\n").contains("draft-one"),
+            "a region that no longer applies to the document is not drawn"
+        );
+        assert!(
+            !lines_of(&stale).join("\n").contains("[a] accept"),
+            "a region that no longer applies opens no review menu"
+        );
+    }
+
+    #[test]
+    fn inline_region_height_is_clamped_to_leave_document_visible() {
+        let text = (0..20)
+            .map(|line| format!("line{line}\n"))
+            .collect::<String>();
+        let snapshot = DocumentBuffer::new(&text).snapshot();
+        let generated = (0..30)
+            .map(|line| format!("pending{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let assist = generated_assist(snapshot.revision().get(), 0, &generated);
+        let (rendered, presentation) = render_assisted(&text, 50, 10, 0, Some(0), &assist);
+        let (without_menu, _) = render_assisted(&text, 50, 10, 1, Some(0), &assist);
+        let markers = (0..rendered.area.height)
+            .filter(|row| {
+                (0..rendered.area.width).any(|column| rendered[(column, *row)].symbol() == "▎")
+            })
+            .count();
+        assert_eq!(markers, 6);
+        assert_eq!(presentation.visible_lines, 1);
+        assert!(
+            lines_of(&without_menu)
+                .iter()
+                .any(|row| row.contains("line0")),
+            "the clamped region leaves a document row visible"
+        );
+    }
+
+    #[test]
+    fn the_review_menu_opens_at_the_cursor_and_closes_when_the_cursor_leaves_the_region() {
+        let text = "first\nanchor\nbelow";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let anchor = text.find("anchor").unwrap();
+        let assist = generated_assist(snapshot.revision().get(), anchor as u64, "draft");
+        let (inside, _) = render_assisted(text, 60, 14, anchor, Some(0), &assist);
+        let rows = lines_of(&inside);
+        assert!(
+            rows.iter().any(|row| row.contains("[a] accept")),
+            "the menu opens when the cursor is in the region: {rows:?}"
+        );
+        assert_eq!(
+            row_containing(&inside, "[a] accept"),
+            row_containing(&inside, "anchor") + 2,
+            "the menu is drawn below the region it reviews: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("draft")),
+            "the menu never hides the payload it reviews: {rows:?}"
+        );
+        let (outside, _) = render_assisted(text, 60, 14, anchor + 1, Some(0), &assist);
+        assert!(
+            !lines_of(&outside)
+                .iter()
+                .any(|row| row.contains("[a] accept")),
+            "the menu closes when the cursor leaves the region"
+        );
+    }
+
+    #[test]
+    fn the_review_menu_flips_above_the_cursor_when_the_row_below_leaves_the_area() {
+        let area = Rect::new(0, 0, 40, 10);
+        let placement = super::inline_menu_placement(area, 5, 10, 8, 30, 1).expect("a placement");
+        assert_eq!(placement.y, 8, "the menu flips above the cursor");
+        assert_eq!(placement.x, 6, "the menu stays to the right of the cursor");
+    }
+
+    #[test]
+    fn the_review_menu_clamps_to_the_left_edge_rather_than_leaving_the_area() {
+        let area = Rect::new(0, 0, 40, 10);
+        let placement = super::inline_menu_placement(area, 20, 5, 4, 30, 1).expect("a placement");
+        assert_eq!(placement.x, 0, "the menu is clamped at the left edge");
+        assert!(
+            placement.x + placement.width <= area.x + area.width,
+            "the menu never leaves the text area"
+        );
+        assert!(
+            placement.y + placement.height <= area.y + area.height,
+            "the menu never leaves the text area"
+        );
+    }
+
+    #[test]
+    fn renders_line_numbers_and_the_line_content() {
+        let joined = paint("alpha\nbeta\ngamma", 30, 8, 0);
+        assert!(joined.contains("alpha"), "{joined}");
+        assert!(joined.contains("beta"), "{joined}");
+        assert!(joined.contains("gamma"), "{joined}");
+        assert!(
+            !joined.contains("ln 1"),
+            "the line number is gone from the chrome: {joined}"
+        );
+    }
+
+    #[test]
+    fn the_viewport_shows_only_the_visible_window() {
+        let text = (0..50).map(|i| format!("line{i}\n")).collect::<String>();
+        let joined = paint(&text, 30, 8, 0);
+        assert!(joined.contains("line0"), "{joined}");
+        assert!(
+            !joined.contains("line20"),
+            "must not render off-screen lines: {joined}"
+        );
+    }
+
+    #[test]
+    fn moving_the_cursor_scrolls_the_viewport() {
+        let text = (0..50).map(|i| format!("line{i}\n")).collect::<String>();
+        let offset = text.find("line40").unwrap();
+        let joined = paint(&text, 30, 8, offset);
+        assert!(joined.contains("line40"), "{joined}");
+    }
+
+    #[test]
+    fn a_read_only_attachment_says_so() {
+        // Wide enough for the whole readout row. The scope badge sits before
+        // the advisory on purpose: on a narrow box the badge and the cursor
+        // position survive truncation while the trailing hint is what gets
+        // cut, because the badge is the safety-relevant half.
+        let joined = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                writable: false,
+                status: "read-only",
+                ..defaults()
+            },
+        )
+        .join("\n");
+        assert!(joined.contains("read-only"), "{joined}");
+        assert!(joined.contains("edits refused"), "{joined}");
+    }
+
+    /// The scope badge is the only thing on screen that tells a user whether
+    /// `:wq` reaches this project or every project on the machine, and the
+    /// path reads identically at either scope. It must therefore always be
+    /// rendered, and it must change with the scope.
+    #[test]
+    fn the_status_row_always_names_the_authority_root() {
+        for (scope, expected) in [
+            (
+                codegg_protocol::document::DocumentScope::Workspace,
+                "[project]",
+            ),
+            (
+                codegg_protocol::document::DocumentScope::GlobalAgent,
+                "[global]",
+            ),
+        ] {
+            let joined = render(
+                "content",
+                60,
+                8,
+                0,
+                Options {
+                    scope,
+                    ..defaults()
+                },
+            )
+            .join("\n");
+            assert!(
+                joined.contains(expected),
+                "{scope:?} must show {expected}:\n{joined}"
+            );
+            // And never the other one — a badge that always rendered both
+            // would carry no information.
+            let other = if expected == "[project]" {
+                "[global]"
+            } else {
+                "[project]"
+            };
+            assert!(
+                !joined.contains(other),
+                "{scope:?} must not show {other}:\n{joined}"
+            );
+        }
+    }
+
+    /// The editor's single chrome row: the mode badge and path on the left,
+    /// the status cluster on the right.
+    ///
+    /// It is the **last** row of the block, so the assertion does not depend
+    /// on the chrome height or on where the block's borders are.
+    fn banner(lines: &[String]) -> String {
+        // The last rendered line is the block's **bottom border**; the
+        // chrome row is the one inside it.
+        lines.iter().rev().nth(1).cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn normal_mode_badge_is_on_the_bottom_chrome_row() {
+        let row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Normal,
+                ..defaults()
+            },
+        ));
+        assert!(row.contains("NOR"), "{row}");
+    }
+
+    #[test]
+    fn insert_mode_badge_is_on_the_bottom_chrome_row() {
+        let row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Insert,
+                ..defaults()
+            },
+        ));
+        assert!(row.contains("INS"), "{row}");
+    }
+
+    #[test]
+    fn select_mode_badge_is_on_the_bottom_chrome_row() {
+        let row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Select,
+                ..defaults()
+            },
+        ));
+        assert!(row.contains("SEL"), "{row}");
+    }
+
+    #[test]
+    fn mode_badge_keeps_the_path_and_modal_input_next_to_it() {
+        let path_row = banner(&render("content", 60, 8, 0, defaults()));
+        assert!(path_row.contains("NOR src/lib.rs"), "{path_row}");
+
+        let command_row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                command_active: true,
+                command_line: "wq",
+                ..defaults()
+            },
+        ));
+        assert!(command_row.contains("NOR :wq_"), "{command_row}");
+
+        let search_row = banner(&render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                search_active: true,
+                search_line: "needle",
+                ..defaults()
+            },
+        ));
+        assert!(search_row.contains("NOR /needle_"), "{search_row}");
+    }
+
+    #[test]
+    fn mode_badge_names_the_mode_and_is_never_muted() {
+        let theme = Theme::default();
+        let normal = render_buffer("content", 60, 8, 0, defaults());
+        let normal_badge = &normal[(1, 6)];
+        assert_eq!(normal_badge.symbol(), "N");
+        assert_eq!(normal_badge.fg, theme.foreground);
+        assert!(normal_badge.modifier.contains(Modifier::BOLD));
+
+        // The badge describes the buffer's mode, not which surface has the
+        // keyboard: a dialog can take the keyboard without changing the mode.
+        let unfocused = render_buffer(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                ..defaults()
+            },
+        );
+        assert_eq!(unfocused[(1, 6)].fg, theme.foreground);
+
+        let inserting = render_buffer(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Insert,
+                ..defaults()
+            },
+        );
+        assert_eq!(inserting[(1, 6)].fg, theme.primary);
+
+        let selecting = render_buffer(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                mode: EditorMode::Select,
+                ..defaults()
+            },
+        );
+        assert_eq!(selecting[(1, 6)].fg, theme.warning);
+    }
+
+    #[test]
+    fn a_surfaced_notice_replaces_the_status_line_and_appends_the_pending_prefix() {
+        let lines = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                notice: Some("edit queue is full"),
+                pending_prefix: EditorPrefix::Goto,
+                ..defaults()
+            },
+        );
+        let banner = banner(&lines);
+        assert!(banner.contains("edit queue is full"), "{banner}");
+        assert!(
+            !banner.contains("synced"),
+            "banner status is replaced: {banner}"
+        );
+        assert!(
+            banner.contains("edit queue is full g"),
+            "banner and pending prefix share the row: {banner}"
+        );
+    }
+
+    #[test]
+    fn a_clean_status_shows_in_the_banner() {
+        let lines = render("content", 60, 8, 0, defaults());
+        let banner = banner(&lines);
+        assert!(banner.contains("synced"), "{banner}");
+    }
+
+    /// The two "the cursor did not move" reasons must be distinguishable on
+    /// screen, and neither may appear when the find landed.
+    ///
+    /// They are one cursor position and two completely different facts, so a
+    /// user told nothing has to guess between "that character is not ahead of
+    /// you" and "I stopped looking". The common case — a find that worked —
+    /// has to stay silent, or every ordinary keystroke would leave debris on
+    /// the row.
+    #[test]
+    fn the_find_disclosure_distinguishes_absent_from_bounded_and_is_silent_on_success() {
+        let cases = [
+            (FindNote::None, false, false),
+            (FindNote::Absent('z'), true, false),
+            (FindNote::Bounded('z'), true, true),
+        ];
+        for (note, expect_visible, expect_bound) in cases {
+            let lines = render(
+                "content",
+                60,
+                8,
+                0,
+                Options {
+                    find_note: &note.label(),
+                    ..defaults()
+                },
+            );
+            let banner = banner(&lines);
+            if expect_visible {
+                assert!(
+                    banner.contains('z'),
+                    "the note must name the target: {banner}"
+                );
+            } else {
+                assert!(
+                    !banner.contains('z'),
+                    "a landed find must leave the row clean: {banner}"
+                );
+            }
+            assert_eq!(
+                banner.contains("MiB"),
+                expect_bound,
+                "only the bounded note states the bound: {banner}"
+            );
+        }
+
+        // The two never render identically — that is the whole point.
+        assert_ne!(
+            FindNote::Absent('z').label(),
+            FindNote::Bounded('z').label()
+        );
+    }
+
+    /// An armed `f` and the disclosure share one row, in that order: the
+    /// indicator answers "what is waiting", the note answers "what happened
+    /// last", and conflating them would leave the user unable to tell which
+    /// is which.
+    #[test]
+    fn the_find_disclosure_and_the_pending_prefix_share_the_banner_row() {
+        let lines = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                find_note: &FindNote::Absent('z').label(),
+                pending_prefix: EditorPrefix::FindNext,
+                ..defaults()
+            },
+        );
+        let row = banner(&lines);
+        // The bordered row is padded out to the pane width, so the banner
+        // text ends *before* a run of spaces and the right-hand border.
+        let text = row.trim_end().trim_end_matches('│').trim_end();
+        assert!(
+            text.ends_with(" f"),
+            "the pending indicator is last on the row: {text:?}"
+        );
+        let note_at = text
+            .find("no 'z'")
+            .expect("the disclosure must render on the same row");
+        assert!(
+            note_at < text.len() - 1,
+            "the note precedes the pending indicator: {text:?}"
+        );
+    }
+
+    /// The modal lines own the banner while they are open, and suppress the
+    /// note — a disclosure about a find that happened before them would read
+    /// as an answer to the question the line is asking.
+    #[test]
+    fn an_open_modal_line_suppresses_the_find_disclosure() {
+        let note = FindNote::Absent('z').label();
+
+        let lines = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                command_active: true,
+                command_line: "wq",
+                find_note: &note,
+                ..defaults()
+            },
+        );
+        let row = banner(&lines);
+        assert!(row.contains(":wq"), "the `:` line owns the banner: {row}");
+        assert!(
+            !row.contains("no 'z'"),
+            "a stale find note must not sit on the `:` line: {row}"
+        );
+
+        let lines = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                search_active: true,
+                search_line: "target",
+                find_note: &note,
+                ..defaults()
+            },
+        );
+        let row = banner(&lines);
+        assert!(
+            row.contains("/target"),
+            "the `/` line owns the banner: {row}"
+        );
+        assert!(
+            !row.contains("no 'z'"),
+            "a stale find note must not sit on the `/` line: {row}"
+        );
+    }
+
+    #[test]
+    fn a_conflict_draft_is_visible_in_the_banner() {
+        let joined = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                status: "disk conflict \u{2014} draft kept",
+                status_caveat: true,
+                ..defaults()
+            },
+        )
+        .join("\n");
+        assert!(joined.contains("disk conflict"), "{joined}");
+        assert!(joined.contains("draft kept"), "{joined}");
+    }
+
+    #[test]
+    fn a_gone_document_says_the_draft_is_kept() {
+        let joined = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                status: "document gone \u{2014} draft kept",
+                status_caveat: true,
+                ..defaults()
+            },
+        )
+        .join("\n");
+        assert!(joined.contains("document gone"), "{joined}");
+        assert!(joined.contains("draft kept"), "{joined}");
+    }
+
+    #[test]
+    fn a_disconnected_transport_says_the_draft_is_kept() {
+        let joined = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                status: "disconnected \u{2014} draft kept",
+                status_caveat: true,
+                ..defaults()
+            },
+        )
+        .join("\n");
+        assert!(joined.contains("disconnected"), "{joined}");
+    }
+
+    #[test]
+    fn an_empty_document_renders_a_placeholder() {
+        let joined = paint("", 30, 8, 0);
+        assert!(joined.contains("empty document"), "{joined}");
+    }
+
+    #[test]
+    fn a_narrow_area_does_not_panic() {
+        for (width, height) in [(1u16, 1u16), (1, 10), (10, 1), (2, 2), (3, 3)] {
+            let lines = render("abc\ndef", width, height, 1, defaults());
+            assert_eq!(lines.len(), height as usize, "{width}x{height}");
+        }
+    }
+
+    #[test]
+    fn a_very_long_line_is_truncated_to_the_viewport() {
+        let text = "x".repeat(5000);
+        let lines = render(&text, 30, 8, 0, defaults());
+        let widest = lines
+            .iter()
+            .map(|line| line.trim_end().chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            widest <= 30,
+            "per-frame render must stay viewport-bounded: {widest}"
+        );
+    }
+
+    #[test]
+    fn per_frame_work_is_bounded_by_the_viewport_not_the_document() {
+        let text = (0..20_000)
+            .map(|i| format!("line{i}\n"))
+            .collect::<String>();
+        let lines = render(&text, 40, 10, 0, defaults());
+        let visible = lines.iter().filter(|line| line.contains("line")).count();
+        assert!(
+            visible <= 10,
+            "at most one row per viewport line: {visible}"
+        );
+        assert!(lines.iter().any(|line| line.contains("line0")));
+    }
+
+    // ── C002 huge-line degradation ────────────────────────────────────
+
+    fn mib_of_x(megabytes: usize) -> String {
+        "x".repeat(megabytes * 1024 * 1024)
+    }
+
+    /// Frame input cost for `text` the way the renderer accounts it: the
+    /// deterministic budget from `measure_frame_cost`, not wall-clock time.
+    fn frame_cost(text: &str, first_line: usize, visible_lines: usize) -> crate::editor::FrameCost {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        crate::editor::measure_frame_cost(&snapshot, first_line, visible_lines)
+    }
+
+    #[test]
+    fn a_1mib_single_line_renders_a_marked_prefix_within_budget() {
+        let text = mib_of_x(1);
+        let cost = frame_cost(&text, 0, 24);
+        assert!(
+            cost.total_bytes <= crate::editor::MAX_FRAME_SOURCE_BYTES,
+            "frame cost {} exceeds 256 KiB",
+            cost.total_bytes
+        );
+        assert_eq!(cost.truncated_lines, 1);
+
+        // Cursor at the start: the prefix is visible and honestly marked.
+        let joined = paint(&text, 80, 24, 0);
+        assert!(
+            joined.contains("too long"),
+            "a truncated line must be visibly marked, got:\n{joined}"
+        );
+        for line in joined.lines() {
+            assert!(
+                line.chars().count() <= 80,
+                "every row stays viewport-bounded: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_at_the_far_right_of_a_huge_line_stays_bounded_and_marked() {
+        let text = mib_of_x(1);
+        let cursor = text.len();
+        let cost = frame_cost(&text, 0, 24);
+        assert!(cost.total_bytes <= crate::editor::MAX_FRAME_SOURCE_BYTES);
+
+        // The cursor byte is past the render window; the frame must still
+        // render within budget and say the line is truncated rather than
+        // silently showing a prefix as the whole line.
+        let joined = paint(&text, 80, 24, cursor);
+        assert!(
+            joined.contains("too long"),
+            "far-right cursor on a huge line must stay marked, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn cursor_in_the_middle_of_a_huge_line_stays_bounded_and_marked() {
+        let text = mib_of_x(2);
+        let joined = paint(&text, 80, 24, text.len() / 2);
+        assert!(
+            joined.contains("too long"),
+            "mid-line cursor on a huge line must stay marked, got:\n{joined}"
+        );
+        let cost = frame_cost(&text, 0, 24);
+        assert!(cost.total_bytes <= crate::editor::MAX_FRAME_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn a_viewport_of_huge_lines_stays_within_the_frame_budget() {
+        let text = (0..30)
+            .map(|_| "y".repeat(1024 * 1024))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cost = frame_cost(&text, 0, 30);
+        assert!(
+            cost.total_bytes <= crate::editor::MAX_FRAME_SOURCE_BYTES,
+            "30 huge lines must cost at most 256 KiB, got {}",
+            cost.total_bytes
+        );
+        // Rendering must not panic and must mark the frame partial.
+        let joined = paint(&text, 80, 24, 0);
+        assert!(
+            joined.contains("too long"),
+            "a frame of huge lines must be marked, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn a_1x1_terminal_with_a_huge_line_does_not_panic_and_marks() {
+        let text = mib_of_x(1);
+        let lines = render(&text, 1, 1, 0, defaults());
+        assert_eq!(lines.len(), 1);
+        let cost = frame_cost(&text, 0, 1);
+        assert!(cost.total_bytes <= crate::editor::MAX_FRAME_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn tabs_and_wide_unicode_inside_the_budget_render_exactly() {
+        // Inside the budget nothing changes: tabs, wide CJK, and combining
+        // marks render with the same widths as before C002.
+        let text = "a\tb汉e\u{301}f";
+        let joined = paint(text, 40, 8, 0);
+        assert!(joined.contains('a'), "{joined}");
+        assert!(joined.contains('b'), "{joined}");
+        assert!(joined.contains('汉'), "{joined}");
+        assert!(!joined.contains("too long"), "{joined}");
+        let cost = frame_cost(text, 0, 8);
+        assert_eq!(cost.truncated_lines, 0);
+    }
+
+    #[test]
+    fn the_gutter_width_does_not_change_as_the_cursor_moves() {
+        let text = (0..120).map(|i| format!("line{i}\n")).collect::<String>();
+        let content_column = |rendered: &str| {
+            rendered
+                .lines()
+                .filter(|line| line.trim_start().starts_with("line"))
+                .map(|line| line.len() - line.trim_start().len())
+                .min()
+                .unwrap_or(usize::MAX)
+        };
+        let first = paint(&text, 40, 10, 0);
+        let middle = text.find("line60").unwrap();
+        let later = paint(&text, 40, 10, middle);
+        assert_eq!(
+            content_column(&first),
+            content_column(&later),
+            "gutter must not jitter as the cursor moves"
+        );
+    }
+
+    #[test]
+    fn the_title_carries_nothing() {
+        // The title used to spell out NORMAL/INSERT *and* add
+        // `[composer]`/`[buffer]`, so the editor carried a second way of
+        // naming the same fact — and `[composer]` named an axis that no
+        // longer exists.
+        let joined = render("content", 60, 8, 0, defaults()).join("\n");
+        let title = joined.lines().next().unwrap_or_default();
+        assert!(!title.contains("NOR"), "{title}");
+        assert!(!title.contains("INS"), "{title}");
+        assert!(!title.contains("NORMAL"), "{title}");
+        assert!(!title.contains("INSERT"), "{title}");
+        assert!(!title.contains("composer"), "{title}");
+        assert!(!title.contains("buffer"), "{title}");
+    }
+
+    #[test]
+    fn a_busy_operation_is_marked_in_the_status_row() {
+        let joined = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                busy: true,
+                ..defaults()
+            },
+        )
+        .join("\n");
+        assert!(joined.contains("working"), "{joined}");
+    }
+
+    /// The chrome row's **armed prefix indicator**, read back from the frame.
+    ///
+    /// The armed prefix is the only thing the chrome row paints in the
+    /// primary + bold style, so this is the indicator itself rather than a
+    /// guess at it from the row's text.
+    ///
+    /// A text-level guess cannot work here. The row carries the scope badge
+    /// (`[project]`) and the writable marker, and a substring search for the
+    /// indicator's glyph finds *those* instead of the indicator: `[` is in the
+    /// badge, `t` is in "project" and in "writable", `m` is in "read-only —
+    /// edits refused". The check that matters is "is a prefix armed?", and only
+    /// the style can answer it.
+    fn armed_indicator(buffer: &ratatui::buffer::Buffer, height: u16) -> String {
+        let theme = Theme::default();
+        let row = banner_row(height);
+        let mode_badge_start = (0..buffer.area.width.saturating_sub(2)).find(|x| {
+            buffer[(*x, row)].symbol() == "N"
+                && buffer[(*x + 1, row)].symbol() == "O"
+                && buffer[(*x + 2, row)].symbol() == "R"
+        });
+        let indicator_start = mode_badge_start.map_or(0, |x| x + 3);
+        let mut text = String::new();
+        for x in indicator_start..buffer.area.width {
+            let cell = &buffer[(x, row)];
+            if cell.fg == theme.primary && cell.modifier.contains(Modifier::BOLD) {
+                text.push_str(cell.symbol());
+            }
+        }
+        text.trim().to_string()
+    }
+
+    /// Every armed prefix puts something different on screen, and an idle editor
+    /// has no pending-prefix indicator.
+    ///
+    /// The distinctness is the point, not the presence: an indicator that rendered
+    /// every prefix identically would let a user believe they had armed a grammar
+    /// they had not. `space` is here because it was the one pending state with no
+    /// indicator at all before M002 — the baseline's `bool` had nowhere to render
+    /// to — and `space y` is the gesture that made that visible.
+    #[test]
+    fn every_pending_prefix_renders_distinctly_and_idle_has_no_prefix_indicator() {
+        let mut seen: Vec<(EditorPrefix, String)> = Vec::new();
+        for prefix in [
+            EditorPrefix::Idle,
+            EditorPrefix::Goto,
+            EditorPrefix::Space,
+            EditorPrefix::OpenBracket,
+            EditorPrefix::CloseBracket,
+            EditorPrefix::FindNext,
+            EditorPrefix::FindPrevious,
+            EditorPrefix::FindTillNext,
+            EditorPrefix::FindTillPrevious,
+            // The `m` grammar's two levels. Both are here because the `m`
+            // level is the one pending state whose *second* level is a
+            // different state again: a reader who armed `m` and then `m r`
+            // has to be able to see which half they are in, and the two
+            // halves must not render alike.
+            EditorPrefix::Match,
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundAdd),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundDelete),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceFrom),
+            EditorPrefix::MatchArg(editor::MatchArg::SurroundReplaceTo('(')),
+            EditorPrefix::MatchArg(editor::MatchArg::AroundObject),
+            EditorPrefix::MatchArg(editor::MatchArg::InnerObject),
+        ] {
+            let buffer = render_buffer(
+                "content",
+                60,
+                8,
+                0,
+                Options {
+                    pending_prefix: prefix,
+                    ..defaults()
+                },
+            );
+            let banner = banner(&lines_of(&buffer));
+            let indicator = armed_indicator(&buffer, 8);
+            if prefix == EditorPrefix::Idle {
+                assert!(
+                    indicator.is_empty(),
+                    "an idle editor must not show a pending-prefix indicator: {banner:?}"
+                );
+            } else {
+                assert_eq!(
+                    indicator,
+                    prefix.display().as_ref(),
+                    "{prefix:?} must render its own indicator, not another one: {banner:?}"
+                );
+            }
+            for (earlier, earlier_banner) in &seen {
+                assert_ne!(
+                    earlier_banner, &banner,
+                    "{earlier:?} and {prefix:?} render identically"
+                );
+            }
+            seen.push((prefix, banner));
+        }
+    }
+
+    fn render_with_lsp(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        options: Options<'_>,
+        lsp: crate::editor_lsp::EditorLspState,
+        theme: Theme,
+    ) -> Vec<String> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            selections: options.selections,
+            search_line: options.search_line.to_string(),
+            search_matches: options.search_matches.clone(),
+            jumplist: options.jumplist,
+            history_bound_cleared: options.history_cleared,
+            ..TuiDocumentPresentation::default()
+        };
+        seed_history(&mut presentation, options.history);
+        let completion = crate::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    status_caveat: options.status_caveat,
+                    notice: options.notice,
+                    find_note: options.find_note,
+                    count_label: options.count_label,
+                    mode: options.mode,
+                    buffer_focused: options.buffer_focused,
+                    pending_prefix: options.pending_prefix,
+                    menu: options.menu,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    search_active: options.search_active,
+                    search_line: options.search_line,
+                    search_count: options.search_count,
+                    search_partial: options.search_partial,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    completion: &completion,
+                    highlight: &mut highlight,
+                    presentation: &mut presentation,
+                    theme: Arc::new(theme.clone()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    // ── Completion popup rendering ────────────────────────────────────
+
+    use codegg_protocol::lsp::{
+        LspCompletionApplicabilityDto, LspCompletionCandidateDto, LspCompletionEditDto,
+        LspCompletionResultDto, LspCompletionStatus,
+    };
+
+    fn completion_candidate(label: &str, applicable: bool) -> LspCompletionCandidateDto {
+        LspCompletionCandidateDto {
+            label: label.to_string(),
+            detail: Some(format!("detail {label}")),
+            kind: Some("function".to_string()),
+            filter_text: None,
+            sort_text: None,
+            applicability: if applicable {
+                LspCompletionApplicabilityDto::Applicable {
+                    edit: LspCompletionEditDto {
+                        start_line: 1,
+                        start_character: 4,
+                        end_line: 1,
+                        end_character: 8,
+                        new_text: label.to_string(),
+                    },
+                }
+            } else {
+                LspCompletionApplicabilityDto::NonApplicable {
+                    reason: codegg_protocol::lsp::LspCompletionUnsupportedReason::Snippet,
+                }
+            },
+        }
+    }
+
+    fn completion_state(
+        candidates: Vec<LspCompletionCandidateDto>,
+        status: LspCompletionStatus,
+        truncated: bool,
+        incomplete: bool,
+    ) -> crate::editor_completion::EditorCompletionState {
+        use crate::editor_completion::EditorCompletionScope;
+        use crate::editor_lsp::EditorLspScope;
+        let mut state = crate::editor_completion::EditorCompletionState::default();
+        let scope = EditorCompletionScope {
+            read_scope: EditorLspScope {
+                generation: 0,
+                session_id: "session".into(),
+                project_id: "project".into(),
+                workspace_id: "workspace".into(),
+                path: "src/lib.rs".into(),
+            },
+            document_id: "doc".into(),
+            revision: 0,
+            line: 1,
+            character: 8,
+        };
+        let request = state.begin(&scope);
+        let mut result = LspCompletionResultDto::ready(
+            "doc".into(),
+            0,
+            Some(0),
+            candidates,
+            truncated,
+            incomplete,
+        );
+        result.status = status;
+        assert!(state.apply(request, state.epoch(), &scope, Some(result), None));
+        state
+    }
+
+    fn render_with_completion(
+        text: &str,
+        width: u16,
+        height: u16,
+        completion: &crate::editor_completion::EditorCompletionState,
+    ) -> Vec<String> {
+        render_with_completion_at(text, width, height, 0, completion)
+    }
+
+    fn render_with_completion_at(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        completion: &crate::editor_completion::EditorCompletionState,
+    ) -> Vec<String> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            ..TuiDocumentPresentation::default()
+        };
+        let lsp = crate::editor_lsp::EditorLspState::default();
+        let options = Options {
+            status: "synced",
+            notice: None,
+            status_caveat: false,
+            find_note: "",
+            count_label: "",
+            mode: EditorMode::Normal,
+            buffer_focused: true,
+            pending_prefix: EditorPrefix::Idle,
+            menu: None,
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            selections: Vec::new(),
+            search_matches: Vec::new(),
+            history: (0, 0),
+            history_cleared: false,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            writable: true,
+            busy: false,
+            lsp: crate::editor_lsp::EditorLspState::default(),
+            jumplist: crate::document_session::Jumplist::default(),
+        };
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    status_caveat: options.status_caveat,
+                    notice: options.notice,
+                    find_note: options.find_note,
+                    count_label: options.count_label,
+                    mode: options.mode,
+                    buffer_focused: options.buffer_focused,
+                    pending_prefix: options.pending_prefix,
+                    menu: options.menu,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    search_active: options.search_active,
+                    search_line: options.search_line,
+                    search_count: options.search_count,
+                    search_partial: options.search_partial,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    completion,
+                    highlight: &mut highlight,
+                    presentation: &mut presentation,
+                    theme: Arc::new(Theme::default()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn minor_mode_menu_renders_entries_only_when_present() {
+        let menu = crate::editor_keymap::EditorMenuView {
+            path: "Space".to_string(),
+            entries: vec![
+                crate::editor_keymap::EditorMenuEntry {
+                    key: "q".to_string(),
+                    label: "the insert menu".to_string(),
+                    is_menu: true,
+                    available: true,
+                },
+                crate::editor_keymap::EditorMenuEntry {
+                    key: "a".to_string(),
+                    label: "ask for an insertion".to_string(),
+                    is_menu: false,
+                    available: true,
+                },
+            ],
+        };
+        let rows = lines_of(&render_buffer(
+            "anchor\n",
+            80,
+            16,
+            0,
+            Options {
+                pending_prefix: EditorPrefix::Space,
+                menu: Some(&menu),
+                ..defaults()
+            },
+        ))
+        .join("\n");
+        assert!(rows.contains("Space"), "menu title renders:\n{rows}");
+        assert!(
+            rows.contains("<space>"),
+            "the pop-back key renders:\n{rows}"
+        );
+        assert!(rows.contains("q >"), "submenu key renders:\n{rows}");
+        assert!(
+            rows.contains("the insert menu"),
+            "submenu label renders:\n{rows}"
+        );
+        assert!(
+            rows.contains("ask for an insertion"),
+            "command renders:\n{rows}"
+        );
+
+        let no_menu = lines_of(&render_buffer(
+            "anchor\n",
+            80,
+            16,
+            0,
+            Options {
+                pending_prefix: EditorPrefix::Space,
+                ..defaults()
+            },
+        ))
+        .join("\n");
+        assert!(
+            !no_menu.contains("the insert menu"),
+            "no menu draws no entries"
+        );
+
+        let empty_menu = crate::editor_keymap::EditorMenuView {
+            path: "Space".to_string(),
+            entries: Vec::new(),
+        };
+        let empty = lines_of(&render_buffer(
+            "anchor\n",
+            80,
+            16,
+            0,
+            Options {
+                pending_prefix: EditorPrefix::Space,
+                menu: Some(&empty_menu),
+                ..defaults()
+            },
+        ))
+        .join("\n");
+        assert_eq!(
+            empty, no_menu,
+            "an empty menu draws exactly what no menu draws"
+        );
+    }
+
+    #[test]
+    fn completion_popup_lists_candidates_with_selection() {
+        let state = completion_state(
+            vec![
+                completion_candidate("println!", true),
+                completion_candidate("print", true),
+                completion_candidate("snip", false),
+            ],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(rows.contains("println!"), "labels render:\n{rows}");
+        assert!(rows.contains("> println!"), "first row selected:\n{rows}");
+        assert!(
+            rows.contains("· snippet"),
+            "non-applicable names its reason:\n{rows}"
+        );
+        assert!(
+            rows.contains("suggestions"),
+            "header names the state:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn a_non_applicable_candidate_names_its_own_reason() {
+        let mut needs_edits = completion_candidate("edit", false);
+        needs_edits.applicability = LspCompletionApplicabilityDto::NonApplicable {
+            reason: codegg_protocol::lsp::LspCompletionUnsupportedReason::AdditionalEdits,
+        };
+        let state = completion_state(vec![needs_edits], LspCompletionStatus::Ready, false, false);
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(
+            rows.contains("· needs extra edits"),
+            "the reason is the candidate's own:\n{rows}"
+        );
+        assert!(
+            !rows.contains("· snippet"),
+            "one reason does not stand in for another:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_renders_below_the_cursor_with_candidates() {
+        let text = "first line\ncursor line\nlast line\n";
+        let cursor = text.find("cursor line").unwrap();
+        let state = completion_state(
+            vec![completion_candidate("cursor_candidate", true)],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        let rows = render_with_completion_at(text, 80, 24, cursor, &state);
+        let cursor_row = rows
+            .iter()
+            .position(|row| row.contains("cursor line"))
+            .unwrap();
+        let popup_row = rows
+            .iter()
+            .position(|row| row.contains("Completion"))
+            .unwrap();
+        assert!(rows.join("\n").contains("cursor_candidate"));
+        assert!(
+            popup_row > cursor_row,
+            "popup is below the cursor line:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
+    fn completion_popup_neutralizes_malicious_labels() {
+        let mut evil = completion_candidate("a\x1b[31mb\nc\td", true);
+        evil.detail = Some("x".repeat(500));
+        let state = completion_state(vec![evil], LspCompletionStatus::Ready, false, false);
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(!rows.contains('\x1b'), "no escape survives:\n{rows}");
+        assert!(
+            rows.contains("a [31mb c d"),
+            "controls become spaces:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_states_render_distinctly() {
+        for (status, word) in [
+            (LspCompletionStatus::NotReady, "warming"),
+            (LspCompletionStatus::Stale, "re-trigger"),
+            (LspCompletionStatus::Unsynced, "revision"),
+            (LspCompletionStatus::Unsupported, "provider"),
+        ] {
+            let state = completion_state(vec![], status, false, false);
+            let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+            assert!(rows.contains(word), "{status:?} must say {word}:\n{rows}");
+        }
+        let state = completion_state(vec![], LspCompletionStatus::Ready, false, false);
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(
+            !rows.contains("No suggestions"),
+            "empty Ready draws no row:\n{rows}"
+        );
+        assert!(
+            !rows.contains("Completion"),
+            "empty Ready draws no popup:\n{rows}"
+        );
+        let mut errored = crate::editor_completion::EditorCompletionState::default();
+        let scope = {
+            use crate::editor_completion::EditorCompletionScope;
+            use crate::editor_lsp::EditorLspScope;
+            EditorCompletionScope {
+                read_scope: EditorLspScope {
+                    generation: 0,
+                    session_id: "s".into(),
+                    project_id: "p".into(),
+                    workspace_id: "w".into(),
+                    path: "src/lib.rs".into(),
+                },
+                document_id: "doc".into(),
+                revision: 0,
+                line: 0,
+                character: 0,
+            }
+        };
+        let request = errored.begin(&scope);
+        assert!(errored.apply(
+            request,
+            errored.epoch(),
+            &scope,
+            None,
+            Some("boom\n\x1b[0m".into())
+        ));
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &errored).join("\n");
+        assert!(rows.contains("boom"), "error text shows:\n{rows}");
+        assert!(!rows.contains('\x1b'), "error text is sanitized:\n{rows}");
+    }
+
+    #[test]
+    fn completion_popup_hides_on_terminals_too_narrow_to_fit() {
+        let state = completion_state(
+            vec![completion_candidate("println!", true)],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        // 1x1 and narrow frames must not panic; the keys keep working
+        // because state and rendering are independent.
+        let tiny = render_with_completion("fn main() {}\n", 1, 1, &state).join("\n");
+        assert!(!tiny.contains("println!"), "no room means no popup");
+        let narrow = render_with_completion("fn main() {}\n", 20, 24, &state).join("\n");
+        assert!(
+            !narrow.contains("println!"),
+            "under 24 columns means no popup"
+        );
+        let wide = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(wide.contains("println!"), "room means popup");
+    }
+
+    #[test]
+    fn completion_popup_scrolls_long_lists_and_marks_budgets() {
+        let candidates: Vec<_> = (0..15)
+            .map(|index| completion_candidate(&format!("item-{index:02}"), true))
+            .collect();
+        let mut state = completion_state(candidates, LspCompletionStatus::Ready, true, true);
+        for _ in 0..14 {
+            state.select_next();
+        }
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(
+            rows.contains("item-14"),
+            "selected tail is visible:\n{rows}"
+        );
+        assert!(!rows.contains("item-00"), "the head scrolled away:\n{rows}");
+        assert!(
+            rows.contains("truncated"),
+            "the count cap is disclosed:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_on_a_huge_line_stays_bounded() {
+        // The popup reads DTO strings only, never the snapshot, so a
+        // megabyte line cannot blow the frame budget through this path.
+        let text = "x".repeat(1024 * 1024);
+        let state = completion_state(
+            vec![completion_candidate("println!", true)],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        let rows = render_with_completion(&text, 80, 24, &state).join("\n");
+        assert!(rows.contains("println!"), "popup renders over huge lines");
+    }
+
+    fn styled_token(
+        line: u32,
+        character: u32,
+        length: u32,
+        kind: &str,
+    ) -> codegg_protocol::lsp::LspSemanticTokenDto {
+        codegg_protocol::lsp::LspSemanticTokenDto {
+            line,
+            character,
+            length,
+            token_type: kind.to_string(),
+            modifiers: vec![],
+        }
+    }
+
+    #[test]
+    fn token_styles_come_from_theme_slots_and_stay_legible() {
+        for theme in [Theme::dark(), Theme::light()] {
+            // Every supported class maps to a theme slot, never a hardcoded
+            // ANSI color. Unknown vendor types stay plain (None).
+            let supported = [
+                "keyword",
+                "string",
+                "number",
+                "comment",
+                "function",
+                "method",
+                "type",
+                "class",
+                "enum",
+                "struct",
+                "variable",
+                "parameter",
+                "property",
+                "namespace",
+            ];
+            for kind in supported {
+                let style =
+                    token_style(&theme, kind).unwrap_or_else(|| panic!("{kind} must be styled"));
+                let fg = style.fg.expect("styled token must set a foreground");
+                assert_ne!(
+                    fg, theme.background,
+                    "{kind} foreground must differ from the background"
+                );
+            }
+            assert_eq!(token_style(&theme, "vendor_custom"), None);
+            assert_eq!(token_style(&theme, "totally_unknown"), None);
+        }
+        // Spot-check slots: keyword uses primary bold, comment uses muted
+        // italic, string uses success. Hardcoded Yellow/Green/DarkGray would
+        // fail this on at least one theme.
+        let dark = Theme::dark();
+        assert_eq!(
+            token_style(&dark, "keyword").unwrap().fg,
+            Some(dark.primary)
+        );
+        assert_eq!(token_style(&dark, "comment").unwrap().fg, Some(dark.muted));
+        assert_eq!(token_style(&dark, "string").unwrap().fg, Some(dark.success));
+    }
+
+    #[test]
+    fn unknown_tokens_render_plain_while_neighbors_keep_styles() {
+        use crate::editor::EditorViewport;
+        let text = "let value = 42;";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let theme = Arc::new(Theme::default());
+        let mut presentation = TuiDocumentPresentation::default();
+        // `let` keyword 0..3, `value` variable 4..9 (plain), `42` number
+        // 12..14. The middle span is well-formed but unstyled in the old
+        // whitelist; it must not erase its neighbors.
+        let validated = crate::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            vec![
+                styled_token(0, 0, 3, "keyword"),
+                styled_token(0, 4, 5, "variable"),
+                styled_token(0, 12, 2, "number"),
+                styled_token(0, 4, 5, "vendor_custom_plain"),
+            ],
+        );
+        // `vendor_custom_plain` overlaps `variable` and is dropped; the
+        // three distinct spans survive validation.
+        assert_eq!(validated.accepted.len(), 3);
+        let lsp = crate::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let completion = crate::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let viewport = EditorViewport {
+            first_line: 0,
+            column: 0,
+            gutter: 3,
+            text_columns: 40,
+            visible_lines: 5,
+        };
+        let mut widget = EditorWidget {
+            path: "src/lib.rs",
+            status: "synced",
+            notice: None,
+            status_caveat: false,
+            find_note: "",
+            count_label: "",
+            mode: EditorMode::Normal,
+            buffer_focused: true,
+            pending_prefix: EditorPrefix::Idle,
+            menu: None,
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            cursor_byte: 0,
+            writable: true,
+            busy: false,
+            snapshot: &snapshot,
+            lsp: &lsp,
+            completion: &completion,
+            highlight: &mut highlight,
+            presentation: &mut presentation,
+            theme,
+        };
+        let spans = widget.line_spans(0, viewport, Style::default(), &[], 0);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(joined.contains("let"), "{joined}");
+        assert!(joined.contains("value"), "{joined}");
+        assert!(joined.contains("42"), "{joined}");
+        // At least the keyword and number spans carry a themed foreground;
+        // the plain middle does not erase them.
+        let themed = spans.iter().filter(|s| s.style.fg.is_some()).count();
+        assert!(
+            themed >= 2,
+            "keyword and number must keep themed styles: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_and_partial_highlights_are_disclosed_in_the_banner() {
+        let truncated = crate::editor_lsp::EditorLspState {
+            semantic_revision: Some(3),
+            semantic_truncated: true,
+            semantic_incomplete: true,
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let joined = render_with_lsp("content", 60, 8, 0, defaults(), truncated, Theme::default())
+            .join("\n");
+        assert!(
+            joined.contains("truncated"),
+            "truncation must be explicit: {joined}"
+        );
+        let partial = crate::editor_lsp::EditorLspState {
+            semantic_revision: Some(3),
+            semantic_incomplete: true,
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let joined =
+            render_with_lsp("content", 60, 8, 0, defaults(), partial, Theme::default()).join("\n");
+        assert!(
+            joined.contains("partial"),
+            "dropped spans must be explicit: {joined}"
+        );
+        let clean = crate::editor_lsp::EditorLspState::default();
+        let joined =
+            render_with_lsp("content", 60, 8, 0, defaults(), clean, Theme::default()).join("\n");
+        assert!(
+            !joined.contains("truncated") && !joined.contains("partial"),
+            "no signal without semantic data: {joined}"
+        );
+    }
+
+    #[test]
+    fn semantic_highlight_preserves_current_line_and_diagnostic_markers() {
+        use codegg_protocol::lsp::{LspDiagnosticDto, LspRangeDto};
+        let text = "alpha\nbeta\n";
+        let lsp = crate::editor_lsp::EditorLspState {
+            semantic_tokens: vec![styled_token(0, 0, 5, "keyword")],
+            semantic_revision: Some(1),
+            diagnostics: vec![LspDiagnosticDto {
+                range: LspRangeDto {
+                    path: "src/lib.rs".into(),
+                    workspace_relative_path: None,
+                    start_line: 0,
+                    start_column: 0,
+                    end_line: 0,
+                    end_column: 1,
+                },
+                severity: 1,
+                tag: 0,
+                code: None,
+                message: "broken".into(),
+                source: None,
+            }],
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        // Cursor on line 0, viewport shows both lines.
+        let joined = render_with_lsp(text, 40, 8, 0, defaults(), lsp, Theme::default()).join("\n");
+        assert!(joined.contains("alpha"), "{joined}");
+        assert!(
+            joined.contains("!"),
+            "{joined} diagnostic marker must survive"
+        );
+    }
+
+    // ── M005: the row's window ──────────────────────────────────────────
+
+    /// One row's spans, built by the real `line_spans` for one viewport.
+    ///
+    /// `cursor_line` is passed explicitly so a test can exercise the row
+    /// builder's contract ("the frame resolved the cursor's line once") rather
+    /// than having the helper re-derive it.
+    fn row_spans(
+        text: &str,
+        cursor_byte: usize,
+        cursor_line: usize,
+        column: usize,
+        text_columns: u16,
+        lsp: crate::editor_lsp::EditorLspState,
+    ) -> Vec<Span<'static>> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte,
+            ..TuiDocumentPresentation::default()
+        };
+        let completion = crate::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let viewport = EditorViewport {
+            first_line: 0,
+            column,
+            gutter: 3,
+            text_columns,
+            visible_lines: 4,
+        };
+        let mut widget = EditorWidget {
+            path: "src/lib.rs",
+            status: "synced",
+            notice: None,
+            status_caveat: false,
+            find_note: "",
+            count_label: "",
+            mode: EditorMode::Normal,
+            buffer_focused: true,
+            pending_prefix: EditorPrefix::Idle,
+            menu: None,
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            cursor_byte,
+            writable: true,
+            busy: false,
+            snapshot: &snapshot,
+            lsp: &lsp,
+            completion: &completion,
+            highlight: &mut highlight,
+            presentation: &mut presentation,
+            theme: Arc::new(Theme::default()),
+        };
+        widget.line_spans(0, viewport, Style::default(), &[], cursor_line)
+    }
+
+    fn diagnostic(
+        path: &str,
+        start_line: u32,
+        start_column: u32,
+        end_line: u32,
+        end_column: u32,
+        severity: u32,
+    ) -> codegg_protocol::lsp::LspDiagnosticDto {
+        codegg_protocol::lsp::LspDiagnosticDto {
+            range: codegg_protocol::lsp::LspRangeDto {
+                path: path.to_string(),
+                workspace_relative_path: None,
+                start_line,
+                start_column,
+                end_line,
+                end_column,
+            },
+            severity,
+            tag: 0,
+            code: None,
+            message: "diagnostic".into(),
+            source: None,
+        }
+    }
+
+    /// The text one row's spans draw, joined.
+    fn joined(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    fn style_at_byte(spans: &[Span<'static>], byte: usize) -> Style {
+        let mut offset = 0usize;
+        for span in spans {
+            let end = offset.saturating_add(span.content.len());
+            if (offset..end).contains(&byte) {
+                return span.style;
+            }
+            offset = end;
+        }
+        Style::default()
+    }
+
+    #[test]
+    fn inline_diagnostics_use_error_precedence_and_theme_severity_colors() {
+        let theme = Theme::default();
+        let lsp = crate::editor_lsp::EditorLspState {
+            diagnostics: vec![
+                diagnostic("src/lib.rs", 0, 1, 0, 5, 2),
+                diagnostic("src/lib.rs", 0, 3, 0, 4, 1),
+            ],
+            diagnostics_status: crate::editor_lsp::DiagnosticsViewStatus::Ready,
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let spans = row_spans("abcdef", 0, 0, 0, 6, lsp);
+        let warning = style_at_byte(&spans, 2);
+        let error = style_at_byte(&spans, 3);
+        let plain = style_at_byte(&spans, 5);
+
+        assert!(warning.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(warning.fg, Some(theme.warning));
+        assert!(error.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(
+            error.fg,
+            Some(theme.error),
+            "error wins over overlapping warning"
+        );
+        assert!(!plain.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn inline_diagnostics_clip_to_visible_bytes_and_refuse_malformed_utf16() {
+        let clipped = diagnostic_ranges_for_line(
+            "src/lib.rs",
+            0,
+            "a😀bcd",
+            "a😀bcd".len(),
+            5..7,
+            &[diagnostic("src/lib.rs", 0, 1, 0, 6, 2)],
+        );
+        assert_eq!(clipped, vec![(5..7, 2)]);
+
+        // This row only read a bounded prefix. A range extending beyond it is
+        // clipped to the already-read bytes; it never asks for the line tail.
+        let partial = diagnostic_ranges_for_line(
+            "src/lib.rs",
+            0,
+            "a😀b",
+            "a😀bcdef".len(),
+            5..6,
+            &[diagnostic("src/lib.rs", 0, 1, 0, 100, 2)],
+        );
+        assert_eq!(partial, vec![(5..6, 2)]);
+
+        // UTF-16 column 2 lands between the surrogate units for 😀.
+        let malformed = diagnostic_ranges_for_line(
+            "src/lib.rs",
+            0,
+            "a😀b",
+            "a😀b".len(),
+            1..6,
+            &[diagnostic("src/lib.rs", 0, 2, 0, 3, 1)],
+        );
+        assert!(malformed.is_empty());
+
+        let wrong_path = diagnostic_ranges_for_line(
+            "src/lib.rs",
+            0,
+            "abcdef",
+            6,
+            0..6,
+            &[diagnostic("src/other.rs", 0, 0, 0, 6, 1)],
+        );
+        assert!(wrong_path.is_empty());
+    }
+
+    #[test]
+    fn an_over_budget_line_refuses_inline_diagnostic_spans() {
+        let text = "x".repeat(crate::editor::MAX_RENDER_LINE_BYTES + 1);
+        let lsp = crate::editor_lsp::EditorLspState {
+            diagnostics: vec![diagnostic("src/lib.rs", 0, 0, 0, 4, 1)],
+            diagnostics_status: crate::editor_lsp::DiagnosticsViewStatus::Ready,
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let spans = row_spans(&text, 0, 0, 0, 20, lsp);
+
+        assert!(joined(&spans).contains("too long"));
+        assert!(!spans
+            .iter()
+            .any(|span| span.style.add_modifier.contains(Modifier::UNDERLINED)));
+    }
+
+    /// A row of a line far longer than the window reads and walks only the
+    /// window.
+    ///
+    /// The drawn text is the window's, and the row's read is the window's
+    /// bytes rather than the line's — the counter is the only way to tell a
+    /// bounded read from a whole one, because both draw the same 40 columns.
+    #[test]
+    fn a_row_reads_and_walks_only_as_far_as_its_window() {
+        let text = format!("{}\n", "abcdefghij".repeat(400));
+        let before = crate::render_cost::snapshot();
+        let spans = row_spans(&text, 0, 0, 0, 40, Default::default());
+        let cost = crate::render_cost::snapshot().since(&before);
+
+        assert_eq!(
+            joined(&spans),
+            "abcdefghij".repeat(4),
+            "the row draws the 40 columns it was given"
+        );
+        assert!(
+            cost.editor_row_bytes <= 42 * 4,
+            "a {}-byte row must be read as far as its 40 columns: {} bytes",
+            text.len(),
+            cost.editor_row_bytes
+        );
+        assert_eq!(cost.editor_row_reads, 1, "one row, one read");
+    }
+
+    /// A row of multi-byte characters draws its window whole.
+    ///
+    /// The window's byte budget is a count, not an offset, and a count that
+    /// lands inside a character is not a readable range at all. Reading it
+    /// anyway is refused — so a row of three-byte characters, whose 122-column
+    /// budget lands mid-character, would draw nothing rather than its columns.
+    #[test]
+    fn a_multi_byte_row_draws_its_whole_window() {
+        let text = format!("{}\n", "漢字テキスト".repeat(30));
+        let spans = row_spans(&text, 0, 0, 0, 120, Default::default());
+        // Every character here is two columns wide, so 120 columns is ten
+        // repeats.
+        assert_eq!(
+            joined(&spans),
+            "漢字テキスト".repeat(10),
+            "a row of three-byte characters must draw its 120 columns"
+        );
+        assert_eq!(
+            spans.iter().map(|span| span.width()).sum::<usize>(),
+            120,
+            "the drawn window is exactly the columns it was given"
+        );
+    }
+
+    /// A character that straddles the window's **end** is kept whole.
+    ///
+    /// Every character here is two columns wide, so a 5-column window ends in
+    /// the middle of the third character. Dropping it would lose a character
+    /// the reader can see most of; truncating it is not possible at all.
+    #[test]
+    fn the_clip_keeps_a_character_that_straddles_its_end() {
+        let text = "漢漢漢漢漢\n";
+        let spans = row_spans(text, 0, 0, 0, 5, Default::default());
+        assert_eq!(
+            joined(&spans),
+            "漢漢漢",
+            "the character that begins before the window's end is drawn whole"
+        );
+    }
+
+    /// A character that straddles the **scroll column** is kept whole.
+    #[test]
+    fn the_clip_keeps_a_character_that_straddles_its_start() {
+        let text = "漢漢漢漢漢\n";
+        // Column 3 falls inside the second character (columns 2..4).
+        let spans = row_spans(text, 0, 0, 3, 4, Default::default());
+        assert_eq!(
+            joined(&spans),
+            "漢漢漢",
+            "the character that ends past the scroll column starts the window"
+        );
+    }
+
+    /// The unstarted arms are unchanged.
+    ///
+    /// A row scrolled past its last character draws one empty span rather
+    /// than a ghost of the row's text, and an empty line with the cursor on
+    /// it draws exactly the cursor's cell — the one position a reader reaches
+    /// most often must not be invisible, which is why it is a single space
+    /// and not nothing.
+    #[test]
+    fn the_unstarted_rows_draw_what_they_always_drew() {
+        let scrolled = row_spans("abc\n", 0, 0, 9, 10, Default::default());
+        assert_eq!(scrolled.len(), 1, "a scrolled-past row draws one cell");
+        assert_eq!(joined(&scrolled), "", "and it is empty");
+
+        let empty = row_spans("\n", 0, 0, 0, 10, Default::default());
+        assert_eq!(empty.len(), 1, "the cursor's own cell on an empty line");
+        assert_eq!(joined(&empty), " ", "drawn as one space, not nothing");
+    }
+
+    /// The row's cursor cell is decided by the line the frame resolved.
+    ///
+    /// `cursor_cell` is handed the frame's one `cursor_line` rather than
+    /// re-deriving it with a rope lookup per row; a cell that recomputed it
+    /// would answer for a cursor the frame had already decided was elsewhere.
+    #[test]
+    fn the_cursor_cell_uses_the_row_the_frame_resolved() {
+        let snapshot = DocumentBuffer::new("abc\ndef\n").snapshot();
+        let mut presentation = TuiDocumentPresentation::default();
+        let lsp = crate::editor_lsp::EditorLspState::default();
+        let completion = crate::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::editor_highlight::EditorHighlight::default();
+        let widget = EditorWidget {
+            path: "src/lib.rs",
+            status: "synced",
+            notice: None,
+            status_caveat: false,
+            find_note: "",
+            count_label: "",
+            mode: EditorMode::Normal,
+            buffer_focused: true,
+            pending_prefix: EditorPrefix::Idle,
+            menu: None,
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            cursor_byte: 1,
+            writable: true,
+            busy: false,
+            snapshot: &snapshot,
+            lsp: &lsp,
+            completion: &completion,
+            highlight: &mut highlight,
+            presentation: &mut presentation,
+            theme: Arc::new(Theme::default()),
+        };
+        assert_eq!(
+            widget.cursor_cell(0, "abc", 3, 0, 0, 3, 0),
+            Some((1, 2)),
+            "on the row the frame resolved, the cursor owns its cell"
+        );
+        assert_eq!(
+            widget.cursor_cell(4, "def", 3, 1, 4, 7, 0),
+            None,
+            "a row the frame did not resolve the cursor to has no cursor cell"
+        );
+        assert_eq!(
+            widget
+                .head_cells(4, "def", 3, 1, 4, 7, 0)
+                .iter()
+                .filter(|(_, _, primary)| *primary)
+                .count(),
+            0,
+            "the cursor's head is not folded into a row it is not on"
+        );
+    }
+
+    /// The style sweep keeps the scan's colour under a token that covers only
+    /// part of it, and the token's colour where it covers.
+    ///
+    /// This is the priority the two runs encode: a server token outranks the
+    /// scan **where it covers**, and the scan keeps everything it covers
+    /// elsewhere. A sweep that advanced a single cursor over the merged list
+    /// would drop the string's colour on the segment before the token, and
+    /// one that sorted the ranges by byte order would give the token's
+    /// segment the scan's colour instead.
+    #[test]
+    fn the_style_sweep_keeps_the_scan_beside_a_partial_token() {
+        let theme = Theme::default();
+        let text = "let value = \"abcdef\";\n";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let validated = crate::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            // `cde`, inside the string literal — `"` is column 12 — so the
+            // scan covers the whole literal and the token only its middle.
+            vec![styled_token(0, 15, 3, "keyword")],
+        );
+        assert_eq!(
+            validated.accepted.len(),
+            1,
+            "the fixture's token must survive validation"
+        );
+        let lsp = crate::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let plain = row_spans(text, 0, 0, 0, 40, Default::default());
+        let spans = row_spans(text, 0, 0, 0, 40, lsp);
+
+        // Compare the colours **per character**, so the assertion does not
+        // depend on where either layer happens to split its runs.
+        let colours = |spans: &[Span<'static>]| -> Vec<Option<ratatui::style::Color>> {
+            spans
+                .iter()
+                .flat_map(|span| {
+                    span.content
+                        .chars()
+                        .map(|_| span.style.fg)
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let plain = colours(&plain);
+        let tinted = colours(&spans);
+        // The row is the line's content, without its terminator.
+        let content = text.trim_end_matches('\n').len();
+        assert_eq!(plain.len(), content, "the fixture row is plain ASCII");
+        assert_eq!(tinted.len(), plain.len(), "the token changed no characters");
+        for byte in 0..content {
+            if (15..18).contains(&byte) {
+                assert_eq!(
+                    tinted[byte],
+                    Some(theme.primary),
+                    "the token's own bytes take the token's colour: {spans:?}"
+                );
+            } else {
+                assert_eq!(
+                    tinted[byte], plain[byte],
+                    "byte {byte} keeps the scan's colour where the token does not cover: {spans:?}"
+                );
+            }
+        }
+        assert_ne!(
+            plain[16],
+            Some(theme.primary),
+            "the fixture's token must be distinguishable from the scan"
+        );
+    }
+
+    /// A token that runs past the window colours the part of it the reader
+    /// can see.
+    ///
+    /// The row reads a **prefix** of its line, so a token whose end lies past
+    /// those bytes has no byte offset in the read to map to. Dropping it — the
+    /// obvious reading of "the column is not there" — would remove the colour
+    /// from the whole of a token that starts on screen, which is the one part
+    /// of it the reader is looking at.
+    #[test]
+    fn a_token_running_past_the_window_colours_what_is_on_screen() {
+        let theme = Theme::default();
+        // One 3,000-byte line: the window reads ~488 of it, and the token
+        // covers the first 500 columns.
+        let text = format!("{}\n", "x".repeat(3_000));
+        let snapshot = DocumentBuffer::new(&text).snapshot();
+        let validated = crate::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            vec![styled_token(0, 0, 500, "keyword")],
+        );
+        assert_eq!(
+            validated.accepted.len(),
+            1,
+            "the fixture's token must survive validation"
+        );
+        let lsp = crate::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let spans = row_spans(&text, 0, 0, 0, 40, lsp);
+
+        assert_eq!(joined(&spans), "x".repeat(40), "the row draws its window");
+        assert!(
+            spans
+                .iter()
+                .all(|span| span.style.fg == Some(theme.primary)),
+            "every drawn byte is inside the token, so every drawn byte is the \
+             token's colour: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_break_horizontal_clipping() {
+        let text = format!("{} // {}", "x".repeat(5000), "tail");
+        let snapshot = DocumentBuffer::new(&text).snapshot();
+        let validated = crate::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            vec![styled_token(0, 0, 3, "keyword")],
+        );
+        let lsp = crate::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::editor_lsp::EditorLspState::default()
+        };
+        let lines = render_with_lsp(&text, 30, 8, 0, defaults(), lsp, Theme::default());
+        let widest = lines
+            .iter()
+            .map(|line| line.trim_end().chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            widest <= 30,
+            "semantic spans must stay viewport-bounded: {widest}"
+        );
+    }
+
+    // ── Cursor, readability, background ──────────────────────────────────
+
+    #[test]
+    fn normal_mode_draws_a_reverse_video_cursor() {
+        let theme = Theme::default();
+        // The cursor sits on `b` of `beta`.
+        let height = 8;
+        let buffer = render_buffer(
+            "alpha\nbeta\ngamma",
+            30,
+            height,
+            6,
+            Options {
+                mode: EditorMode::Normal,
+                buffer_focused: false,
+                ..defaults()
+            },
+        );
+        // Found by the reverse-video pairing itself, so the test states the
+        // rule rather than a coordinate.
+        let reversed = body_cells(&buffer, height)
+            .into_iter()
+            .filter(|cell| cell.fg == theme.background && cell.bg == theme.foreground)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reversed.len(),
+            1,
+            "exactly one cell may be reverse-video, and it is the cursor"
+        );
+        // And the character under it is still legible glyph-first: reverse
+        // video is the one choice that guarantees contrast for every token
+        // color without the renderer knowing which of them is light.
+        let cursor_symbol = &buffer[(TEXT_X, 1 + 1)];
+        assert_eq!(cursor_symbol.symbol(), "b");
+    }
+
+    #[test]
+    fn insert_mode_draws_a_bar_and_never_a_block() {
+        let theme = Theme::default();
+        let height = 8;
+        let buffer = render_buffer(
+            "alpha\nbeta",
+            30,
+            height,
+            6,
+            Options {
+                mode: EditorMode::Insert,
+                buffer_focused: true,
+                ..defaults()
+            },
+        );
+        // Self-locating: find the bar by the marker that *defines* it rather
+        // than by a hardcoded cell. The point is that exactly one such cell
+        // exists, and that its background is the current-line tint — a block
+        // would be the theme foreground.
+        let bars = body_cells(&buffer, height)
+            .into_iter()
+            .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+            .collect::<Vec<_>>();
+        assert_eq!(bars.len(), 1, "exactly one Insert caret must be drawn");
+        assert_eq!(
+            bars[0].bg, theme.alternate_bg,
+            "a block in Insert would hide the character being typed over"
+        );
+        assert_ne!(
+            bars[0].bg, theme.foreground,
+            "the Insert caret must not reverse the cell it sits on"
+        );
+    }
+
+    #[test]
+    fn a_cursor_at_the_end_of_a_line_is_still_visible() {
+        let theme = Theme::default();
+        // Offset 5 is one past `alpha` — the position a reader reaches most
+        // often and the one that must never be invisible.
+        let buffer = render_buffer(
+            "alpha\nbeta",
+            30,
+            8,
+            5,
+            Options {
+                buffer_focused: false,
+                ..defaults()
+            },
+        );
+        let cell = &buffer[(4 + 5, 1)];
+        assert_eq!(cell.symbol(), " ");
+        assert_eq!(cell.fg, theme.background);
+        assert_eq!(cell.bg, theme.foreground);
+    }
+
+    #[test]
+    fn the_cursor_line_is_readable_on_a_dark_theme() {
+        let theme = Theme::default();
+        let buffer = render_buffer("alpha\nbeta", 30, 8, 0, defaults());
+        // Body row 0 is the cursor's own line; column 1 is not the cursor.
+        let style = body_style(&buffer, 0, 1);
+        let fg = style.fg;
+        let bg = if style.bg == ratatui::style::Color::Reset {
+            theme.background
+        } else {
+            style.bg
+        };
+        // The defect this pins: the current line used to render as
+        // `fg(alternate_bg)`, a background color as a foreground, which on a
+        // dark theme is near-black on near-black.
+        assert_ne!(
+            fg, theme.alternate_bg,
+            "the cursor line must not paint a background color as its foreground"
+        );
+        assert!(
+            (luminance(fg) - luminance(bg)).abs() > 0.5,
+            "cursor-line text {fg:?} on {bg:?} has too little contrast to read"
+        );
+    }
+
+    #[test]
+    fn the_document_area_carries_the_theme_background() {
+        let theme = Theme::default();
+        let buffer = render_buffer("alpha", 30, 8, 0, defaults());
+        // A blank cell past the end of the text still has to be themed: this
+        // is the `Clear`-then-bare-`Paragraph` defect, and it only shows on a
+        // cell with no glyph on it.
+        let trailing = &buffer[(14, 1)];
+        assert_eq!(
+            trailing.bg, theme.background,
+            "the document area must not fall back to the terminal default"
+        );
+    }
+
+    #[test]
+    fn selected_text_stays_readable_against_the_selection_background() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha\nbeta").snapshot();
+        // Select bytes 1..4 (`pha`) on the cursor's own line, with the cursor
+        // parked at 4 — the head, not the cells under assertion.
+        let buffer = render_buffer(
+            "alpha\nbeta",
+            30,
+            8,
+            4,
+            Options {
+                buffer_focused: true,
+                selections: vec![selection_over(&snapshot, 1..4)],
+                ..defaults()
+            },
+        );
+        let cell = body_style(&buffer, 0, 1);
+        assert_eq!(cell.bg, theme.selection, "selection must paint bg");
+        let fg = cell.fg;
+        // Pinning the foreground is the contract: "patch only the background"
+        // carried a syntax foreground chosen for a different background,
+        // which is the same dark-on-dark defect one layer down.
+        assert_eq!(fg, theme.foreground);
+        assert!(
+            (luminance(fg) - luminance(theme.selection)).abs() > 0.3,
+            "selected text {fg:?} on {:?} is not readable",
+            theme.selection
+        );
+        // Line 1 carries no selection at all and must not be tinted.
+        assert_ne!(body_style(&buffer, 1, 1).bg, theme.selection);
+    }
+
+    #[test]
+    fn a_search_match_is_highlighted_and_still_readable() {
+        let theme = Theme::default();
+        // `aaa` sits at 0..3 on the cursor's own line; the cursor block owns
+        // column 0, so column 1 is a match cell that is not the cursor.
+        let buffer = render_buffer(
+            "aaa bbb aaa",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                search_line: "aaa",
+                search_count: 2,
+                search_matches: vec![0..3, 8..11],
+                ..defaults()
+            },
+        );
+        let cell = body_style(&buffer, 0, 1);
+        assert_eq!(
+            cell.bg, theme.selection_dim,
+            "a `/` match must be highlighted in the text"
+        );
+        let fg = cell.fg;
+        assert_eq!(fg, theme.foreground);
+        assert!((luminance(fg) - luminance(theme.selection_dim)).abs() > 0.3);
+        // Column 4 (`b`) is not part of any match and must not be tinted.
+        assert_ne!(body_style(&buffer, 0, 4).bg, theme.selection_dim);
+    }
+
+    #[test]
+    fn the_cursor_is_painted_over_a_search_match_and_a_selection() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("aaa bbb").snapshot();
+        // Every layer stacked on the same cell: the cursor is on the match
+        // start, which is also inside the selection.
+        // One match, because the search line matches once. `vec![0..3]` here
+        // is a set of ranges, not a mistaken range-to-vec conversion — the
+        // lint cannot tell the two apart, so the reason is stated instead.
+        #[allow(clippy::single_range_in_vec_init)]
+        let matches = vec![0..3];
+        let buffer = render_buffer(
+            "aaa bbb",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                selections: vec![selection_over(&snapshot, 0..3)],
+                search_line: "aaa",
+                search_count: 1,
+                search_matches: matches,
+                ..defaults()
+            },
+        );
+        let cursor_cell = body_style(&buffer, 0, 0);
+        assert_eq!(cursor_cell.bg, theme.foreground);
+        assert_eq!(cursor_cell.fg, theme.background);
+    }
+
+    // ── `/` search rendering ────────────────────────────────────────────
+
+    #[test]
+    fn the_search_line_appears_in_the_banner_while_it_is_open() {
+        let height = 8;
+        let lines = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                search_active: true,
+                search_line: "host_status",
+                ..defaults()
+            },
+        );
+        let banner = &lines[banner_row(height) as usize];
+        assert!(
+            banner.contains("/host_status_"),
+            "the open `/` line belongs on the banner row: {banner:?}"
+        );
+    }
+
+    #[test]
+    fn a_partial_search_says_so_rather_than_reading_as_complete() {
+        let height = 8;
+        let lines = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                search_line: "alph",
+                search_count: 3,
+                search_partial: true,
+                ..defaults()
+            },
+        );
+        // The count shares the `ln/col` readout row, which is where the
+        // reader is already looking when a search resolves.
+        let readout = &lines[readout_row(height) as usize];
+        assert!(readout.contains("3 matches"), "{readout:?}");
+        assert!(readout.contains("partial"), "{readout:?}");
+        let plain = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                search_line: "alph",
+                search_count: 3,
+                search_partial: false,
+                ..defaults()
+            },
+        );
+        let plain_readout = &plain[readout_row(height) as usize];
+        assert!(plain_readout.contains("3 matches"), "{plain_readout:?}");
+        assert!(!plain_readout.contains("partial"), "{plain_readout:?}");
+    }
+
+    // ── The jumplist picker ─────────────────────────────────────────────
+
+    /// The picker is a list of visited positions, newest first, with the
+    /// count against the bound in its title.
+    #[test]
+    fn the_jumplist_picker_lists_positions_newest_first() {
+        use crate::document_session::{Jumplist, JumplistEntry, JumplistIdentity};
+        let mut jumplist = Jumplist::default();
+        for byte in [0, 11] {
+            jumplist.push(JumplistEntry {
+                identity: JumplistIdentity::default(),
+                byte,
+            });
+        }
+        jumplist.open_picker();
+        let painted = render(
+            "alpha\nbeta\ngamma\n",
+            60,
+            12,
+            11,
+            Options {
+                jumplist,
+                ..defaults()
+            },
+        )
+        .join("\n");
+
+        assert!(
+            painted.contains("jumplist · 2/32"),
+            "the title carries the count against the named bound, got:\n{painted}"
+        );
+        // The document paints those words too, so the rows are matched by
+        // their own gutter rather than by the text alone.
+        let newest = painted
+            .find("    3  gamma")
+            .expect("the newest entry's row");
+        let oldest = painted
+            .find("    1  alpha")
+            .expect("the oldest entry's row");
+        assert!(
+            newest < oldest,
+            "newest first, so the most recent jump is the first row, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("oldest dropped"),
+            "below the bound nothing is dropped, so nothing claims it is:\n{painted}"
+        );
+    }
+
+    /// At the bound the picker states what the bound costs, so a history that
+    /// pruned is disclosed where the list is read rather than silently shorter.
+    #[test]
+    fn the_jumplist_picker_discloses_the_bound_it_holds_at() {
+        use crate::document_session::{
+            Jumplist, JumplistEntry, JumplistIdentity, MAX_JUMPLIST_ENTRIES,
+        };
+        let mut jumplist = Jumplist::default();
+        for byte in 0..MAX_JUMPLIST_ENTRIES {
+            jumplist.push(JumplistEntry {
+                identity: JumplistIdentity::default(),
+                byte,
+            });
+        }
+        jumplist.open_picker();
+        let painted = render(
+            "alpha\nbeta\ngamma\n",
+            60,
+            12,
+            0,
+            Options {
+                jumplist,
+                ..defaults()
+            },
+        )
+        .join("\n");
+
+        assert!(
+            painted.contains(&format!(
+                "jumplist · {MAX_JUMPLIST_ENTRIES}/{MAX_JUMPLIST_ENTRIES}"
+            )),
+            "the count reaches the bound, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("oldest dropped at the bound"),
+            "at the bound the picker says what a further push costs, got:\n{painted}"
+        );
+    }
+
+    // ── The history cursor's position ───────────────────────────────────
+
+    /// A time cursor nobody can see is a rename.
+    #[test]
+    fn the_history_position_is_disclosed_only_when_the_cursor_is_not_at_the_tip() {
+        let height = 8;
+        let at_tip = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                history: (3, 3),
+                ..defaults()
+            },
+        );
+        let banner = &at_tip[banner_row(height) as usize];
+        assert!(
+            !banner.contains("history"),
+            "at the tip there is nothing to disclose: {banner:?}"
+        );
+
+        let behind = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                history: (1, 3),
+                ..defaults()
+            },
+        );
+        let banner = &behind[banner_row(height) as usize];
+        assert!(
+            banner.contains("history 1/3"),
+            "the position belongs on the banner row: {banner:?}"
+        );
+    }
+
+    /// A clear at the bound explains itself instead of leaving `u` broken.
+    #[test]
+    fn the_banner_names_a_history_cleared_at_its_bound() {
+        let height = 8;
+        let cleared = render(
+            "alpha",
+            100,
+            height,
+            0,
+            Options {
+                history_cleared: true,
+                ..defaults()
+            },
+        );
+        let banner = &cleared[banner_row(height) as usize];
+        assert!(
+            banner.contains("history cleared at its bound"),
+            "the fallback is disclosed rather than silent: {banner:?}"
+        );
+    }
+
+    /// nothing is applied.
+    ///
+    /// The rendering is M013's, but a rendering nobody exercises is a
+    /// rendering nobody knows works, and "the preview shows the files" is
+    /// the whole point of the chord.
+    #[test]
+    fn the_rename_preview_names_the_files_it_would_change() {
+        use codegg_protocol::lsp::{
+            LspReadOperation, LspReadPayloadDto, LspReadResultDto, LspReadStatus, LspRenameFileDto,
+            LspRenamePreviewDto,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::RenamePreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::RenamePreview(LspRenamePreviewDto {
+                old_name: Some("old".to_string()),
+                new_name: "renamed".to_string(),
+                edit_count: 2,
+                files: vec![LspRenameFileDto {
+                    path: "src/lib.rs".to_string(),
+                    edit_count: 2,
+                }],
+                warnings: Vec::new(),
+                truncated: false,
+                base_stale: false,
+                candidate: None,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("renamed"),
+            "the preview names the new name, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("src/lib.rs"),
+            "and the file it would change, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("not applied"),
+            "and says that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    #[test]
+    fn the_format_preview_shows_the_diff_and_says_it_is_not_applied() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspReadOperation, LspReadPayloadDto, LspReadResultDto,
+            LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: false,
+                base_stale: false,
+                candidate: None,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("let x =  1;"),
+            "the preview shows the diff, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("not applied"),
+            "and says that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    /// The code-action panel lists what the server offered, and says which
+    /// of the offered actions can be applied.
+    ///
+    /// The reader has to be able to see *all* of the offer — including the
+    /// parts that cannot be applied — because the offer is the server's
+    /// answer, and hiding an action would hide the answer. Each line says
+    /// what would happen, so a command-only action is visibly not an
+    /// application and not a mystery.
+    #[test]
+    fn the_code_action_panel_lists_the_offer_and_says_which_can_be_applied() {
+        use codegg_protocol::lsp::{
+            LspCodeActionDto, LspCodeActionUnavailable, LspPreviewCandidateDto, LspPreviewPatchDto,
+            LspReadOperation, LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::CodeActionPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::CodeActions {
+                actions: vec![
+                    LspCodeActionDto {
+                        title: "Add the missing import".to_string(),
+                        kind: Some("quickfix".to_string()),
+                        preferred: true,
+                        disabled_reason: None,
+                        has_edit: true,
+                        has_command: false,
+                        candidate: Some(LspPreviewCandidateDto {
+                            preview_id: "editor-preview-1".to_string(),
+                            preview_revision: 1,
+                            preview_digest: "a".repeat(64),
+                            kind: "code_action".to_string(),
+                            title: "Add the missing import".to_string(),
+                            provenance: "editor:code_action:Add the missing import".to_string(),
+                            patches: vec![LspPreviewPatchDto {
+                                path: "src/lib.rs".to_string(),
+                                patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                                original_hash: "b".repeat(64),
+                            }],
+                        }),
+                        unavailable: None,
+                    },
+                    LspCodeActionDto {
+                        title: "Run the test suite".to_string(),
+                        kind: None,
+                        preferred: false,
+                        disabled_reason: None,
+                        has_edit: false,
+                        has_command: true,
+                        candidate: None,
+                        unavailable: Some(LspCodeActionUnavailable::Command),
+                    },
+                ],
+                truncated: false,
+            }),
+        });
+
+        let painted = render("hello", 96, 24, 0, options).join("\n");
+        assert!(
+            painted.contains("Add the missing import"),
+            "the panel names the action, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("ready to apply"),
+            "and says the applicable one can be applied, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("Run the test suite"),
+            "the unapplicable action is listed too, got:\n{painted}"
+        );
+        assert!(
+            painted.contains("command"),
+            "and says why it cannot be applied, got:\n{painted}"
+        );
+    }
+
+    /// The code-action panel shows the **selected** action, even when the
+    /// server offered more actions than the panel is tall.
+    #[test]
+    fn the_code_action_panel_keeps_the_selected_action_visible() {
+        use codegg_protocol::lsp::{
+            LspCodeActionDto, LspPreviewCandidateDto, LspPreviewPatchDto, LspReadOperation,
+            LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let action = |index: usize| LspCodeActionDto {
+            title: format!("Action {index}"),
+            kind: Some("quickfix".to_string()),
+            preferred: false,
+            disabled_reason: None,
+            has_edit: true,
+            has_command: false,
+            candidate: Some(LspPreviewCandidateDto {
+                preview_id: format!("editor-preview-{index}"),
+                preview_revision: 1,
+                preview_digest: "a".repeat(64),
+                kind: "code_action".to_string(),
+                title: format!("Action {index}"),
+                provenance: format!("editor:code_action:Action {index}"),
+                patches: vec![LspPreviewPatchDto {
+                    path: "src/lib.rs".to_string(),
+                    patch: "@@ -1 +1 @@\n-a\n+b\n".to_string(),
+                    original_hash: "b".repeat(64),
+                }],
+            }),
+            unavailable: None,
+        };
+
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.selected_index = 10;
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::CodeActionPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::CodeActions {
+                actions: (0..12).map(action).collect(),
+                truncated: false,
+            }),
+        });
+
+        let painted = render("hello", 96, 24, 0, options).join("\n");
+        assert!(
+            painted.contains("> Action 10"),
+            "the selected action must be visible and marked, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("Action 0\n"),
+            "the window must have moved past the earlier actions, got:\n{painted}"
+        );
+    }
+
+    /// A preview that became a candidate is not "not applied" any more.
+    #[test]
+    fn a_preview_with_a_candidate_says_it_is_ready_to_apply() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspPreviewCandidateDto, LspPreviewPatchDto, LspReadOperation,
+            LspReadPayloadDto, LspReadResultDto, LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: false,
+                base_stale: false,
+                candidate: Some(LspPreviewCandidateDto {
+                    preview_id: "editor-preview-1".to_string(),
+                    preview_revision: 1,
+                    preview_digest: "a".repeat(64),
+                    kind: "formatting".to_string(),
+                    title: "Format src/lib.rs".to_string(),
+                    provenance: "editor:format:src/lib.rs".to_string(),
+                    patches: vec![LspPreviewPatchDto {
+                        path: "src/lib.rs".to_string(),
+                        patch: "@@ -1 +1 @@\n- let x = 1;\n+ let x =  1;".to_string(),
+                        original_hash: "b".repeat(64),
+                    }],
+                }),
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("ready to apply"),
+            "a candidate is ready to apply, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("not applied"),
+            "and must not still claim that nothing is applied, got:\n{painted}"
+        );
+    }
+
+    #[test]
+    fn a_truncated_preview_says_it_cannot_be_applied() {
+        use codegg_protocol::lsp::{
+            LspFormatPreviewDto, LspReadOperation, LspReadPayloadDto, LspReadResultDto,
+            LspReadStatus,
+        };
+        let mut options = defaults();
+        options.lsp.panel = Some(crate::editor_lsp::EditorLspPanel::ReadResult);
+        options.lsp.read_result = Some(LspReadResultDto {
+            operation: LspReadOperation::FormatPreview,
+            status: LspReadStatus::Ready,
+            payload: Some(LspReadPayloadDto::FormatPreview(LspFormatPreviewDto {
+                path: "src/lib.rs".to_string(),
+                edit_count: 1,
+                before_hash: "a".to_string(),
+                after_hash: "b".to_string(),
+                diff: "- let x = 1;\n+ let x =  1;".to_string(),
+                truncated: true,
+                base_stale: false,
+                candidate: None,
+            })),
+        });
+
+        let painted = render("hello", 72, 20, 0, options).join("\n");
+        assert!(
+            painted.contains("truncated"),
+            "a truncated preview must say it is truncated, got:\n{painted}"
+        );
+        assert!(
+            !painted.contains("ready to apply"),
+            "and must not offer itself as applicable, got:\n{painted}"
+        );
+    }
+}

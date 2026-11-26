@@ -1,0 +1,877 @@
+use crate::components::dialogs::help::HelpRoute;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Dialog {
+    None,
+    Model,
+    Agent,
+    Session,
+    /// The help box, with the route it was opened by.
+    ///
+    /// The route is part of the **request** rather than a separate argument,
+    /// so a call site cannot open the help box without saying which help box
+    /// it is: the composer's chord (which owns the copy gesture) or the app's
+    /// `/help` (which does not). See
+    /// [`crate::components::dialogs::help::HelpRoute`].
+    Help(HelpRoute),
+    Tree,
+    Files,
+    Theme,
+    Question,
+    Permission,
+    PanelManager,
+    Mcp,
+    Keybind,
+    Share,
+    Import,
+    Template,
+    Connect,
+    ConnectionSelection,
+    Context,
+    Cost,
+    Usage,
+    Stats,
+    Goto,
+    Plan,
+    Diff,
+    Confirm,
+    Review,
+    ResearchBrowser,
+    SecurityReview,
+    SourcePreview,
+    ShellShow,
+    Terminal,
+    TaskList,
+    WorktreeList,
+    GoalShow,
+    MemoryResults,
+    DoctorReport,
+    /// Read-only `/logs` window: bounded daemon log tail plus retained
+    /// toast notifications. Own variant so `ui_state.dialog` reports
+    /// what is actually on screen.
+    Logs,
+    Plugin,
+    RunDetail,
+    JobDetail,
+    ProjectPicker,
+    Collaborators,
+    ProjectChat,
+    /// Team Collaboration Corrective M003: project team administration
+    /// view (durable membership management). FocusManager-owned; see
+    /// `team.rs`. `/collaborators` remains ephemeral presence.
+    Team,
+    /// `/control` inspector. Split from `Team` because the panel host reads
+    /// the discriminator to decide where a box docks; see
+    /// [`crate::components::component::DialogType::Control`].
+    Control,
+    /// M003: one-time device-token plaintext display (transient,
+    /// secret-safe; see `device_secret.rs`). FocusManager-owned.
+    TeamTokenSecret,
+    /// Project Work Orders M003: Task scheduling sheet (confirm/cancel
+    /// a WorkOrder create). FocusManager-owned; see `task_schedule.rs`.
+    TaskSchedule,
+    /// Project Work Orders M003: project Task view (running/waiting/
+    /// attention/recent). FocusManager-owned; see `task_view.rs`.
+    TaskView,
+    /// C001: one-time external-trigger bearer display (transient,
+    /// secret-safe; see `trigger_secret.rs`). FocusManager-owned.
+    TriggerSecret,
+    /// Project Work Orders M004: global Workspace dashboard (bounded
+    /// per-project activity rows). FocusManager-owned; see
+    /// `workspace_dashboard.rs`. Not a durable Workspace object.
+    WorkspaceDashboard,
+    /// `/approval` + `/sandbox` fast-select. FocusManager-owned; see
+    /// `policy_selector.rs`.
+    PolicySelector,
+    /// M004: the session's waiting prompts. FocusManager-owned; see
+    /// `components/dialogs/queue.rs`. `dock_target` has no queue arm, so this
+    /// box is a modal and never docks.
+    Queue,
+}
+
+impl Dialog {
+    /// True when a dialog of any variant is on screen.
+    ///
+    /// The predicate covers **every** variant of the enum. An earlier
+    /// version matched 50 of 53 and omitted `PanelManager` and `Control`,
+    /// so a caller asking "is a dialog open?" was told "no" while the
+    /// panel manager was on screen. `scripts/check_command_argument_contract.py`
+    /// fails when a variant is missing from this list.
+    pub fn is_open(&self) -> bool {
+        matches!(
+            self,
+            Self::Model
+                | Self::Agent
+                | Self::Session
+                | Self::Help(_)
+                | Self::Tree
+                | Self::Files
+                | Self::Theme
+                | Self::Question
+                | Self::Permission
+                | Self::PanelManager
+                | Self::Mcp
+                | Self::Keybind
+                | Self::Share
+                | Self::Import
+                | Self::Template
+                | Self::Connect
+                | Self::ConnectionSelection
+                | Self::Context
+                | Self::Cost
+                | Self::Usage
+                | Self::Stats
+                | Self::Goto
+                | Self::Plan
+                | Self::Diff
+                | Self::Confirm
+                | Self::Review
+                | Self::ResearchBrowser
+                | Self::SecurityReview
+                | Self::SourcePreview
+                | Self::ShellShow
+                | Self::Terminal
+                | Self::TaskList
+                | Self::WorktreeList
+                | Self::GoalShow
+                | Self::MemoryResults
+                | Self::DoctorReport
+                | Self::Logs
+                | Self::Plugin
+                | Self::RunDetail
+                | Self::JobDetail
+                | Self::ProjectPicker
+                | Self::Collaborators
+                | Self::ProjectChat
+                | Self::Team
+                | Self::Control
+                | Self::TeamTokenSecret
+                | Self::TaskSchedule
+                | Self::TaskView
+                | Self::TriggerSecret
+                | Self::WorkspaceDashboard
+                | Self::PolicySelector
+                | Self::Queue
+        )
+    }
+}
+
+/// Synchronous component/user intent consumed by `App::process_msg`.
+///
+/// This enum is not a completion channel. Intent handlers may update cached
+/// UI state or enqueue a typed `TuiCommand` effect for the runtime.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TuiMsg {
+    SubmitPrompt,
+    NavigateUp,
+    NavigateDown,
+    NavigateLeft,
+    NavigateRight,
+    CycleAgent,
+    OpenModelDialog,
+    OpenAgentDialog,
+    OpenSessionDialog,
+    OpenHelpDialog,
+    /// Copy the composer's held selection to the system clipboard.
+    ///
+    /// ADR-0042 part 7: the copy gesture is the help box's, reached through
+    /// the `space` chord. The help box **returns** this message rather than
+    /// copying, because the focused component is a clone of the dialog and a
+    /// clone cannot reach the app's composer. The app performs the copy and
+    /// reports the outcome.
+    CopyComposerSelection,
+    OpenTreeDialog,
+    OpenThemeDialog,
+    OpenShareDialog,
+    OpenImportDialog,
+    OpenDiffDialog {
+        old_content: Box<str>,
+        new_content: Box<str>,
+        title: Box<str>,
+    },
+    /// A model was chosen in the `/models` box, with the thinking level
+    /// picked there for it, if any.
+    SelectModel {
+        model: String,
+        reasoning: Option<codegg_protocol::core::ReasoningMode>,
+    },
+    SelectAgent {
+        agent_name: String,
+    },
+    SelectSession(Box<Session>),
+    SubmitConnect,
+    CloseDialog,
+    ProjectInitApprove,
+    ToggleSidebar,
+    /// A directional pane gesture, resolved contextually.
+    MoveDirection(crate::panels::PanelDirection),
+    /// Put the keyboard on the panel docked at `placement`.
+    FocusPanelAt {
+        placement: crate::panels::PanelPlacement,
+    },
+    /// The terminal panel took the PTY's keyboard.
+    ///
+    /// A panel cannot focus the terminal itself: the focus flag lives on the
+    /// controller the box also drives, and the toast that explains where
+    /// keystrokes now go needs the app's message state.
+    TerminalPanelFocus {
+        handle: String,
+    },
+    /// Hand the keyboard back to the host (the panel's `Ctrl-]`).
+    TerminalPanelBlur {
+        handle: String,
+    },
+    /// Forward bytes to a live PTY.
+    ///
+    /// Carries the payload rather than the side effect on purpose: the send
+    /// is a bounded daemon operation, and doing it in the command layer is
+    /// what keeps a panel from becoming an execution surface.
+    TerminalPanelInput {
+        handle: String,
+        bytes: Vec<u8>,
+    },
+    /// Clear the terminal's local scrollback and screen.
+    TerminalPanelClear {
+        handle: String,
+    },
+    /// Start a shell for the terminal panel.
+    ///
+    /// A panel can ask but cannot act: spawning is a daemon operation, and
+    /// *which surface* the result lands on is app state a panel is
+    /// structurally unable to see. One intent, one owner.
+    StartTerminal,
+    /// Load `panel` into the side column and close the manager.
+    SelectPanel {
+        panel: crate::panels::SidePanelId,
+    },
+    /// Bind `digit` to `panel` and persist it.
+    SavePanelHotkey {
+        digit: char,
+        panel: crate::panels::SidePanelId,
+    },
+    /// Move the panel to `placement` and persist the choice.
+    ///
+    /// Separate from `SelectPanel` on purpose: the two answer different
+    /// questions — *which panel* is loaded versus *where the panel lives* —
+    /// and folding them together would make the layout strip a way to
+    /// silently retarget the loaded panel.
+    SetPanelPlacement {
+        placement: crate::panels::PanelPlacement,
+    },
+    /// Step to the next placement. The manager's single layout key.
+    CyclePanelPlacement,
+    /// Put the manager's highlighted panel on `placement`.
+    ///
+    /// The Normal-mode directional inside the manager, so *where* a panel lives
+    /// is the same gesture everywhere else in the TUI. Separate from
+    /// [`SelectPanel`](Self::SelectPanel): this one positions and leaves the
+    /// panel unloaded, so arriving on an edge and filling it are two
+    /// deliberate acts rather than one gesture that silently starts a load.
+    MovePanelTo {
+        panel: crate::panels::SidePanelId,
+        placement: crate::panels::PanelPlacement,
+    },
+    /// Open the unified tasks overlay: todos, subagents, jobs.
+    ToggleTasksList,
+    ToggleFullscreen,
+    ToggleReasoning,
+    ToggleTts,
+    CycleModelForward,
+    CycleModelBackward,
+    ClearSession,
+    NewSession,
+    CloseSession,
+    CharInput(char),
+    Backspace,
+    Delete,
+    CursorLeft,
+    CursorRight,
+    CursorHome,
+    CursorEnd,
+    PageUp,
+    PageDown,
+    Search,
+    SearchNext,
+    SearchPrev,
+    ClearSearch,
+    StashPrompt,
+    RestorePrompt,
+    CopyMessage,
+    Quit,
+    ExternalEditor,
+    UndoDelete,
+    /// Legacy alias for `ThemeCommit`. Kept so any in-tree call sites
+    /// that still send `SelectTheme` continue to work; new code should
+    /// prefer the `ThemePreviewChanged` / `ThemeCommit` / `ThemeRevert`
+    /// trio.
+    SelectTheme {
+        theme_name: String,
+    },
+    /// Live-preview a theme in the running UI without persisting it. The
+    /// app updates its current `Theme` to match; nothing is written to
+    /// the database. Used while the user navigates the theme picker.
+    ThemePreviewChanged {
+        theme_id: String,
+    },
+    /// Persist a theme (DB row + config mirror) and close the picker.
+    /// Distinct from `SelectTheme` so live preview can keep emitting
+    /// previews until the user explicitly commits.
+    ThemeCommit {
+        theme_id: String,
+    },
+    /// Revert the running UI to the last committed theme. Used by Esc
+    /// and by the dialog-close revert path.
+    ThemeRevert,
+    SubmitPermission {
+        choice_index: usize,
+    },
+    SubmitQuestionAnswers {
+        answers_json: String,
+    },
+    SelectTreeSession {
+        session_id: String,
+    },
+    ForkTreeSession {
+        session_id: String,
+    },
+    ForkSession {
+        session_id: String,
+    },
+    /// M006: launch a session into an isolated checkout.
+    ///
+    /// `parent_session_id` is set when the launch is a *fork* of that
+    /// session. `worktree_id` names the managed checkout to place the
+    /// session in; `None` means a new checkout is allocated.
+    LaunchSession {
+        parent_session_id: Option<String>,
+        worktree_id: Option<String>,
+    },
+    /// M006: the selected session runs in the project's own root, so
+    /// there is no managed checkout to reuse.
+    LaunchNeedsCheckout,
+    SubmitImportPreview,
+    ConfirmImport,
+    SelectTemplate {
+        key: String,
+        template: Box<SessionTemplate>,
+    },
+    GotoMessage {
+        index: usize,
+    },
+    CopyShareUrl,
+    McpAction {
+        server_name: String,
+        action: String,
+    },
+    KeybindChanged {
+        action: String,
+        binding: String,
+    },
+    ConfirmDeleteSession {
+        session_id: String,
+    },
+    ConfirmArchiveSession {
+        session_id: String,
+        unarchive: bool,
+    },
+    ConfirmBulkDelete {
+        count: usize,
+        session_ids: Vec<String>,
+    },
+    ConfirmBulkArchive {
+        count: usize,
+        unarchive: bool,
+        session_ids: Vec<String>,
+    },
+    ConfirmResult(Option<bool>),
+    /// A row in the `/approval` / `/sandbox` fast-select was chosen. Exactly
+    /// one axis is populated; `App::process_msg` forwards it to
+    /// `policy::request_policy_change`, so the warning matrix and the
+    /// daemon CAS still apply.
+    PolicyOptionSelected {
+        approval_mode: Option<String>,
+        sandbox_profile: Option<String>,
+    },
+    /// M004: `/queue` asked the daemon to discard one entry.
+    ///
+    /// Carries the `entry_id` the box had selected rather than an index, so a
+    /// projection that changed between the keystroke and the request cannot
+    /// make the delete name a different prompt. The daemon decides whether it
+    /// is allowed at all (`ControllerScope::QueueMutation`); the box does not
+    /// pre-empt it.
+    QueueDeleteSelected {
+        entry_id: String,
+    },
+    /// M004: re-read the queue projection for the active session. Emitted by
+    /// `r` in the box, which is the only surface the push path cannot cover —
+    /// a mutation made by a second attached frontend.
+    QueueRefreshRequested,
+    /// M005: `Enter` on a fresh compose step. The box has already left the
+    /// text step by the time this is observed.
+    ///
+    /// Carries the composed text and **not** an `entry_id`: the id is minted
+    /// here, at commit, rather than when the step opened. Minting it up front
+    /// would make an abandoned compose step burn an id, and — worse — make the
+    /// retry story ambiguous about which text the id belongs to.
+    QueueAddCommitted {
+        text: String,
+        /// M007 (ADR-0039): the resolved due time, or `None` for an immediate
+        /// entry.
+        ///
+        /// An absolute instant, not a duration: the duration was resolved
+        /// against the wall clock when the user pressed `Enter`, and resolving
+        /// it again at submit time would silently slide the entry by however
+        /// long the queue box took to get here.
+        run_at_ms: Option<i64>,
+    },
+    /// M005: `Enter` on the edit step.
+    ///
+    /// Carries the entry's **existing** id. An edit replaces text; it does not
+    /// replace identity, and minting a new id would orphan the row the user
+    /// meant to correct.
+    QueueEditCommitted {
+        entry_id: String,
+        text: String,
+        /// M007: `None` clears an existing schedule.
+        run_at_ms: Option<i64>,
+    },
+    /// M007: a duration the box could not parse, refused **before** any request.
+    ///
+    /// Carries the offending input verbatim so the message can quote what the
+    /// user actually typed. This is the input — a short grammar token the user
+    /// just composed — and never prompt text, which is the thing the rest of
+    /// this surface refuses to name anywhere.
+    QueueScheduleRejected {
+        input: String,
+    },
+    /// M005: the complete desired order of the **operable** (pending) rows.
+    ///
+    /// Already filtered and permuted by the box — see
+    /// `QueueDialog::pending_permutation` for why a client that sends every id
+    /// it rendered is refused the moment one row is mid-delivery. The TUI
+    /// builds the permutation and the daemon validates it; neither sorts the
+    /// other's data.
+    QueueReorderSelected {
+        entry_ids: Vec<String>,
+    },
+    /// M005: a reorder that cannot be expressed, named so the user gets a
+    /// reason instead of a keypress that does nothing.
+    QueueReorderUnavailable {
+        reason: crate::components::dialogs::queue::QueueReorderRefusal,
+    },
+    /// M006: `s` on a queued prompt — hand it to the turn that is already
+    /// running instead of waiting for that turn to finish.
+    ///
+    /// Carries the entry id the box had selected, for the same reason delete
+    /// does: a projection that landed between the keystroke and the request must
+    /// not make this name a different prompt. Carries **no text** — the daemon
+    /// loads what the `add` stored, so a keystroke cannot submit text that no
+    /// queue entry accounts for.
+    QueueSendNowSelected {
+        entry_id: String,
+    },
+    /// M006: a send-now that produced no request, named so the user gets a
+    /// reason instead of a keypress that does nothing.
+    QueueSendNowUnavailable {
+        reason: crate::components::dialogs::queue::QueueSendRefusal,
+    },
+    ReviewOpenDiff {
+        path: String,
+    },
+    ResearchOpenRun {
+        run_id: String,
+    },
+    ResearchRefreshRuns,
+    ResearchLoadSection {
+        run_id: String,
+        section: String,
+    },
+    /// Copy a file path to the clipboard and surface a toast.
+    /// Emitted by the security review panel's "jump to file" action;
+    /// the file is never opened or mutated.
+    SecurityReviewJump {
+        path: String,
+        line: Option<u32>,
+    },
+    OpenSourcePreview {
+        path: PathBuf,
+        line: Option<u32>,
+        origin_label: Option<String>,
+    },
+    // ── Project chat window (`ChatDialog`) ────────────────────────────
+    //
+    // Pure intents. The dialog owns presentation and local view state
+    // only; every variant below is routed by `App::process_msg` into the
+    // existing `commands/chat.rs` `start_chat_*` seams, which own the
+    // daemon round-trip, authorization, and stale-completion guards.
+    /// Send a composed message, optionally as a reply.
+    ChatSend {
+        body: String,
+        reply_to: Option<String>,
+    },
+    /// Replace one message body. The daemon resolves the expected
+    /// revision and reports conflicts; the client never guesses one.
+    ChatEdit {
+        message_id: String,
+        body: String,
+    },
+    /// Redact one message body irreversibly.
+    ChatRedact {
+        message_id: String,
+    },
+    /// Advance the read marker to the newest retained message.
+    ChatMarkRead,
+    /// Page backward from the current window (daemon-side backward
+    /// paging; gated on the negotiated capability).
+    ChatLoadOlder,
+    /// Reload the active channel.
+    ChatRefresh,
+    /// Move the window to another channel of the same project. The
+    /// reducer validates the channel against the daemon's own listing
+    /// before switching, so an unknown id is rejected client-side too.
+    ChatSwitchChannel {
+        channel_id: String,
+    },
+    /// The daemon does not advertise backward paging, so `u` cannot be
+    /// served. Surfaced as a hint rather than a silent no-op.
+    ChatPagingUnsupported,
+    /// A chat surface asked the shared composer to open an editor for it.
+    ChatComposerSeed(crate::chat_browser::ChatComposeSeed),
+    /// The chat panel's `Esc`: drop the armed reply/edit context and keep the
+    /// text.
+    ///
+    /// `Esc` is the **mode switch** everywhere now — it leaves insert mode and
+    /// cancels an armed compose rather than handing the panel's selection back
+    /// to the conversation. The panel owns that intent, so it names it.
+    CancelChatComposer,
+    /// The agents panel asked to act on one agent.
+    ///
+    /// A *selection*, not an instruction: the command layer resolves the
+    /// agent's provenance and decides whether the action is even available,
+    /// so a verb the panel could not offer is still refused here.
+    AgentPanelAction {
+        selection: crate::panels::agents::AgentSelection,
+        name: String,
+    },
+    OpenRunDetail {
+        run_id: String,
+    },
+    OpenJobDetail {
+        job_id: String,
+    },
+    CancelJob {
+        job_id: String,
+    },
+    ShellInclude {
+        id: String,
+        mode: String,
+    },
+    ShellAsk {
+        id: String,
+    },
+    ShellRerun {
+        id: String,
+    },
+    ShellKill {
+        id: String,
+    },
+    RunRerun {
+        run_id: String,
+    },
+    RunPromote {
+        run_id: String,
+    },
+    RunCopyId {
+        run_id: String,
+    },
+    /// Provider Connections Milestone 3: user confirms a connection +
+    /// model selection update from the dialog.
+    SubmitSelectionUpdate {
+        session_id: String,
+        connection_id: String,
+        connection_revision: Option<u64>,
+        model_id: String,
+        catalog_revision: Option<String>,
+    },
+    /// Provider Connections Milestone 3: the daemon reported the
+    /// current selection state for the dialog.
+    SessionSelectionUpdated {
+        selection: codegg::protocol::provider::SessionSelectionDto,
+    },
+    /// Provider Connections Milestone 3: the daemon reported the
+    /// updated list of selectable connections.
+    ProviderConnectionsUpdated {
+        connections: Vec<codegg::protocol::provider::ProviderConnectionSummaryDto>,
+    },
+    /// Provider Connections Milestone 3: the daemon reported the
+    /// bounded model catalog for a connection.
+    ProviderConnectionModelsUpdated {
+        connection_id: String,
+        catalog_revision: Option<String>,
+        models: Vec<codegg::protocol::provider::SelectedModelDto>,
+    },
+    /// The connection highlight moved in the selection dialog. The model
+    /// pane is scoped to one connection, so the app refetches that
+    /// connection's catalog; without this the previously focused
+    /// connection's models stayed on screen and Enter could pair them with
+    /// the wrong connection.
+    ConnectionFocusChanged {
+        connection_id: String,
+    },
+    OpenConnectionRotation {
+        connection_id: String,
+        expected_revision: u64,
+    },
+    ConnectionLifecycle {
+        action: ConnectionLifecycleAction,
+        connection_id: String,
+        expected_revision: u64,
+    },
+    /// Open the project picker dialog.
+    OpenProjectPicker,
+    /// Switch to the next project tab.
+    NextProjectTab,
+    /// Switch to the previous project tab.
+    PreviousProjectTab,
+    /// Close the active project tab.
+    CloseProjectTab,
+    /// Open the subagent with this projection `task_id` as a tab in the main
+    /// buffer.
+    ///
+    /// Addressed by the projection's canonical id rather than a row index so
+    /// every surface that can open a tab — the tasks overlay today, the
+    /// sessions panel's subagent section from M004 — agrees on identity even
+    /// if the rows shift underneath between the keypress and the dispatch.
+    ///
+    /// Carries no authority: opening a tab reads state the projection already
+    /// published and sends nothing to the subagent. Interacting with a
+    /// subagent is M900, which is not approved for planning.
+    OpenSubagentTab {
+        task_id: String,
+    },
+    /// Move to the next subagent tab, wrapping through the conversation.
+    NextCenterTab,
+    /// Move to the previous subagent tab, wrapping through the conversation.
+    PreviousCenterTab,
+    /// Close the active subagent tab, returning to the main buffer.
+    CloseCenterTab,
+    /// Select a project tab by visible index.
+    SelectProjectTabByIndex {
+        index: usize,
+    },
+    /// Project Work Orders M003: toggle the prompt composer between
+    /// Session and Task submission modes. `InputMode` is untouched.
+    ToggleComposerMode,
+    /// Project Work Orders M003: the scheduling sheet confirmed with
+    /// edited values. Validation runs in `App` (prompt preserved on
+    /// error); success spawns the `WorkOrderCreate` continuation.
+    /// C001 adds the focused queue insertion position/revision and the
+    /// external-trigger toggle.
+    TaskScheduleConfirm {
+        delay_text: String,
+        not_before_text: String,
+        repeat_text: String,
+        sequential: bool,
+        lane_id: Option<String>,
+        queue_insert_position: Option<usize>,
+        queue_expected_revision: Option<u64>,
+        external_trigger: bool,
+        gate_join_all: bool,
+        model: Option<String>,
+    },
+    /// Project Work Orders M003: move the sheet selection (`delta`
+    /// rows). Component-local navigation also exists; this covers
+    /// App-driven sync paths.
+    TaskScheduleMove {
+        delta: isize,
+    },
+    /// Project Work Orders M003: move the Task-view selection.
+    TaskViewMove {
+        delta: isize,
+    },
+    /// Project Work Orders M003: reorder the selected waiting task
+    /// within its lane (`delta` positions). CAS-guarded; conflicts
+    /// refresh with "queue changed; retry".
+    TaskViewReorder {
+        delta: isize,
+    },
+    /// Project Work Orders M003: open the selected row — materialized
+    /// session via canonical routing, or detail refresh for future
+    /// tasks (never a fake session).
+    TaskViewOpen,
+    /// Project Work Orders M003: refresh the Task view projection.
+    TaskViewRefresh,
+    /// Project Work Orders M003: cancel the selected waiting task
+    /// (`WorkOrderCancel`; running sessions use session/job control).
+    TaskViewCancel,
+    /// Project Work Orders M003: resume the selected paused task
+    /// (`WorkOrderResume`).
+    TaskViewResume,
+    /// Project Work Orders M003: fetch occurrence detail for the
+    /// selected row (lazy single-row fetch, never N+1).
+    TaskViewDetail,
+    /// C001: close the one-time trigger secret dialog and forget the
+    /// bearer. Metadata stays listable; the secret is never re-readable.
+    TriggerSecretClose,
+    /// M003: close the one-time device-token secret dialog and forget
+    /// the plaintext. Token metadata stays listable; the credential is
+    /// never re-readable (rotation is revoke + create).
+    TeamTokenSecretClose,
+    /// C001: create/retry the external trigger for the selected Task
+    /// row (or the setup-incomplete WorkOrder). Idempotent via the
+    /// deterministic creation key; ambiguous timeouts reconcile via
+    /// metadata before minting a new credential.
+    TaskTriggerSetup,
+    /// C001: revoke the active trigger for the selected row
+    /// (monotonic; rotation is revoke + create and needs explicit
+    /// user choice).
+    TaskTriggerRevoke,
+    /// C001: explicit rotation for the selected row (revoke old then
+    /// create replacement, showing only the new bearer). The human must
+    /// choose it; lost responses never auto-revoke.
+    TaskTriggerRotate,
+    /// C001: refresh trigger metadata for the selected row (list/get,
+    /// never secrets).
+    TaskTriggerRefresh,
+    /// Open the global Workspace dashboard (M004).
+    OpenWorkspaceDashboard,
+    /// Project Work Orders M004: move the dashboard selection.
+    WorkspaceDashboardMove {
+        delta: isize,
+    },
+    /// Project Work Orders M004: descend from the dashboard — focus
+    /// the selected project tab and open its Task view (Enter on an
+    /// expanded project with running work goes through the same Task
+    /// view path; the dashboard never fabricates a session).
+    WorkspaceDashboardOpen,
+    /// Project Work Orders M004: bounded dashboard refresh (one
+    /// aggregate request, never N+1).
+    WorkspaceDashboardRefresh,
+    /// Project Work Orders M004: expand/collapse the selected
+    /// project's inline running-task detail (one bounded lazy fetch).
+    WorkspaceDashboardToggleExpand,
+    /// `/files`: open a workspace-relative file in the editor.
+    ///
+    /// The `/files` box is a navigator and never holds a document itself, so
+    /// this intent is what turns a selected row into an attachment. The path
+    /// is workspace-relative and reaches `open_editor`, which owns the
+    /// lexical validation and the daemon-authorized attach.
+    FilesOpenSelected {
+        path: String,
+    },
+    /// `/files`: close the `/files` box (`q`) — inert in the docked panel.
+    FilesClose,
+    /// `/files`: re-walk the workspace root.
+    ///
+    /// An intent, not a walk. The command layer owns the async read and the
+    /// completion returns through the existing generation-guarded listing
+    /// path, so a refresh that lands after the user changed project is
+    /// dropped rather than painted over the new workspace.
+    FilesRefresh,
+    /// `/files`: open `path` (`l`, and `Enter` on a directory).
+    ///
+    /// The box holds a *view* of the shared tree structure and cannot reach
+    /// `App` from `render`, so the motion is an intent like opening a file:
+    /// the command layer decides whether the directory opens in place, the
+    /// scope slides, or — for a file, which has nothing to enter — the
+    /// document opens, and issues the walk. The path is workspace-relative,
+    /// exactly as the listing reported it.
+    FilesDescend {
+        path: String,
+    },
+    FilesToggle {
+        path: String,
+    },
+    /// `/files`: go up one level (`h`).
+    ///
+    /// Carries the path of the row the cursor is on: the **authority**
+    /// resolves the relation, against the unfiltered row set.
+    FilesAscend {
+        path: String,
+    },
+    /// `/files`: make `path` the selection (`j`, `k`, `Ctrl+d`, `Ctrl+u`).
+    ///
+    /// The surface names the row it wants; the authority records it. The
+    /// selection is a **path**, so it does not depend on a filter.
+    FilesSelect {
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionLifecycleAction {
+    Refresh,
+    Enable,
+    Disable,
+    Delete,
+    Restore,
+    Purge,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub text: String,
+    pub score: f64,
+    pub last_used: i64,
+    pub frequency: u32,
+}
+
+impl HistoryEntry {
+    pub fn new(text: String) -> Self {
+        let now = now_ms();
+        Self {
+            text,
+            score: 1.0,
+            last_used: now,
+            frequency: 1,
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.frequency += 1;
+        self.last_used = now_ms();
+        self.recalc_score();
+    }
+
+    fn recalc_score(&mut self) {
+        let now = now_ms();
+        let age_hours = ((now - self.last_used) as f64) / 3600000.0;
+        let recency = 1.0 / (1.0 + age_hours);
+        let freq = (self.frequency as f64).ln() + 1.0;
+        self.score = recency * freq;
+    }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+use std::path::PathBuf;
+
+use codegg::config::schema::SessionTemplate;
+use codegg::session::models::Session;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone)]
+pub struct TodoEntry {
+    pub content: String,
+    pub status: String,
+    pub priority: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionStatus {
+    Idle,
+    Working,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompletionType {
+    Slash,
+    File,
+    Agent,
+}

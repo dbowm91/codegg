@@ -21,19 +21,29 @@ from pathlib import Path
 import re
 import sys
 
-# A `mod` declaration gated by any cfg predicate that mentions `test`.
-_TEST_MOD_GATE = re.compile(r"^[ \t]*#\[cfg\([^\]]*\btest\b[^\]]*\)\][ \t]*$", re.MULTILINE)
-
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rust_test_scan  # noqa: E402  (path is set above)
+
+# A `cfg` predicate that mentions `test`. Kept as this guard's own predicate:
+# the transport modules gate their tests with `#[cfg(all(test, unix))]`, and
+# the shared production view's narrow default deliberately leaves a compound
+# predicate alone.
+_TEST_MOD_GATE = re.compile(r"cfg\([^\]]*\btest\b[^\]]*\)")
 
 
 def _read(path: Path) -> str:
     return path.read_text() if path.exists() else ""
 
 
+def _is_test_gate(inner: str) -> bool:
+    """True when an attribute's inner text is a `cfg` naming `test`."""
+    return _TEST_MOD_GATE.fullmatch(inner.strip()) is not None
+
+
 def _strip_test_modules(source: str) -> str:
-    """Return everything before the first test-gated `mod` declaration.
+    """Blank the test-gated `mod` blocks, keeping every line in place.
 
     Modules gate their tests with any cfg predicate that mentions `test`,
     not only the bare `#[cfg(test)]` — for example
@@ -41,9 +51,21 @@ def _strip_test_modules(source: str) -> str:
     literal `#[cfg(test)]` alone silently returns the whole file when a
     module uses a compound predicate, so test-only call sites get scanned as
     production and trip guards that are correctly satisfied in real code.
+
+    The *structure* is `rust_test_scan`'s: the module's extent is matched
+    over the scanner's literal-aware mask, so a brace spelled in a fixture
+    string cannot end a module early. The predicate stays this guard's own,
+    passed as `is_gate`, because the shared default is the narrow
+    `cfg(test)` rule.
+
+    Truncating at the first gate -- what this replaced -- returned only the
+    file's prefix, so every item below a mid-file test module was invisible.
+    On this tree the truncation dropped 16,683 characters of
+    `src/core/transport/daemon_socket.rs`; all of it is test-only under this
+    guard's own predicate, so no violation was missed, but a production item
+    added below the first test module would have been.
     """
-    first = _TEST_MOD_GATE.search(source)
-    return source[: first.start()] if first else source
+    return rust_test_scan.production_mask(source, is_gate=_is_test_gate)
 
 
 def main() -> int:

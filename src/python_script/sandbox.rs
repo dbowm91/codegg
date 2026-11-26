@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn path_inside_allowed_roots_inside() {
         let root = ws();
-        let path = root.join("src").join("main.rs");
+        let path = root.join("src").join("lib.rs");
         assert!(path_inside_allowed_roots(&path, &[root]));
     }
 

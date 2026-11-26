@@ -401,7 +401,7 @@ Test instrumentation never widens production authority:
 
 The desktop has its **own** renderer-owned, remappable input model. It is not
 the TUI's keymap, and the TUI's keymap is not changed by it — the TUI's
-`ActionKey` (`src/tui/input.rs:259`, 61 variants) is the **source vocabulary**
+`ActionKey` (`crates/codegg-tui/src/input.rs:259`, 61 variants) is the **source vocabulary**
 the desktop draws from, and `plans/000-long-term-specification.md:564` makes
 the conceptual hierarchy normative while the exact keys are configurable. The
 desktop borrows concepts; it does not borrow bindings.

@@ -6,7 +6,7 @@
 //!
 //! - local and simulated-remote clients share the one daemon path (the TUI
 //!   never walks its own filesystem; the TUI-layer decoy test in
-//!   `src/tui/commands/file_tree.rs` proves the client side with a fake
+//!   `crates/codegg-tui/src/commands/file_tree.rs` proves the client side with a fake
 //!   transport, and these tests prove the daemon reads only its resolved
 //!   root);
 //! - traversal/symlink/wrong-project prefixes are denied before content;
@@ -241,7 +241,7 @@ async fn decoy_tree_with_same_shape_never_leaks_into_the_daemon_listing() {
     // (the stand-in for a same-spelled remote-TUI directory). The listing
     // must contain only daemon-host entries: the daemon reads exactly its
     // resolved root, and the TUI layer (proven with a fake transport in
-    // `src/tui/commands/file_tree.rs`) never reads its own tree at all.
+    // `crates/codegg-tui/src/commands/file_tree.rs`) never reads its own tree at all.
     let pool = test_pool().await;
     let daemon = local_tui_daemon(pool).await;
     let daemon_root = tempfile::tempdir().expect("tempdir");
