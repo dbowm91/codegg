@@ -777,7 +777,7 @@ fn default_preference_dto(principal_id: String) -> crate::protocol::core::Runtim
     }
 }
 
-fn approval_preference_to_dto(
+pub(crate) fn approval_preference_to_dto(
     pref: &codegg_core::approval::RuntimePreference,
 ) -> crate::protocol::core::RuntimePreferenceDto {
     crate::protocol::core::RuntimePreferenceDto {

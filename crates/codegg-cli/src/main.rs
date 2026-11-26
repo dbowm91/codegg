@@ -4698,13 +4698,10 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             InitialSessionRequest::Continue {
                 project_dir: project_dir.clone(),
             }
-        } else if cli.no_session {
-            InitialSessionRequest::None
         } else {
-            InitialSessionRequest::New {
-                directory: project_dir.clone(),
-                title: None,
-            }
+            // M005: a plain launch opens a draft tab, not a durable session.
+            // The first prompt creates the row; see App::ensure_launch_session.
+            InitialSessionRequest::None
         };
         app.load_initial_session_via_core(request).await;
     }

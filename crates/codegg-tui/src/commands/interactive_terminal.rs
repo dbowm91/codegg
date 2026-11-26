@@ -679,17 +679,11 @@ pub(crate) fn apply_terminal_attach_finished(
         // leave two views of one PTY fighting over the keyboard.
         app.terminal_panel_spawn = false;
         app.panel_host.show_terminal(Some(&handle));
-        // The load is finished, so the panel is for typing: a shell the user
-        // asked for starts ready for its first key rather than waiting for a
-        // second `i`. Scoped to the panel that actually holds the keyboard —
-        // an attach that lands after the user has left the column, or behind
-        // an open dialog, shows the terminal without stealing focus back.
-        if app.panel_host.is_focused()
-            && app.panel_host.active() == crate::panels::SidePanelId::Terminal
-            && app.focus_manager.is_empty()
-        {
-            let _ = app.interactive_terminals.focus(&handle);
-        }
+        // The shell is live and painting in the column. That is the whole load:
+        // the keyboard stays NOR, because selecting a panel is a reading
+        // gesture and `Shift+J/K` must keep walking instead of typing into the
+        // process. `i` is the deliberate step into INS
+        // (`focus_terminal_panel`), and `Esc` brings the keyboard back here.
     } else {
         handle_terminal_show(app, handle);
     }
@@ -1858,10 +1852,18 @@ pub(crate) fn ready_terminal_panel(app: &mut App) {
         spawn_default_terminal_for_panel(app);
         return;
     }
-    if app.interactive_terminals.focus(&handle) {
-        return;
+    // A selection is a load, never a typing session. A PTY left focused by an
+    // earlier `i` is parked back at NOR here, so walking away and back cannot
+    // leave the keyboard inside the process; `i` is the one way in.
+    if app.interactive_terminals.is_focused(&handle) {
+        app.interactive_terminals.escape(&handle);
     }
     if app.interactive_terminals.is_live(&handle) {
+        // Live and attached: the render is already running, so there is
+        // nothing to do but leave it on screen and NOR.
+        if app.interactive_terminals.attachment_id(&handle).is_some() {
+            return;
+        }
         app.terminal_panel_spawn = true;
         start_terminal_attach(app, handle);
     }
@@ -2687,14 +2689,14 @@ mod tests {
         );
     }
 
-    /// The panel's load must leave it ready for the next key.
+    /// The panel's load paints the shell without taking the keyboard.
     ///
-    /// Focus is scoped to the surface that holds the keyboard: this pins the
-    /// positive half, and the test above pins the negative one (an attach that
-    /// lands while the panel is off the keyboard shows the shell without
-    /// taking it back).
+    /// This is the owner's reversal of the closed live-surface decision: the
+    /// panel shows exactly what an INS selection showed — a live, attached
+    /// shell — and still opens NOR, so `Shift+J/K` moves panels rather than
+    /// typing into the process. `i` is the deliberate step into INS.
     #[test]
-    fn a_panel_attach_focuses_the_terminal_the_panel_is_showing() {
+    fn a_panel_attach_renders_the_shell_without_taking_the_keyboard() {
         use crate::panels::{PanelPlacement, SidePanelId};
 
         let mut app = test_app();
@@ -2715,9 +2717,14 @@ mod tests {
         );
 
         assert!(
-            app.interactive_terminals.is_focused("h-ready"),
-            "a shell that finished loading into the focused terminal panel is ready for the \
-             next key; a second `i` must not be what makes it typeable"
+            !app.interactive_terminals.is_focused("h-ready"),
+            "the panel loads and renders its shell in NOR; taking the PTY keyboard on load \
+             is what made Shift+J/K type into the process"
+        );
+        assert_eq!(
+            app.panel_host.terminal_handle(),
+            Some("h-ready"),
+            "the loaded shell must still be the one the column renders"
         );
         assert_eq!(
             app.ui_state.dialog,
@@ -3791,6 +3798,10 @@ mod tests {
         let marker = "CODEGG-IDLE-LIVENESS";
         let mut app = pull_test_app(dir.path(), marker_shell()).await;
 
+        // Create and attach are two round trips; one 25ms drain can stop
+        // between them and leave the surface unmounted.
+        let created = await_terminal_create(&mut app).await;
+        await_live_attachment(&mut app, &created).await;
         drain_tui_commands(&mut app).await;
         let handle = app
             .dialog_state
@@ -3906,7 +3917,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("workspace");
         let mut app = pull_test_app(dir.path(), marker_shell()).await;
 
-        drain_tui_commands(&mut app).await;
+        // The create and the attach are two round trips: one 25ms drain can
+        // return between them and leave a view with no surface (the same
+        // latent race the sibling fixtures document).
+        let handle = await_terminal_create(&mut app).await;
+        await_live_attachment(&mut app, &handle).await;
         assert!(
             mounted_terminal_surface(&app).is_some(),
             "the fixture must start with a mounted surface"
@@ -4147,6 +4162,10 @@ mod tests {
     async fn a_new_terminal_shows_the_processes_own_prompt_without_a_keystroke() {
         let dir = tempfile::tempdir().expect("workspace");
         let mut app = pull_test_app(dir.path(), prompt_shell()).await;
+        // Create and attach are two round trips; one 25ms drain can stop
+        // between them, before the box has a surface to show.
+        let created = await_terminal_create(&mut app).await;
+        await_live_attachment(&mut app, &created).await;
         drain_tui_commands(&mut app).await;
         let handle = app
             .dialog_state

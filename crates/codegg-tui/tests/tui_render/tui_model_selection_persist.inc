@@ -38,7 +38,17 @@ impl CoreClient for FakeSelectionDaemon {
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError> {
         match request.payload {
-            CoreRequest::ModelSelect { session_id, model } => {
+            CoreRequest::ModelSelect {
+                session_id,
+                model,
+                reasoning,
+                expected_revision,
+            } => {
+                // M004: the level travels in the same request as the model,
+                // under the revision the client last saw. This fixture
+                // selects no level, so the fields are forwarded as absent.
+                assert!(reasoning.is_none(), "no level was chosen");
+                assert_eq!(expected_revision, None, "no preference was read yet");
                 self.received.lock().unwrap().push((session_id, model));
                 match self.refuse_with.lock().unwrap().clone() {
                     Some(message) => Ok(CoreResponse::Error {
@@ -179,7 +189,7 @@ async fn a_persisted_selection_reports_no_error_to_the_operator() {
     let completions: Vec<_> = commands
         .iter()
         .filter_map(|c| match c {
-            TuiCommand::ModelSelectPersisted { model, error } => {
+            TuiCommand::ModelSelectPersisted { model, error, .. } => {
                 Some((model.clone(), error.clone()))
             }
             _ => None,

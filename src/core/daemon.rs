@@ -4170,9 +4170,9 @@ impl CoreDaemon {
             }
             codegg_core::audit::AuditAction::ModelSelect => {
                 let (session, model) = match request {
-                    CoreRequest::ModelSelect { session_id, model } => {
-                        (session_id.clone(), model.clone())
-                    }
+                    CoreRequest::ModelSelect {
+                        session_id, model, ..
+                    } => (session_id.clone(), model.clone()),
                     _ => (
                         chain.session_id.clone().unwrap_or_default(),
                         decision.operation.clone(),

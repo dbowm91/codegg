@@ -2335,6 +2335,12 @@ pub enum CoreResponse {
     ReasoningPreference {
         preference: RuntimePreferenceDto,
     },
+    // M004: the result of a model selection that also carried a thinking
+    // level. The preference is the authoritative row after the single
+    // write, so the client adopts the revision instead of guessing it.
+    ModelPreference {
+        preference: RuntimePreferenceDto,
+    },
     /// Provider reasoning control M002: the daemon's reasoning capability
     /// advertisement.
     ReasoningCapabilities {
@@ -3186,6 +3192,17 @@ pub enum CoreRequest {
     ModelSelect {
         session_id: String,
         model: String,
+        // M004: the thinking level selected in the same gesture as the
+        // model. Additive and defaulted: an older client omits it, and the
+        // daemon then leaves the stored reasoning selection untouched.
+        #[serde(default)]
+        reasoning: Option<ReasoningOverride>,
+        // M004: the runtime_preferences revision the client last saw. Both
+        // dimensions are written under this one compare-and-set, so a model
+        // choice can no longer invalidate the client's own cached revision
+        // for the reasoning dimension. None skips the check.
+        #[serde(default)]
+        expected_revision: Option<u64>,
     },
     /// Provider Connections Milestone 3: read the session's current
     /// connection/model selection. Resolves the legacy `provider/model`

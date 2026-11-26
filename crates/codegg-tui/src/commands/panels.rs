@@ -349,6 +349,24 @@ fn materialize_hosted_panel(app: &mut App, id: SidePanelId) -> bool {
     if app.panel_host.hosted_panel_has_content(id) != Some(false) {
         return true;
     }
+    // M009: the Workspace picker is a real list the host adopts directly. It
+    // needs no modal and no async box: the catalog is already cached, so the
+    // walk lands on content on the first frame.
+    if id == SidePanelId::Workspace {
+        let rows = app
+            .project_catalog
+            .entries
+            .iter()
+            .map(|entry| (entry.project_id.clone(), entry.display_name.clone()))
+            .collect();
+        app.panel_host.adopt(
+            id,
+            Box::new(crate::panels::workspace_picker::WorkspacePickerPanel::new(
+                rows,
+            )),
+        );
+        return true;
+    }
     // A box is already open (the manager itself maps to no dock target, so
     // this is a real one). Leave it alone: adopting it here would steal a
     // box the user opened for another purpose.
@@ -426,7 +444,7 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) -> PanelFill {
         // open and nothing to adopt. `materialize_hosted_panel` returns before
         // reaching these for a panel that is not hosted; the picker reaches
         // `Agents` directly, which is why that one still does its work.
-        P::Session | P::Chat | P::Terminal | P::Help => PanelFill::Bespoke,
+        P::Session | P::Chat | P::Terminal | P::Help | P::Workspace => PanelFill::Bespoke,
         P::Tree => {
             app.open_dialog(Dialog::Tree);
             PanelFill::Filled
@@ -641,13 +659,13 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) -> PanelFill {
             crate::commands::work_orders::open_task_view(app, "task");
             PanelFill::StillLoading
         }
-        // A diff is a view of one file: an empty-path read only produced
-        // "the diff returned an unexpected response". Say what it needs.
+        // M003: the daemon already answers a bare diff with the whole
+        // working tree, so selecting the panel reads that change set. The
+        // panel used to refuse for a file while the aggregate sat unrendered
+        // on the wire.
         P::Diff => {
-            app.messages_state
-                .toasts
-                .info("Diff needs a file — open one from /review, or run /diff <path>");
-            PanelFill::Cannot("no file selected — /diff <path>")
+            crate::commands::diff::start_diff(app, String::new());
+            PanelFill::Loading
         }
         P::Review => {
             app.open_dialog(Dialog::Review);

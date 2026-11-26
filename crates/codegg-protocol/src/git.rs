@@ -155,6 +155,35 @@ pub struct GitDiffResultDto {
     pub new_content: String,
     /// The title the diff view carries.
     pub title: String,
+    /// M003: the working-tree change set split per file, for the aggregate
+    /// branch. Empty on the single-file branch and on an older daemon, so a
+    /// client falls back to the unified patch in new_content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<GitDiffFileDto>,
+    /// M003: true when the aggregate hit a file-count or byte bound and the
+    /// list is incomplete. A truncated answer is still an answer, but the
+    /// reader must be told.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// One file of an aggregate working-tree diff.
+///
+/// The patch section is the file's own unified-diff text, header included, so
+/// the reader can render it without re-reading the repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiffFileDto {
+    /// Repository-relative path. A rename carries its new path.
+    pub path: String,
+    /// The file's section of the unified diff.
+    pub patch: String,
+    /// True for a binary file, where the section is git's binary notice or a
+    /// binary patch rather than readable text.
+    #[serde(default)]
+    pub binary: bool,
+    /// True when this file's section was cut by the per-file bound.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// The status of one repository.

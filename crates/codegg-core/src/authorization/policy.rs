@@ -1888,6 +1888,8 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::ModelSelect {
             session_id: String::new(),
             model: String::new(),
+            reasoning: None,
+            expected_revision: None,
         },
         R::SessionSelectionGet {
             session_id: String::new(),

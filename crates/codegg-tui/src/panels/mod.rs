@@ -48,6 +48,7 @@ pub mod help;
 pub mod hosted;
 pub mod session;
 pub mod terminal;
+pub mod workspace_picker;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -455,6 +456,9 @@ pub enum SidePanelId {
     /// The interactive terminal, driven from the side column with the same
     /// Viewing/Focused split the box uses.
     Terminal,
+    /// M009: the project catalog, so a project can be switched without
+    /// leaving the session or opening the whole Workspace view.
+    Workspace,
     /// The keybinding reference. Hosts the same [`HelpDialog`] the box does,
     /// so a filter typed here behaves identically to one typed there.
     Help,
@@ -534,6 +538,7 @@ impl SidePanelId {
         SidePanelId::Session,
         SidePanelId::Chat,
         SidePanelId::Terminal,
+        SidePanelId::Workspace,
         SidePanelId::Help,
         SidePanelId::Tree,
         SidePanelId::Sessions,
@@ -571,6 +576,7 @@ impl SidePanelId {
             SidePanelId::Session => "Session",
             SidePanelId::Chat => "Chat",
             SidePanelId::Terminal => "Terminal",
+            SidePanelId::Workspace => "Workspace",
             SidePanelId::Help => "Help",
             SidePanelId::Tree => "Tree",
             SidePanelId::Files => "Files",
@@ -614,6 +620,7 @@ impl SidePanelId {
             SidePanelId::Session => "SESSIONS",
             SidePanelId::Chat => "CHAT",
             SidePanelId::Terminal => "TERMINAL",
+            SidePanelId::Workspace => "WORKSPACE",
             SidePanelId::Help => "HELP",
             SidePanelId::Tree => "TREE",
             SidePanelId::Files => "FILES",
@@ -662,6 +669,7 @@ impl SidePanelId {
             SidePanelId::Session => "sessions",
             SidePanelId::Chat => "chat",
             SidePanelId::Terminal => "terminal",
+            SidePanelId::Workspace => "workspace",
             SidePanelId::Help => "help",
             SidePanelId::Tree => "tree",
             SidePanelId::Files => "files",
@@ -730,7 +738,8 @@ impl SidePanelId {
             | Self::Keybinds
             | Self::Themes
             | Self::Team
-            | Self::Control => PanelClass::Full,
+            | Self::Control
+            | Self::Workspace => PanelClass::Full,
             _ => PanelClass::Detail,
         }
     }
@@ -817,6 +826,7 @@ impl SidePanelId {
             SidePanelId::Session => "goal · todos · files",
             SidePanelId::Chat => "messages · channels",
             SidePanelId::Terminal => "shell · commands",
+            SidePanelId::Workspace => "projects · switch",
             SidePanelId::Help => "keys · filters",
             SidePanelId::Tree => "session history",
             SidePanelId::Files => "browse · open in editor",

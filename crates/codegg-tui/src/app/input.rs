@@ -57,10 +57,14 @@ impl App {
                 if let Some(tab) = self.project_tabs.active_mut() {
                     tab.model = model.clone();
                 }
-                // The level picked in the box travels with the selection.
-                if let Some(reasoning) = reasoning {
-                    self.apply_selected_reasoning_level(reasoning);
-                }
+                // M004: the level picked in the box travels in the *same*
+                // durable request as the model. Writing it separately bumped
+                // the preference row before the reasoning write compared its
+                // own cached revision, so the user's selection conflicted
+                // with itself. Five writes became one.
+                let reasoning_override = reasoning
+                    .as_ref()
+                    .and_then(crate::commands::reasoning::override_for);
                 self.persist_model_selection(&model);
                 // `persist_model_selection` only writes the last-used
                 // *preference*, which the next launch restores. The daemon
@@ -70,7 +74,7 @@ impl App {
                 // next turn still ran whatever the daemon had stored — the
                 // divergence behind "I selected mimo 2.6 flash and it ran
                 // muse-spark 1.3".
-                self.persist_durable_model_selection(model.clone());
+                self.persist_durable_model_selection_with(model.clone(), reasoning_override);
                 self.close_dialog();
             }
             TuiMsg::SelectAgent { agent_name } => {
@@ -973,6 +977,21 @@ impl App {
             }
             TuiMsg::WorkspaceDashboardOpen => {
                 crate::commands::workspace_dashboard::open_selected_dashboard_project(self);
+            }
+            TuiMsg::WorkspacePickerOpen { project_id } => {
+                let display_name = self
+                    .project_catalog
+                    .entries
+                    .iter()
+                    .find(|entry| entry.project_id == project_id)
+                    .map(|entry| entry.display_name.clone());
+                crate::commands::project_picker::open_or_focus_project(
+                    self,
+                    project_id,
+                    None,
+                    display_name,
+                    None,
+                );
             }
             TuiMsg::WorkspaceDashboardRefresh => {
                 crate::commands::workspace_dashboard::refresh_workspace_dashboard(self);

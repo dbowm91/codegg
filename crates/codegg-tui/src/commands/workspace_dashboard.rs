@@ -116,8 +116,9 @@ pub(crate) fn open_workspace_dashboard(app: &mut App) {
     // Explicit opens always start fresh (bounded aggregate reload);
     // modal dialogs above the view (TaskView, confirmations) never call
     // open and therefore preserve selection via `leave`/`close` paths.
-    app.dialog_state.workspace_dashboard =
-        Some(WorkspaceDashboardState::new(return_tab, reconnect_epoch));
+    let mut dashboard = WorkspaceDashboardState::new(return_tab, reconnect_epoch);
+    dashboard.view.reset_modes();
+    app.dialog_state.workspace_dashboard = Some(dashboard);
     app.workspace_focus = crate::app::state::WorkspaceFocus::default();
     if !matches!(app.ui_state.routes.current(), Route::Workspace) {
         app.ui_state.routes.navigate_to(Route::Workspace);
@@ -129,9 +130,9 @@ pub(crate) fn open_workspace_dashboard(app: &mut App) {
     // user's afterwards: `Shift+S` can switch away and back without
     // re-entering the view.
     crate::commands::panels::select_panel(app, crate::panels::SidePanelId::Chat);
-    app.messages_state.toasts.info(
-        "Workspace — Session/Task composer for the selected project; side panel is project chat (Esc leaves)",
-    );
+    app.messages_state
+        .toasts
+        .info("Workspace — j/k move, l open, n new session, d detail, i filter, Shift+X leaves");
 }
 
 /// Leave the Workspace primary view. Cancels/invalidates only frontend
@@ -148,6 +149,10 @@ pub(crate) fn leave_workspace_view(app: &mut App) {
     }
     app.dialog_state.workspace_dashboard = None;
     app.workspace_focus = WorkspaceFocus::Composer;
+    // The route's own mode and filter do not outlive it: the composer's mode
+    // is restored by the ordinary frame, and a stale INS here would make the
+    // next entry type into the filter when the user expected navigation.
+    app.park_composer_at_normal();
     // Clear the Workspace-driven chat panel binding; per-project drafts
     // stay in `ChatState` and are not deleted. The panel is unbound too —
     // leaving the view must not leave keys aimed at a project locator that
@@ -792,6 +797,15 @@ pub(crate) fn handle_workspace_dashboard_key(app: &mut App, key: crossterm::even
 /// prompt descends to the Task view; `Esc` blurs chat back to the
 /// composer first and leaves the view only from composer focus.
 pub(crate) fn handle_workspace_view_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    // M007: the whole view owns every key on this route. The composer is not
+    // painted here, so nothing may fall through to it; the route-owned
+    // router in `workspace_view` owns NOR/INS, the tree, the detail and the
+    // launch sheet.
+    return crate::commands::workspace_view::handle_workspace_view_key(app, key);
+}
+
+#[allow(dead_code)]
+fn legacy_workspace_view_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::{KeyCode, KeyModifiers};
     if app.dialog_state.workspace_dashboard.is_none() {
         return false;
@@ -901,12 +915,6 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: crossterm::event::Ke
     // dashboard query; Insert-mode text stays in the composer. Handled
     // by `App::on_key` (which owns `input_mode`); nothing to do here.
     false
-}
-
-pub(crate) fn dispatch_workspaces(app: &mut App) {
-    app.messages_state
-        .toasts
-        .info("Workspace management - use /sessions to switch workspaces");
 }
 
 pub(crate) fn dispatch_workspace(app: &mut App) {

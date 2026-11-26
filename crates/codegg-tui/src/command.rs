@@ -167,8 +167,6 @@ pub enum BuiltinSlashAction {
     ChatActionReview,
     ChatActionList,
     Sessions,
-    /// Open the project picker (same box as `Ctrl+\` / Normal-mode `Shift+F`).
-    Projects,
     Share,
     Unshare,
     Rename,
@@ -187,7 +185,6 @@ pub enum BuiltinSlashAction {
     ModelsRefresh,
     Variants,
     Fork,
-    Workspaces,
     Worktree,
     Editor,
     /// M006-A: open one workspace-relative document in the
@@ -609,9 +606,6 @@ impl CommandRegistry {
                 // silently shadow the other.
                 .with_aliases(&["resume", "continue"])
                 .with_description("Switch session"),
-            Command::new("/projects", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Projects))
-                .with_aliases(&["/project"])
-                .with_description("Open the project picker (Shift+F in Normal mode)"),
             Command::new("/new", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::New))
                 .with_aliases(&["clear"])
                 .with_description("New session"),
@@ -670,8 +664,6 @@ impl CommandRegistry {
                 .with_description("Select active agent (/agent <name>)"),
             Command::new("/mcps", CommandCategory::System, CommandAction::Dialog(Dialog::Mcp))
                 .with_description("Manage MCP servers"),
-            Command::new("/workspaces", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Workspaces))
-                .with_description("Manage workspaces"),
             Command::new("/tree", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tree)).with_description("Show session tree"),
             Command::new("/files", CommandCategory::System, CommandAction::Dialog(Dialog::Files))
                 .with_description("Browse workspace files"),
@@ -1320,7 +1312,12 @@ mod tests {
         // that mirrors the `Ctrl+Alt+O` chord). The same pin also lives in
         // `architecture/command.md` via `command_docs_count_matches_registry`,
         // so both have to move together.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 169);
+        //
+        // 169 -> 167 for M006 of the Workspace/panel corrective: the duplicate
+        // /projects (alias /project) and /workspaces rows are gone; /workspace
+        // is the survivor. The same pin lives in architecture/command.md via
+        // command_docs_count_matches_registry.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 167);
     }
 
     #[test]
@@ -1557,7 +1554,6 @@ mod tests {
             B::ChatActionReview,
             B::ChatActionList,
             B::Sessions,
-            B::Projects,
             B::Share,
             B::Unshare,
             B::Rename,
@@ -1573,7 +1569,6 @@ mod tests {
             B::ModelsRefresh,
             B::Variants,
             B::Fork,
-            B::Workspaces,
             B::Worktree,
             B::Editor,
             B::OpenDocument,
@@ -1770,23 +1765,28 @@ mod tests {
         );
     }
 
+    /// M006: the duplicate project surfaces are gone, and the one survivor
+    /// still resolves. The picker itself stays reachable from `Shift+F` and
+    /// `Ctrl+\\`; only the duplicate command spellings were removed.
     #[test]
-    fn projects_command_opens_the_picker() {
+    fn duplicate_project_commands_are_gone() {
         let registry = CommandRegistry::new();
-        let cmd = registry
-            .find_by_name_or_alias("/projects")
-            .expect("/projects must be registered");
+        for removed in ["/projects", "/project", "/workspaces"] {
+            assert!(
+                registry.find_by_name_or_alias(removed).is_none(),
+                "{removed} must not be registered: /workspace is the only project surface"
+            );
+        }
+        let survivor = registry
+            .find_by_name_or_alias("/workspace")
+            .expect("/workspace must remain registered");
         assert!(
             matches!(
-                cmd.action,
-                CommandAction::Builtin(BuiltinSlashAction::Projects)
+                survivor.action,
+                CommandAction::Builtin(BuiltinSlashAction::Workspace)
             ),
-            "/projects must dispatch to the picker action"
+            "/workspace must open the workspace view"
         );
-        let alias = registry
-            .find_by_name_or_alias("/project")
-            .expect("/project alias must be registered");
-        assert_eq!(alias.name, cmd.name, "alias must resolve to /projects");
     }
 
     #[test]

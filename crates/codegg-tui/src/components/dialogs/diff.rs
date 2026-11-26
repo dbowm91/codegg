@@ -327,6 +327,348 @@ impl DiffDialog {
     }
 }
 
+/// M003: the aggregate working-tree diff, one file at a time.
+///
+/// The daemon sends the change set already split into per-file sections, so
+/// this surface is an index plus one patch: choose a file with `j`/`k`, take
+/// the patch with `l`/`Enter`, and leave with `Esc`. It never reads the
+/// working tree and never calls git; a binary section is announced rather than
+/// decoded.
+///
+/// The panel adopts this component, so there is no modal-only path to keep in
+/// sync: the same keys and the same render serve the column.
+pub struct DiffBrowserDialog {
+    files: Vec<codegg::protocol::git::GitDiffFileDto>,
+    selected: usize,
+    /// True when the change set hit the daemon's bound.
+    truncated: bool,
+    /// Whether keys scroll the patch instead of moving the file index.
+    focus_patch: bool,
+    viewer: DiffViewer,
+}
+
+impl DiffBrowserDialog {
+    /// Build the browser from the daemon's per-file sections.
+    ///
+    /// An empty list is not an error: the caller renders the explicit empty
+    /// state, and this type is only constructed for a non-empty answer.
+    pub fn new(files: Vec<codegg::protocol::git::GitDiffFileDto>, truncated: bool) -> Self {
+        let viewer = viewer_for(&files, 0);
+        Self {
+            files,
+            selected: 0,
+            truncated,
+            focus_patch: false,
+            viewer,
+        }
+    }
+
+    /// Number of files in the change set.
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Index of the file the patch pane is showing.
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    fn select(&mut self, index: usize) {
+        let Some(last) = self.files.len().checked_sub(1) else {
+            return;
+        };
+        self.selected = index.min(last);
+        self.viewer = viewer_for(&self.files, self.selected);
+    }
+
+    fn selected_file(&self) -> Option<&codegg::protocol::git::GitDiffFileDto> {
+        self.files.get(self.selected)
+    }
+
+    fn hint_line(&self) -> HintLine {
+        let mut hint = HintLine::new();
+        if self.focus_patch {
+            hint.push("j/k", "scroll")
+                .push("PgUp/PgDn", "page")
+                .push("h", "files")
+                .push("s", "layout");
+        } else {
+            hint.push("j/k", "file")
+                .push("l", "patch")
+                .push("s", "layout")
+                .push("Esc", "close");
+        }
+        hint
+    }
+
+    /// Paint the patch pane: header, then the visible rows.
+    fn render_patch(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        let mode_str = match self.viewer.mode {
+            DiffMode::Inline => "Inline",
+            DiffMode::SideBySide => "Side-by-Side",
+        };
+        let title = Line::from(vec![
+            Span::styled("Diff: ", Style::default().fg(theme.primary)),
+            Span::styled(
+                self.viewer.title.to_string(),
+                Style::default().fg(theme.foreground),
+            ),
+            Span::raw(" | "),
+            Span::styled(mode_str, Style::default().fg(theme.secondary)),
+        ]);
+        frame.render_widget(ratatui::widgets::Paragraph::new(title), chunks[0]);
+
+        let Some(file) = self.selected_file() else {
+            return;
+        };
+        if file.binary {
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+                    " binary file — no textual patch",
+                    Style::default().fg(theme.muted),
+                ))),
+                chunks[1],
+            );
+            return;
+        }
+        let visible = chunks[1].height as usize;
+        for (y, line) in lines_from(&self.viewer.hunks, self.viewer.scroll.get())
+            .take(visible)
+            .enumerate()
+        {
+            let fg_color = match line.tag {
+                similar::ChangeTag::Delete => theme.error,
+                similar::ChangeTag::Insert => theme.success,
+                similar::ChangeTag::Equal => theme.foreground,
+            };
+            let old_num = line
+                .line_number_old
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let new_num = line
+                .line_number_new
+                .map(|n| format!("{:4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let prefix = match line.tag {
+                similar::ChangeTag::Delete => "-",
+                similar::ChangeTag::Insert => "+",
+                similar::ChangeTag::Equal => " ",
+            };
+            let content = format!("{}{} │ {}", old_num, new_num, line.content);
+            let full_line = format!("{}{}", prefix, &content[1..]);
+            let styled = Line::from(vec![Span::styled(full_line, Style::default().fg(fg_color))]);
+            let row = Rect::new(chunks[1].x, chunks[1].y + y as u16, chunks[1].width, 1);
+            frame.render_widget(styled, row);
+        }
+    }
+
+    /// Paint the file index.
+    fn render_index(&self, frame: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
+        if area.height == 0 {
+            return;
+        }
+        let visible = area.height as usize;
+        let offset = self.selected.saturating_sub(visible.saturating_sub(1));
+        for (row, (index, file)) in self
+            .files
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(visible)
+            .enumerate()
+        {
+            let selected = index == self.selected;
+            let marker = if selected { ">" } else { " " };
+            let suffix = if file.binary {
+                " [bin]"
+            } else if file.truncated {
+                " [cut]"
+            } else {
+                ""
+            };
+            let style = if selected && focused {
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else if selected {
+                Style::default().fg(theme.foreground)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            let line = format!("{}{}{}", marker, file.path, suffix);
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(Line::from(Span::styled(line, style))),
+                Rect::new(area.x, area.y + row as u16, area.width, 1),
+            );
+        }
+        if self.truncated {
+            // The bound is the daemon's; the reader is told rather than shown
+            // a list that silently ends early.
+            let row = area.y + area.height.saturating_sub(1);
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+                    " change set truncated",
+                    Style::default().fg(theme.warning),
+                ))),
+                Rect::new(area.x, row, area.width, 1),
+            );
+        }
+    }
+}
+
+/// Build the patch viewer for one file in the change set.
+fn viewer_for(files: &[codegg::protocol::git::GitDiffFileDto], index: usize) -> DiffViewer {
+    let file = files.get(index);
+    let title = file
+        .map(|file| file.path.clone())
+        .unwrap_or_else(|| "Diff".to_string())
+        .into_boxed_str();
+    let patch = file
+        .map(|file| file.patch.clone())
+        .unwrap_or_default()
+        .into_boxed_str();
+    DiffViewer::new(Box::from(""), patch, title)
+}
+
+impl Component for DiffBrowserDialog {
+    fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc => Some(TuiMsg::CloseDialog),
+            KeyCode::Char('s') if key.modifiers.is_empty() => {
+                self.viewer.toggle_mode();
+                None
+            }
+            KeyCode::Char('h') | KeyCode::Left if self.focus_patch => {
+                self.focus_patch = false;
+                None
+            }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right if !self.focus_patch => {
+                self.focus_patch = true;
+                None
+            }
+            _ if self.focus_patch => match key.code {
+                KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+                    self.viewer.handle_scroll(-1);
+                    None
+                }
+                KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
+                    self.viewer.handle_scroll(1);
+                    None
+                }
+                KeyCode::PageUp => {
+                    self.viewer.handle_scroll(-10);
+                    None
+                }
+                KeyCode::PageDown => {
+                    self.viewer.handle_scroll(10);
+                    None
+                }
+                KeyCode::Home => {
+                    self.viewer.scroll.reset();
+                    None
+                }
+                KeyCode::End => {
+                    self.viewer.scroll_to_bottom();
+                    None
+                }
+                _ => None,
+            },
+            _ => match key.code {
+                KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+                    self.select(self.selected.saturating_sub(1));
+                    None
+                }
+                KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
+                    self.select(self.selected + 1);
+                    None
+                }
+                KeyCode::Home | KeyCode::Char('g') => {
+                    self.select(0);
+                    None
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    let last = self.files.len().saturating_sub(1);
+                    self.select(last);
+                    None
+                }
+                _ => None,
+            },
+        }
+    }
+
+    fn update(&mut self, _msg: TuiMsg) -> Option<TuiMsg> {
+        None
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        if area.height < 5 || area.width < 20 {
+            return;
+        }
+        let inner = Section::new("Diff Browser", theme)
+            .focused(true)
+            .draw(area, frame.buffer_mut());
+        let footer_rows = 1;
+        let body_height = inner.height.saturating_sub(footer_rows);
+        if body_height == 0 {
+            return;
+        }
+        let list_width = (inner.width / 3).clamp(16, 40);
+        let chunks = Layout::horizontal([
+            Constraint::Length(list_width),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(Rect::new(inner.x, inner.y, inner.width, body_height));
+        self.render_index(frame, chunks[0], theme, !self.focus_patch);
+        self.render_patch(frame, chunks[2], theme);
+        let footer = self.hint_line().render(0);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+                footer,
+                Style::default().fg(theme.muted),
+            ))),
+            Rect::new(inner.x, inner.y + body_height, inner.width, 1),
+        );
+    }
+
+    /// The host has already drawn the column's border and title.
+    fn render_in_panel(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        if area.height == 0 || area.width < 16 {
+            return;
+        }
+        let list_width = (area.width / 3).clamp(14, 36);
+        let chunks = Layout::horizontal([
+            Constraint::Length(list_width),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+        self.render_index(frame, chunks[0], theme, !self.focus_patch);
+        self.render_patch(frame, chunks[2], theme);
+    }
+
+    fn keymap_hint_line(&self) -> Option<HintLine> {
+        Some(self.hint_line())
+    }
+
+    fn dialog_type(&self) -> DialogType {
+        DialogType::Diff
+    }
+
+    fn docks_as_viewer(&self) -> bool {
+        false
+    }
+}
+
 /// The legacy single-border layout, kept byte-for-byte.
 ///
 /// Converted from `impl Widget for &DiffDialog` because a trait cannot carry a

@@ -109,6 +109,18 @@ pub(crate) fn apply_diff_finished(
                 app.messages_state.toasts.info("No changes detected");
                 return;
             }
+            if panel_waiting && !result.files.is_empty() {
+                // M003: the panel is the surface that can show an index and
+                // one patch at a time. The unified patch in new_content is
+                // kept for the modal path and for an older daemon that sends
+                // no split.
+                let browser = crate::components::dialogs::diff::DiffBrowserDialog::new(
+                    result.files,
+                    result.truncated,
+                );
+                app.panel_host.adopt(SidePanelId::Diff, Box::new(browser));
+                return;
+            }
             let dialog = crate::components::dialogs::diff::DiffDialog::new(
                 result.old_content.into_boxed_str(),
                 result.new_content.into_boxed_str(),
@@ -157,6 +169,8 @@ mod tests {
             old_content: old.to_string(),
             new_content: new.to_string(),
             title: "diff: working tree".to_string(),
+            files: Vec::new(),
+            truncated: false,
         }
     }
 

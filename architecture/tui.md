@@ -3279,6 +3279,61 @@ keeps its labelled empty state (`" no output — press i to type"`) and the box
 - **No observation coupling**: headers describe without carrying
   output; raw terminal bytes never enter session/projection state.
 
+### The Workspace whole view (M007-M011)
+
+`/workspace` is a **route-owned whole view**, not a viewport inside the session
+frame. While the route is active the ordinary frame is not painted at all: no left
+sidebar, no bottom composer, no composer hint row, no todo/tasks strip and no
+model/agent badge row. The frame is a one-row title (mode, filter, exit hint), a
+left region and a right region; leaving the route restores the previous session and
+its composer intact.
+
+**Mode.** The view has its own NOR/INS mode (`WorkspaceMode`), independent of the
+composer's. `i` enters INS to filter; `Esc` returns to NOR and clears the filter
+before it leaves the route. `Shift+X` exits only in NOR; in INS it is the capital
+letter `X` typed into the filter (D1).
+
+**Tree.** Project -> workspace -> managed worktree. A project's workspaces come from
+one bounded `ProjectGet`; a workspace's worktrees from one bounded
+`ManagedWorktreeList { workspace_id }`. Both are cached per identity, so expanding a
+node is one request and re-expanding it is none. The tree never resolves a path and
+never spawns `git`.
+
+**Launch.** `n` opens the new-session sheet for the selected workspace or worktree.
+An existing worktree launches with `SessionLaunch { ExistingManagedWorktree }`; a new
+checkout offers the repository's local branches (`GitRead(Branches)`) as its base and
+either the daemon's deterministic `codegg/worktree/<id>` branch (`target_branch: None`)
+or a user-typed name. One idempotency key per submit is reused on a transport retry
+and replaced after a refusal. The view adopts only the identities the response
+returns (`session_id`, `workspace_id`, `branch`) and opens that session.
+
+**Detail.** `d` replaces the tree with the project detail (identity, workspaces,
+worktree counts) in the same window; `h` returns. It is not a modal.
+
+### The Workspace picker panel (M009)
+
+`SidePanelId::Workspace` (config key `workspace`) is a hosted panel that adopts a real
+component on selection: the project catalog with its own NOR/INS filter. `Enter`
+opens or focuses the selected project's tab through the ordinary project-tab path; it
+never opens a modal and never requires `Route::Workspace`.
+
+### Terminal panel: a load is not a typing session (M002)
+
+Selecting the Terminal panel creates or attaches its shell and paints the live PTY
+immediately, but the keyboard stays **NOR**. This reverses the closed live-surface
+acceptance; that record is not edited. `i` is the deliberate step into INS, `Esc`
+returns to NOR without losing the shell, and `Shift+J/K` from the panel moves panels
+instead of typing into the process. The shell is still created by
+`ready_terminal_panel` over the same daemon-authorized PTY route.
+
+### Task view: a projection with modes (M010)
+
+The Task view keeps its existing actions (`Enter`, `d`, `x`, `K`, `r`, `u`) and adds
+a NOR/INS filter, `h`/`l` section jumps and a persistent selected-row detail line.
+`x` arms on the first press and confirms on the second; any other key disarms. It
+mounts no second composer: opening a task targets the chat panel that owns the
+conversation (D9).
+
 ### Remote TUI Snapshot Sequencing
 
 `App::remote_sequence: u64` is monotonically increasing.

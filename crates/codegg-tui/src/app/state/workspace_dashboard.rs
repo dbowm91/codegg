@@ -110,6 +110,9 @@ pub struct WorkspaceDashboardState {
     pub expanded_error: Option<String>,
     /// Async request state for dashboard load/expand operations.
     pub request: AsyncUiRequestState,
+    /// M007-M011: the whole view's own mode, filter, tree caches, inline
+    /// detail and launch sheet. A projection of daemon answers only.
+    pub view: crate::app::state::workspace_view::WorkspaceViewState,
 }
 
 impl WorkspaceDashboardState {
@@ -132,6 +135,7 @@ impl WorkspaceDashboardState {
             expanded_loading: false,
             expanded_error: None,
             request: AsyncUiRequestState::new(),
+            view: crate::app::state::workspace_view::WorkspaceViewState::default(),
         }
     }
 

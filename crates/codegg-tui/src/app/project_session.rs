@@ -151,7 +151,11 @@ impl App {
         if self.session_state.session.is_some() {
             return;
         }
-        crate::commands::sessions::start_new_session(self);
+        // M005: the launch tab is a draft, not a row. Creating the session
+        // here is what filled the catalog with empty "Untitled" rows; the
+        // first prompt creates it through the lazy path, and the draft state
+        // answers /models, /sessions and the tree until then.
+        self.begin_draft_session();
     }
 
     /// Invalidate the frontend-only SessionCreate continuation.  The daemon

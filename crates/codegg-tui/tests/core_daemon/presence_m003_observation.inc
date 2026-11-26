@@ -247,6 +247,8 @@ async fn observer_cannot_steer_cancel_or_mutate_through_daemon() {
         CoreRequest::ModelSelect {
             session_id: session_id.to_owned(),
             model: "other/model".to_owned(),
+            reasoning: None,
+            expected_revision: None,
         },
     ];
     for request in denied {

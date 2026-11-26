@@ -2157,67 +2157,17 @@ pub(crate) fn apply_session_messages_loaded(
 /// Start a user-initiated new session (Ctrl+N, `/new`).
 ///
 /// This is the fix for "Ctrl+N does nothing": the old handler only cleared
-/// `session_state.session`, which left the TUI with no session at all and made
-/// every session-scoped surface (`/models`, `/sessions`, tree) unusable until a
-/// prompt happened to create one implicitly. Creating the session eagerly is
-/// what makes those surfaces work from the first keystroke.
+/// The draft entry point behind Ctrl+N, /new and a fresh launch.
+///
+/// It writes no durable row: the tab keeps its project and workspace
+/// binding, and the first prompt creates the session through the lazy
+/// path. This is the M005 reversal of eager creation, which wrote an empty
+/// "Untitled" row on every launch and every keypress.
 pub(crate) fn start_new_session(app: &mut App) {
-    let request_id = app.dialog_state.new_session_request.begin();
-    let Some(core_client) = app.core_client.clone() else {
-        // No daemon: there is nothing to create a session against. Say so
-        // instead of leaving the user on a dead key.
-        app.messages_state
-            .toasts
-            .error("Cannot start a new session: the codegg core is unavailable. Check /doctor.");
-        let _ = app
-            .dialog_state
-            .new_session_request
-            .fail(request_id, "core client unavailable".to_string());
-        return;
-    };
-    let project_dir = app
-        .active_workspace_root()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    // Send the typed identities only. `active_project_key()` falls back to
-    // the workspace root when the tab has no daemon project id, and
-    // `SessionCreate` takes a `(project_id, workspace_id)` pair — sending a
-    // path as `project_id` could only ever be rejected with
-    // "project_id and workspace_id must be provided together". Both stay
-    // `None` when the launch bootstrap has not run yet, which sends the
-    // daemon down its directory-locator path instead.
-    let project_id = app.active_project_id().map(|id| id.to_string());
-    let workspace_id = app.active_workspace_id().map(|id| id.to_string());
-
-    spawn_registered_tui_task(
-        app.tui_cmd_tx.clone(),
-        &mut app.task_registry,
-        TuiTaskKind::Command,
-        "new_session",
-        async move {
-            let request = codegg::core::new_request(
-                format!("session-create-new-{}", uuid::Uuid::new_v4()),
-                CoreRequest::SessionCreate {
-                    directory: project_dir.to_string_lossy().into_owned(),
-                    title: None,
-                    project_id,
-                    workspace_id,
-                },
-            );
-            let (session, error) = match core_client.request(request).await {
-                Ok(CoreResponse::Session { session }) => (Some(session), None),
-                Ok(CoreResponse::Error { code, message }) => {
-                    (None, Some(format!("{code}: {message}")))
-                }
-                Ok(other) => (None, Some(format!("unexpected core response: {other:?}"))),
-                Err(error) => (None, Some(error.to_string())),
-            };
-            Some(TuiCommand::NewSessionCreated {
-                request_id,
-                session,
-                error,
-            })
-        },
-    );
+    app.begin_draft_session();
+    app.messages_state
+        .toasts
+        .info("New session — the first prompt creates it");
 }
 
 /// Apply a `NewSessionCreated` completion. Stale completions (mismatched

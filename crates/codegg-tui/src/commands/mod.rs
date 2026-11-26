@@ -66,6 +66,7 @@ pub(super) mod transcript_follow;
 pub(super) mod turn_control;
 pub(super) mod work_orders;
 pub(super) mod workspace_dashboard;
+pub(super) mod workspace_view;
 
 #[cfg(test)]
 mod dispatch_tests;

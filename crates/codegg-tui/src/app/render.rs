@@ -138,6 +138,22 @@ fn readable_on(
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
+        // M007: the Workspace route is a whole view, not a viewport inside the
+        // session frame. It owns every region and paints no sidebar, no
+        // composer, no hint row and no model/agent badge; the ordinary frame is
+        // restored, intact, when the route is left. A modal decision surface
+        // still outranks it, and a subagent tab is a session-route surface, so
+        // either falls through to the ordinary frame.
+        if matches!(
+            self.ui_state.routes.current(),
+            crate::route::Route::Workspace
+        ) && !self.change_review_state.is_open()
+            && self.ui_state.subagents.active_tab().is_none()
+            && !self.ui_state.dialog.is_open()
+        {
+            self.render_workspace_frame(frame);
+            return;
+        }
         // Expire a lapsed confirmation rather than only on the next keypress:
         // the pump runs on every animation tick, so a prompt the user walked
         // away from clears itself instead of waiting to be overwritten by
@@ -1070,6 +1086,285 @@ impl App {
             .with_hosted_mut::<FilesDialog, ()>(SidePanelId::Files, |dialog| {
                 dialog.adopt_structure(revision, &build);
             });
+    }
+
+    /// M007: paint the Workspace whole view.
+    ///
+    /// Two regions and one title row: the tree (or the inline detail) on the
+    /// left, the project chat viewer on the right. Deliberately no composer,
+    /// no sidebar, no badge row and no hint row — the route's own footer is
+    /// the whole vocabulary, and the ordinary composer is restored unchanged
+    /// when the route is left (D11).
+    fn render_workspace_frame(&mut self, frame: &mut Frame) {
+        use crate::app::state::workspace_view::{LaunchStep, TreeKind, WorkspaceMode};
+        let area = frame.area();
+        let theme = Arc::clone(&self.ui_state.theme);
+        frame.render_widget(
+            ratatui::widgets::Block::default().style(Style::default().bg(theme.background)),
+            area,
+        );
+        if area.height < 4 || area.width < 40 {
+            return;
+        }
+        // One immutable snapshot, then paint. Holding the dashboard borrow
+        // across a panel render would borrow the app twice.
+        let snapshot = {
+            let Some(dashboard) = self.dialog_state.workspace_dashboard.as_ref() else {
+                frame.render_widget(
+                    Paragraph::new("Workspace closed — /workspace to open")
+                        .style(Style::default().fg(theme.muted)),
+                    area,
+                );
+                return;
+            };
+            let mode_label = match dashboard.view.mode {
+                WorkspaceMode::Normal => "NOR",
+                WorkspaceMode::Insert => "INS",
+            };
+            let filter = if dashboard.view.filter.is_empty() {
+                String::new()
+            } else {
+                format!("  filter:{}", dashboard.view.filter)
+            };
+            let rows = if dashboard.view.detail.is_none() {
+                crate::commands::workspace_view::visible_rows(self)
+            } else {
+                Vec::new()
+            };
+            let mut detail_lines: Vec<Line<'static>> = Vec::new();
+            if let Some(project_id) = dashboard.view.detail.as_deref() {
+                if dashboard.view.detail_loading {
+                    detail_lines.push(Line::from(Span::styled(
+                        " loading project…",
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+                if let Some(error) = dashboard.view.detail_error.as_ref() {
+                    detail_lines.push(Line::from(Span::styled(
+                        format!(" error: {error}"),
+                        Style::default().fg(theme.error),
+                    )));
+                }
+                if let Some(detail) = dashboard.view.detail_data.as_ref() {
+                    detail_lines.push(Line::from(Span::styled(
+                        format!(" {} ", detail.project.display_name),
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    detail_lines.push(Line::from(format!(
+                        "  {} · {} · {} sessions",
+                        detail.project.lifecycle, detail.project.project_id, detail.session_count
+                    )));
+                    detail_lines.push(Line::from(""));
+                    detail_lines.push(Line::from(Span::styled(
+                        " workspaces",
+                        Style::default().fg(theme.secondary),
+                    )));
+                    for workspace in detail.workspaces.iter() {
+                        let worktrees = dashboard
+                            .view
+                            .worktrees
+                            .get(&workspace.workspace_id)
+                            .map(|worktrees| worktrees.len())
+                            .unwrap_or(0);
+                        detail_lines.push(Line::from(format!(
+                            "  {} · {} · {} worktrees",
+                            workspace.display_name, workspace.workspace_id, worktrees
+                        )));
+                    }
+                } else {
+                    detail_lines.push(Line::from(Span::styled(
+                        format!(" project {project_id}"),
+                        Style::default().fg(theme.foreground),
+                    )));
+                }
+                detail_lines.push(Line::from(""));
+                detail_lines.push(Line::from(Span::styled(
+                    " h back · n new session",
+                    Style::default().fg(theme.muted),
+                )));
+            }
+            let mut footer: Vec<String> = Vec::new();
+            if let Some(launch) = dashboard.view.launch.as_ref() {
+                let placement = if launch.selected == 0 {
+                    "new checkout".to_string()
+                } else {
+                    launch
+                        .ready_worktrees()
+                        .nth(launch.selected.saturating_sub(1))
+                        .map(|worktree| {
+                            worktree
+                                .branch
+                                .clone()
+                                .unwrap_or_else(|| worktree.worktree_id.clone())
+                        })
+                        .unwrap_or_else(|| "worktree".to_string())
+                };
+                let step = match launch.step {
+                    LaunchStep::Placement => "placement",
+                    LaunchStep::Base => "base branch",
+                    LaunchStep::Branch => "branch",
+                };
+                let branch = launch
+                    .branches
+                    .get(launch.base_selected)
+                    .cloned()
+                    .unwrap_or_else(|| "auto".to_string());
+                let typed = if launch.branch_input.is_empty() {
+                    "automatic".to_string()
+                } else {
+                    launch.branch_input.clone()
+                };
+                let error = launch
+                    .error
+                    .as_ref()
+                    .map(|error| format!(" · {error}"))
+                    .unwrap_or_default();
+                footer.push(format!(
+                    "new session · {step}: {placement} · base:{branch} · branch:{typed}{error} · Enter start · Esc back"
+                ));
+            } else if let Some(notice) = dashboard.view.notice.as_ref() {
+                footer.push(notice.clone());
+            } else if let Some(error) = dashboard.error.as_ref() {
+                footer.push(format!("error: {error}"));
+            } else if dashboard.loading {
+                footer.push("loading projects…".to_string());
+            }
+            (
+                mode_label.to_string(),
+                filter,
+                dashboard.view.selected,
+                rows,
+                detail_lines,
+                footer.join("  |  "),
+            )
+        };
+        let (mode_label, filter, selected, rows, detail_lines, footer_text) = snapshot;
+        let title = Line::from(vec![
+            Span::styled(
+                " WORKSPACE ",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {mode_label}{filter}  "),
+                Style::default().fg(theme.foreground),
+            ),
+            Span::styled(
+                "i filter · l open · n new · d detail · Shift+X exit",
+                Style::default().fg(theme.muted),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(title).style(Style::default().bg(theme.background)),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+
+        let footer_rows = 1;
+        let body = Rect::new(
+            area.x,
+            area.y + 1,
+            area.width,
+            area.height.saturating_sub(1 + footer_rows),
+        );
+        let list_width = (area.width as u32 * 11 / 20) as u16;
+        let tree_area = Rect::new(body.x, body.y, list_width, body.height);
+        let chat_area = Rect::new(
+            body.x + list_width,
+            body.y,
+            body.width.saturating_sub(list_width),
+            body.height,
+        );
+
+        if !detail_lines.is_empty() {
+            let detail_area = Rect::new(body.x, body.y, body.width, body.height);
+            frame.render_widget(
+                Paragraph::new(detail_lines).style(Style::default().bg(theme.background)),
+                detail_area,
+            );
+        } else {
+            let visible = tree_area.height as usize;
+            let offset = selected.saturating_sub(visible.saturating_sub(1));
+            for (row_index, row) in rows.iter().enumerate().skip(offset).take(visible) {
+                let is_selected = row_index == selected;
+                let indent = "  ".repeat(row.depth as usize);
+                let marker = if row.expandable {
+                    if row.expanded {
+                        "▾ "
+                    } else {
+                        "▸ "
+                    }
+                } else {
+                    "· "
+                };
+                let label = if row.label.is_empty() {
+                    row.note.clone()
+                } else if row.note.is_empty() {
+                    row.label.clone()
+                } else {
+                    format!("{}  {}", row.label, row.note)
+                };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.background)
+                        .bg(theme.primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(match row.kind {
+                        TreeKind::Project => theme.foreground,
+                        TreeKind::Workspace => theme.secondary,
+                        TreeKind::Worktree => theme.muted,
+                    })
+                };
+                let text = format!(
+                    "{}{}{}",
+                    if is_selected { ">" } else { " " },
+                    indent,
+                    format!("{marker}{label}")
+                );
+                let line_area = Rect::new(
+                    tree_area.x,
+                    tree_area.y + (row_index - offset) as u16,
+                    tree_area.width,
+                    1,
+                );
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        crate::wrap::ellipsize_to_width(&text, tree_area.width as usize),
+                        style,
+                    ))),
+                    line_area,
+                );
+            }
+        }
+
+        // The chat pane is a viewer: the project chat the dashboard already
+        // bound, painted through its own panel so a docked chat cannot
+        // disagree with what this pane shows.
+        if self
+            .panel_host
+            .is_visible_at(crate::panels::PanelPlacement::Right)
+        {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.render_panel_at(frame, crate::panels::PanelPlacement::Right, chat_area);
+            }));
+        } else {
+            frame.render_widget(
+                Paragraph::new("Chat pane unavailable — Shift+S to dock the Chat panel")
+                    .style(Style::default().fg(theme.muted)),
+                chat_area,
+            );
+        }
+
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                crate::wrap::ellipsize_to_width(&footer_text, area.width as usize),
+                Style::default().fg(theme.muted),
+            ))),
+            Rect::new(area.x, area.y + area.height - 1, area.width, 1),
+        );
     }
 
     /// M005: non-modal Workspace primary view. Reads the bounded

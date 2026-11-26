@@ -11,7 +11,7 @@ use std::sync::Arc;
 use codegg_git::{GitOperation, RepoPath, RepoRoot};
 use codegg_protocol::core::{CoreRequest, CoreResponse};
 use codegg_protocol::git::{
-    GitDiffRequestDto, GitDiffResultDto, GitRevertRequestDto, GitRevertResultDto,
+    GitDiffFileDto, GitDiffRequestDto, GitDiffResultDto, GitRevertRequestDto, GitRevertResultDto,
 };
 
 use crate::core::writer_fence::DaemonWriterFenceFactory;
@@ -113,6 +113,7 @@ async fn handle_git_diff(
             ));
         }
         let diff_text = String::from_utf8_lossy(&output.stdout).to_string();
+        let (files, truncated) = split_unified_diff(&diff_text);
         return Ok(CoreResponse::GitDiff {
             result: GitDiffResultDto {
                 project_id: request.project_id,
@@ -121,6 +122,8 @@ async fn handle_git_diff(
                 old_content: String::new(),
                 new_content: diff_text,
                 title: "Repository Diff".to_string(),
+                files,
+                truncated,
             },
         });
     };
@@ -159,8 +162,103 @@ async fn handle_git_diff(
             old_content,
             new_content,
             title: format!("Diff: {path}"),
+            files: Vec::new(),
+            truncated: false,
         },
     })
+}
+
+/// M003 aggregate bound: the most files one bare diff answer carries.
+const MAX_DIFF_FILES: usize = 200;
+/// M003 aggregate bound: the most patch bytes one file may carry.
+const MAX_DIFF_FILE_BYTES: usize = 256 * 1024;
+/// M003 aggregate bound: the most patch bytes the whole answer may carry.
+const MAX_DIFF_TOTAL_BYTES: usize = 1024 * 1024;
+
+/// Split one unified working-tree patch into per-file sections.
+///
+/// The bare `/`diff` branch already runs exactly one `git diff`; this is a
+/// parse of that one answer, not an N+1 read. A section starts at git's own
+/// `diff --git` header, so no path is guessed and a file the parser cannot
+/// name is still shown under its header text rather than dropped.
+///
+/// Bounds are explicit because the answer travels over the wire: file count,
+/// per-file bytes and total bytes, each reported through `truncated` so the
+/// reader is never shown a silently partial list.
+fn split_unified_diff(patch: &str) -> (Vec<GitDiffFileDto>, bool) {
+    /// Cut at a UTF-8 boundary and report that the section was shortened.
+    fn cut(text: &str, max: usize) -> (String, bool) {
+        if text.len() <= max {
+            return (text.to_string(), false);
+        }
+        let mut end = max;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        (text[..end].to_string(), true)
+    }
+
+    /// The repository-relative path of a `diff --git` header.
+    ///
+    /// The `b/` side is the path after the change, which is what a reader
+    /// navigates to. Both plain and quoted headers are accepted; a header the
+    /// parser cannot name keeps its own text.
+    fn header_path(line: &str) -> String {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if let Some(token) = tokens.iter().rev().find(|token| token.starts_with("b/")) {
+            return token.trim_start_matches("b/").trim_matches('"').to_string();
+        }
+        line.trim().to_string()
+    }
+
+    fn flush(
+        files: &mut Vec<GitDiffFileDto>,
+        current: &mut Option<(String, String)>,
+        total: &mut usize,
+        aggregate_truncated: &mut bool,
+    ) {
+        let Some((path, body)) = current.take() else {
+            return;
+        };
+        if body.trim().is_empty() {
+            return;
+        }
+        let (patch, file_truncated) = cut(&body, MAX_DIFF_FILE_BYTES);
+        if *total + patch.len() > MAX_DIFF_TOTAL_BYTES {
+            *aggregate_truncated = true;
+            return;
+        }
+        *total += patch.len();
+        let binary = patch.contains("Binary files ")
+            || patch.contains("GIT binary patch")
+            || patch.contains("Binary file ");
+        files.push(GitDiffFileDto {
+            path,
+            patch,
+            binary,
+            truncated: file_truncated,
+        });
+    }
+
+    let mut files: Vec<GitDiffFileDto> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    let mut total = 0usize;
+    let mut truncated = false;
+
+    for line in patch.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            flush(&mut files, &mut current, &mut total, &mut truncated);
+            if files.len() >= MAX_DIFF_FILES {
+                truncated = true;
+                break;
+            }
+            current = Some((header_path(line), line.to_string()));
+        } else if let Some((_, body)) = current.as_mut() {
+            body.push_str(line);
+        }
+    }
+    flush(&mut files, &mut current, &mut total, &mut truncated);
+    (files, truncated)
 }
 
 /// The repository-relative form of a caller-supplied path.
@@ -429,5 +527,62 @@ fn diff_error(code: &str, message: &str) -> CoreResponse {
     CoreResponse::Error {
         code: code.to_string(),
         message: message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod aggregate_diff_tests {
+    use super::split_unified_diff;
+
+    const TWO_FILES: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+index 1111111..2222222 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1 +1 @@
+-old a
++new a
+diff --git a/src/b.rs b/src/b.rs
+index 3333333..4444444 100644
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1 +1 @@
+-old b
++new b
+";
+
+    /// M003: one git answer, two file sections, no second read.
+    #[test]
+    fn splits_one_patch_into_named_file_sections() {
+        let (files, truncated) = split_unified_diff(TWO_FILES);
+        assert!(!truncated);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "src/a.rs");
+        assert_eq!(files[1].path, "src/b.rs");
+        assert!(files[0].patch.contains("-old a"));
+        assert!(files[1].patch.contains("+new b"));
+        assert!(!files[0].binary);
+    }
+
+    /// A binary section is announced, never decoded as text.
+    #[test]
+    fn marks_a_binary_section() {
+        let patch = "\
+diff --git a/img.png b/img.png
+index 1111111..2222222 100644
+Binary files a/img.png and b/img.png differ
+";
+        let (files, truncated) = split_unified_diff(patch);
+        assert!(!truncated);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].binary);
+    }
+
+    /// An empty or preamble-only answer is not a file list.
+    #[test]
+    fn empty_patch_has_no_files() {
+        let (files, truncated) = split_unified_diff("");
+        assert!(files.is_empty());
+        assert!(!truncated);
     }
 }

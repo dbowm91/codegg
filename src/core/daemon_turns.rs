@@ -1712,7 +1712,12 @@ impl CoreDaemon {
                 );
                 Ok(CoreResponse::Ack)
             }
-            CoreRequest::ModelSelect { session_id, model } => {
+            CoreRequest::ModelSelect {
+                session_id,
+                model,
+                reasoning,
+                expected_revision,
+            } => {
                 // M004 convergence: `ModelSelect` is a compatibility
                 // adapter over the durable `SelectionService`. The
                 // runtime cache is only updated after durable success;
@@ -1787,36 +1792,78 @@ impl CoreDaemon {
                             let mut selected = runtime.selected_model.write().await;
                             *selected = Some(canonical);
                         }
-                        // Remember the principal's last-used preference.
-                        // A preference write failure never rolls back the
-                        // explicit selection; it is reported via tracing
-                        // and the selection still acknowledges.
-                        if let Some(pool) = self.pool.clone() {
+                        // M004: the model identity and the thinking level are
+                        // one preference write under the revision the client
+                        // sent. The model write used to bump the row and the
+                        // reasoning write then compared its own stale cache
+                        // against that bump, so the user's selection conflicted
+                        // with itself. One row, one compare-and-set.
+                        //
+                        // A conflict is the honest answer: the explicit
+                        // session selection already landed (it has its own
+                        // durable authority), and the caller must re-read the
+                        // preference row rather than overwrite another
+                        // writer's change.
+                        let preference = if let Some(pool) = self.pool.clone() {
                             let principal_id = authority.principal_id().as_str().to_owned();
                             let preference_store =
                                 codegg_core::approval::RuntimePreferenceStore::new(pool);
-                            if let Err(error) = preference_store
-                                .set_model_preference(
+                            match preference_store
+                                .set_model_and_reasoning_preference(
                                     &principal_id,
                                     Some(connection_id.as_str()),
                                     Some(&model_id),
-                                    None,
+                                    reasoning.as_ref(),
+                                    expected_revision,
                                 )
                                 .await
                             {
-                                tracing::warn!(
-                                    error = %error,
-                                    session_id = %session_id,
-                                    "model selection persisted but last-used preference was not saved"
-                                );
+                                Ok(preference) => Some(preference),
+                                Err(
+                                    error @ codegg_core::approval::PreferenceError::Conflict {
+                                        ..
+                                    },
+                                ) => {
+                                    return Ok(CoreResponse::Error {
+                                        code: "preference_conflict".to_string(),
+                                        message: error.to_string(),
+                                    });
+                                }
+                                Err(codegg_core::approval::PreferenceError::Validation(
+                                    message,
+                                )) => {
+                                    return Ok(CoreResponse::Error {
+                                        code: "preference_validation".to_string(),
+                                        message,
+                                    });
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        error = %error,
+                                        session_id = %session_id,
+                                        "model selection persisted but last-used preference was not saved"
+                                    );
+                                    None
+                                }
                             }
-                        }
+                        } else {
+                            None
+                        };
                         crate::bus::global::GlobalEventBus::publish(
                             crate::bus::events::AppEvent::SessionUpdated {
                                 id: session_id.clone(),
                             },
                         );
-                        Ok(CoreResponse::Ack)
+                        match preference {
+                            Some(preference) => Ok(CoreResponse::ModelPreference {
+                                preference: crate::core::daemon_ops::approval_preference_to_dto(
+                                    &preference,
+                                ),
+                            }),
+                            // No preference store: the durable selection is
+                            // still the authority for this session.
+                            None => Ok(CoreResponse::Ack),
+                        }
                     }
                     Ok(other) => Ok(CoreResponse::Error {
                         code: crate::core::session_selection::selection_outcome_code(&other)

@@ -185,6 +185,13 @@ fn release_hint(row: &crate::app::state::TaskViewRow) -> String {
 pub struct TaskViewDialog {
     project_id: String,
     snapshot: TaskViewSnapshot,
+    /// M010: the view's own live filter.
+    filter: String,
+    /// M010: NOR/INS. Deliberately separate from the composer's mode.
+    insert: bool,
+    /// M010: `x` is a destructive action, so the first press arms it and the
+    /// second confirms. Any other key disarms.
+    cancel_armed: bool,
 }
 
 impl TaskViewDialog {
@@ -196,11 +203,84 @@ impl TaskViewDialog {
                 loading: true,
                 ..TaskViewSnapshot::default()
             },
+            filter: String::new(),
+            insert: false,
+            cancel_armed: false,
         }
     }
 
     pub fn set_snapshot(&mut self, snapshot: TaskViewSnapshot) {
         self.snapshot = snapshot;
+    }
+
+    /// Rows between the current selection and the next/previous section start.
+    fn section_delta(&self, forward: bool) -> Option<isize> {
+        let selected = self.snapshot.selected_id.as_deref()?;
+        let mut ids: Vec<&str> = Vec::new();
+        let mut starts: Vec<usize> = Vec::new();
+        for (_, rows) in self.snapshot.sections.iter() {
+            starts.push(ids.len());
+            for row in rows {
+                ids.push(row.id.as_str());
+            }
+        }
+        let current = ids.iter().position(|id| *id == selected)?;
+        if forward {
+            let next = starts.into_iter().find(|start| *start > current)?;
+            Some(next as isize - current as isize)
+        } else {
+            let previous = starts.into_iter().filter(|start| *start < current).max()?;
+            Some(previous as isize - current as isize)
+        }
+    }
+
+    /// The snapshot with the filter applied.
+    ///
+    /// Selection stays in the App-owned state; the filter is a reading aid, so
+    /// an empty match is stated rather than silently showing every row.
+    fn filtered_snapshot(&self) -> TaskViewSnapshot {
+        let query = self.filter.trim();
+        if query.is_empty() {
+            return self.snapshot.clone();
+        }
+        let mut filtered = self.snapshot.clone();
+        for (_, lines) in filtered.sections.iter_mut() {
+            lines.retain(|line| {
+                codegg::util::fuzzy::fuzzy_score(query, &line.title) > 0
+                    || codegg::util::fuzzy::fuzzy_score(query, &line.detail) > 0
+            });
+        }
+        filtered.sections.retain(|(_, lines)| !lines.is_empty());
+        filtered
+    }
+
+    /// The selected row's line, for the persistent detail pane.
+    fn selected_line(&self) -> Option<&TaskViewLine> {
+        let selected = self.snapshot.selected_id.as_deref()?;
+        self.snapshot
+            .sections
+            .iter()
+            .flat_map(|(_, lines)| lines.iter())
+            .find(|line| line.id == selected)
+    }
+
+    fn hint_line(&self) -> HintLine {
+        let mut hint = HintLine::new();
+        if self.insert {
+            hint.push("type", "filter")
+                .push("Esc", "NOR")
+                .push("^U", "clear");
+            return hint;
+        }
+        hint.push("j/k", "move")
+            .push("h/l", "section")
+            .push("enter", "open")
+            .push("i", "filter")
+            .push("d", "detail")
+            .push("r", "refresh")
+            .push("x", "cancel")
+            .push("u", "resume");
+        hint
     }
 }
 
@@ -209,28 +289,81 @@ impl Component for TaskViewDialog {
     /// so the panel host may resolve `Shift+←/→/↑/↓` as the docking gesture
     /// before this dialog sees the key.
     fn docks_as_viewer(&self) -> bool {
-        {
-            true
-        }
+        // M010: the view has its own filter and NOR/INS mode now, so the host
+        // must not resolve Shift gestures for it.
+        false
     }
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
+        // `x` is destructive: the first press arms it, the next confirms, and
+        // any other key disarms. No modal is stacked over the view.
+        let armed = self.cancel_armed;
+        self.cancel_armed = false;
+        if self.insert {
+            return match key.code {
+                KeyCode::Esc => {
+                    if self.filter.is_empty() {
+                        self.insert = false;
+                    } else {
+                        self.filter.clear();
+                    }
+                    None
+                }
+                KeyCode::Char('u') if key.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+                    self.filter.clear();
+                    None
+                }
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                    None
+                }
+                KeyCode::Up => Some(TuiMsg::TaskViewMove { delta: -1 }),
+                KeyCode::Down => Some(TuiMsg::TaskViewMove { delta: 1 }),
+                KeyCode::Enter => Some(TuiMsg::TaskViewOpen),
+                KeyCode::Char(ch)
+                    if key.modifiers.is_empty()
+                        || key.modifiers == crossterm::event::KeyModifiers::SHIFT =>
+                {
+                    if self.filter.chars().count() < 128 {
+                        self.filter.push(ch);
+                    }
+                    None
+                }
+                _ => None,
+            };
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => Some(TuiMsg::CloseDialog),
+            KeyCode::Char('i') => {
+                self.insert = true;
+                None
+            }
             KeyCode::Up | KeyCode::Char('k') => Some(TuiMsg::TaskViewMove { delta: -1 }),
             KeyCode::Down | KeyCode::Char('j') => Some(TuiMsg::TaskViewMove { delta: 1 }),
             KeyCode::PageUp => Some(TuiMsg::TaskViewMove { delta: -10 }),
             KeyCode::PageDown => Some(TuiMsg::TaskViewMove { delta: 10 }),
-            KeyCode::Home => Some(TuiMsg::TaskViewMove { delta: -10_000 }),
-            KeyCode::End => Some(TuiMsg::TaskViewMove { delta: 10_000 }),
+            KeyCode::Home | KeyCode::Char('g') => Some(TuiMsg::TaskViewMove { delta: -10_000 }),
+            KeyCode::End | KeyCode::Char('G') => Some(TuiMsg::TaskViewMove { delta: 10_000 }),
             // Shift+J/K reorder (focused move modifier; bare j/k navigate).
             KeyCode::Char('J') => Some(TuiMsg::TaskViewReorder { delta: 1 }),
             KeyCode::Char('K') => Some(TuiMsg::TaskViewReorder { delta: -1 }),
-            KeyCode::Char('g') => Some(TuiMsg::TaskViewMove { delta: -10_000 }),
-            KeyCode::Char('G') => Some(TuiMsg::TaskViewMove { delta: 10_000 }),
+            // h/l move by section: one row at a time is j/k's job.
+            KeyCode::Char('h') => self
+                .section_delta(false)
+                .map(|delta| TuiMsg::TaskViewMove { delta }),
+            KeyCode::Char('l') => self
+                .section_delta(true)
+                .map(|delta| TuiMsg::TaskViewMove { delta }),
             KeyCode::Enter => Some(TuiMsg::TaskViewOpen),
             KeyCode::Char('r') => Some(TuiMsg::TaskViewRefresh),
             KeyCode::Char('d') => Some(TuiMsg::TaskViewDetail),
-            KeyCode::Char('x') => Some(TuiMsg::TaskViewCancel),
+            KeyCode::Char('x') => {
+                if armed {
+                    Some(TuiMsg::TaskViewCancel)
+                } else {
+                    self.cancel_armed = true;
+                    None
+                }
+            }
             KeyCode::Char('u') => Some(TuiMsg::TaskViewResume),
             // C001 trigger management (metadata only; no secret-read path).
             KeyCode::Char('t') => Some(TuiMsg::TaskTriggerSetup),
@@ -250,7 +383,7 @@ impl Component for TaskViewDialog {
 
     /// The verbs this box owns, spelled the way this box spells them.
     fn keymap_hint_line(&self) -> Option<HintLine> {
-        Some(hint())
+        Some(self.hint_line())
     }
 
     /// The row list alone: no border, no title, no footer.
@@ -270,24 +403,32 @@ impl Component for TaskViewDialog {
         if inner.height == 0 || inner.width == 0 {
             return;
         }
+        let snapshot = self.filtered_snapshot();
         render_view(
             frame,
             inner,
             theme,
             &self.project_id,
-            &self.snapshot,
+            &snapshot,
             SectionFrame::Hosted,
+            &self.filter,
+            self.insert,
+            self.cancel_armed,
         );
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        let snapshot = self.filtered_snapshot();
         render_view(
             frame,
             area,
             theme,
             &self.project_id,
-            &self.snapshot,
+            &snapshot,
             SectionFrame::Owned,
+            &self.filter,
+            self.insert,
+            self.cancel_armed,
         );
     }
 
@@ -303,6 +444,9 @@ fn render_view(
     project_id: &str,
     snapshot: &TaskViewSnapshot,
     chrome: SectionFrame,
+    filter: &str,
+    insert: bool,
+    cancel_armed: bool,
 ) {
     if area.height < 8 || area.width < 30 {
         return;
@@ -325,6 +469,26 @@ fn render_view(
         truncate(&snapshot.summary_line, width),
         Style::default().fg(theme.muted),
     ))];
+    // M010: the view's own mode and filter, so a typed filter is visible and
+    // an empty match is never mistaken for an empty project.
+    let mode = if insert { "INS" } else { "NOR" };
+    let filter_line = if filter.is_empty() {
+        format!(" {mode}  i filter")
+    } else {
+        format!(" {mode}  filter:{filter}")
+    };
+    lines.push(Line::from(Span::styled(
+        truncate(&filter_line, width),
+        Style::default().fg(if insert { theme.primary } else { theme.muted }),
+    )));
+    if filter.is_empty() {
+        // nothing
+    } else if snapshot.sections.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " no task matches the filter",
+            Style::default().fg(theme.muted),
+        )));
+    }
     if snapshot.loading {
         lines.push(Line::from(Span::raw("Loading tasks…")));
     }
@@ -386,6 +550,33 @@ fn render_view(
                 ]));
             }
         }
+    }
+    // M010: the selected row's detail is always on screen, not a transient
+    // box. This is the same projection's own fields; no new request.
+    if let Some(selected) = snapshot.selected_id.as_deref() {
+        if let Some(row) = snapshot
+            .sections
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .find(|row| row.id == selected)
+        {
+            lines.push(Line::from(Span::styled(
+                truncate(&format!("▸ {}  {}", row.title, row.detail), width),
+                Style::default().fg(theme.foreground),
+            )));
+            if let Some(attention) = row.attention.as_deref() {
+                lines.push(Line::from(Span::styled(
+                    truncate(&format!("  ! {attention}"), width),
+                    Style::default().fg(theme.warning),
+                )));
+            }
+        }
+    }
+    if cancel_armed {
+        lines.push(Line::from(Span::styled(
+            truncate("press x again to cancel — any other key keeps it", width),
+            Style::default().fg(theme.warning),
+        )));
     }
     if let Some(error) = snapshot.error.as_deref() {
         lines.push(Line::from(Span::styled(

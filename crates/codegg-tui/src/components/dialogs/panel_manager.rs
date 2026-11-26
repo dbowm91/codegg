@@ -532,8 +532,9 @@ mod tests {
     #[test]
     fn stepping_the_list_skips_folded_rows() {
         let mut d = dialog();
-        // Session → Chat → Terminal → Help → Sessions; `Tree` is folded.
-        for _ in 0..4 {
+        // Session → Chat → Terminal → Workspace → Help → Sessions;
+        // `Tree` is folded.
+        for _ in 0..5 {
             d.handle_key(key(KeyCode::Down, KeyModifiers::NONE));
         }
         assert_eq!(d.selected(), Some(SidePanelId::Sessions));

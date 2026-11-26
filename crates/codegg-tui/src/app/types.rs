@@ -747,6 +747,11 @@ pub enum TuiMsg {
     /// Project Work Orders M004: bounded dashboard refresh (one
     /// aggregate request, never N+1).
     WorkspaceDashboardRefresh,
+    /// M009: the Workspace picker panel chose a project. Opens or focuses
+    /// that project's tab through the canonical routing path.
+    WorkspacePickerOpen {
+        project_id: String,
+    },
     /// Project Work Orders M004: expand/collapse the selected
     /// project's inline running-task detail (one bounded lazy fetch).
     WorkspaceDashboardToggleExpand,

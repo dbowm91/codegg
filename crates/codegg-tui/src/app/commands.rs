@@ -492,11 +492,17 @@ pub enum TuiCommand {
     ModelSelectPersist {
         session_id: String,
         model: String,
+        /// M004: the thinking level chosen in the same gesture.
+        reasoning: Option<codegg::protocol::core::ReasoningOverride>,
+        /// M004: the preference revision the client last saw.
+        expected_revision: Option<u64>,
     },
     /// Completion for [`TuiCommand::ModelSelectPersist`]. `error` is
-    /// `None` only when the daemon durably accepted the choice.
+    /// `None` only when the daemon durably accepted the choice, and
+    /// `preference` is the row the daemon wrote (its revision included).
     ModelSelectPersisted {
         model: String,
+        preference: Option<codegg::protocol::core::RuntimePreferenceDto>,
         error: Option<String>,
     },
     ConnectionLifecycle {
@@ -1745,6 +1751,38 @@ pub enum TuiCommand {
         reconnect_epoch: u64,
         project_id: String,
         tasks: Vec<codegg::protocol::work_order::WorkOrderDto>,
+        error: Option<String>,
+    },
+    /// M007-M011: a project's workspaces, from the same bounded
+    /// `ProjectGet` the detail uses.
+    WorkspaceProjectLoaded {
+        request_id: u64,
+        project_id: String,
+        project: Option<Box<codegg::protocol::dto::ProjectDetailsDto>>,
+        error: Option<String>,
+    },
+    /// M011: one workspace's managed worktrees.
+    WorkspaceWorktreesLoaded {
+        request_id: u64,
+        workspace_id: String,
+        worktrees: Vec<codegg::protocol::dto::ManagedWorktreeDto>,
+        error: Option<String>,
+    },
+    /// M011: the repository's local branches for the launch base.
+    WorkspaceBranchesLoaded {
+        request_id: u64,
+        branches: Vec<String>,
+        error: Option<String>,
+    },
+    /// M011: the launch answered. `session_id` is the concrete session the
+    /// daemon created (or converged on); the view opens it.
+    WorkspaceLaunchFinished {
+        request_id: u64,
+        session_id: Option<String>,
+        workspace_id: Option<String>,
+        branch: Option<String>,
+        stage: String,
+        converged: bool,
         error: Option<String>,
     },
     /// C001: `WorkOrderTriggerCreate` completion. `secret` carries the

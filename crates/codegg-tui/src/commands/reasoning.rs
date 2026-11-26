@@ -343,14 +343,6 @@ pub(crate) fn apply_preference_loaded(
     app.ui_state.reasoning_mode = ReasoningMode::from(preference.reasoning_selection.clone());
 }
 
-/// Write one extended-thinking level through the daemon, **verbatim**:
-/// the user picked it, so a cycle would land somewhere else.
-pub(crate) fn start_level_update(app: &mut App, level: ReasoningMode) {
-    let previous = app.ui_state.reasoning_mode.clone();
-    app.ui_state.reasoning_mode = level.clone();
-    start_preference_update(app, override_for(&level), previous);
-}
-
 pub(crate) fn dispatch_reasoning(app: &mut App) {
     // The option set is the **model's**, not a static ladder:
     // the labels the capability publishes, in its own order, a

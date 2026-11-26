@@ -1006,6 +1006,104 @@ impl RuntimePreferenceStore {
             .ok_or_else(|| PreferenceError::Storage("preference write lost".into()))
     }
 
+    /// M004: persist last-used connection/model identity and an optional
+    /// reasoning selection in one revision bump.
+    ///
+    /// The model and the thinking level are chosen in one gesture in the
+    /// model dialog, but they were two writes: the model write bumped the row
+    /// revision and the reasoning write then compared its cached expected
+    /// revision against the new one, so the user's own selection conflicted
+    /// with itself ("expected 180, current 183"). This is the shape
+    /// [`Self::set_policy`] already established: validate every dimension
+    /// first, check the expected revision once, and write the whole row once.
+    ///
+    /// A None reasoning value means "this gesture did not choose a level" and
+    /// preserves the stored selection; it is not "clear the selection".
+    pub async fn set_model_and_reasoning_preference(
+        &self,
+        principal_id: &str,
+        connection_id: Option<&str>,
+        model_id: Option<&str>,
+        reasoning: Option<&ReasoningOverride>,
+        expected_revision: Option<u64>,
+    ) -> Result<RuntimePreference, PreferenceError> {
+        validate_principal_id(principal_id)?;
+        if let Some(v) = connection_id {
+            validate_identity_field("last_provider_connection_id", v)?;
+        }
+        if let Some(v) = model_id {
+            validate_identity_field("last_model_id", v)?;
+        }
+        if let Some(selection) = reasoning {
+            validate_reasoning_selection(selection)?;
+        }
+        let current = self.get(principal_id).await?;
+        let (current_revision, current_row) = match current {
+            Some(p) => (p.revision, Some(p)),
+            None => (0, None),
+        };
+        if let Some(expected) = expected_revision {
+            if expected != current_revision {
+                return Err(PreferenceError::Conflict {
+                    expected,
+                    current: current_revision,
+                });
+            }
+        }
+        let next_revision = current_revision.saturating_add(1).max(1);
+        let now = now_millis();
+        let approval_mode = current_row
+            .as_ref()
+            .and_then(|p| p.approval_mode.map(|m| m.as_str().to_owned()));
+        let sandbox_profile = current_row
+            .as_ref()
+            .and_then(|p| p.sandbox_profile.map(|s| s.as_str().to_owned()));
+        let (task_connection_id, task_model_id) = match current_row.as_ref() {
+            Some(p) => (
+                p.last_task_provider_connection_id.clone(),
+                p.last_task_model_id.clone(),
+            ),
+            None => (None, None),
+        };
+        let reasoning_selection = match reasoning {
+            Some(selection) => encode_reasoning_selection(Some(selection))?,
+            None => current_reasoning_selection(current_row.as_ref()),
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO runtime_preferences
+                (principal_id, approval_mode, sandbox_profile,
+                 last_provider_connection_id, last_model_id,
+                 last_task_provider_connection_id, last_task_model_id,
+                 reasoning_selection,
+                 revision, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(principal_id) DO UPDATE SET
+                last_provider_connection_id = excluded.last_provider_connection_id,
+                last_model_id = excluded.last_model_id,
+                reasoning_selection = excluded.reasoning_selection,
+                revision = excluded.revision,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(principal_id)
+        .bind(approval_mode)
+        .bind(sandbox_profile)
+        .bind(connection_id)
+        .bind(model_id)
+        .bind(task_connection_id)
+        .bind(task_model_id)
+        .bind(reasoning_selection)
+        .bind(next_revision as i64)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| PreferenceError::Storage(e.to_string()))?;
+        self.get(principal_id)
+            .await?
+            .ok_or_else(|| PreferenceError::Storage("preference write lost".into()))
+    }
+
     /// Reserved M004 contract: persist last-used connection/model identity.
     /// Re-resolved against the provider catalog on use; a stale identity
     /// never authorizes a silent provider/model switch (that check lives in
@@ -2305,6 +2403,76 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PreferenceError::Validation(_)));
+    }
+
+    /// M004: the model and the thinking level are one preference write.
+    ///
+    /// The regression this pins is the user's own two writes conflicting:
+    /// the model write bumped the row revision and the reasoning write then
+    /// compared its cached expected revision against the new one
+    /// ("expected 180, current 183"). One call, one bump, both dimensions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_and_reasoning_are_written_in_one_revision_bump() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        let reasoning = ReasoningOverride::Effort {
+            level: "high".to_string(),
+        };
+        let pref = store
+            .set_model_and_reasoning_preference(
+                "dave",
+                Some("conn-1"),
+                Some("model-1"),
+                Some(&reasoning),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(pref.revision, 1, "one write is one bump");
+        assert_eq!(pref.last_provider_connection_id.as_deref(), Some("conn-1"));
+        assert_eq!(pref.last_model_id.as_deref(), Some("model-1"));
+        assert_eq!(pref.reasoning_selection, Some(reasoning.clone()));
+
+        // The next selection carries the revision this one returned, so it
+        // succeeds; an omitted level preserves the stored one.
+        let pref = store
+            .set_model_and_reasoning_preference(
+                "dave",
+                Some("conn-1"),
+                Some("model-2"),
+                None,
+                Some(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pref.revision, 2);
+        assert_eq!(pref.last_model_id.as_deref(), Some("model-2"));
+        assert_eq!(
+            pref.reasoning_selection,
+            Some(reasoning),
+            "omitting a level must not clear the stored selection"
+        );
+
+        // A stale revision is the typed conflict a concurrent writer gets,
+        // and the row is untouched.
+        let err = store
+            .set_model_and_reasoning_preference(
+                "dave",
+                Some("conn-1"),
+                Some("model-3"),
+                None,
+                Some(1),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            PreferenceError::Conflict {
+                expected: 1,
+                current: 2
+            }
+        ));
+        let current = store.get("dave").await.unwrap().unwrap();
+        assert_eq!(current.last_model_id.as_deref(), Some("model-2"));
     }
 
     #[tokio::test(flavor = "current_thread")]

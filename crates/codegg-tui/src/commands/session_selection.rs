@@ -322,7 +322,13 @@ fn envelope(payload: CoreRequest) -> RequestEnvelope<CoreRequest> {
 /// `provider/model` catalog id onto the explicit connection + model the
 /// durable service stores; it performs the same authorization and audit
 /// as a `SessionSelectionUpdate`.
-pub(crate) fn start_model_select_persist(app: &mut App, session_id: String, model: String) {
+pub(crate) fn start_model_select_persist(
+    app: &mut App,
+    session_id: String,
+    model: String,
+    reasoning: Option<codegg::protocol::core::ReasoningOverride>,
+    expected_revision: Option<u64>,
+) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     let Some(core_client) = core_client else {
@@ -337,18 +343,28 @@ pub(crate) fn start_model_select_persist(app: &mut App, session_id: String, mode
         TuiTaskKind::Command,
         "model_select_persist",
         async move {
-            let outcome = match core_client
-                .request(envelope(CoreRequest::ModelSelect { session_id, model }))
+            // M004: one request carries both dimensions. The response is the
+            // row the daemon wrote, so the client adopts the new revision
+            // instead of holding the one its own write just invalidated.
+            let (preference, error) = match core_client
+                .request(envelope(CoreRequest::ModelSelect {
+                    session_id,
+                    model,
+                    reasoning,
+                    expected_revision,
+                }))
                 .await
             {
-                Ok(CoreResponse::Ack) | Ok(CoreResponse::ModelsSnapshot { .. }) => None,
-                Ok(CoreResponse::Error { message, .. }) => Some(message),
-                Ok(other) => Some(format!("unexpected response: {other:?}")),
-                Err(e) => Some(format!("selection could not be saved: {e}")),
+                Ok(CoreResponse::ModelPreference { preference }) => (Some(preference), None),
+                Ok(CoreResponse::Ack) | Ok(CoreResponse::ModelsSnapshot { .. }) => (None, None),
+                Ok(CoreResponse::Error { message, .. }) => (None, Some(message)),
+                Ok(other) => (None, Some(format!("unexpected response: {other:?}"))),
+                Err(e) => (None, Some(format!("selection could not be saved: {e}"))),
             };
             Some(TuiCommand::ModelSelectPersisted {
                 model: model_for_reply,
-                error: outcome,
+                preference,
+                error,
             })
         },
     );

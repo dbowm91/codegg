@@ -32,6 +32,7 @@ pub mod ui;
 pub mod view_switch;
 pub mod work_orders;
 pub mod workspace_dashboard;
+pub mod workspace_view;
 
 pub use agent::AgentState;
 pub use async_request::AsyncUiRequestState;
@@ -106,4 +107,7 @@ pub use workspace_dashboard::{
     dashboard_row_badge, WorkspaceDashboardRow, WorkspaceDashboardState, WorkspaceFocus,
     MAX_DASHBOARD_EXPANDED_TASKS, MAX_DASHBOARD_FILTER_LEN, MAX_DASHBOARD_ROWS,
     MAX_DASHBOARD_VISIBLE_ROWS,
+};
+pub use workspace_view::{
+    LaunchSheet, LaunchStep, TreeKind, TreeRow, WorkspaceMode, WorkspaceViewState, MAX_TREE_ROWS,
 };

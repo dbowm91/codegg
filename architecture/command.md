@@ -34,7 +34,7 @@ frontend-action set and creates **no** `Run`.
   (`serves_form()`, `:638`), and the audit as a canonical `Run`.
 - `src/command/` — Core `Command` struct, file loading, template processing
 - `crates/codegg-tui/src/command.rs` — TUI `CommandRegistry`: a **cache** of the daemon's
-  catalog with 169 built-in rows, plus the TUI's own local dynamic sources
+  catalog with 167 built-in rows, plus the TUI's own local dynamic sources
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -42,7 +42,7 @@ frontend-action set and creates **no** `Run`.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 169 rows cached from the daemon's catalog (highest
+1. **Built-in commands**: 167 rows cached from the daemon's catalog (highest
    priority)
 2. **Config commands**: From the `commands` section of the config file
    (`codegg.jsonc` / `codegg.json` / `config.json`)3. **Project commands**: From `command/` or `commands/` directories under the
@@ -222,7 +222,7 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (161 variants, `crates/codegg-tui/src/command.rs:112`).
+built-in executable operation (159 variants, `crates/codegg-tui/src/command.rs:112`).
 Adding a new built-in command requires touching this one typed
 registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
@@ -311,11 +311,11 @@ cwd. Dynamic commands cannot change daemon authorization or execution scope.
 They are also **outside** the daemon's catalog: a dynamic source is a
 separate trust class, and the desktop does not expose it.
 
-### Built-in Commands (169 total)
+### Built-in Commands (167 total)
 
-The **169** is the length of the TUI's cached built-in rows. It is a count
+The **167** is the length of the TUI's cached built-in rows. It is a count
 of the *cache*, and it is deliberately **not** the count of commands the
-product has: the daemon's catalog is the definition, and it carries **161**
+product has: the daemon's catalog is the definition, and it carries **159**
 commands over **167** argument forms — 126 daemon-effect forms and 41
 frontend-effect forms. The two numbers answer different questions and both
 are guarded.
@@ -342,7 +342,6 @@ Representative built-ins:
 | `/themes` | `/theme` | Switch theme |
 | `/help` | | Help |
 | `/sessions` | `resume`, `continue` | Switch session. `resume` stays the session-switch spelling; carrying on after a stopped turn is `/start` (below) |
-| `/projects` | `/project` | Open the project picker (`Shift+F` in Normal mode) |
 | `/new` | `clear` | New session |
 | `/stop` | | Interrupt the agent's running turn. Also `x` twice in Normal mode |
 | `/start` | | Carry on after a stopped turn. Re-submits: a cancelled turn cannot be resurrected |
@@ -365,7 +364,6 @@ Representative built-ins:
 | `/variants` | | Switch model variant |
 | `/agents` | | Open the "which panel?" box, then load the agent list into it; `Enter` in the list opens the agent's config editor |
 | `/mcps` | | Manage MCP servers |
-| `/workspaces` | | Manage workspaces |
 | `/tree` | | Show file tree |
 | `/editor` | | Open editor |
 | `/keybinds` | | Customize keybindings |
@@ -485,7 +483,7 @@ supports: `description`, `agent`, `model`, `template`, `runtime`,
   never execute a daemon-effect form directly — a daemon effect goes
   through `CoreRequest::CommandExecute`, and the daemon authorizes it under
   `command.execute` and audits it as a canonical `Run`.
-- **Built-in count is 169**: Guarded by
+- **Built-in count is 167**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `crates/codegg-tui/src/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -519,7 +517,7 @@ cargo test -p codegg -- every_builtin_entry_has_coherent_action
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-169 count stays in sync with this documentation. The two
+167 count stays in sync with this documentation. The two
 `command_docs_*` tests parse **this file** and fail on drift, so a count
 bump means updating this document and the registry pin together. The
 `command_docs_*` pair also guards the `BuiltinSlashAction` variant count
@@ -569,10 +567,10 @@ Changes made in this pass:
   two registry/action coherence guards individually instead of repeating
   the same `cargo test -p codegg -- command` line twice.
 
-Verified accurate and left unchanged: the count claims — 169 built-in
-commands and 161 `BuiltinSlashAction` variants — both re-measured against
-source (`CommandRegistry::built_in_commands()` yields 169 entries and the
-enum has 161 variants); `CommandDomain` (11, `command.rs:22`),
+Verified accurate and left unchanged: the count claims stated above — both
+re-measured against source (the built-in registry length and the
+`BuiltinSlashAction` variant count match the numbers in the header);
+`CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction` (5,
 `command.rs:316`), the TUI `Command` struct fields (`command.rs:325`), core
@@ -603,8 +601,8 @@ command catalog milestone.
   at `:313` (actually `:316`), the `Command` struct at `:322` (actually
   `:325`), and the three count-guard tests at `:1217`/`:1364`/`:1400`
   (actually `:1277`/`:1429`/`:1465`). Every anchor was re-read against
-  source; the counts they guarded — 169 built-in commands and 161
-  `BuiltinSlashAction` variants — were correct and are unchanged.
+  source; the counts they guarded were correct at that pass and this pass
+  re-measures them above.
 - **The anchors below were already correct** and are left unchanged:
   `BuiltinSlashAction` `:112`, `CommandCategory` `:10`, `CommandDomain`
   `:22`, `CommandScope` `:56`, `CommandSource` `:76`.
@@ -615,11 +613,14 @@ Verified 2026-10-13 against `crates/codegg-tui/src/command.rs` and `src/command/
 re-verified 2026-10-19 after C007 added `/subagent-send`, and re-verified
 2026-10-20 after Eggwork M002 added `/nodes`, and re-verified
 2026-10-23 after the TUI text-rendering line added `/expand-all`:
-both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1277`) asserts 169, and every `(\d+)\s+(hardcoded|built-in|total)`
-plus `[Cc]ount is (\d+)` match in this document resolves to 169.
-Also verified the 169 built-in registry length, `BuiltinSlashAction`
-(161 variants, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
+both count-guard tests pass at each pass; the current numbers are those in
+the header, and every `(\d+)\s+(hardcoded|built-in|total)` plus
+`[Cc]ount is (\d+)` match in this document resolves to the header's count.
+The 2026-11-26 pass then removed `/projects` (alias `/project`) and
+`/workspaces`, which is why the current count is two lower than the
+number this paragraph recorded at the time.
+Also verified the built-in registry length, `BuiltinSlashAction`
+(the header's variant count, `command.rs:112`), `CommandDomain` (11, `command.rs:22`),
 `CommandScope` (2, `command.rs:56`), `CommandSource` (4, `command.rs:76`),
 `CommandCategory` (3, `command.rs:10`), `CommandAction`
 (5, `command.rs:316`), the TUI `Command` struct fields
@@ -691,8 +692,8 @@ and the note below it, re-checked to land on the struct declaration. No
 `src/command/` reference in this document was affected.
 
 One row moved on **2026-10-23** when the TUI text-rendering line added its
-expand-all gesture: the built-in command count is **169** and the
-`BuiltinSlashAction` variant count is **161**. The new command is
+expand-all gesture: the built-in command count is **167** and the
+`BuiltinSlashAction` variant count is **159**. The new command is
 `/expand-all` (aliases `expand-disclosures`, `collapse-all`), which expands or
 collapses every tool-call and reasoning disclosure in the transcript; it is the
 same gesture as the `Ctrl+Alt+O` chord and dispatches to the same handler, so
@@ -703,8 +704,8 @@ counts, which the test parses and fails on drift). The variant total has its
 own source-backed assertion,
 `command_docs_builtin_slash_action_variant_count_matches_source`, which reads
 the `(N variants` claims here against the enum. The two `N variants` claims in
-this document were corrected to 161 against the enum, and the four
-built-in-total claims to 169 against the registry; the **2026-10-21** paragraph
+this document were corrected to 159 against the enum, and the four
+built-in-total claims to 167 against the registry; the **2026-10-21** paragraph
 above is left as it was written, because it is a dated historical record of
 that merge rather than a live claim.
 
@@ -714,8 +715,8 @@ Re-verified 2026-10-25 against `crates/codegg-core/src/command_catalog.rs`
 `crates/codegg-core/src/frontend_action.rs` (`FrontendAction` `:41`,
 `action_for_form()` `:323`), `src/core/daemon_commands.rs`
 (`build_inner_request()` `:189`, `serves_form()` `:638`) and
-`crates/codegg-tui/src/command.rs`: the cached built-in rows still number **169** and
-`BuiltinSlashAction` still has **161** variants, byte-identical to
-`origin/main` (`cb4ceed9d`). The daemon's catalog carries **161** commands
+`crates/codegg-tui/src/command.rs`: the cached built-in rows still number **167** and
+`BuiltinSlashAction` still has **159** variants, byte-identical to
+`origin/main` (`cb4ceed9d`). The daemon's catalog carries **159** commands
 over **167** argument forms — 126 daemon-effect forms and 41 frontend-effect
 forms.

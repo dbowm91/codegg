@@ -120,9 +120,27 @@ Text entered while a turn is running is retained for a later turn. Use `/queue` 
 
 Use `Shift+Arrow` or `Shift+H/J/K/L` in Normal mode to move between the composer and docked panels. The direction depends on panel placement. `Shift+Q` leaves a focused panel and returns to the composer. `Ctrl+B` closes the panel the keyboard is in, and the same key re-opens it with **the panel that was there** — the edge keeps its occupant. The edge keeps its panel across close and reopen. Placement and the arranged layout are saved when you dock, move or cycle a panel, so the next start lands where you left off; the default is the right column.
 
-Use `Shift+S` (or `/panels`) to choose which panel is shown. The list holds the **full-interface panels** — Session, Chat, Terminal, Files, Sessions, Help, Agents, Tasks, Logs, Context, Review, Models, MCP, Plugins, Keys, Themes, Team and Control. Views of those are folded under them instead of taking their own rows: Goal, Plan and Memory belong to Session; Tree to Files; Cost, Usage and Stats to Context; Doctor to Logs; Shells to Terminal; Diff and Security to Review; Task View and Research to Tasks; Present to Team. Press `A` in the manager to list the folded views too (each row names its parent), or type a name into the filter — `diff`, `memory` — to reach one directly. Folding is a listing decision only: every folded panel still docks, still takes focus, and still opens from its `/` command and saved hotkey.
+Use `Shift+S` (or `/panels`) to choose which panel is shown. The list holds the **full-interface panels** — Session, Chat, Terminal, Workspace, Files, Sessions, Help, Agents, Tasks, Logs, Context, Review, Models, MCP, Plugins, Keys, Themes, Team and Control. Views of those are folded under them instead of taking their own rows: Goal, Plan and Memory belong to Session; Tree to Files; Cost, Usage and Stats to Context; Doctor to Logs; Shells to Terminal; Diff and Security to Review; Task View and Research to Tasks; Present to Team. Press `A` in the manager to list the folded views too (each row names its parent), or type a name into the filter — `diff`, `memory` — to reach one directly. Folding is a listing decision only: every folded panel still docks, still takes focus, and still opens from its `/` command and saved hotkey.
 
 The project picker and panel manager have their own key hints. Press `?` or `Space` to see the current bindings.
+
+## Workspace view
+
+`/workspace` is a whole view: the project -> workspace -> worktree tree on the left
+and the project chat viewer on the right. No sidebar, no composer and no badge row
+are painted; leaving restores the session exactly as it was.
+
+- `j`/`k` move, `g`/`G` jump, `l`/`Enter` expands a project or workspace,
+  `h` collapses or returns to the parent.
+- `i` filters (INS); `Esc` returns to NOR and clears the filter before leaving.
+- `n` opens the new-session sheet for the selected workspace or worktree: an
+  existing managed worktree, or a new checkout with a base branch and either the
+  automatic `codegg/worktree/<id>` branch or a name you type.
+- `d` opens the project detail in the same window; `h` returns.
+- `Shift+X` leaves in NOR; in INS it types `X`.
+
+The **Workspace** panel (`/panels`) lists the project catalog for a quick switch
+without opening the whole view.
 
 ## Transcript
 
@@ -154,6 +172,10 @@ Approval and sandbox are separate settings. Approval controls how a request is r
 Use `/approval` and `/sandbox` to choose these settings. The CLI equivalents are `--approval-mode` and `--sandbox`. If a required filesystem sandbox cannot be applied, CodeGG refuses to start the target. See [docs/security-semantics.md](security-semantics.md).
 
 ## Shell and terminal
+
+Selecting the Terminal panel loads and paints its shell but leaves the keyboard in
+NOR; press `i` to type into the process and `Esc` to read again.
+
 
 Prefix a command with `!` to run it as a human shell command. A single bang keeps its output out of the model context. Double bang, `!!command`, stages bounded output for a later submitted turn. Use `/shell-include` or `/shell-ask` for the corresponding include and question workflows.
 

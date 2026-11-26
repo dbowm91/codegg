@@ -1407,8 +1407,19 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 focus_connection_id,
             );
         }
-        TuiCommand::ModelSelectPersist { session_id, model } => {
-            crate::commands::session_selection::start_model_select_persist(app, session_id, model);
+        TuiCommand::ModelSelectPersist {
+            session_id,
+            model,
+            reasoning,
+            expected_revision,
+        } => {
+            crate::commands::session_selection::start_model_select_persist(
+                app,
+                session_id,
+                model,
+                reasoning,
+                expected_revision,
+            );
         }
         TuiCommand::ConnectionLifecycle {
             action,
@@ -1448,8 +1459,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 }
             }
         }
-        TuiCommand::ModelSelectPersisted { model, error } => {
-            app.apply_model_select_persisted(model, error);
+        TuiCommand::ModelSelectPersisted {
+            model,
+            preference,
+            error,
+        } => {
+            app.apply_model_select_persisted(model, preference, error);
         }
         TuiCommand::SessionSelectionLoaded {
             session_id,
@@ -2104,6 +2119,49 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 written_files,
                 checkpoint_id,
                 error,
+            );
+        }
+        TuiCommand::WorkspaceProjectLoaded {
+            request_id: _,
+            project_id,
+            project,
+            error,
+        } => {
+            super::super::commands::workspace_view::apply_project_loaded(
+                app, project_id, project, error,
+            );
+        }
+        TuiCommand::WorkspaceWorktreesLoaded {
+            request_id: _,
+            workspace_id,
+            worktrees,
+            error,
+        } => {
+            super::super::commands::workspace_view::apply_worktrees_loaded(
+                app,
+                workspace_id,
+                worktrees,
+                error,
+            );
+        }
+        TuiCommand::WorkspaceBranchesLoaded {
+            request_id: _,
+            branches,
+            error,
+        } => {
+            super::super::commands::workspace_view::apply_branches_loaded(app, branches, error);
+        }
+        TuiCommand::WorkspaceLaunchFinished {
+            request_id: _,
+            session_id,
+            workspace_id: _,
+            branch,
+            stage,
+            converged,
+            error,
+        } => {
+            super::super::commands::workspace_view::apply_launch_finished(
+                app, session_id, branch, stage, converged, error,
             );
         }
         TuiCommand::WorkspaceDashboardLoaded {

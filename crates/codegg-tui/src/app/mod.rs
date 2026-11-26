@@ -2757,14 +2757,6 @@ impl App {
         }
     }
 
-    /// Write one extended-thinking level through the daemon, which owns it.
-    pub(crate) fn apply_selected_reasoning_level(
-        &mut self,
-        level: codegg::protocol::core::ReasoningMode,
-    ) {
-        crate::commands::reasoning::start_level_update(self, level);
-    }
-
     pub fn set_remote_send_tx(&mut self, tx: mpsc::Sender<RemoteTuiMessage>) {
         self.remote_send_tx = Some(tx);
     }
@@ -5811,10 +5803,10 @@ impl App {
             agents, appearance, change_review, chat, compaction, control, diagnostics, diff,
             edit_history, editor, exit_control, file_tree, goals, help, import,
             interactive_terminal, lsp, memory, observe, panels, plugin_management, policy,
-            presence, project_init, project_picker, promotion, provider_connections, queue,
-            reasoning, research, revert, security, session_report, session_selection, sessions,
-            shell, skills, subagent_steer, tasks, team, test, transcript, turn_control,
-            work_orders, workspace_dashboard,
+            presence, project_init, promotion, provider_connections, queue, reasoning, research,
+            revert, security, session_report, session_selection, sessions, shell, skills,
+            subagent_steer, tasks, team, test, transcript, turn_control, work_orders,
+            workspace_dashboard,
         };
         match action {
             B::ProjectInit => project_init::dispatch_project_init(self),
@@ -5862,7 +5854,6 @@ impl App {
             B::ChatActionReview => chat::dispatch_chat_action_review(self, argument),
             B::ChatActionList => chat::dispatch_chat_action_list(self, argument),
             B::Sessions => sessions::dispatch_sessions(self),
-            B::Projects => project_picker::dispatch_projects(self),
             B::Stop => turn_control::stop(self),
             B::StartTurn => turn_control::start(self),
             B::Share => sessions::dispatch_share(self),
@@ -5880,7 +5871,6 @@ impl App {
             B::ModelsRefresh => session_selection::dispatch_models_refresh(self),
             B::Variants => session_selection::dispatch_variants(self),
             B::Fork => sessions::dispatch_fork(self),
-            B::Workspaces => workspace_dashboard::dispatch_workspaces(self),
             B::Worktree => tasks::dispatch_worktree(self),
             B::Editor => editor::dispatch_editor(self),
             B::OpenDocument => editor::dispatch_open_document(self, argument),
@@ -7843,12 +7833,11 @@ impl App {
 
     /// Start a brand-new session (Ctrl+N, `/new`).
     ///
-    /// This previously only did `session_state.session = None`, which read as
-    /// "nothing happened": the TUI had no session, and with no session
-    /// `/models` could not switch models, `/sessions` had nothing to bind to,
-    /// and pressing Ctrl+N again was a no-op on an already-empty state. A new
-    /// session is now actually created through the core so the session-scoped
-    /// surfaces work immediately.
+    /// The old path created a durable row immediately so `/models` and
+    /// `/sessions` had something to bind to. That is what filled the catalog
+    /// with empty "Untitled" rows: every launch and every `Ctrl+N` wrote one
+    /// before the user had typed anything. The draft state below answers those
+    /// surfaces without a row, and the first prompt creates the session.
     pub(crate) fn new_session(&mut self) {
         // Refresh the cached consolidation flag at session start so the
         // per-turn handler does not re-parse the config TOML.
@@ -7868,21 +7857,41 @@ impl App {
             }
         }
 
+        self.begin_draft_session();
+        self.prompt_state.pending_send = false;
+        self.ui_state.routes.navigate_to(Route::Home);
+        // A fresh session is a draft now: say what the next key does, since
+        // no row and no system message appear until the first prompt.
+        self.messages_state
+            .toasts
+            .info("New session — the first prompt creates it");
+    }
+
+    /// Enter the pre-session draft state: the tab has a project and a
+    /// workspace, but no durable session row.
+    ///
+    /// This is the one reset behind a fresh launch, `Ctrl+N` and `/new`. A
+    /// session is born from the first prompt (the lazy path in
+    /// `prompt.rs`), so an untouched launch leaves no "Untitled" row behind.
+    /// The tab keeps its project/workspace binding, which is what the create
+    /// request needs; the session-scoped surfaces answer for the draft state
+    /// instead of going dark (`/models` records on the tab, `/sessions` says
+    /// there is none yet).
+    pub fn begin_draft_session(&mut self) {
         self.invalidate_pending_session_submit(false);
         self.change_review_state.reject();
-        // Clear the view immediately so the user sees a fresh composer, then
-        // create the backing session. Creating it (rather than leaving
-        // `session` as None) is what makes /models, /sessions and every other
-        // session-scoped surface usable before the first prompt.
         self.session_state.session = None;
+        self.session_state.session_status = SessionStatus::Idle;
+        self.session_state.last_error = None;
         self.messages_state.messages.clear();
         self.session_state.token_in = 0;
         self.session_state.token_out = 0;
         self.reset_live_token_estimate();
-        self.session_state.session_status = SessionStatus::Idle;
-        self.prompt_state.pending_send = false;
-        self.ui_state.routes.navigate_to(Route::Home);
-        crate::commands::sessions::start_new_session(self);
+        self.session_state.reasoning_tokens = 0;
+        self.session_state.context_tokens = 0;
+        if let Some(tab) = self.project_tabs.active_mut() {
+            tab.session_id = None;
+        }
     }
 
     fn apply_template(&mut self, key: String, template: SessionTemplate) {
@@ -10498,10 +10507,31 @@ impl App {
     /// session there is nothing durable to write yet; the selection is
     /// recorded on the tab and applied when a session binds.
     pub fn persist_durable_model_selection(&mut self, model: String) {
+        self.persist_durable_model_selection_with(model, None);
+    }
+
+    /// M004: persist a model together with the thinking level chosen in the
+    /// same gesture, under the revision the client last saw.
+    ///
+    /// One request, one compare-and-set, one revision bump. The revision is
+    /// carried so a concurrent writer still gets a typed conflict instead of
+    /// being silently overwritten.
+    pub fn persist_durable_model_selection_with(
+        &mut self,
+        model: String,
+        reasoning: Option<codegg::protocol::core::ReasoningOverride>,
+    ) {
         let Some(session_id) = self.active_session_id().map(str::to_owned) else {
             return;
         };
-        crate::commands::session_selection::start_model_select_persist(self, session_id, model);
+        let expected_revision = self.ui_state.reasoning_preference_revision;
+        crate::commands::session_selection::start_model_select_persist(
+            self,
+            session_id,
+            model,
+            reasoning,
+            expected_revision,
+        );
     }
 
     /// Completion for [`Self::persist_model_selection`].
@@ -10510,8 +10540,21 @@ impl App {
     /// choice must not be left on screen as if it had been accepted. The
     /// display is reverted to the durable value and the refusal is
     /// reported.
-    pub fn apply_model_select_persisted(&mut self, model: String, error: Option<String>) {
+    pub fn apply_model_select_persisted(
+        &mut self,
+        model: String,
+        preference: Option<codegg::protocol::core::RuntimePreferenceDto>,
+        error: Option<String>,
+    ) {
         let Some(error) = error else {
+            // The daemon returned the row it wrote; adopt its revision and
+            // reasoning selection so the *next* selection carries a current
+            // expected revision instead of a stale one.
+            if let Some(preference) = preference {
+                self.ui_state.reasoning_preference_revision = Some(preference.revision);
+                self.ui_state.reasoning_mode =
+                    codegg::protocol::core::ReasoningMode::from(preference.reasoning_selection);
+            }
             tracing::info!(
                 model = %model,
                 "model selection persisted to durable session selection"
@@ -10526,6 +10569,10 @@ impl App {
         if let Some(session_id) = self.active_session_id().map(str::to_owned) {
             crate::commands::session_selection::start_selection_refresh(self, session_id, None);
         }
+        // A conflict means somebody else wrote the row: re-read it so the
+        // cached revision stops being stale. A refused model choice is
+        // exactly the moment the cache must not be trusted.
+        crate::commands::reasoning::start_preference_refresh(self);
         self.messages_state
             .toasts
             .add(Toast::error(&format!("Model selection not saved: {error}")));
