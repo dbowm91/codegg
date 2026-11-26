@@ -1354,6 +1354,17 @@ rather than a call to action. Three tests cover the contract: every panel in
 `SidePanelId::ALL` keeps the column, a matching box is docked rather than mounted,
 and an unrelated box is left mounted.
 
+**Live receipt captured:** the `codegg` binary from `9f8274622` was
+driven under `tui-test` in a fresh temp repository (`/tmp/codegg-receipt`, 130x40).
+It launched into the panel column and painted `Logs has nothing to show yet.` with
+its `daemon · notices` hint — the M002 idle body, on screen, with no
+"Nothing loaded / Open it from the panel manager" text anywhere. Frame at
+`/tmp/receipt-a-panels.svg`. The remaining receipts in §9 were **not** captured:
+once the panel column owns the keyboard, this session's scripted keystrokes landed
+in the panel rather than the composer, so the `/sessions` and `/workspace` frames
+show the panel instead of the surface under test. Driving focus back to the
+composer needs another iteration.
+
 **Outstanding evidence:** no `tui-test` receipt has been captured on this head, no
 `plans/implementation/tui-workspace-and-panel-surface-corrective/NNN-*` work package
 was written before execution (the owner asked for the implementation directly), and
