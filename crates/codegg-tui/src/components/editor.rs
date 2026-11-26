@@ -30,6 +30,7 @@ use codegg_document::DocumentSnapshot;
 use crate::document_session::MAX_JUMPLIST_ENTRIES;
 use crate::editor::{self, EditorMode, EditorPrefix, EditorViewport};
 use crate::editor_inline_assist::{InlineAssistRegion, InlineAssistState, InlinePromptField};
+use crate::editor_palette::PaletteRow;
 use crate::theme::Theme;
 
 /// Rows of chrome reserved at the **bottom** of the editor block.
@@ -255,59 +256,6 @@ const PICKER_ROW_BYTES: usize = 512;
 /// Characters of a line a picker row shows.
 const PICKER_ROW_CHARS: usize = 60;
 
-/// The editor's own keys, as the keymap box lists them.
-///
-/// The editor's **own** verbs, not the whole application's: the box answers
-/// "what can I press *in here*", and a list that also carried the composer's
-/// and the panels' keys would answer a different question.
-const EDITOR_KEYMAP: &[(&str, &str)] = &[
-    ("e / b", "word end / start — selects the word"),
-    ("w", "next word start"),
-    (
-        "3w / 5j",
-        "a count repeats the motion; 0 alone is line start",
-    ),
-    ("v", "select mode — movement extends"),
-    (
-        "x / X / Alt-x",
-        "select the line / widen to lines / narrow back",
-    ),
-    (
-        "d / Alt-d / y",
-        "delete into the unnamed register / delete without yanking / yank it and the clipboard",
-    ),
-    ("c / Alt-c", "change — delete the selection, then type"),
-    ("_", "trim the selection to whole lines"),
-    ("\" a", "select register a — then y / p / P / R"),
-    ("J / Alt-J", "join the lines covered"),
-    ("> / <", "indent / unindent the covered lines"),
-    ("space c / C", "toggle line / block comment"),
-    ("u / Ctrl-r", "undo / redo"),
-    (". / Alt-.", "repeat the last insert / the last motion"),
-    (":", "command line — matches as you type"),
-    ("/ / ?", "regex search / the same backwards"),
-    ("*", "search for the selected text"),
-    ("n / N", "next / previous match"),
-    ("Ctrl-d / Ctrl-u", "half a page down / up"),
-    ("PgDn / PgUp", "a full page down / up"),
-    ("z c / t / b", "view: centre / top / bottom"),
-    ("g g / g G", "start / end of the buffer"),
-    ("g t / c / b", "top / middle / bottom of screen"),
-    ("space q a", "ask the model for an insertion at the cursor"),
-    (
-        "Ctrl+Alt+u",
-        "accept the generated region as one undoable edit",
-    ),
-    ("Ctrl+Alt+v", "discard the generated region"),
-    (
-        "[a] [d] [e]",
-        "review the generated region: accept, deny, edit",
-    ),
-    ("space j", "jumplist — back to a visited position"),
-    ("space ?", "this box"),
-    ("Esc", "leave select mode / cancel"),
-];
-
 impl EditorWidget<'_> {
     /// Paint the editor into `area`.
     pub fn render(self, frame: &mut Frame, area: Rect) {
@@ -350,7 +298,6 @@ impl EditorWidget<'_> {
         let viewport = if text_area.height > 0 {
             let viewport = self.render_text(frame, text_area, region, region_applies);
             if let Some(viewport) = viewport {
-                self.render_space_menu(frame, text_area, viewport);
                 if let Some(region) = region {
                     let in_region =
                         inline_assist.is_some_and(|state| state.cursor_in_region(self.cursor_byte));
@@ -367,79 +314,16 @@ impl EditorWidget<'_> {
         // After the text: the match list is a floating overlay, and an overlay
         // painted before the document would be painted over by it.
         self.render_command_matches(frame, text_area);
-        self.render_keymap_overlay(frame, text_area);
+        self.render_space_menu(frame, text_area);
+        if self.presentation.jumplist.picker_open() {
+            self.render_jumplist_picker(frame, text_area);
+        }
         self.render_lsp_panel(frame, area);
         self.render_completion_popup(frame, area, text_area, viewport);
+        self.render_command_palette(frame, text_area);
         if let Some(field) = inline_assist.and_then(InlineAssistState::field) {
             self.render_inline_prompt_overlay(frame, text_area, field);
         }
-    }
-
-    /// The editor's **keymap box** — its own catalogue of its keys, in the
-    /// bottom-right corner — and, when it is open, the `space j`
-    /// **jumplist picker**, which is the same box holding a different list.
-    ///
-    /// A floating overlay: it covers the corner of the text area rather than
-    /// taking rows away from the document, so opening it does not reflow the
-    /// text under the reader. Two lists share it because a list on a row is a
-    /// list that has to be truncated, and a second box over the first would be
-    /// two competing overlays for one corner.
-    fn render_keymap_overlay(&self, frame: &mut Frame, text_area: Rect) {
-        if self.presentation.jumplist.picker_open() {
-            self.render_jumplist_picker(frame, text_area);
-            return;
-        }
-        if !self.presentation.keymap_overlay {
-            return;
-        }
-        let theme = Arc::clone(&self.theme);
-        let key_width = EDITOR_KEYMAP
-            .iter()
-            .map(|(keys, _)| keys.chars().count())
-            .max()
-            .unwrap_or(0);
-        let desc_width = EDITOR_KEYMAP
-            .iter()
-            .map(|(_, desc)| desc.chars().count())
-            .max()
-            .unwrap_or(0);
-        let width = (key_width + desc_width + 4).min(text_area.width as usize) as u16;
-        let height = (EDITOR_KEYMAP.len() + 2).min(text_area.height as usize) as u16;
-        if width == 0 || height == 0 {
-            return;
-        }
-        let rect = Rect {
-            x: text_area.x + text_area.width - width,
-            y: text_area.y + text_area.height - height,
-            width,
-            height,
-        };
-        let lines: Vec<Line> = EDITOR_KEYMAP
-            .iter()
-            .map(|(keys, desc)| {
-                Line::from(vec![
-                    Span::styled(
-                        format!(" {keys:>key_width$}  "),
-                        Style::default()
-                            .fg(theme.primary)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(desc.to_string(), Style::default().fg(theme.foreground)),
-                ])
-            })
-            .collect();
-        let block = Block::default()
-            .title(" keymap ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.primary))
-            .style(Style::default().bg(theme.background));
-        let inner = block.inner(rect);
-        frame.render_widget(Clear, rect);
-        frame.render_widget(block, rect);
-        frame.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
-            inner,
-        );
     }
 
     /// The `space j` **jumplist picker**, in the keymap box's corner.
@@ -1173,47 +1057,48 @@ impl EditorWidget<'_> {
         ))
     }
 
-    fn render_space_menu(&self, frame: &mut Frame, area: Rect, viewport: EditorViewport) {
+    fn render_space_menu(&self, frame: &mut Frame, text_area: Rect) {
         let Some(menu) = self.menu.filter(|menu| !menu.entries.is_empty()) else {
             return;
         };
-        let Some((cursor_x, cursor_y)) = self.cursor_screen_position(area, viewport) else {
-            return;
-        };
-        let content_width = menu
+        let theme = Arc::clone(&self.theme);
+        let key_width = menu
             .entries
             .iter()
             .map(|entry| {
-                display_width_str(&entry.key)
-                    .saturating_add(if entry.is_menu { 2 } else { 0 })
-                    .saturating_add(1)
-                    .saturating_add(display_width_str(&entry.label))
+                display_width_str(&entry.key).saturating_add(if entry.is_menu { 2 } else { 0 })
             })
             .max()
             .unwrap_or(0);
-        let title_width = display_width_str(&menu.path).saturating_add(2);
-        let Ok(width) = u16::try_from(content_width.max(title_width).saturating_add(2)) else {
+        let desc_width = menu
+            .entries
+            .iter()
+            .map(|entry| display_width_str(&entry.label))
+            .max()
+            .unwrap_or(0);
+        let Ok(width) = u16::try_from(
+            key_width
+                .saturating_add(desc_width)
+                .saturating_add(5)
+                .min(text_area.width as usize),
+        ) else {
             return;
         };
         let Ok(height) = u16::try_from(menu.entries.len().saturating_add(2)) else {
             return;
         };
-        if width > area.width || height > area.height {
+        if width == 0 || height == 0 || height > text_area.height {
             return;
         }
-        let Some(rect) = inline_menu_placement(
-            area,
-            cursor_x,
-            cursor_y.saturating_add(1),
-            cursor_y.saturating_sub(height),
+        let rect = Rect {
+            x: text_area.x + text_area.width - width,
+            y: text_area.y + text_area.height - height,
             width,
             height,
-        ) else {
-            return;
         };
-        let theme = Arc::clone(&self.theme);
         let block = Block::default()
             .title(format!(" {} ", menu.path))
+            .title_bottom(" <space> ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.primary))
             .style(Style::default().bg(theme.background));
@@ -1229,13 +1114,19 @@ impl EditorWidget<'_> {
                 };
                 Line::from(vec![
                     Span::styled(
-                        key,
+                        format!(" {key:>key_width$}  "),
                         Style::default()
                             .fg(theme.primary)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw(" "),
-                    Span::styled(entry.label.as_str(), Style::default().fg(theme.foreground)),
+                    Span::styled(
+                        entry.label.as_str(),
+                        Style::default().fg(if entry.available {
+                            theme.foreground
+                        } else {
+                            theme.muted
+                        }),
+                    ),
                 ])
             })
             .collect::<Vec<_>>();
@@ -1245,6 +1136,117 @@ impl EditorWidget<'_> {
             Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
             inner,
         );
+    }
+
+    fn render_command_palette(&self, frame: &mut Frame, area: Rect) {
+        let Some(palette) = self.presentation.command_palette.as_ref() else {
+            return;
+        };
+        if area.width < 24 || area.height < 6 {
+            return;
+        }
+        let theme = Arc::clone(&self.theme);
+        let rows = palette.rows();
+        let width = area.width.min(72);
+        let height = area.height.min(20);
+        let rect = Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height - height) / 2,
+            width,
+            height,
+        };
+        let block = Block::default()
+            .title(" commands ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let count = format!("{}/{}", rows.len(), palette.total());
+        let pad = (inner.width as usize)
+            .saturating_sub(display_width_str(&palette.query))
+            .saturating_sub(1)
+            .saturating_sub(display_width_str(&count));
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled(
+                palette.query.as_str(),
+                Style::default().fg(theme.foreground),
+            ),
+            Span::styled("█", Style::default().fg(theme.primary)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(count, Style::default().fg(theme.muted)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(theme.border),
+        )));
+        let name_width = rows
+            .iter()
+            .map(|row| match row {
+                PaletteRow::Command(command) => command.config_name().len(),
+                PaletteRow::Key { keys, .. } => keys.len(),
+            })
+            .max()
+            .unwrap_or(0);
+        let binding_width = rows
+            .iter()
+            .map(|row| match row {
+                PaletteRow::Command(command) => command.spec().len(),
+                PaletteRow::Key { .. } => 0,
+            })
+            .max()
+            .unwrap_or(0);
+        let visible = (inner.height as usize).saturating_sub(2).max(1);
+        let start = palette
+            .selected
+            .saturating_sub(visible / 2)
+            .min(rows.len().saturating_sub(visible));
+        for (index, row) in rows.iter().enumerate().skip(start).take(visible) {
+            let (name, binding, description) = match row {
+                PaletteRow::Command(command) => (
+                    command.config_name().to_string(),
+                    command.spec().to_string(),
+                    command.help(),
+                ),
+                PaletteRow::Key { keys, description } => {
+                    (keys.to_string(), String::new(), *description)
+                }
+            };
+            let selected = index == palette.selected;
+            let marker = if selected { ">" } else { " " };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {marker} "),
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{name:<name_width$}"),
+                    Style::default().fg(theme.primary),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    format!("{binding:<binding_width$}"),
+                    Style::default().fg(theme.muted),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    description,
+                    Style::default().fg(if selected {
+                        theme.foreground
+                    } else {
+                        theme.muted
+                    }),
+                ),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     fn render_inline_review_menu(
@@ -1972,7 +1974,8 @@ impl EditorWidget<'_> {
                             }
                         }
                         if !applicable {
-                            row.push_str("  · unavailable");
+                            row.push_str("  · ");
+                            row.push_str(completion_unavailable_reason(&candidate.applicability));
                         }
                         let style = if index == state.selected {
                             Style::default().bg(theme.selection).fg(theme.foreground)
@@ -2016,8 +2019,21 @@ impl EditorWidget<'_> {
                 Style::default().fg(theme.warning),
             )));
         }
+        let title = format!(" Completion · {status} ");
+        let footer = " ↑↓ select · Enter apply · Esc ";
+        let content_width = lines
+            .iter()
+            .map(|line| line.width())
+            .max()
+            .unwrap_or(0)
+            .max(display_width_str(&title))
+            .max(display_width_str(footer));
         let height = ((lines.len() + 2) as u16).min(area.height).min(16);
-        let width = area.width.min(MAX_COMPLETION_POPUP_WIDTH);
+        let width = content_width
+            .saturating_add(2)
+            .max(24)
+            .min(MAX_COMPLETION_POPUP_WIDTH as usize)
+            .min(area.width as usize) as u16;
         if height < 3 || width < 24 {
             return;
         }
@@ -2028,20 +2044,14 @@ impl EditorWidget<'_> {
         else {
             return;
         };
-        let Some(rect) = inline_menu_placement(
-            placement_area,
-            cursor_x,
-            cursor_y.saturating_add(1),
-            cursor_y.saturating_sub(height),
-            width,
-            height,
-        ) else {
+        let Some(rect) =
+            completion_popup_placement(placement_area, cursor_x, cursor_y, width, height)
+        else {
             return;
         };
         let block = Block::default()
-            .title(format!(
-                " Completion · {status} · ↑↓ select · Enter apply · Esc "
-            ))
+            .title(title)
+            .title_bottom(footer)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.primary))
             .style(Style::default().bg(theme.background));
@@ -2880,6 +2890,64 @@ fn inline_menu_placement(
     let mut y = preferred_y;
     if y.saturating_add(height) > bottom {
         y = fallback_y;
+    }
+    if y < area.y {
+        y = area.y;
+    }
+    if y.saturating_add(height) > bottom {
+        return None;
+    }
+    Some(Rect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn completion_unavailable_reason(
+    applicability: &codegg_protocol::lsp::LspCompletionApplicabilityDto,
+) -> &'static str {
+    use codegg_protocol::lsp::LspCompletionApplicabilityDto as Applicability;
+    use codegg_protocol::lsp::LspCompletionUnsupportedReason as Reason;
+    match applicability {
+        Applicability::Applicable { .. } => "",
+        Applicability::NonApplicable { reason } => match reason {
+            Reason::Snippet => "snippet",
+            Reason::AdditionalEdits => "needs extra edits",
+            Reason::Command => "has a server command",
+            Reason::OutOfRange => "out of range",
+            Reason::EditTooLarge => "too large",
+            Reason::InsertAndReplace => "insert and replace",
+        },
+    }
+}
+
+fn completion_popup_placement(
+    area: Rect,
+    cursor_x: u16,
+    cursor_y: u16,
+    width: u16,
+    height: u16,
+) -> Option<Rect> {
+    if width > area.width || height > area.height {
+        return None;
+    }
+    let right = area.x + area.width;
+    let bottom = area.y + area.height;
+    let mut x = cursor_x;
+    if x.saturating_add(width) > right {
+        x = cursor_x.saturating_sub(width);
+    }
+    if x < area.x {
+        x = area.x;
+    }
+    if x.saturating_add(width) > right {
+        x = right - width;
+    }
+    let mut y = cursor_y.saturating_add(1);
+    if y.saturating_add(height) > bottom {
+        y = cursor_y.saturating_sub(height);
     }
     if y < area.y {
         y = area.y;
@@ -4798,17 +4866,19 @@ mod tests {
     #[test]
     fn minor_mode_menu_renders_entries_only_when_present() {
         let menu = crate::editor_keymap::EditorMenuView {
-            path: "space".to_string(),
+            path: "Space".to_string(),
             entries: vec![
                 crate::editor_keymap::EditorMenuEntry {
                     key: "q".to_string(),
                     label: "the insert menu".to_string(),
                     is_menu: true,
+                    available: true,
                 },
                 crate::editor_keymap::EditorMenuEntry {
                     key: "a".to_string(),
                     label: "ask for an insertion".to_string(),
                     is_menu: false,
+                    available: true,
                 },
             ],
         };
@@ -4824,14 +4894,18 @@ mod tests {
             },
         ))
         .join("\n");
-        assert!(rows.contains("space"), "menu title renders:\n{rows}");
+        assert!(rows.contains("Space"), "menu title renders:\n{rows}");
+        assert!(
+            rows.contains("<space>"),
+            "the pop-back key renders:\n{rows}"
+        );
         assert!(rows.contains("q >"), "submenu key renders:\n{rows}");
         assert!(
             rows.contains("the insert menu"),
             "submenu label renders:\n{rows}"
         );
         assert!(
-            rows.contains("a ask for an insertion"),
+            rows.contains("ask for an insertion"),
             "command renders:\n{rows}"
         );
 
@@ -4852,7 +4926,7 @@ mod tests {
         );
 
         let empty_menu = crate::editor_keymap::EditorMenuView {
-            path: "space".to_string(),
+            path: "Space".to_string(),
             entries: Vec::new(),
         };
         let empty = lines_of(&render_buffer(
@@ -4889,12 +4963,30 @@ mod tests {
         assert!(rows.contains("println!"), "labels render:\n{rows}");
         assert!(rows.contains("> println!"), "first row selected:\n{rows}");
         assert!(
-            rows.contains("unavailable"),
-            "non-applicable is marked:\n{rows}"
+            rows.contains("· snippet"),
+            "non-applicable names its reason:\n{rows}"
         );
         assert!(
             rows.contains("suggestions"),
             "header names the state:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn a_non_applicable_candidate_names_its_own_reason() {
+        let mut needs_edits = completion_candidate("edit", false);
+        needs_edits.applicability = LspCompletionApplicabilityDto::NonApplicable {
+            reason: codegg_protocol::lsp::LspCompletionUnsupportedReason::AdditionalEdits,
+        };
+        let state = completion_state(vec![needs_edits], LspCompletionStatus::Ready, false, false);
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(
+            rows.contains("· needs extra edits"),
+            "the reason is the candidate's own:\n{rows}"
+        );
+        assert!(
+            !rows.contains("· snippet"),
+            "one reason does not stand in for another:\n{rows}"
         );
     }
 

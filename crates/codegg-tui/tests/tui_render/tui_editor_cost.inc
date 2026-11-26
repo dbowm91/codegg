@@ -70,6 +70,7 @@ impl Fixture {
     }
 
     fn with_lsp(lsp: EditorLspState) -> Self {
+        wait_for_the_grammar_sets();
         Self {
             presentation: TuiDocumentPresentation::default(),
             lsp,
@@ -248,15 +249,19 @@ fn rows_with_a_thousand_tokens() -> (DocumentSnapshot, EditorLspState) {
     (snapshot, lsp)
 }
 
-/// A 5,000-line document, scanned into the highlighter's cache.
-fn five_thousand_lines() -> (DocumentBuffer, EditorHighlight) {
-    // The default grammar sets load off the render thread, so an integration
-    // test waits for them once here instead of racing the background load.
-    // A frame never waits: it paints plain text until the load lands.
+/// The default grammar sets load off the render thread, so an integration
+/// test waits for them once here instead of racing the background load.
+/// A frame never waits: it paints plain text until the load lands.
+fn wait_for_the_grammar_sets() {
     assert!(
         codegg_tui::editor_highlight::wait_for_highlight_assets(std::time::Duration::from_secs(30)),
         "the bundled grammar sets load within the fixture budget"
     );
+}
+
+/// A 5,000-line document, scanned into the highlighter's cache.
+fn five_thousand_lines() -> (DocumentBuffer, EditorHighlight) {
+    wait_for_the_grammar_sets();
     let text: String = (0..5_000)
         .map(|index| format!("let value_{index} = {index};\n"))
         .collect();

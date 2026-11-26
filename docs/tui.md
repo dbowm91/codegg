@@ -161,7 +161,7 @@ Use `/terminal` to open an interactive terminal. It uses the local daemon and ca
 
 ## Files and editor
 
-Use `/files` or `Ctrl+T` to browse the active workspace; the keys are in [Browsing files](#browsing-files). The editor has its own Normal and Insert modes. Press `Space ?` in the editor for its keymap. LSP setup and diagnostics are covered in [docs/LSP.md](LSP.md).
+Use `/files` or `Ctrl+T` to browse the active workspace; the keys are in [Browsing files](#browsing-files). The editor has its own Normal and Insert modes. Press `Space` in the editor for the menu of keys it offers, and `Space ?` for its command palette. LSP setup and diagnostics are covered in [docs/LSP.md](LSP.md).
 
 ## Browsing files
 
@@ -534,16 +534,18 @@ instead of leaving the key dead.
 `space` is a menu, and every key in it either does something or says why it
 cannot. Nothing in it is dead.
 
-Pressing `space` draws the menu next to the cursor, so the keys it offers and
-what each one does are on screen rather than in your memory. A key that opens
-a menu of its own shows that menu instead, and `Esc` steps back out.
+Pressing `space` draws the menu in the **lower right** of the editor, so the
+keys it offers and what each one does are on screen rather than in your
+memory, and the box never covers the text you are editing. A key that opens a
+menu of its own shows that menu instead, titled with the level you are in
+(`Space`, `Space q`), and `space` steps back out.
 
 The menu is yours to extend: see [Configuring the editor](#configuring-the-editor).
 
 | Key | What it does |
 |---|---|
 | `space f` | open the workspace file browser |
-| `space ?` | open the editor's own command palette, the `:` list, filtered as you type |
+| `space ?` | open the editor's own command palette: a centred box with a filter bar |
 | `space r` | open the rename prompt (the `:` line, pre-filled) and preview the rename |
 | `space a` | ask what code actions the server would offer at the cursor, and pick one |
 | `space y` | copy every selection |
@@ -563,6 +565,30 @@ These four say why they cannot run rather than doing nothing:
 | `space b` | one document is open at a time, so there is no list to choose from |
 | `space D` | no server capability backs a separate workspace-diagnostics request; `space d` opens the panel that exists |
 | `space '` | the pickers are not fuzzy, so there is no query to recall |
+
+### The editor command palette
+
+`space ?` opens the editor's own command palette: a box in the middle of the
+screen with a filter bar, a match count, and the editor's commands.
+
+Type to filter. `↑`/`↓` move the selection, `Enter` runs the selected command, and
+`Esc` closes the box. A command that needs an argument — a line number to jump
+to, a pattern to search for — opens the `:` line with the command already
+written for you.
+
+The list holds two kinds of row:
+
+| Row | What it is |
+|---|---|
+| a command | runnable; `Enter` runs it |
+| a key | one of the editor's own bindings, listed so you can look it up; `Enter` says so rather than pretending to run it |
+
+Commands are filtered by their own name — `goto` finds `goto_line`. Keys are
+filtered by the binding itself or by what it does — `word` finds *next word
+start*.
+
+While the palette is open it owns the keyboard, so the filter never types
+into the document behind it.
 
 ### Configuring the editor
 
@@ -839,12 +865,20 @@ updates.
 ### Completion
 
 As you type, the editor asks the language server what could follow and shows
-the answers in a small list **beside the cursor** — below it when there is
-room, above it when there is not. The list never takes a row of its own, so the
-document does not move under you.
+the answers in a small list **at your cursor** — its left edge is your
+cursor's own column, and it opens on the row below your cursor's line,
+flipping above only when there is no room below. The list is as wide as its
+widest entry, so it never becomes a panel across the middle of the screen. It
+never takes a row of its own, so the document does not move under you.
 
 The list appears only when the server actually has something to offer. An empty
 answer draws nothing at all rather than a box saying that there is nothing.
+
+An answer the editor cannot apply says **why** — `· snippet`, `· needs extra
+edits`, `· has a server command` — so you can tell it apart from one that is
+ready to take.
+
+Accepting an answer inserts it at your cursor, on your cursor's line.
 
 If you would rather have no popup at all, switch it off in the editor
 configuration:

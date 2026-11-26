@@ -6622,6 +6622,14 @@ the handle (`assets()`), never force it. A bounded
 `wait_for_highlight_assets` exists for integration tests, which link the
 library without the `cfg(test)` loader; the shipped path has no such wait.
 
+**A frame comparison must not straddle the load.** A frame drawn before the
+grammar sets land paints plain text, and a frame drawn after them paints
+syntax colours, so two frames of the *same* state differ when the load falls
+between them — the difference is the load's timing, not the renderer. An
+integration test that compares frames therefore waits for the load **before
+the first frame**, and the editor's cost fixtures wait in the constructor
+every frame goes through, rather than in one test that happens to need it.
+
 **The semantic read is a viewport window, not a file dump.**
 `request_editor_semantic_tokens` sends
 `textDocument/semanticTokens/range` for a bounded window from
@@ -6951,9 +6959,9 @@ the line flow immediately below the cursor's row, so a menu on the
 cursor's next row would cover the payload it exists to review. The menu is
 therefore placed after the region's own rows: it keeps the cursor's display
 column, so it stays anchored to the cursor, and it leaves the generated
-text readable. Like the editor's other floating surfaces — the keymap box,
-the completion popup, the language-server panel — it is an overlay: it
-covers document pixels rather than reserving rows, and the document's row
+text readable. Like the editor's other floating surfaces — the command
+palette, the completion popup, the language-server panel — it is an overlay:
+it covers document pixels rather than reserving rows, and the document's row
 positions are unchanged. This is the one place where the implementation
 follows the plan's *intent* (a cursor-anchored floating menu that never
 reflows the document) over its letter, and the reason is recorded here.
@@ -7031,9 +7039,21 @@ than quietly ignored. The command names are the editor's own, in snake_case
 against the registry's own `ALL` list — one list, so a command that is not
 executable is not bindable either.
 
-**The menu is drawn next to the cursor** as a floating overlay, and it lists
-the keys the open menu offers with a one-line label for each. It never
-reserves a row, so the document does not reflow when it opens.
+**The menu is a window in the lower right.** It is anchored to the bottom
+right of the text area, flush with the pane's right edge, and it lists the
+keys the open menu offers with a one-line label for each. It never reserves
+a row, so the document does not reflow when it opens. The lower-right corner
+is the one deliberate divergence from Helix, whose menu floats at the cursor:
+the corner is where the editor's own chrome already sits, so the menu never
+covers the text being edited.
+
+**The root menu merges the built-in leaves with the configured ones.** The
+Helix glyphs the editor answers to are listed alongside whatever a
+configuration file adds, and a configured key wins on a clash. A leaf the
+build cannot honour is listed too, dimmed, so the menu never hides a key
+that exists. The window is titled by its level (`Space`, `Space q`) and its
+bottom border carries the pop-back key (`<space>`), so a nested menu says how
+to leave it.
 
 ### The editor's Helix UX surface
 
@@ -7158,12 +7178,24 @@ row has no cell for — so the range alone cannot say "this row is selected".
 `editor::line_selection_covers_line` answers that, and the renderer paints the
 row's whole background.
 
-**`space ?` opens the keymap box** — the editor's own catalogue of its keys, in
-its bottom-right corner. It used to open the `:` command palette, but the `:`
-line is the command matcher and the palette was a second way to reach the same
-commands, so the key that was supposed to answer "what can I press here?"
-answered a different question. The box is a floating overlay: it covers the
-corner of the text area rather than taking rows away from the document.
+**`space ?` opens the command palette** — a centred box with a filter bar, a
+match count, and the editor's own commands. `Enter` runs the selected
+command, or hands a command that takes an argument to the `:` line
+pre-filled. The palette is modal: while it is open it owns every key, so the
+filter never types into the document behind it.
+
+Its rows are two kinds. A **command** is runnable, and it is filtered by its
+own long snake_case name — `goto` finds `goto_line`. A **key** is the
+editor's own binding, listed so it can be looked up, and it is filtered by the
+binding itself or by what it does — `word` finds *next word start*.
+Selecting a key says that it is a key rather than pretending to run it.
+
+**The keymap box is retired.** It used to be a floating catalogue of the
+editor's keys in the bottom-right corner, and it carried the same information
+the palette's key rows carry, scrolled rather than searched. Its rows now
+live in `crates/codegg-tui/src/editor_palette.rs` as `EDITOR_KEYMAP`, so
+nothing was lost: the key that was supposed to answer "what can I press
+here?" still does, in a box the reader can search.
 
 **The composer's hint row carries keys only.** It no longer repeats the
 `COMP`/`NOR`/`INS` prefix — the badge directly above the input box already says
@@ -7914,8 +7946,10 @@ tui/
 ├── editor_completion.rs    # Editor completion popup model
 ├── editor_effect.rs        # M010 editor-level pending effect + clipboard verb
 ├── editor_highlight.rs     # Editor semantic highlight projection
+├── editor_keymap.rs        # The Helix-style editor keymap and its menus
 ├── editor_lsp.rs           # Editor LSP presentation (M006-C)
 ├── editor_match.rs         # Editor match/search state
+├── editor_palette.rs       # The editor's command palette and its key rows
 ├── document_session.rs     # TuiDocumentSession (DocumentController seam)
 ├── file_diff.rs            # Async diff stats for sidebar
 ├── file_icons.rs           # File-kind icon mapping
@@ -8662,10 +8696,23 @@ the two cannot collide.
 
 ### Completion popup and transactional acceptance (M004)
 
-The popup is drawn **next to the cursor** — below the caret's line when
-there is room, above it when there is not — and it appears **only when the
-server has something to offer**: a `Ready` answer with no candidates draws
-nothing rather than a box saying that there is nothing. The `[editor]`
+The popup is drawn **at the cursor**: its left edge is the caret's own
+column, and it opens on the row below the caret's line, flipping above only
+when there is no room below. It is **content-sized** — the box is as wide as
+its widest candidate, not a fixed panel across the middle of the screen — and
+it appears **only when the server has something to offer**: a `Ready` answer
+with no candidates draws nothing rather than a box saying that there is
+nothing.
+
+A candidate that cannot be applied says **why**. The row names the reason
+the server gave — `· snippet`, `· needs extra edits`, `· has a server
+command`, `· out of range`, `· too large`, `· insert and replace` —
+instead of a flat *unavailable*, so a reader can tell a candidate the editor
+will not apply from one the server has not finished describing.
+
+The acceptance lands **at the cursor**: the range the server sends is the
+range that is applied, resolved against the current snapshot, so the text
+changes on the caret's own line at the caret's own word. The `[editor]`
 section of the editor configuration carries `completion-popup`, and with it
 set to `false` no completion request is made at all.
 

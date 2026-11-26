@@ -114,9 +114,6 @@ pub enum EditorPendingEffect {
     /// browser lists the workspace and the LSP panel lists a server's answer,
     /// and neither can carry this editor's own byte offsets.
     OpenJumplist,
-    /// Toggle the editor's **keymap box** — its own catalogue of its keys,
-    /// in the bottom-right corner of the editor.
-    OpenKeymap,
     /// Open the **rename prompt** — the `:` line, pre-filled with the rename
     /// command, waiting for the new name.
     ///

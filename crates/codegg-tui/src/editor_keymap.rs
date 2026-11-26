@@ -232,6 +232,14 @@ impl MenuPath {
         }
         parts.join(" ")
     }
+
+    pub fn title(self) -> String {
+        let mut parts = vec!["Space".to_string()];
+        for key in &self.keys[..self.len as usize] {
+            parts.push(key.label());
+        }
+        parts.join(" ")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +265,7 @@ pub struct EditorMenuEntry {
     pub key: String,
     pub label: String,
     pub is_menu: bool,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,21 +443,57 @@ impl EditorKeymap {
     }
 
     pub fn menu_view(&self, path: MenuPath) -> Option<EditorMenuView> {
-        let mode = self.menus.get(&path.id())?;
-        let entries = mode
-            .entries
-            .iter()
-            .map(|entry| EditorMenuEntry {
-                key: entry.key.label(),
-                label: match entry.action {
+        let mut entries: Vec<EditorMenuEntry> = Vec::new();
+        if path.is_root() {
+            for leaf in crate::editor::SPACE_LEAVES {
+                let Some((_, label)) = crate::editor::SPACE_LEAF_LABELS
+                    .iter()
+                    .find(|(glyph, _)| *glyph == leaf.glyph)
+                else {
+                    continue;
+                };
+                let available = !matches!(
+                    leaf.action,
+                    crate::editor::PrefixAction::Effect(
+                        crate::editor_effect::EditorPendingEffect::Unavailable(_)
+                    )
+                );
+                entries.push(EditorMenuEntry {
+                    key: leaf.glyph.to_string(),
+                    label: (*label).to_string(),
+                    is_menu: false,
+                    available,
+                });
+            }
+        }
+        if let Some(mode) = self.menus.get(&path.id()) {
+            for entry in &mode.entries {
+                let key = entry.key.label();
+                let is_menu = matches!(entry.action, MenuAction::Menu(_));
+                let label = match entry.action {
                     MenuAction::Command(command) => command.help().to_string(),
-                    MenuAction::Menu(_) => format!("the {} menu", entry.key.label()),
-                },
-                is_menu: matches!(entry.action, MenuAction::Menu(_)),
-            })
-            .collect();
+                    MenuAction::Menu(_) => format!("the {key} menu"),
+                };
+                match entries.iter_mut().find(|slot| slot.key == key) {
+                    Some(slot) => {
+                        slot.label = label;
+                        slot.is_menu = is_menu;
+                        slot.available = true;
+                    }
+                    None => entries.push(EditorMenuEntry {
+                        key,
+                        label,
+                        is_menu,
+                        available: true,
+                    }),
+                }
+            }
+        }
+        if entries.is_empty() {
+            return None;
+        }
         Some(EditorMenuView {
-            path: path.label(),
+            path: path.title(),
             entries,
         })
     }
@@ -607,6 +652,32 @@ mod tests {
             "the shipped default survives: {keys:?}"
         );
     }
+    #[test]
+    fn the_root_menu_lists_the_built_in_space_leaves() {
+        let keymap = EditorKeymap::defaults();
+        let menu = keymap.menu_view(MenuPath::root()).expect("the root menu");
+        assert!(
+            menu.entries.iter().any(|entry| entry.key == "q"),
+            "the configured submenu is listed"
+        );
+        assert!(
+            menu.entries.iter().any(|entry| entry.key == "f"),
+            "a built-in leaf is listed"
+        );
+        assert!(
+            menu.entries.iter().any(|entry| entry.key == "?"),
+            "the palette entry is listed"
+        );
+    }
+
+    #[test]
+    fn a_nested_menu_lists_only_its_own_entries() {
+        let keymap = EditorKeymap::defaults();
+        let menu = keymap.menu_view(space_q()).expect("the q menu");
+        assert_eq!(menu.entries.len(), 1);
+        assert_eq!(menu.entries[0].key, "a");
+    }
+
     #[test]
     fn a_menu_path_names_its_menu() {
         let root = MenuPath::root();

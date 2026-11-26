@@ -158,18 +158,12 @@ pub struct TuiDocumentPresentation {
     /// A cursor motion clears it, because a view that has been scrolled away
     /// is only meaningful while the reader is reading it.
     pub view_scroll: Option<usize>,
-    /// Whether the editor's **keymap box** is open in its bottom-right
-    /// corner.
+    /// The editor's **command palette**, while it is open.
     ///
-    /// The editor's own catalogue of its keys, opened with `space ?`. It is a
-    /// **box** rather than a row because the keys are a list, and a list on a
-    /// row is a list that has to be truncated — and a truncated keymap names
-    /// only some of the keys, which is worse than no keymap.
-    ///
-    /// The box is a floating overlay: it covers the corner of the text area
-    /// rather than taking rows away from the document, so opening it does not
-    /// reflow the text under the reader.
-    pub keymap_overlay: bool,
+    /// A centred box with a filter bar, the way Helix's is. The `:` line is
+    /// the same matcher on one row; the palette is the same matcher with
+    /// room to read.
+    pub command_palette: Option<crate::editor_palette::EditorCommandPalette>,
     /// The visited-position history — Helix's **jumplist** — and its picker.
     ///
     /// Chronological, oldest first, and deliberately **not** normalized the

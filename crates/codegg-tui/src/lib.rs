@@ -2937,6 +2937,7 @@ pub mod editor_inline_assist;
 pub mod editor_keymap;
 pub mod editor_lsp;
 pub mod editor_match;
+pub mod editor_palette;
 pub mod file_tree;
 pub mod file_tree_coordinator;
 pub mod unified_diff;

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The editor now has its own command palette.** `space ?` opens a centred
+  box with a filter bar, a match count and the editor's commands — the same
+  shape as Helix's, for the same reason: a list you have to scroll is a list
+  you cannot search. Type to filter, `Enter` runs the selected command, and a
+  command that takes an argument hands you the `:` line pre-filled. The
+  palette also lists the editor's own key bindings, so `space ?` answers
+  "what can I press here?" as well as "what can I do here?" — those rows
+  explain themselves when you select them rather than pretending to run.
+- **The space menu is now a window in the lower right** of the editor, and it
+  lists the built-in Helix keys alongside whatever your configuration adds,
+  so the keys on offer are on screen rather than in your memory. The window is
+  titled with the level you are in (`Space`, `Space q`) and its bottom border
+  carries the pop-back key, so a nested menu says how to leave it.
 - **The editor's language-server features now work in an ordinary
   workspace.** Two things had been blocking every one of them. Diagnostics were
   never collected — the code that publishes them existed but nothing ever ran
@@ -115,6 +128,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The completion popup sits at your cursor and is as wide as its contents.**
+  It used to be a fixed-width panel in the middle of the screen; it now opens
+  on the row below your cursor's line with its left edge at your cursor's own
+  column, so it never covers the text you are editing. A candidate the editor
+  cannot apply says **why** — `· snippet`, `· needs extra edits`, `· has a
+  server command` — instead of a flat "unavailable".
+- **The editor's keymap box is retired.** `space ?` used to open a floating
+  catalogue of the editor's keys in the bottom-right corner. That catalogue
+  now lives in the command palette as searchable rows, so the information is
+  still there and can be found by typing.
 - **Extended thinking now takes any reasoning label your provider uses, and
   the daemon remembers the one you chose.** The thinking control used to offer
   exactly four levels — `minimal`, `low`, `medium`, `high` — so a provider

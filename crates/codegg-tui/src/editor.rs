@@ -772,18 +772,14 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
         glyph: 'f',
         action: PrefixAction::Effect(EditorPendingEffect::OpenFilePicker),
     },
-    // `space ?` — the editor's own **keymap box**, in its bottom-right
-    // corner.
+    // `space ?` — the editor's **command palette**, in the centre of the
+    // screen with a filter bar, the way Helix's is.
     //
     // Deliberately not the global `?` help dialog: bare `?` still opens the
-    // help, and `space ?` is the editor's own list of *its* keys. It used to
-    // open the `:` command palette, but the `:` line is the command matcher
-    // and the palette was a second way to reach the same commands — so the
-    // key that was supposed to answer "what can I press here?" answered a
-    // different question.
+    // help, and `space ?` is the editor's own list of what it can do.
     PrefixLeaf {
         glyph: '?',
-        action: PrefixAction::Effect(EditorPendingEffect::OpenKeymap),
+        action: PrefixAction::Effect(EditorPendingEffect::OpenCommandPalette),
     },
     // The clipboard family. `space y` yanks every member of the selection
     // set; `space Y` is Helix's *main* selection — the distinguished member
@@ -880,6 +876,34 @@ pub const SPACE_LEAVES: &[PrefixLeaf] = &[
             "last picker: this build's pickers are not fuzzy, so there is no query to recall",
         )),
     },
+];
+
+/// What each space leaf shows in the space menu.
+///
+/// One row per leaf in [`SPACE_LEAVES`]: the menu and the leaves are one
+/// table, and a leaf without a description is a key the reader cannot place.
+pub const SPACE_LEAF_LABELS: &[(char, &str)] = &[
+    ('y', "yank the selections to the clipboard"),
+    ('k', "show the docs for the item under the cursor"),
+    ('s', "open the symbol picker"),
+    ('S', "open the workspace symbol picker"),
+    ('d', "open the diagnostic picker"),
+    ('h', "select the references of the symbol under the cursor"),
+    ('f', "open the file picker"),
+    ('?', "open the command palette"),
+    ('p', "paste the clipboard after the selections"),
+    ('P', "paste the clipboard before the selections"),
+    ('R', "replace the selections with the clipboard"),
+    ('Y', "yank the main selection to the clipboard"),
+    ('r', "rename the symbol under the cursor"),
+    ('a', "perform a code action"),
+    ('F', "open a file picker at another directory"),
+    ('b', "open the buffer picker"),
+    ('j', "open the jumplist picker"),
+    ('D', "open the workspace diagnostic picker"),
+    ('c', "toggle a line comment"),
+    ('C', "toggle a block comment"),
+    ('\'', "open the last picker"),
 ];
 
 /// `[` mode's leaves: the **non-ts subset** of Helix's unimpaired `[` grammar.
@@ -13808,5 +13832,23 @@ mod tests {
         // the one `o` opened — and the reader's typing would go there.
         assert_eq!(open.cursor_after, 4, "on the line `o` opened");
         assert_eq!(add.cursor_after, 0, "wherever the cursor already was");
+    }
+
+    #[test]
+    fn every_space_leaf_has_a_menu_description() {
+        for leaf in SPACE_LEAVES {
+            assert!(
+                SPACE_LEAF_LABELS
+                    .iter()
+                    .any(|(glyph, _)| *glyph == leaf.glyph),
+                "the space menu has no description for `{}`",
+                leaf.glyph
+            );
+        }
+        assert_eq!(
+            SPACE_LEAF_LABELS.len(),
+            SPACE_LEAVES.len(),
+            "the descriptions and the leaves are one table"
+        );
     }
 }

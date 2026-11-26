@@ -46,6 +46,7 @@ use crate::editor::{self, EditorCommand, EditorCommandName, EditorMode, EditorPr
 use crate::editor_effect::{ClipboardVerb, EditorPendingEffect};
 use crate::editor_keymap::{MenuAction, MenuPath};
 use crate::editor_lsp::EditorDiagnosticStep;
+use crate::editor_palette::{EditorCommandPalette, PaletteRow};
 use crate::task_lifecycle::TuiTaskKind;
 
 use super::super::editor_completion::EditorCompletionScope;
@@ -2181,7 +2182,7 @@ fn accept_selected_completion(app: &mut App) {
     let edit = match &candidate.applicability {
         LspCompletionApplicabilityDto::Applicable { edit } => edit.clone(),
         LspCompletionApplicabilityDto::NonApplicable { reason } => {
-            app.messages_state.toasts.warning(match reason {
+            let message = match reason {
                 LspCompletionUnsupportedReason::Snippet => {
                     "Snippet completions can't be applied yet"
                 }
@@ -2198,7 +2199,10 @@ fn accept_selected_completion(app: &mut App) {
                 LspCompletionUnsupportedReason::InsertAndReplace => {
                     "Completion range shape isn't supported yet"
                 }
-            });
+            };
+            app.editor_state
+                .set_notice(EditorNotice::Rejected(message.to_string()));
+            app.messages_state.toasts.warning(message);
             return;
         }
     };
@@ -3948,17 +3952,17 @@ fn dispatch_editor_key(app: &mut App, key: KeyEvent) -> bool {
             }
             return true;
         }
-        // The keymap box closes before anything else, for the same reason the
+        // The palette closes before anything else, for the same reason the
         // two modal input lines do: `Esc` undoes the most recent thing the
-        // user asked for, and the box is a thing they asked for.
+        // user asked for, and the palette is a thing they asked for.
         if app
             .editor_state
             .session
             .as_ref()
-            .is_some_and(|session| session.presentation().keymap_overlay)
+            .is_some_and(|session| session.presentation().command_palette.is_some())
         {
             if let Some(session) = app.editor_state.session.as_mut() {
-                session.presentation_mut().keymap_overlay = false;
+                session.presentation_mut().command_palette = None;
             }
             return true;
         }
@@ -4372,7 +4376,6 @@ fn run_editor_pending_effect(app: &mut App, effect: EditorPendingEffect) {
         EditorPendingEffect::OpenFilePicker => open_editor_file_picker(app),
         EditorPendingEffect::OpenCommandPalette => open_editor_command_palette(app),
         EditorPendingEffect::OpenJumplist => open_editor_jumplist_picker(app),
-        EditorPendingEffect::OpenKeymap => toggle_editor_keymap(app),
         EditorPendingEffect::RenamePrompt => open_editor_rename_prompt(app),
         EditorPendingEffect::RunCommand(command) => run_editor_command(app, command, None),
     }
@@ -4443,30 +4446,17 @@ fn open_editor_file_picker(app: &mut App) {
     app.open_file_picker();
 }
 
-/// The palette is the editor's catalogue — the rows are
-/// [`EditorCommandName::ALL`], filtered as you type — and it is deliberately
-/// **not** the global `?` help dialog. Bare `?` still opens the help; `space
-/// ?` is the editor's list of what it can do, which is a different question
-/// and a different reader.
+/// Open the editor's **command palette** — a centred box with a filter
+/// bar, the way Helix's is.
+///
+/// The rows are [`EditorCommandName::ALL`], filtered as you type. It is
+/// deliberately **not** the global `?` help dialog: bare `?` still opens the
+/// help; `space ?` is the editor's list of what it can do.
 fn open_editor_command_palette(app: &mut App) {
     let Some(session) = app.editor_state.session.as_mut() else {
         return;
     };
-    session.presentation_mut().open_command_line("");
-}
-
-/// Toggle the editor's **keymap box** — its own catalogue of its keys, in
-/// the bottom-right corner of the editor.
-///
-/// A toggle rather than an open, because the box is the editor's own chrome
-/// and a reader who opens it twice should get their document back rather
-/// than a second box.
-fn toggle_editor_keymap(app: &mut App) {
-    let Some(session) = app.editor_state.session.as_mut() else {
-        return;
-    };
-    let presentation = session.presentation_mut();
-    presentation.keymap_overlay = !presentation.keymap_overlay;
+    session.presentation_mut().command_palette = Some(EditorCommandPalette::default());
 }
 
 // ── The jumplist ───────────────────────────────────────────────────────────
@@ -4519,9 +4509,9 @@ fn open_editor_jumplist_picker(app: &mut App) {
             return;
         };
         let presentation = session.presentation_mut();
-        // The keymap box and the picker are the editor's one floating box, so
-        // opening one closes the other rather than stacking two over the text.
-        presentation.keymap_overlay = false;
+        // The palette is the editor's modal box, so opening the picker
+        // closes it rather than stacking two over the text.
+        presentation.command_palette = None;
         if presentation.jumplist.is_empty() {
             true
         } else {
@@ -5188,6 +5178,79 @@ enum BufferKey {
     ShrinkSyntaxSelection,
     RequestInlineApprove,
     RequestInlineDiscard,
+}
+
+/// Handle one key while the command palette is open — modal, like the `:` line.
+fn handle_palette_key(state: &mut EditorState, key: KeyEvent) -> BufferKey {
+    match key.code {
+        KeyCode::Esc => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().command_palette = None;
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Enter => {
+            let selected = state
+                .session
+                .as_ref()
+                .and_then(|session| session.presentation().command_palette.as_ref())
+                .and_then(|palette| palette.selected_row());
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().command_palette = None;
+            }
+            match selected {
+                Some(PaletteRow::Command(command)) if command.takes_argument() => {
+                    if let Some(session) = state.session.as_mut() {
+                        session
+                            .presentation_mut()
+                            .open_command_line(&format!("{} ", command.spec()));
+                    }
+                    BufferKey::Consumed
+                }
+                Some(PaletteRow::Command(command)) => BufferKey::RunCommand(command, None),
+                Some(PaletteRow::Key { keys, .. }) => {
+                    state.set_notice(EditorNotice::Rejected(format!(
+                        "`{keys}` is a key, not a command — press it directly"
+                    )));
+                    BufferKey::Consumed
+                }
+                None => BufferKey::Consumed,
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(session) = state.session.as_mut() {
+                if let Some(palette) = session.presentation_mut().command_palette.as_mut() {
+                    palette.pop();
+                }
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            if let Some(session) = state.session.as_mut() {
+                if let Some(palette) = session.presentation_mut().command_palette.as_mut() {
+                    palette.move_selection(1);
+                }
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Up | KeyCode::BackTab => {
+            if let Some(session) = state.session.as_mut() {
+                if let Some(palette) = session.presentation_mut().command_palette.as_mut() {
+                    palette.move_selection(-1);
+                }
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Char(ch) if key.modifiers.is_empty() => {
+            if let Some(session) = state.session.as_mut() {
+                if let Some(palette) = session.presentation_mut().command_palette.as_mut() {
+                    palette.push(ch);
+                }
+            }
+            BufferKey::Consumed
+        }
+        _ => BufferKey::Consumed,
+    }
 }
 
 /// Handle one key while the `:` command line is open.
@@ -6106,7 +6169,15 @@ fn editor_buffer_key(
     // them, including the mode-independent Ctrl chords: a half-typed
     // `:q` must not be rewritten by `Ctrl+S` silently writing the file the
     // user was about to close. `/` is checked first only so the two input
-    // lines can never both be open.
+    // lines can never both be open. The palette is modal too, and is
+    // checked before them.
+    if state
+        .session
+        .as_ref()
+        .is_some_and(|session| session.presentation().command_palette.is_some())
+    {
+        return handle_palette_key(state, key);
+    }
     if state
         .session
         .as_ref()
@@ -16156,17 +16227,20 @@ mod tests {
         assert_eq!(undo_depth(&app.editor_state), 0, "and records no history");
     }
 
-    /// its keys, in its bottom-right corner — and not the global help dialog.
-    /// Bare `?` still opens the help.
+    /// `space ?` opens the editor's **command palette** — and not the
+    /// global help dialog. Bare `?` still opens the help.
     #[tokio::test]
-    async fn space_question_mark_opens_the_editors_keymap_box() {
+    async fn space_question_mark_opens_the_editor_command_palette() {
         let (state, _daemon) = opened_writer("hello").await;
         let mut app = app_on_the_editor_route(state).await;
 
         press_space(&mut app, '?');
 
         let presentation = app.editor_state.session.as_ref().unwrap().presentation();
-        assert!(presentation.keymap_overlay, "the keymap box is open");
+        assert!(
+            presentation.command_palette.is_some(),
+            "the command palette is open"
+        );
         assert!(
             !presentation.command_active,
             "and it is not the `:` command line"
@@ -16178,15 +16252,40 @@ mod tests {
             .as_mut()
             .unwrap()
             .presentation_mut()
-            .keymap_overlay = false;
-        assert!(
-            !app.editor_state
-                .session
-                .as_ref()
-                .unwrap()
-                .presentation()
-                .keymap_overlay
+            .command_palette = None;
+        assert!(app
+            .editor_state
+            .session
+            .as_ref()
+            .unwrap()
+            .presentation()
+            .command_palette
+            .is_none());
+    }
+
+    /// The palette owns every key while it is open: a printable that
+    /// reached the document behind the filter bar would insert text.
+    #[tokio::test]
+    async fn a_printable_key_filters_the_palette_and_types_nothing() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut app = app_on_the_editor_route(state).await;
+
+        press_space(&mut app, '?');
+        handle_editor_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
         );
+
+        let presentation = app.editor_state.session.as_ref().unwrap().presentation();
+        assert_eq!(
+            presentation
+                .command_palette
+                .as_ref()
+                .map(|palette| palette.query.as_str()),
+            Some("w"),
+            "the key filtered the palette"
+        );
+        assert_eq!(editor_text(&app.editor_state), "hello", "and typed nothing");
     }
 
     /// Insert mode types the space and the glyph. The space prefix is armed
