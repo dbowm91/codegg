@@ -1173,6 +1173,40 @@ impl App {
                             workspace.display_name, workspace.workspace_id, worktrees
                         )));
                     }
+                    if let Some(summary) = dashboard
+                        .rows
+                        .iter()
+                        .map(|row| &row.summary)
+                        .find(|summary| summary.project_id == detail.project.project_id)
+                    {
+                        detail_lines.push(Line::from(""));
+                        detail_lines.push(Line::from(Span::styled(
+                            " tasks",
+                            Style::default().fg(theme.secondary),
+                        )));
+                        if summary.counts_visible {
+                            detail_lines.push(Line::from(format!(
+                                "  {} running · {} waiting · {} attention · {} future",
+                                summary.running_work_order_count,
+                                summary.waiting_work_order_count,
+                                summary.needs_attention_count,
+                                summary.future_work_order_count
+                            )));
+                        } else {
+                            detail_lines.push(Line::from(Span::styled(
+                                "  withheld — the daemon returned no counts for this principal",
+                                Style::default().fg(theme.muted),
+                            )));
+                        }
+                    }
+                    detail_lines.push(Line::from(""));
+                    detail_lines.push(Line::from(Span::styled(
+                        " membership",
+                        Style::default().fg(theme.secondary),
+                    )));
+                    detail_lines.push(Line::from(
+                        "  contributors write · viewers read-only · t manages",
+                    ));
                 } else {
                     detail_lines.push(Line::from(Span::styled(
                         format!(" project {project_id}"),
@@ -1181,7 +1215,7 @@ impl App {
                 }
                 detail_lines.push(Line::from(""));
                 detail_lines.push(Line::from(Span::styled(
-                    " h back · n new session",
+                    " h back · n new · e edit · s state · x destroy · t team",
                     Style::default().fg(theme.muted),
                 )));
             }
@@ -1230,6 +1264,11 @@ impl App {
                 footer.push(format!("error: {error}"));
             } else if dashboard.loading {
                 footer.push("loading projects…".to_string());
+            } else {
+                footer.push(
+                    "a add · e edit · s archive/restore · x destroy · t team · n new session · X exit"
+                        .to_string(),
+                );
             }
             (
                 mode_label.to_string(),

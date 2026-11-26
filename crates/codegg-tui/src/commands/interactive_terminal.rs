@@ -4316,12 +4316,9 @@ mod tests {
     async fn a_refused_clear_reports_itself_and_leaves_the_screen_intact() {
         let dir = tempfile::tempdir().expect("workspace");
         let mut app = pull_test_app(dir.path(), prompt_shell()).await;
-        drain_tui_commands(&mut app).await;
-        let handle = app
-            .dialog_state
-            .terminal_detail_handle
-            .clone()
-            .expect("the box is showing a terminal");
+        // The create and the attach are two round trips: one 25ms drain can
+        // return between them and leave the box with no handle at all.
+        let handle = await_terminal_create(&mut app).await;
         await_live_attachment(&mut app, &handle).await;
         pull_until_rendered(&mut app, &handle, "CLEAR-PROMPT", 120, 40).await;
 

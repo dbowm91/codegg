@@ -389,6 +389,7 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
                         (
                             worktree.path.clone(),
                             crate::components::dialogs::session::CheckoutInfo {
+                                workspace_id: Some(worktree.workspace_id.clone()),
                                 worktree_id: Some(worktree.worktree_id.clone()),
                                 branch: worktree.branch.clone(),
                                 state: Some(worktree.state.clone()),
@@ -462,6 +463,7 @@ pub(crate) fn apply_sessions_reloaded(
         .session
         .as_ref()
         .map(|session| session.id.clone());
+    let active_workspace_id = app.active_workspace_id().map(str::to_string);
     let project_context = app
         .active_project_display_context()
         .map(|context| format!("{context} · sessions in this project"));
@@ -485,6 +487,9 @@ pub(crate) fn apply_sessions_reloaded(
         // M006: the checkouts are set *after* the sessions, because
         // `load_sessions` clears the dialog's side maps.
         dialog.set_checkouts(checkouts.clone());
+        // M005/M012: the scope is resolved from the tab, not from the list, so
+        // a session in a checkout groups under the workspace that launched it.
+        dialog.set_active_scope(active_workspace_id.clone(), active_session_id.clone());
     };
     apply(&mut app.dialog_state.session_dialog);
     app.focus_manager
@@ -492,6 +497,41 @@ pub(crate) fn apply_sessions_reloaded(
             crate::components::component::DialogType::Session,
             apply,
         );
+    app.refresh_sessions_dialog_pending_rows();
+}
+
+/// M005: arm the counted cleanup of message-less historical sessions, and
+/// delete exactly those on the second press.
+///
+/// The count is the confirmation: the first press names it and touches
+/// nothing, the second deletes those ids and no others. The active session is
+/// never among them, and hiding empty rows is a view setting, not a deletion.
+pub(crate) fn start_empty_cleanup(app: &mut App) {
+    if app.dialog_state.session_dialog.cleanup_arm.is_some() {
+        let ids = app.dialog_state.session_dialog.empty_session_ids();
+        app.dialog_state.session_dialog.clear_cleanup_arm();
+        if ids.is_empty() {
+            app.messages_state
+                .toasts
+                .info("No empty sessions to delete");
+            return;
+        }
+        let count = ids.len();
+        start_bulk_delete(app, ids);
+        app.messages_state
+            .toasts
+            .info(&format!("Deleting {count} empty session(s)"));
+        return;
+    }
+    match app.dialog_state.session_dialog.arm_empty_cleanup() {
+        Some(count) => app.messages_state.toasts.warning(&format!(
+            "Press C again to delete {count} empty session(s); the active session is kept"
+        )),
+        None => app
+            .messages_state
+            .toasts
+            .info("No empty sessions to delete"),
+    }
     app.refresh_sessions_dialog_pending_rows();
 }
 

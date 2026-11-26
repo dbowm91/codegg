@@ -136,11 +136,29 @@ are painted; leaving restores the session exactly as it was.
 - `n` opens the new-session sheet for the selected workspace or worktree: an
   existing managed worktree, or a new checkout with a base branch and either the
   automatic `codegg/worktree/<id>` branch or a name you type.
-- `d` opens the project detail in the same window; `h` returns.
+- `d` opens the project detail in the same window (workspaces, worktree and
+  session counts, task counts, membership); `h` returns.
+- `a` registers a local project, `e` edits the selected one, `t` opens its team
+  membership. `s` archives an active project or restores an archived one and needs a
+  second `s`, with any other key disarming. `x` destroys the project through a
+  confirmation that names how many sessions go with it.
+- Actions apply to the selected row, so they work on a project you have not opened a
+  tab for.
 - `Shift+X` leaves in NOR; in INS it types `X`.
 
 The **Workspace** panel (`/panels`) lists the project catalog for a quick switch
 without opening the whole view.
+
+## Sessions list
+
+`/sessions` shows the current workspace by default; `w` switches to the whole
+project. A session launched into a managed checkout appears under the workspace that
+launched it, even though it runs in the checkout's own directory.
+
+`e` shows or hides sessions with no messages. Rows with no messages are hidden by
+default, except the session you are in. `C` counts them first: press it once to see
+how many would go, again to delete them. Nothing is deleted until the second press,
+and the active session is never included.
 
 ## Transcript
 

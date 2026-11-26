@@ -1233,14 +1233,14 @@ The addendum is complete when all twelve milestones have closure records and:
 | M002 | Panel walk fills the column; Terminal NOR | capability / invariant | partial — Terminal NOR landed and is tested; the inline-load contract for every asynchronous filler is not |
 | M003 | Aggregate Diff panel | capability | landed — additive `files` + splitter + panel browser; `tui-test` receipt outstanding |
 | M004 | One model + reasoning preference write | invariant / capability | landed — one CAS, returned preference, store regression test; receipt outstanding |
-| M005 | Lazy sessions and workspace-scoped listing | capability / invariant | partial — draft sessions landed for launch, `Ctrl+N` and `/new`; the workspace-scoped list and empty-row cleanup are not |
+| M005 | Lazy sessions and workspace-scoped listing | capability / invariant | landed — draft sessions for launch, `Ctrl+N` and `/new`; the list defaults to the active workspace with a project toggle, hides message-less rows unless asked, and a counted `C` cleanup spares the active session |
 | M006 | Remove `/projects` and `/workspaces` | capability / invariant | landed — both catalogs, rows, dispatch and docs; `check_command_catalog_ownership.py` passes |
 | M007 | Workspace whole view, NOR/INS, `Shift+X` | capability | landed — route-owned frame, modes, filter, `h/j/k/l`, inline detail, NOR-only exit; receipt outstanding |
-| M008 | Workspace project lifecycle and permissions | capability | not started |
+| M008 | Workspace project lifecycle and permissions | capability | landed — `a`/`e`/`s`/`x`/`t` drive the picker's own phases through one shared entry point, the detail carries task counts and the membership policy line, team answers are adopted for the view's selection |
 | M009 | Workspace picker side panel | capability | landed — `SidePanelId::Workspace`, real adopted component, catalog rows |
 | M010 | Task-view refinement and chat-panel wiring | capability / polish | landed — filter, modes, section jumps, detail line, confirm-before-cancel; chat-panel wiring is the existing open path |
 | M011 | Workspace worktree tree and session launch | capability | landed — `ProjectGet`/`ManagedWorktreeList` tree, `GitRead(Branches)` base, `SessionLaunch` with both placements, one idempotency key; receipt outstanding |
-| M012 | Shared chat scope across worktrees | capability / invariant | not started — D12 answered (group by lineage) 2026-11-26 |
+| M012 | Shared chat scope across worktrees | capability / invariant | landed (lineage reading) — a session in a managed checkout groups under the workspace that launched it; a projection, no row rewritten |
 
 ## 13. Handoff note
 
@@ -1311,6 +1311,38 @@ the focused `codegg-core` and daemon splitter tests, the named guards
 `check_test_duplication`, `check_daemon_cwd_usage`, `check_no_hardcoded_models`,
 `check_writer_disposition`, `check_test_self_reexec_paths`,
 `check_test_common_binding`), `cargo fmt`, and `scripts/verify.sh quick`.
+
+**Second pass (M005, M008, M012):**
+
+- **M005 (listing half)** — `/sessions` carries its own scope (`SessionScope`,
+  active workspace by default, `w` toggles to the project), hides message-less
+  rows unless `e` reveals them, and gains a counted `C` cleanup that arms on the
+  first press and deletes exactly the counted ids on the second. Three rules keep
+  it honest: the active session is never hidden, an unanswered count request is
+  never read as "everything is empty" (both the filter and the cleanup switch off),
+  and hiding rows is a view setting rather than a deletion.
+- **M008** — `a`/`e`/`s`/`x`/`t` act on the selected row.
+  `commands::project_picker::begin_lifecycle_from` is the single place that
+  resolves the picker phase, the pinned project and the request id, and the
+  picker's own catalog keys now call it too, so the two surfaces cannot disagree.
+  Archive arms then performs (any other key disarms); destroy opens the picker's
+  counted confirmation. The detail carries the dashboard's task counts (showing
+  `withheld` when the daemon returned none) and the D6 membership line; a team
+  listing is adopted when its project is the active tab **or** the view's
+  selection, so a project with no tab still shows its team.
+- **M012 (lineage reading)** — a session in a managed checkout resolves its
+  lineage through `managed_worktree.workspace_id` and groups under the workspace
+  that launched it. The grouping is a filter over the existing bounded list: no
+  row is rewritten, no schema field, no protocol change. Unattributable rows
+  (no recorded workspace) are kept rather than dropped.
+
+**Tests added:** six view-level lifecycle tests (edit pins the selection, archive
+arms then performs, another key disarms, destroy opens the counted confirmation,
+the no-daemon team path names its denial), three session-list tests (lineage
+grouping across two workspaces, the empty-row filter with the active-session
+exemption, and the cleanup count with its unanswered-counts refusal), and a
+deterministic fix for the `a_refused_clear_reports_itself` fixture, which raced
+the terminal create against its own attach.
 
 **Outstanding evidence:** no `tui-test` receipt has been captured on this head, no
 `plans/implementation/tui-workspace-and-panel-surface-corrective/NNN-*` work package

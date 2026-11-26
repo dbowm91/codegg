@@ -174,6 +174,12 @@ enum RowIdentity {
 /// action needs to name a checkout it may reuse.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CheckoutInfo {
+    /// The workspace the checkout was launched from.
+    ///
+    /// This is the lineage key: a session in a managed checkout runs in the
+    /// checkout's own workspace, so this is what ties it back to the workspace
+    /// a reader thinks of as "the" chat list.
+    pub workspace_id: Option<String>,
     /// The managed checkout's id. `None` for a session that runs in the
     /// project's own root.
     pub worktree_id: Option<String>,
@@ -207,6 +213,36 @@ impl CheckoutInfo {
     }
 }
 
+/// Which sessions the list shows.
+///
+/// M012: a session launched into a managed checkout runs in the *checkout's*
+/// workspace, not the project's. Grouping by lineage puts it back under the
+/// workspace it was launched from without rewriting any row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionScope {
+    /// The workspace the tab is bound to, plus the checkouts launched from it.
+    #[default]
+    Workspace,
+    /// Every workspace in the project.
+    Project,
+}
+
+impl SessionScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "this workspace",
+            Self::Project => "whole project",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Workspace => Self::Project,
+            Self::Project => Self::Workspace,
+        }
+    }
+}
+
 pub struct SessionDialog {
     pub theme: Arc<Theme>,
     pub project_context: Option<String>,
@@ -237,6 +273,16 @@ pub struct SessionDialog {
     jobs: Vec<JobListRow>,
     /// M006: the managed checkouts, keyed by the checkout's path.
     checkouts: HashMap<String, CheckoutInfo>,
+    /// M005: the list defaults to the active workspace, not the project.
+    pub scope: SessionScope,
+    /// M005: message-less historical rows are hidden unless asked for.
+    pub show_empty: bool,
+    /// M005: the number of rows an armed cleanup would delete.
+    pub cleanup_arm: Option<usize>,
+    /// The workspace the scoped list is taken in.
+    pub active_workspace_id: Option<String>,
+    /// The active session, which no filter may hide.
+    pub active_session_id: Option<String>,
     visible_height: usize,
     sorted_cache: RefCell<SortedCache>,
     chrome: bool,
@@ -265,6 +311,11 @@ impl Clone for SessionDialog {
             subagents: self.subagents.clone(),
             jobs: self.jobs.clone(),
             checkouts: self.checkouts.clone(),
+            scope: self.scope,
+            show_empty: self.show_empty,
+            cleanup_arm: self.cleanup_arm,
+            active_workspace_id: self.active_workspace_id.clone(),
+            active_session_id: self.active_session_id.clone(),
             visible_height: self.visible_height,
             sorted_cache: RefCell::new(self.sorted_cache.borrow().clone()),
             chrome: self.chrome,
@@ -295,6 +346,11 @@ impl SessionDialog {
             subagents: Vec::new(),
             jobs: Vec::new(),
             checkouts: HashMap::new(),
+            scope: SessionScope::default(),
+            show_empty: false,
+            cleanup_arm: None,
+            active_workspace_id: None,
+            active_session_id: None,
             visible_height: 10,
             sorted_cache: RefCell::new(None),
             chrome: true,
@@ -357,9 +413,16 @@ impl SessionDialog {
 
     pub fn set_message_count(&mut self, session_id: &str, count: usize) {
         self.message_counts.insert(session_id.to_string(), count);
-        if self.sort_by == SortBy::Activity {
-            self.sorted_cache = RefCell::new(None);
-        }
+        // M005: the count decides whether a row is listed at all, so it
+        // invalidates the row cache whatever the current sort is.
+        self.sorted_cache = RefCell::new(None);
+    }
+
+    /// M005/M012: bind the list's scope to the active tab.
+    pub fn set_active_scope(&mut self, workspace_id: Option<String>, session_id: Option<String>) {
+        self.active_workspace_id = workspace_id;
+        self.active_session_id = session_id;
+        self.sorted_cache = RefCell::new(None);
     }
 
     /// M006: set the managed checkouts the sessions may run in.
@@ -370,6 +433,8 @@ impl SessionDialog {
     /// otherwise. A session with no entry runs in the root.
     pub fn set_checkouts(&mut self, checkouts: HashMap<String, CheckoutInfo>) {
         self.checkouts = checkouts;
+        // M012: the checkout decides which workspace a row groups under.
+        self.sorted_cache = RefCell::new(None);
     }
 
     /// M006: the checkout the selected session runs in.
@@ -662,6 +727,35 @@ impl SessionDialog {
             sessions.retain(|s| s.time_archived.is_none());
         }
 
+        // M012: the lineage projection. A session launched into a managed
+        // checkout runs in the checkout's workspace; it belongs to the
+        // workspace that launched it. No row is rewritten — this is a filter.
+        if self.scope == SessionScope::Workspace {
+            if let Some(active) = self.active_workspace_id.clone() {
+                // A row with no recorded workspace is unattributable, not
+                // foreign: keeping it is the conservative reading, and dropping
+                // it would look like a deletion the reader never asked for.
+                sessions.retain(|s| match self.lineage_workspace(s) {
+                    Some(workspace) => workspace == active.as_str(),
+                    None => true,
+                });
+            }
+        }
+
+        // M005: a durable session with no messages is a historical empty. The
+        // active session is never hidden, because hiding the row a reader is
+        // sitting in reads as a deletion.
+        // A missing count is not evidence of an empty session: the count
+        // request is best-effort, and treating "unknown" as zero would hide the
+        // whole list whenever it failed.
+        if !self.show_empty && !self.message_counts.is_empty() {
+            let active = self.active_session_id.clone();
+            sessions.retain(|s| {
+                Some(s.id.as_str()) == active.as_deref()
+                    || self.message_counts.get(&s.id).copied().unwrap_or(0) > 0
+            });
+        }
+
         match self.sort_by {
             SortBy::Date => sessions.sort_by_key(|b| std::cmp::Reverse(b.time_updated)),
             SortBy::Title => sessions.sort_by_key(|a| a.title.to_lowercase()),
@@ -743,6 +837,66 @@ impl SessionDialog {
         self.show_archived = !self.show_archived;
         self.selected = 0;
         self.sorted_cache = RefCell::new(None);
+    }
+
+    /// M005: switch between the active workspace and the whole project.
+    pub fn toggle_scope(&mut self) {
+        self.scope = self.scope.next();
+        self.selected = 0;
+        self.sorted_cache = RefCell::new(None);
+    }
+
+    /// M005: reveal or hide the message-less historical rows.
+    pub fn toggle_show_empty(&mut self) {
+        self.show_empty = !self.show_empty;
+        self.selected = 0;
+        self.sorted_cache = RefCell::new(None);
+    }
+
+    pub fn scope_label(&self) -> &'static str {
+        self.scope.label()
+    }
+
+    /// The workspace a session belongs to for grouping.
+    ///
+    /// A session in a managed checkout answers with the workspace the checkout
+    /// was launched from; every other session answers with its own.
+    fn lineage_workspace<'a>(&'a self, session: &'a Session) -> Option<&'a str> {
+        self.checkouts
+            .get(session.directory.as_str())
+            .and_then(|checkout| checkout.workspace_id.as_deref())
+            .or(session.workspace_id.as_deref())
+    }
+
+    /// The empty rows a cleanup would delete, excluding the active session.
+    ///
+    /// Empty when no counts have been loaded: an unanswered count request must
+    /// never be read as "every session is empty".
+    pub fn empty_session_ids(&self) -> Vec<String> {
+        if self.message_counts.is_empty() {
+            return Vec::new();
+        }
+        self.sessions
+            .iter()
+            .filter(|session| Some(session.id.as_str()) != self.active_session_id.as_deref())
+            .filter(|session| self.message_counts.get(&session.id).copied().unwrap_or(0) == 0)
+            .map(|session| session.id.clone())
+            .collect()
+    }
+
+    /// Arm the counted cleanup. `None` when there is nothing to delete.
+    pub fn arm_empty_cleanup(&mut self) -> Option<usize> {
+        let count = self.empty_session_ids().len();
+        if count == 0 {
+            self.cleanup_arm = None;
+            return None;
+        }
+        self.cleanup_arm = Some(count);
+        Some(count)
+    }
+
+    pub fn clear_cleanup_arm(&mut self) {
+        self.cleanup_arm = None;
     }
 
     pub fn sort_label(&self) -> &'static str {
@@ -1106,6 +1260,21 @@ impl Component for SessionDialog {
             Span::styled("search: ", Style::default().fg(theme.muted)),
             Span::raw(self.search_label()),
         ]));
+        lines.push(Line::from(vec![
+            Span::styled("scope: ", Style::default().fg(theme.muted)),
+            Span::raw(self.scope_label()),
+            Span::raw(if self.show_empty {
+                " · incl. empty"
+            } else {
+                ""
+            }),
+        ]));
+        if let Some(count) = self.cleanup_arm {
+            lines.push(Line::from(Span::styled(
+                format!("delete {count} empty session(s)? C again confirms"),
+                Style::default().fg(theme.warning),
+            )));
+        }
         lines.push(Line::from(""));
 
         let sorted = self.sorted_sessions();
@@ -1965,6 +2134,7 @@ mod checkout_surface_tests {
 
     fn checkout(path: &str, branch: &str, state: &str, health: &str) -> CheckoutInfo {
         CheckoutInfo {
+            workspace_id: Some(format!("ws-{path}")),
             worktree_id: Some(format!("wt-{path}")),
             branch: Some(branch.to_string()),
             state: Some(state.to_string()),
@@ -2153,5 +2323,115 @@ mod checkout_surface_tests {
                 session_id: "s1".to_string(),
             })
         );
+    }
+
+    /// M012: a session running in a managed checkout groups under the
+    /// workspace that launched it, not under the checkout's own workspace.
+    #[test]
+    fn a_checkout_session_groups_under_the_workspace_that_launched_it() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        // A session in another workspace, stated outright rather than inferred
+        // from a checkout; and one that records no workspace at all.
+        let mut elsewhere = session("elsewhere", "/other");
+        elsewhere.workspace_id = Some("ws-other".to_string());
+        d.load_sessions(vec![
+            session("in-checkout", "/wt/feature-x"),
+            session("unattributed", "/repo"),
+            elsewhere,
+        ]);
+        d.set_message_count("in-checkout", 4);
+        d.set_message_count("unattributed", 2);
+        d.set_message_count("elsewhere", 1);
+        d.set_checkouts(HashMap::from([(
+            "/wt/feature-x".to_string(),
+            checkout("/wt/feature-x", "feature-x", "ready", "clean"),
+        )]));
+        // The helper names a checkout's source workspace `ws-<path>`, and the
+        // checkout session's own workspace is left unset — so a row that
+        // survives this filter did not survive on its own `workspace_id`.
+        d.set_active_scope(Some("ws-/wt/feature-x".to_string()), None);
+
+        let text = rendered(&mut d);
+        assert!(
+            text.contains("in-checkout"),
+            "the checkout's session belongs to the launching workspace: {text}"
+        );
+        assert!(
+            !text.contains("elsewhere"),
+            "another workspace's session is not this workspace's chat list: {text}"
+        );
+        assert!(
+            text.contains("unattributed"),
+            "a row with no recorded workspace is kept, not silently dropped: {text}"
+        );
+
+        d.toggle_scope();
+        let text = rendered(&mut d);
+        assert!(
+            text.contains("elsewhere") && text.contains("in-checkout"),
+            "the project scope shows every workspace: {text}"
+        );
+    }
+
+    /// M005: a durable session with no messages is hidden, except the one the
+    /// reader is sitting in.
+    #[test]
+    fn empty_rows_are_hidden_but_the_active_session_is_kept() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![
+            session("active", "/repo"),
+            session("empty", "/repo"),
+            session("used", "/repo"),
+        ]);
+        d.set_message_count("active", 0);
+        d.set_message_count("empty", 0);
+        d.set_message_count("used", 5);
+        d.set_active_scope(None, Some("active".to_string()));
+
+        let text = rendered(&mut d);
+        assert!(text.contains("used"), "a used session is listed: {text}");
+        assert!(
+            text.contains("active"),
+            "hiding the row the reader is in reads as a deletion: {text}"
+        );
+        assert!(
+            !text.contains("empty"),
+            "a message-less historical row is hidden by default: {text}"
+        );
+
+        d.toggle_show_empty();
+        let text = rendered(&mut d);
+        assert!(
+            text.contains("empty"),
+            "the toggle reveals the hidden rows: {text}"
+        );
+    }
+
+    /// M005: the cleanup counts what it would delete, keeps the active
+    /// session, and refuses to act on counts it never received.
+    #[test]
+    fn cleanup_counts_only_known_empty_rows_and_keeps_the_active_session() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+        d.load_sessions(vec![
+            session("active", "/repo"),
+            session("empty", "/repo"),
+            session("used", "/repo"),
+        ]);
+        assert_eq!(
+            d.arm_empty_cleanup(),
+            None,
+            "an unanswered count request is not evidence that everything is empty"
+        );
+
+        d.set_message_count("active", 0);
+        d.set_message_count("empty", 0);
+        d.set_message_count("used", 3);
+        d.set_active_scope(None, Some("active".to_string()));
+        assert_eq!(
+            d.empty_session_ids(),
+            vec!["empty".to_string()],
+            "the active session and every used session are spared"
+        );
+        assert_eq!(d.arm_empty_cleanup(), Some(1));
     }
 }

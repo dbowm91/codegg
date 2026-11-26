@@ -114,6 +114,14 @@ impl LaunchSheet {
     }
 }
 
+/// An archive or restore armed by its first keypress; the second performs it.
+/// Destroy never arms here — it opens the picker's counted confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleArm {
+    pub project_id: String,
+    pub restore: bool,
+}
+
 /// The Workspace view's own state.
 #[derive(Debug, Default)]
 pub struct WorkspaceViewState {
@@ -140,6 +148,8 @@ pub struct WorkspaceViewState {
     pub next_request: u64,
     /// The launch sheet, when one is open.
     pub launch: Option<LaunchSheet>,
+    /// An archive/restore awaiting its second keypress.
+    pub lifecycle_arm: Option<LifecycleArm>,
     /// A transient line the view owns (a refusal, a launch stage).
     pub notice: Option<String>,
 }
@@ -152,6 +162,7 @@ impl WorkspaceViewState {
         self.selected = 0;
         self.detail = None;
         self.launch = None;
+        self.lifecycle_arm = None;
         self.notice = None;
     }
 

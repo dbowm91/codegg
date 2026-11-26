@@ -3307,8 +3307,67 @@ or a user-typed name. One idempotency key per submit is reused on a transport re
 and replaced after a refusal. The view adopts only the identities the response
 returns (`session_id`, `workspace_id`, `branch`) and opens that session.
 
-**Detail.** `d` replaces the tree with the project detail (identity, workspaces,
-worktree counts) in the same window; `h` returns. It is not a modal.
+**Detail.** `d` replaces the tree with the project detail (identity, lifecycle,
+workspaces, worktree counts, session count and the dashboard's task counts) in the same
+window; `h` returns. It is not a modal, and a principal the daemon withheld counts
+from reads `withheld` rather than `0`.
+
+**Lifecycle and membership (M008).** The view acts on the selected project, not on
+the project that happens to hold the active tab:
+
+| Key | Action |
+|-----|--------|
+| `a` | Register a local project (the picker's raw-path draft) |
+| `e` | Edit display name and bound root (`ProjectUpdate` with `expected_updated_at`) |
+| `s` | Archive an active project, restore an archived one |
+| `x` | Destroy, through the counted confirmation |
+| `t` | Team membership |
+
+Every one of these opens the **project picker** at the phase the picker's own catalog
+keys use; `commands::project_picker::begin_lifecycle_from` is the single place that
+resolves the phase, the pinned project and the request id, so the two surfaces cannot
+disagree about which request a completion belongs to. The view mints no request of
+its own and adds no second project model.
+
+Archive is reversible, so it **arms** on the first `s` and performs on the second; any
+other key disarms, because a confirmation must not outlive the selection it was given
+for. Destroy is irreversible and does not arm in place: it opens the picker's
+`DestroyLoading` phase, and the confirmation it lands in names the session count that
+the deletion would take with it.
+
+Membership is a role on the membership (D6): contributors write, viewers are
+read-only, and there is no project-scoped sandbox, approval or network policy row. The
+listing is adopted when its project is the active tab **or** the view's own selection,
+so a project with no tab still shows its team; an owner-gated denial renders as a
+denial ("Requires project Owner (member.manage)"), never as an empty member list.
+
+### The session list: scoped, counted and grouped (M005, M012)
+
+`/sessions` lists the **active workspace** by default, not the project. `w` toggles
+between the two scopes and the header names which one is in force. The scope is
+resolved from the tab, never from the list, and it is applied as a *projection*: no
+row is rewritten and no session is moved.
+
+Grouping follows the launch lineage. A session launched into a managed checkout runs
+in the checkout's own workspace (`src/core/session_launch.rs`), so its
+`workspace_id` is the checkout's, and it would otherwise vanish from the workspace
+that launched it. The list resolves each row's lineage as
+`managed_worktree.workspace_id` for the checkout it runs in, falling back to the
+session's own `workspace_id`. A row that records **no** workspace is unattributable
+rather than foreign, so it is kept: dropping it would read as a deletion nobody
+asked for.
+
+Message-less rows are hidden by default (`e` reveals them), because a durable
+session with no messages is a historical empty — the species the eager
+`InitialSessionRequest::New` path used to manufacture on every launch. Two rules
+bound that filter: the active session is never hidden, and an **unanswered** count
+request is not evidence of an empty session, so the filter and the cleanup both
+switch off entirely when no counts have been loaded.
+
+Cleanup is explicit and counted. `C` arms: it names how many rows it would delete
+and touches nothing. `C` again deletes exactly those ids through the existing bulk
+delete. It never includes the active session, and hiding rows is a view setting, not
+a deletion.
 
 ### The Workspace picker panel (M009)
 

@@ -5242,6 +5242,15 @@ impl App {
                             'b' => {
                                 self.dialog_state.session_dialog.toggle_bulk_mode();
                             }
+                            'w' => {
+                                self.toggle_session_scope();
+                            }
+                            'e' => {
+                                self.toggle_session_show_empty();
+                            }
+                            'C' => {
+                                crate::commands::sessions::start_empty_cleanup(self);
+                            }
                             _ => {
                                 self.dialog_state.session_dialog.set_filter(c);
                             }
@@ -7336,16 +7345,11 @@ impl App {
                     .map(|project| project.project_id.clone())
             });
         if let Some(project_id) = edit_project_id {
-            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
-                picker.pinned_project_id = Some(project_id.clone());
-                picker.project_edit = None;
-                picker.last_error = None;
-                picker.phase = crate::app::state::PickerPhase::ProjectEditLoading;
-                picker.begin_request()
-            });
-            if let Some(request_id) = request_id {
-                crate::commands::project_picker::start_project_edit(self, project_id, request_id);
-            }
+            crate::commands::project_picker::begin_lifecycle_from(
+                self,
+                crate::commands::project_picker::ProjectLifecycleEntry::Edit,
+                Some(project_id),
+            );
             return;
         }
 
@@ -7372,28 +7376,12 @@ impl App {
                 Some((selected.project_id.clone(), action, restores))
             });
         if let Some((project_id, destroy, restores)) = lifecycle_action {
-            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
-                picker.pinned_project_id = Some(project_id.clone());
-                picker.last_error = None;
-                picker.destroy_confirmation = None;
-                picker.phase = if destroy {
-                    crate::app::state::PickerPhase::DestroyLoading
-                } else {
-                    crate::app::state::PickerPhase::LifecycleChanging
-                };
-                picker.begin_request()
-            });
-            if let Some(request_id) = request_id {
-                if destroy {
-                    crate::commands::project_picker::start_project_destroy_confirmation(
-                        self, project_id, request_id,
-                    );
-                } else {
-                    crate::commands::project_picker::start_project_lifecycle(
-                        self, project_id, restores, request_id,
-                    );
-                }
-            }
+            let entry = match (destroy, restores) {
+                (true, _) => crate::commands::project_picker::ProjectLifecycleEntry::Destroy,
+                (false, true) => crate::commands::project_picker::ProjectLifecycleEntry::Restore,
+                (false, false) => crate::commands::project_picker::ProjectLifecycleEntry::Archive,
+            };
+            crate::commands::project_picker::begin_lifecycle_from(self, entry, Some(project_id));
             return;
         }
 
@@ -7819,6 +7807,18 @@ impl App {
     #[allow(dead_code)]
     fn toggle_show_archived(&mut self) {
         self.dialog_state.session_dialog.toggle_show_archived();
+        self.load_sessions_dialog();
+    }
+
+    /// M005: the list's scope, kept in step between the App-owned state and
+    /// the painted focus-manager clone.
+    fn toggle_session_scope(&mut self) {
+        self.dialog_state.session_dialog.toggle_scope();
+        self.load_sessions_dialog();
+    }
+
+    fn toggle_session_show_empty(&mut self) {
+        self.dialog_state.session_dialog.toggle_show_empty();
         self.load_sessions_dialog();
     }
 

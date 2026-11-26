@@ -299,7 +299,7 @@ fn channel_flag(rest: &[&str]) -> Option<String> {
 /// Fetch the bounded member list plus the M002 chat-policy summary for
 /// the active project, then render the FocusManager-backed `/team`
 /// administration dialog. `/collaborators` stays the presence surface.
-fn start_show_team(app: &mut App, project_id: String) {
+pub(crate) fn start_show_team(app: &mut App, project_id: String) {
     if app.core_client.is_none() {
         app.open_info_dialog(
             crate::components::dialogs::info::InfoType::Team,
@@ -457,7 +457,12 @@ pub(crate) fn apply_team_membership_loaded(
     if !app.dialog_state.team_request.finish(request_id) {
         return;
     }
-    if app.active_project_id() != Some(project_id.as_str()) {
+    // The view can ask about a project that has no tab, so the tab test alone
+    // would load a membership list and then discard it.
+    let view_scope = crate::commands::workspace_view::selected_project_id(app);
+    if app.active_project_id() != Some(project_id.as_str())
+        && view_scope.as_deref() != Some(project_id.as_str())
+    {
         return;
     }
     if unsupported {

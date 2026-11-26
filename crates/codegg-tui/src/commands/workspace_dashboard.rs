@@ -1312,4 +1312,146 @@ mod tests {
             "Vim help must document the Workspace hotkey"
         );
     }
+
+    /// Type one Normal-mode key into the Workspace view.
+    fn press_view_key(app: &mut App, ch: char) {
+        handle_workspace_view_key(
+            app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+    }
+
+    /// M008: a lifecycle action from the view opens the same picker phase the
+    /// catalog's own key does, pinned to the row the user selected rather than
+    /// to whichever project happens to hold the active tab.
+    #[tokio::test]
+    async fn edit_from_the_view_pins_the_selected_project_in_the_picker() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        press_view_key(&mut app, 'e');
+        let picker = app
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .expect("edit opens the picker");
+        assert_eq!(
+            picker.phase,
+            crate::app::state::PickerPhase::ProjectEditLoading
+        );
+        assert_eq!(picker.pinned_project_id.as_deref(), Some("project-1"));
+    }
+
+    /// Archive is reversible but not free, so the first press only arms it and
+    /// the view says which project it would change.
+    #[tokio::test]
+    async fn archive_from_the_view_arms_before_it_acts() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        press_view_key(&mut app, 's');
+        assert!(
+            app.dialog_state.project_picker.is_none(),
+            "the arming press must not start a mutation"
+        );
+        let dashboard = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .expect("view open");
+        let arm = dashboard
+            .view
+            .lifecycle_arm
+            .as_ref()
+            .expect("archive is armed");
+        assert_eq!(arm.project_id, "project-1");
+        assert!(!arm.restore, "an active project is archived, not restored");
+        assert!(
+            dashboard
+                .view
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("archive") && notice.contains("Alpha")),
+            "the arm names the project it would change: {:?}",
+            dashboard.view.notice
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_press_archives_the_armed_project() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        press_view_key(&mut app, 's');
+        press_view_key(&mut app, 's');
+        assert!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .is_some_and(|dashboard| dashboard.view.lifecycle_arm.is_none()),
+            "the performed archive clears its arm"
+        );
+        let picker = app
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .expect("archive opens the picker");
+        assert_eq!(
+            picker.phase,
+            crate::app::state::PickerPhase::LifecycleChanging
+        );
+        assert_eq!(picker.pinned_project_id.as_deref(), Some("project-1"));
+    }
+
+    #[tokio::test]
+    async fn moving_the_selection_disarms_archive() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        press_view_key(&mut app, 's');
+        press_view_key(&mut app, 'j');
+        assert!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .is_some_and(|dashboard| dashboard.view.lifecycle_arm.is_none()),
+            "a confirmation must not outlive the selection it was given for"
+        );
+    }
+
+    /// Destroy is irreversible, so the view does not arm it: it opens the
+    /// picker's own confirmation, which names the session count first.
+    #[tokio::test]
+    async fn destroy_from_the_view_opens_the_counted_confirmation() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        press_view_key(&mut app, 'x');
+        let picker = app
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .expect("destroy opens the confirmation");
+        assert_eq!(picker.phase, crate::app::state::PickerPhase::DestroyLoading);
+        assert_eq!(picker.pinned_project_id.as_deref(), Some("project-1"));
+    }
+
+    /// D6: membership is a team role, not a project policy row. A daemon that
+    /// cannot answer is told so instead of being shown an empty member list.
+    #[tokio::test]
+    async fn team_from_the_view_without_a_daemon_names_the_denial() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        app.core_client = None;
+        press_view_key(&mut app, 't');
+        let lines = app
+            .focus_manager
+            .dialog_mut_any::<crate::components::dialogs::info::InfoDialog>()
+            .map(|dialog| dialog.content_lines().to_vec())
+            .expect("an info dialog explains the refusal");
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.contains("Team administration unavailable")),
+            "the refusal is stated plainly: {lines:?}"
+        );
+    }
 }

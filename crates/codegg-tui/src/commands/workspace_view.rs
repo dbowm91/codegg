@@ -11,10 +11,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::state::workspace_view::{
-    LaunchSheet, LaunchStep, TreeKind, TreeRow, WorkspaceMode, MAX_TREE_ROWS,
+    LaunchSheet, LaunchStep, LifecycleArm, TreeKind, TreeRow, WorkspaceMode, MAX_TREE_ROWS,
 };
 use crate::app::{App, TuiCommand};
 use crate::async_cmd::spawn_registered_tui_task;
+use crate::commands::project_picker::ProjectLifecycleEntry;
 use crate::task_lifecycle::TuiTaskKind;
 use codegg::protocol::core::{CoreRequest, CoreResponse};
 
@@ -204,6 +205,16 @@ fn select_edge(app: &mut App, last: bool) {
         dashboard.view.selected = if last { len.saturating_sub(1) } else { 0 };
     }
     sync_selected_project(app);
+}
+
+/// The project the Workspace view is pointing at, when the route is open.
+pub(crate) fn selected_project_id(app: &App) -> Option<String> {
+    let dashboard = app.dialog_state.workspace_dashboard.as_ref()?;
+    dashboard
+        .view
+        .detail
+        .clone()
+        .or_else(|| selected_row(app).map(|row| row.project_id))
 }
 
 /// Point the chat pane at the selected row's project.
@@ -819,81 +830,171 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
             }
             _ => {}
         },
-        WorkspaceMode::Normal => match key.code {
-            KeyCode::Esc => {
-                let filtered = app
-                    .dialog_state
-                    .workspace_dashboard
-                    .as_ref()
-                    .is_some_and(|dashboard| !dashboard.view.filter.is_empty());
-                if detail_open {
-                    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
-                        dashboard.view.detail = None;
+        WorkspaceMode::Normal => {
+            // Archive/restore is armed by its first press, so any other key
+            // disarms it: a confirmation must not outlive the intent.
+            let archive_key = key.code == KeyCode::Char('s') && key.modifiers.is_empty();
+            if !archive_key {
+                if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                    dashboard.view.lifecycle_arm = None;
+                }
+            }
+            match key.code {
+                KeyCode::Esc => {
+                    let filtered = app
+                        .dialog_state
+                        .workspace_dashboard
+                        .as_ref()
+                        .is_some_and(|dashboard| !dashboard.view.filter.is_empty());
+                    if detail_open {
+                        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                            dashboard.view.detail = None;
+                        }
+                    } else if filtered {
+                        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                            dashboard.view.filter.clear();
+                            dashboard.view.selected = 0;
+                        }
+                    } else {
+                        crate::commands::workspace_dashboard::leave_workspace_view(app);
                     }
-                } else if filtered {
-                    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
-                        dashboard.view.filter.clear();
-                        dashboard.view.selected = 0;
-                    }
-                } else {
+                }
+                KeyCode::Char('X') if key.modifiers == KeyModifiers::SHIFT => {
                     crate::commands::workspace_dashboard::leave_workspace_view(app);
                 }
-            }
-            KeyCode::Char('X') if key.modifiers == KeyModifiers::SHIFT => {
-                crate::commands::workspace_dashboard::leave_workspace_view(app);
-            }
-            KeyCode::Char('i') if key.modifiers.is_empty() => {
-                if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
-                    dashboard.view.mode = WorkspaceMode::Insert;
-                }
-            }
-            KeyCode::Char('j') | KeyCode::Down if key.modifiers.is_empty() => {
-                move_selection(app, 1);
-            }
-            KeyCode::Char('k') | KeyCode::Up if key.modifiers.is_empty() => {
-                move_selection(app, -1);
-            }
-            KeyCode::PageDown => move_selection(app, 10),
-            KeyCode::PageUp => move_selection(app, -10),
-            KeyCode::Char('g') | KeyCode::Home => select_edge(app, false),
-            KeyCode::Char('G') | KeyCode::End => select_edge(app, true),
-            KeyCode::Char(' ') if key.modifiers.is_empty() => {
-                if let Some(row) = selected_row(app) {
-                    toggle_expand(app, &row);
-                }
-            }
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                if let Some(row) = selected_row(app) {
-                    match row.kind {
-                        TreeKind::Project => open_project(app, &row.project_id),
-                        TreeKind::Workspace | TreeKind::Worktree => toggle_expand(app, &row),
+                KeyCode::Char('i') if key.modifiers.is_empty() => {
+                    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.view.mode = WorkspaceMode::Insert;
                     }
                 }
-            }
-            KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-                if let Some(row) = selected_row(app) {
-                    collapse_selected(app, &row);
+                KeyCode::Char('j') | KeyCode::Down if key.modifiers.is_empty() => {
+                    move_selection(app, 1);
                 }
-            }
-            KeyCode::Char('n') if key.modifiers.is_empty() => {
-                if let Some(row) = selected_row(app) {
-                    begin_launch(app, &row);
+                KeyCode::Char('k') | KeyCode::Up if key.modifiers.is_empty() => {
+                    move_selection(app, -1);
                 }
-            }
-            KeyCode::Char('d') if key.modifiers.is_empty() => {
-                if let Some(row) = selected_row(app) {
-                    open_detail(app, &row);
+                KeyCode::PageDown => move_selection(app, 10),
+                KeyCode::PageUp => move_selection(app, -10),
+                KeyCode::Char('g') | KeyCode::Home => select_edge(app, false),
+                KeyCode::Char('G') | KeyCode::End => select_edge(app, true),
+                KeyCode::Char(' ') if key.modifiers.is_empty() => {
+                    if let Some(row) = selected_row(app) {
+                        toggle_expand(app, &row);
+                    }
                 }
+                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
+                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    if let Some(row) = selected_row(app) {
+                        match row.kind {
+                            TreeKind::Project => open_project(app, &row.project_id),
+                            TreeKind::Workspace | TreeKind::Worktree => toggle_expand(app, &row),
+                        }
+                    }
+                }
+                KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+                    if let Some(row) = selected_row(app) {
+                        collapse_selected(app, &row);
+                    }
+                }
+                KeyCode::Char('n') if key.modifiers.is_empty() => {
+                    if let Some(row) = selected_row(app) {
+                        begin_launch(app, &row);
+                    }
+                }
+                KeyCode::Char('d') if key.modifiers.is_empty() => {
+                    if let Some(row) = selected_row(app) {
+                        open_detail(app, &row);
+                    }
+                }
+                KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
+                    app.process_msg(crate::app::TuiMsg::WorkspaceDashboardRefresh);
+                }
+                KeyCode::Char('a') if key.modifiers.is_empty() => {
+                    begin_lifecycle(app, ProjectLifecycleEntry::Register, None);
+                }
+                KeyCode::Char('e') if key.modifiers.is_empty() => {
+                    if let Some(row) = selected_row(app) {
+                        begin_lifecycle(app, ProjectLifecycleEntry::Edit, Some(row.project_id));
+                    }
+                }
+                KeyCode::Char('s') if key.modifiers.is_empty() => {
+                    if let Some(row) = selected_row(app) {
+                        arm_or_run_archive(app, &row);
+                    }
+                }
+                KeyCode::Char('x') if key.modifiers.is_empty() => {
+                    if let Some(row) = selected_row(app) {
+                        begin_lifecycle(app, ProjectLifecycleEntry::Destroy, Some(row.project_id));
+                    }
+                }
+                KeyCode::Char('t') if key.modifiers.is_empty() => {
+                    if let Some(row) = selected_row(app) {
+                        crate::commands::team::start_show_team(app, row.project_id);
+                    }
+                }
+                _ => {}
             }
-            KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
-                app.process_msg(crate::app::TuiMsg::WorkspaceDashboardRefresh);
-            }
-            _ => {}
-        },
+        }
     }
     true
+}
+
+/// Start a lifecycle action, saying why when there is nothing to act on.
+fn begin_lifecycle(
+    app: &mut App,
+    entry: ProjectLifecycleEntry,
+    project_id: Option<String>,
+) -> bool {
+    let started = crate::commands::project_picker::begin_lifecycle_from(app, entry, project_id);
+    if !started {
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            dashboard.view.notice = Some("Select a project row first".to_string());
+        }
+    }
+    started
+}
+
+fn project_is_archived(app: &App, project_id: &str) -> bool {
+    app.project_catalog
+        .entries
+        .iter()
+        .find(|entry| entry.project_id == project_id)
+        .is_some_and(|entry| entry.archived_at.is_some())
+}
+
+/// Arm archive/restore on the first press, perform it on the second.
+fn arm_or_run_archive(app: &mut App, row: &TreeRow) {
+    let restore = project_is_archived(app, &row.project_id);
+    let already_armed = app
+        .dialog_state
+        .workspace_dashboard
+        .as_ref()
+        .and_then(|dashboard| dashboard.view.lifecycle_arm.clone())
+        .is_some_and(|arm| arm.project_id == row.project_id && arm.restore == restore);
+    if already_armed {
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            dashboard.view.lifecycle_arm = None;
+        }
+        begin_lifecycle(
+            app,
+            if restore {
+                ProjectLifecycleEntry::Restore
+            } else {
+                ProjectLifecycleEntry::Archive
+            },
+            Some(row.project_id.clone()),
+        );
+        return;
+    }
+    let verb = if restore { "restore" } else { "archive" };
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.view.lifecycle_arm = Some(LifecycleArm {
+            project_id: row.project_id.clone(),
+            restore,
+        });
+        dashboard.view.notice = Some(format!("press s again to {verb} {}", row.label));
+    }
 }
 
 // -- Completion appliers ----------------------------------------------

@@ -705,6 +705,93 @@ pub(crate) fn apply_project_destroy_confirmation_loaded(
 
 /// Load the current project name, primary bound root, and optimistic token
 /// before showing the rename/repath editor.
+/// Which project-lifecycle phase a caller wants the picker to open.
+///
+/// The picker's own catalog keys and the Workspace view both ask for these, so
+/// the phase, the pinned project and the request id are resolved in one place.
+/// Two surfaces that each computed them would disagree about which request a
+/// completion belongs to, and a late answer would land in the wrong phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectLifecycleEntry {
+    Register,
+    Edit,
+    Archive,
+    Restore,
+    /// Loads the session count before asking for explicit confirmation.
+    Destroy,
+}
+
+impl ProjectLifecycleEntry {
+    fn needs_project(self) -> bool {
+        !matches!(self, Self::Register)
+    }
+}
+
+/// Open the picker at `entry`'s phase and start its daemon work.
+///
+/// Reports `false` only when there is no picker to drive or `entry` needs a
+/// project and none was named. A refusal the picker records itself (a
+/// non-local registration draft, a project with no bound root) is `true`:
+/// the user-visible result is the picker on screen with that reason in it.
+pub(crate) fn begin_lifecycle_from(
+    app: &mut App,
+    entry: ProjectLifecycleEntry,
+    project_id: Option<String>,
+) -> bool {
+    if entry.needs_project() && project_id.is_none() {
+        return false;
+    }
+    // Recreating an open picker would drop the filter the caller is looking at.
+    if app.dialog_state.project_picker.is_none() {
+        app.open_project_picker();
+    }
+    let Some(picker) = app.dialog_state.project_picker.as_mut() else {
+        return false;
+    };
+    if entry == ProjectLifecycleEntry::Register {
+        if !picker.transport_local {
+            picker.last_error =
+                Some("Raw path registration requires a local TUI context".to_string());
+            picker.phase = crate::app::state::PickerPhase::Error;
+            return true;
+        }
+        picker.phase = crate::app::state::PickerPhase::RegistrationInput;
+        picker.registration_input.clear();
+        return true;
+    }
+    let Some(project_id) = project_id else {
+        return false;
+    };
+    picker.pinned_project_id = Some(project_id.clone());
+    picker.last_error = None;
+    match entry {
+        ProjectLifecycleEntry::Edit => {
+            picker.project_edit = None;
+            picker.phase = crate::app::state::PickerPhase::ProjectEditLoading;
+        }
+        ProjectLifecycleEntry::Destroy => {
+            picker.destroy_confirmation = None;
+            picker.phase = crate::app::state::PickerPhase::DestroyLoading;
+        }
+        _ => picker.phase = crate::app::state::PickerPhase::LifecycleChanging,
+    }
+    let request_id = picker.begin_request();
+    match entry {
+        ProjectLifecycleEntry::Edit => start_project_edit(app, project_id, request_id),
+        ProjectLifecycleEntry::Destroy => {
+            start_project_destroy_confirmation(app, project_id, request_id);
+        }
+        ProjectLifecycleEntry::Archive => {
+            start_project_lifecycle(app, project_id, false, request_id)
+        }
+        ProjectLifecycleEntry::Restore => {
+            start_project_lifecycle(app, project_id, true, request_id)
+        }
+        ProjectLifecycleEntry::Register => {}
+    }
+    true
+}
+
 pub(crate) fn start_project_edit(app: &mut App, project_id: String, picker_request_id: u64) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
