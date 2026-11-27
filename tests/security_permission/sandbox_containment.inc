@@ -29,6 +29,10 @@
 
 #![cfg(unix)]
 
+#[cfg(target_os = "macos")]
+use codegg::git_contained_worktree::{
+    build_worktree_grant, WorktreeChildPaths, WorktreeChildStep, WorktreeLaunchTiers,
+};
 use codegg::managed_process::{
     EnvironmentPolicy, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
     SandboxRequest,
@@ -1564,6 +1568,123 @@ fn delegated_shared_scratch_is_explicitly_granted_to_the_contained_child() {
     assert!(
         run.stdout.contains("SIBLING-DENIED") && !sibling_file.exists(),
         "ungranted sibling scratch stays inaccessible: {}",
+        run.stdout
+    );
+}
+
+/// The worktree grant, enforced by Seatbelt.
+///
+/// `build_worktree_grant` composes the production grant; this drives the real
+/// helper with it and proves both directions: a write inside the checkout
+/// succeeds and a write outside every granted root is refused. The target is
+/// `/bin/sh`, not Git: the question is the grant, and a probe that cannot
+/// write is the observable answer.
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_confines_the_worktree_grant_to_its_three_roots() {
+    require_backend!();
+    assert_eq!(
+        platform_sandbox_capability().backend_id(),
+        BackendId::SEATBELT
+    );
+
+    let lane = tempfile::tempdir().expect("lane");
+    let repository = lane.path().join("repo");
+    let gitdir = repository.join(".git");
+    let checkout = lane.path().join("checkout");
+    let scratch = lane.path().join("scratch");
+    let outside = lane.path().join("outside");
+    for directory in [&gitdir, &checkout, &scratch, &outside] {
+        std::fs::create_dir_all(directory).expect("fixture directory");
+    }
+    let canonical = |path: &Path| path.canonicalize().expect("canonical fixture");
+    let gitdir = canonical(&gitdir);
+    let administration = gitdir.join("worktrees");
+    std::fs::create_dir_all(&administration).expect("administration root");
+    let administration = canonical(&administration);
+    let paths = WorktreeChildPaths {
+        git_binary: codegg::git_contained_worktree::resolve_git_binary().expect("pinned Git"),
+        gitdir,
+        repository_root: canonical(&repository),
+        checkout: canonical(&checkout),
+        scratch: canonical(&scratch),
+        administration_root: administration.clone(),
+        administration_dir: administration.join("linked"),
+        branch: "codegg/worktree/macos-grant".to_string(),
+        base_commit: "HEAD".to_string(),
+    };
+    let mut spec = build_worktree_grant(
+        &paths,
+        WorktreeChildStep::Create,
+        WorktreeLaunchTiers::for_host(),
+    )
+    .expect("the macOS worktree grant");
+    assert!(
+        !spec.linux_protected_mount_view
+            && !spec.linux_process_isolation
+            && !spec.linux_offline_network,
+        "a macOS launch must not request a Linux-only tier: {spec:?}"
+    );
+
+    let inside = paths.checkout.join("inside.txt");
+    let escaped = canonical(&outside).join("escaped.txt");
+    spec.target = PathBuf::from("/bin/sh");
+    spec.args = vec![
+        "-c".to_string(),
+        format!(
+            "printf inside > {} && printf escaped > {}",
+            sh_quote(&inside),
+            sh_quote(&escaped)
+        ),
+    ];
+
+    let run = run_helper(&spec);
+    let outcome = run.outcome().expect("helper status frame");
+    let SandboxLaunchOutcome::Enforced {
+        backend,
+        guarantees,
+        ..
+    } = &outcome
+    else {
+        panic!("expected Seatbelt enforcement, got {outcome:?}");
+    };
+    assert_eq!(*backend, BackendId::SEATBELT);
+
+    // Device nodes are not part of the grant; the reported roots are three.
+    let devices: Vec<PathBuf> = codegg::security::sandbox::policy::device_write_allowances()
+        .into_iter()
+        .filter(|path| path.exists())
+        .filter_map(|path| path.canonicalize().ok())
+        .collect();
+    let granted: Vec<String> = spec
+        .write_paths
+        .iter()
+        .filter(|path| !devices.contains(path))
+        .map(|path| path.display().to_string())
+        .collect();
+    assert_eq!(
+        granted.len(),
+        3,
+        "the grant is not three roots: {granted:?}"
+    );
+    let reported = format!("writable grant roots: {}", granted.join(", "));
+    assert!(
+        guarantees.iter().any(|entry| entry == &reported),
+        "the frame must report the obtained roots in the shared form: {guarantees:?}"
+    );
+    assert!(
+        inside.exists(),
+        "a write inside the grant was refused: {}",
+        run.stderr
+    );
+    assert!(
+        !escaped.exists(),
+        "a write outside the grant succeeded: {}",
+        run.stdout
+    );
+    assert!(
+        !run.success,
+        "the probe must fail at the denied redirection: {}",
         run.stdout
     );
 }

@@ -24,12 +24,13 @@ use std::sync::{Arc, Mutex};
 pub mod common;
 
 use codegg::git_contained_worktree::{obtained_write_root_is_present, ContainedGitWorktreeCreator};
-// The grant, the child step, the launch tiers, the child-path fixture and the
-// child-launch composition are read only by the Linux-gated proofs below.
+// The grant and its fixture are platform-neutral; only the mechanism differs.
+// The child-launch composition is read only by the Linux-gated proofs below.
 #[cfg(target_os = "linux")]
+use codegg::git_contained_worktree::compose_worktree_child_launch;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use codegg::git_contained_worktree::{
-    build_worktree_grant, compose_worktree_child_launch, WorktreeChildPaths, WorktreeChildStep,
-    WorktreeLaunchTiers,
+    build_worktree_grant, WorktreeChildPaths, WorktreeChildStep, WorktreeLaunchTiers,
 };
 use codegg_core::worktree_service::{
     ContainedWorktreeCreator, ContainedWorktreeOutcome, ContainedWorktreeRequest,
@@ -120,7 +121,7 @@ fn create_request(repository_root: &Path) -> CreateWorktreeRequest {
 /// The administration root is created first — the grant names it, so it has to
 /// exist before the launch — and the checkout is created empty, because Git
 /// refuses to create a worktree in a non-empty directory.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn child_paths(
     repository: &Path,
     checkout: &Path,
@@ -163,7 +164,7 @@ fn child_paths(
 /// the **shared** administration root — the parent of every linked worktree's
 /// own administration directory — and the repository's Git directory is
 /// readable and immutable.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn the_grant_names_only_the_shared_administration_root() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -186,7 +187,7 @@ fn the_grant_names_only_the_shared_administration_root() {
     let spec = build_worktree_grant(
         &paths,
         WorktreeChildStep::Create,
-        WorktreeLaunchTiers::PRODUCTION,
+        WorktreeLaunchTiers::for_host(),
     )
     .expect("the contained worktree grant");
 
@@ -256,9 +257,10 @@ fn the_grant_names_only_the_shared_administration_root() {
         "the child may create a Git pointer beyond the checkout's own"
     );
 
-    // Both tiers are requested.
-    assert!(spec.linux_process_isolation);
-    assert!(spec.linux_offline_network);
+    // The host's tiers: the Linux production pair, or the filesystem grant.
+    assert_eq!(spec.linux_process_isolation, cfg!(target_os = "linux"));
+    assert_eq!(spec.linux_offline_network, cfg!(target_os = "linux"));
+    assert_eq!(spec.linux_protected_mount_view, cfg!(target_os = "linux"));
 
     // The argv is exactly one shape, and it never names a ref.
     assert!(spec.args.contains(&"worktree".to_string()));
@@ -312,7 +314,7 @@ fn the_grant_names_only_the_shared_administration_root() {
 /// compares the roots it knows about. The **count** is what catches that, and
 /// the count is the property ADR-0048 clause 3 states and
 /// `scripts/check_contained_worktree_grant.py` enforces statically.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn the_grant_writes_exactly_one_path_under_the_git_directory() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -335,7 +337,7 @@ fn the_grant_writes_exactly_one_path_under_the_git_directory() {
     let spec = build_worktree_grant(
         &paths,
         WorktreeChildStep::Create,
-        WorktreeLaunchTiers::PRODUCTION,
+        WorktreeLaunchTiers::for_host(),
     )
     .expect("the contained worktree grant");
 
@@ -874,6 +876,67 @@ fn the_git_execution_policy_is_unchanged() {
             "{argv:?} changed classification"
         );
     }
+}
+
+/// A managed checkout is created end to end on macOS.
+///
+/// The production creator — daemon-pinned Git, the same grant, the private
+/// helper and Seatbelt — must leave a linked worktree Git reports on the
+/// recorded branch.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_managed_checkout_is_created_under_seatbelt() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let repository = workspace.path().join("repo");
+    init_repository(&repository);
+    let gitdir = repository
+        .join(".git")
+        .canonicalize()
+        .expect("canonical gitdir");
+    let scratch = workspace.path().join("scratch");
+    std::fs::create_dir_all(&scratch).expect("scratch root");
+    let managed_root = workspace.path().join("managed");
+    std::fs::create_dir_all(&managed_root).expect("managed root");
+    let checkout = managed_root.join("wt-macos");
+    let branch = "codegg/worktree/macos-c008".to_string();
+
+    // The creator owns branch creation, as the daemon does in production.
+    let creator = ContainedGitWorktreeCreator::new(git_binary(), scratch);
+    let request = ContainedWorktreeRequest {
+        repository_root: repository.canonicalize().expect("canonical repository"),
+        repository_gitdir: gitdir.clone(),
+        worktree_path: checkout.clone(),
+        branch: branch.clone(),
+        base_commit: run_git_output(&repository, &["rev-parse", "HEAD"]),
+        timeout: std::time::Duration::from_secs(60),
+    };
+    let outcome = creator
+        .create(&request)
+        .await
+        .expect("the macOS backend must create the managed checkout");
+
+    assert!(
+        checkout.join(".git").is_file(),
+        "the checkout has no '.git' pointer file"
+    );
+    assert!(
+        outcome.administration_dir.starts_with(&gitdir),
+        "the outcome names an administration directory outside the repository: {:?}",
+        outcome.administration_dir
+    );
+    assert_eq!(
+        outcome.backend, "seatbelt",
+        "the creation was not contained by Seatbelt"
+    );
+    let listing = run_git_output(&repository, &["worktree", "list", "--porcelain"]);
+    assert!(
+        listing.contains(&checkout.display().to_string()),
+        "Git does not list the checkout: {listing}"
+    );
+    assert!(
+        listing.contains(&format!("branch refs/heads/{branch}")),
+        "the checkout is not on the recorded branch: {listing}"
+    );
 }
 
 /// The creator resolves the paths it names — including the two it creates

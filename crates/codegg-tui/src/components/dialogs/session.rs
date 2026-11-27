@@ -1091,10 +1091,13 @@ impl Component for SessionDialog {
                 }
                 None
             }
+            crossterm::event::KeyCode::Char('w') => Some(TuiMsg::ToggleSessionScope),
+            crossterm::event::KeyCode::Char('e') => Some(TuiMsg::ToggleSessionShowEmpty),
+            crossterm::event::KeyCode::Char('C') => Some(TuiMsg::CleanupEmptySessions),
             // M006: the launch actions.
             //
             // `n` places a *new* session in a *new* managed checkout.
-            // `w` places a new session in the selected session's
+            // `W` places a new session in the selected session's
             // *existing* checkout — starting a session in a linked
             // worktree must not create another one. `F` forks the
             // selected session into a new checkout; the lowercase `f`
@@ -1106,7 +1109,7 @@ impl Component for SessionDialog {
                     worktree_id: None,
                 })
             }
-            crossterm::event::KeyCode::Char('w') if !self.bulk_mode && self.filter.is_empty() => {
+            crossterm::event::KeyCode::Char('W') if !self.bulk_mode && self.filter.is_empty() => {
                 match self
                     .selected_checkout()
                     .and_then(|checkout| checkout.worktree_id.clone())
@@ -1536,8 +1539,11 @@ impl Component for SessionDialog {
             // different acts, so the hint says which is which.
             lines.push(Line::from(Span::styled(
                 HintLine::from_items(&[
+                    ("w", "toggle project scope"),
+                    ("e", "show empty rows"),
+                    ("C", "clean up empty"),
                     ("n", "new session in a checkout"),
-                    ("w", "new session in this checkout"),
+                    ("W", "new session in this checkout"),
                     ("F", "fork into a checkout"),
                 ])
                 .render(0),
@@ -2265,6 +2271,15 @@ mod checkout_surface_tests {
     }
 
     #[test]
+    fn session_list_controls_emit_their_intents() {
+        let mut d = SessionDialog::new(Arc::new(Theme::default()));
+
+        assert_eq!(d.handle_key(key('w')), Some(TuiMsg::ToggleSessionScope));
+        assert_eq!(d.handle_key(key('e')), Some(TuiMsg::ToggleSessionShowEmpty));
+        assert_eq!(d.handle_key(key('C')), Some(TuiMsg::CleanupEmptySessions));
+    }
+
+    #[test]
     fn the_reuse_action_names_the_selected_checkout() {
         let mut d = SessionDialog::new(Arc::new(Theme::default()));
         d.load_sessions(vec![session("s1", "/wt/feature-x")]);
@@ -2273,7 +2288,7 @@ mod checkout_surface_tests {
             checkout("/wt/feature-x", "feature-x", "ready", "clean"),
         )]));
 
-        let msg = d.handle_key(key('w'));
+        let msg = d.handle_key(key('W'));
         assert_eq!(
             msg,
             Some(TuiMsg::LaunchSession {
@@ -2290,7 +2305,7 @@ mod checkout_surface_tests {
         let mut d = SessionDialog::new(Arc::new(Theme::default()));
         d.load_sessions(vec![session("s1", "/repo")]);
 
-        let msg = d.handle_key(key('w'));
+        let msg = d.handle_key(key('W'));
         assert_eq!(msg, Some(TuiMsg::LaunchNeedsCheckout));
     }
 
@@ -2395,14 +2410,14 @@ mod checkout_surface_tests {
             "hiding the row the reader is in reads as a deletion: {text}"
         );
         assert!(
-            !text.contains("empty"),
+            !text.contains("empty  0msgs"),
             "a message-less historical row is hidden by default: {text}"
         );
 
         d.toggle_show_empty();
         let text = rendered(&mut d);
         assert!(
-            text.contains("empty"),
+            text.contains("empty  0msgs"),
             "the toggle reveals the hidden rows: {text}"
         );
     }

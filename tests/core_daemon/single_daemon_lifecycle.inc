@@ -282,6 +282,12 @@ async fn plain_launch_registers_the_launch_directory_as_a_project() {
     // up holding both a workspace and a project for the launch directory.
     let root = temp_root("launch-bootstrap");
     let data_root = root.join("data");
+    let db = codegg::storage::DaemonPaths::with_overrides(Some(data_root.join("codegg")), None)
+        .catalog_db_path();
+    assert!(
+        !db.exists(),
+        "fresh launch must start with no catalog database"
+    );
     let workspace = temp_root("launch-ws");
     // `temp_root` only creates the labelled parent; the uuid leaf still has to
     // exist because the probe runs with it as its cwd.
@@ -338,60 +344,134 @@ async fn plain_launch_registers_the_launch_directory_as_a_project() {
         .stderr(Stdio::piped())
         .output()
         .await
-        .expect("stop launch-bootstrap daemon");
-    assert!(stop.status.success(), "launch-bootstrap daemon stop failed");
-
-    // Read the catalog straight out of the isolated daemon database.
-    // `DaemonPaths::default_data_root()` maps `CODEGG_DATA_HOME=<dir>` to
-    // `<dir>/codegg`, and the catalog lives at `<data root>/codegg.db`, so
-    // the override passed here is the already-resolved root, not the raw env
-    // value.
-    let db = codegg::storage::DaemonPaths::with_overrides(Some(data_root.join("codegg")), None)
-        .catalog_db_path();
+        .expect("stop first launch-bootstrap daemon");
     assert!(
-        db.exists(),
-        "the daemon must have created its catalog at {}",
-        db.display()
+        stop.status.success(),
+        "first launch-bootstrap daemon failed to stop: {}",
+        String::from_utf8_lossy(&stop.stderr)
     );
+
+    // Read the isolated daemon catalog after the first real CLI launch.
+    // CODEGG_DATA_HOME=<dir> resolves to <dir>/codegg, where codegg.db lives.
     let canonical = workspace
         .canonicalize()
-        .unwrap_or_else(|_| workspace.clone());
-    let canonical = canonical.to_string_lossy().into_owned();
+        .unwrap_or_else(|_| workspace.clone())
+        .to_string_lossy()
+        .into_owned();
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
         .await
-        .expect("open isolated daemon database");
-
-    let workspaces: Vec<String> = sqlx::query_scalar("SELECT canonical_root FROM workspace")
+        .expect("open isolated daemon database after first launch");
+    let workspaces: Vec<String> = sqlx::query_scalar("SELECT id FROM workspace")
         .fetch_all(&pool)
         .await
-        .expect("read workspace rows");
-    assert!(
-        workspaces.iter().any(|root| root == &canonical),
-        "the launch directory must be registered as a workspace; got {workspaces:?}"
+        .expect("read workspace ids after first launch");
+    assert_eq!(
+        workspaces.len(),
+        1,
+        "first launch registers exactly one workspace"
     );
+    let workspace_id = workspaces[0].clone();
+    let workspace_roots: Vec<String> = sqlx::query_scalar("SELECT canonical_root FROM workspace")
+        .fetch_all(&pool)
+        .await
+        .expect("read workspace roots after first launch");
+    assert_eq!(workspace_roots, vec![canonical.clone()]);
 
-    let projects: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM logical_project WHERE archived_at IS NULL")
-            .fetch_one(&pool)
+    let projects: Vec<String> = sqlx::query_scalar("SELECT id FROM logical_project")
+        .fetch_all(&pool)
+        .await
+        .expect("read project ids after first launch");
+    assert_eq!(
+        projects.len(),
+        1,
+        "first launch registers exactly one project"
+    );
+    let project_id = projects[0].clone();
+    let bindings: Vec<(String, String)> =
+        sqlx::query_as("SELECT project_id, workspace_id FROM workspace_project_binding")
+            .fetch_all(&pool)
             .await
-            .expect("read project rows");
+            .expect("read project-workspace bindings after first launch");
+    assert_eq!(bindings, vec![(project_id.clone(), workspace_id.clone())]);
+    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session")
+        .fetch_one(&pool)
+        .await
+        .expect("count durable sessions before a prompt");
     assert_eq!(
-        projects, 1,
-        "the launch directory must be bound to exactly one project"
+        sessions, 0,
+        "first launch creates no durable session before a prompt"
+    );
+    pool.close().await;
+
+    // A second real CLI launch uses the same data and daemon homes and cwd.
+    let second_output = Command::new(&bin)
+        .current_dir(&workspace)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", &data_root)
+        .env("CODEGG_TUI_STARTUP_PROBE", "1")
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["--no-session"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("second real launch probe");
+    assert!(
+        second_output.status.success(),
+        "second launch probe failed: {}",
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&second_output.stderr).contains("could not register"),
+        "the second launch directory bootstrap must succeed: {}",
+        String::from_utf8_lossy(&second_output.stderr)
     );
 
-    let bound: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM workspace_project_binding wpb \
-         JOIN workspace w ON w.id = wpb.workspace_id \
-         WHERE w.canonical_root = ?",
-    )
-    .bind(&canonical)
-    .fetch_one(&pool)
-    .await
-    .expect("read binding rows");
+    let stop = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", &data_root)
+        .args(["daemon", "stop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("stop second launch-bootstrap daemon");
+    assert!(
+        stop.status.success(),
+        "second launch-bootstrap daemon failed to stop: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
+        .await
+        .expect("reopen isolated daemon database after second launch");
+    let workspaces_after_second: Vec<String> = sqlx::query_scalar("SELECT id FROM workspace")
+        .fetch_all(&pool)
+        .await
+        .expect("read workspace ids after second launch");
     assert_eq!(
-        bound, 1,
-        "the workspace must resolve to a bound project so directory lookup succeeds"
+        workspaces_after_second,
+        vec![workspace_id],
+        "second launch reuses the same workspace id without adding a row"
+    );
+    let projects_after_second: Vec<String> = sqlx::query_scalar("SELECT id FROM logical_project")
+        .fetch_all(&pool)
+        .await
+        .expect("read project ids after second launch");
+    assert_eq!(
+        projects_after_second,
+        vec![project_id],
+        "second launch reuses the same project id without adding a row"
+    );
+    let sessions_after_second: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session")
+        .fetch_one(&pool)
+        .await
+        .expect("count sessions after second launch");
+    assert_eq!(
+        sessions_after_second, 0,
+        "no session exists before a prompt"
     );
 
     pool.close().await;

@@ -60,15 +60,32 @@ impl WorktreeLaunchTiers {
 
     /// The filesystem grant alone.
     ///
-    /// A host that cannot provide the M004 process/IPC boundary (Landlock
-    /// ABI 6) can still enforce the **mount view**, which is the dimension
-    /// this milestone's grant is about. The path set is identical; only the
-    /// two dimensions the host cannot obtain are left out, and the launch
-    /// reports which ones it actually obtained.
+    /// A host that cannot provide the M004/M005 tiers still enforces the
+    /// **grant**, which is the dimension this milestone is about: through the
+    /// protected mount view on Linux and through Seatbelt on macOS. The path
+    /// set is identical; only the dimensions the host cannot obtain are left
+    /// out, and the launch reports which ones it actually obtained.
     pub const FILESYSTEM_ONLY: Self = Self {
         offline_network: false,
         process_isolation: false,
     };
+
+    /// The tiers this host can obtain.
+    ///
+    /// The request follows the host, not the caller: a Linux-only tier asked
+    /// for elsewhere is refused before the child starts. Linux gets the
+    /// production tiers; every other platform gets the filesystem grant,
+    /// enforced by its registered backend or refused by the helper.
+    pub fn for_host() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self::PRODUCTION
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self::FILESYSTEM_ONLY
+        }
+    }
 }
 
 /// Everything one contained worktree creation names.
@@ -335,9 +352,15 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
             base_commit: request.base_commit.clone(),
         };
 
-        let result =
-            run_worktree_child_step(&paths, WorktreeChildStep::Create, branch, request.timeout)
-                .await?;
+        let tiers = WorktreeLaunchTiers::for_host();
+        let result = run_worktree_child_step(
+            &paths,
+            WorktreeChildStep::Create,
+            branch,
+            request.timeout,
+            tiers,
+        )
+        .await?;
         let (backend, abi, network_enforced, guarantees) = match &result.sandbox {
             SandboxExecutionOutcome::Enforced {
                 backend,
@@ -371,7 +394,9 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
                 )));
             }
         }
-        if !network_enforced {
+        // Assert the network boundary only where the host requested it; macOS
+        // cannot obtain it, and ADR-0048's amendment records that as a limit.
+        if tiers.offline_network && !network_enforced {
             return Err(WorktreeServiceError::Git(
                 "the worktree child did not obtain the offline network boundary".into(),
             ));
@@ -393,6 +418,7 @@ impl ContainedWorktreeCreator for ContainedGitWorktreeCreator {
             WorktreeChildStep::AttachBranch,
             branch,
             request.timeout,
+            tiers,
         )
         .await?;
         if !attach.exit_status.success() {
@@ -488,8 +514,11 @@ async fn run_worktree_child_step(
     step: WorktreeChildStep,
     branch: &str,
     timeout: std::time::Duration,
+    tiers: WorktreeLaunchTiers,
 ) -> Result<crate::managed_process::ManagedProcessResult, WorktreeServiceError> {
-    let launch = compose_worktree_child_launch(paths, step, WorktreeLaunchTiers::PRODUCTION)?;
+    // The tier is chosen once by the caller, so the request and the
+    // post-launch assertion cannot disagree about what the host obtained.
+    let launch = compose_worktree_child_launch(paths, step, tiers)?;
     let mut managed = ManagedProcessRequest::new(
         launch.argv,
         launch.cwd,
@@ -633,7 +662,12 @@ pub fn build_worktree_grant(
     } else if tiers.process_isolation {
         config = config.with_linux_process_isolation(true);
     } else {
-        config = config.with_linux_protected_mount_view(true);
+        // The mount view exists only on Linux; macOS enforces the same write
+        // roots with Seatbelt, and asking for the view there is refused.
+        #[cfg(target_os = "linux")]
+        {
+            config = config.with_linux_protected_mount_view(true);
+        }
     }
     let spec = config
         .launch_spec(&paths.git_binary, &args, Some(&paths.gitdir))
@@ -794,6 +828,20 @@ fn assert_grant(
     if tiers.process_isolation && !spec.linux_protected_mount_view {
         return Err(fail(
             "the worktree child was not launched with the protected mount view",
+        ));
+    }
+    // The filesystem-only shape must carry no Linux-only flag: the helper
+    // refuses those where they cannot be enforced. On Linux that tier *is* the
+    // mount view, so the property is asserted where it is meaningful.
+    if !cfg!(target_os = "linux")
+        && !tiers.process_isolation
+        && !tiers.offline_network
+        && (spec.linux_process_isolation
+            || spec.linux_offline_network
+            || spec.linux_protected_mount_view)
+    {
+        return Err(fail(
+            "the worktree child was launched with a Linux-only enforcement flag on a platform that cannot enforce it",
         ));
     }
     Ok(())

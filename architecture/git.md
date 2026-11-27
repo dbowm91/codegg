@@ -327,6 +327,18 @@ Two mechanisms make that grant expressible:
   verifies that the result is a pointer file naming the expected
   administration directory — a nested repository is a failure, not a success.
 
+**The enforcement is the host's.** The grant is the same on every host; the
+mechanism is not. On Linux the child runs under the protected mount view with
+the M004 process/IPC and M005 offline-network tiers. On macOS it runs under
+Seatbelt, which denies all writes and re-allows exactly the three roots, and the
+launch reports the obtained roots in the same structured form as the mount view
+so the post-launch assertion is not skipped. macOS obtains **no** process/IPC
+scope, no network isolation and no read confinement, and it cannot hide a
+nested `.git`; ADR-0048's 2026-11-27 amendment records those limits, and
+`seatbelt_confines_the_worktree_grant_to_its_three_roots` in
+`tests/security_permission/sandbox_containment.inc` is the behavioural proof.
+A platform with no registered backend is refused rather than run uncontained.
+
 The child is still **untrusted code**. The repository's own configuration may
 define filters, hooks, merge drivers, fsmonitor hooks and credential helpers;
 the sandbox, not the absence of that configuration, is what keeps them from

@@ -625,3 +625,90 @@ own:
   assertion is now the negative one: the repository's hook does not run at
   all, which is a *stronger* statement than the one it made before, when the
   hook was required to run and merely be contained.
+
+## Amendment: macOS qualification (2026-11-27)
+
+Status: accepted — 2026-11-27. Extends the decision's platform reach without
+changing the operation, the grant, or any Linux claim.
+
+### Why this amendment exists
+
+Clause 4 requires the contained child to be launched with the M004 process/IPC
+tier and the M005 offline-network tier. Both are Linux mechanisms. The
+production path requested them unconditionally, so on macOS the helper refused
+the launch before the child started — `protected mount view is available only
+on Linux` — and a managed checkout could not be created at all. The refusal was
+correct about the request and wrong about the capability: macOS has a
+registered filesystem-containment backend (Seatbelt), and the grant this ADR
+is about is a filesystem grant.
+
+### What changed
+
+**Clause 4 is Linux-scoped.** The M004 process/IPC tier and the M005
+offline-network tier remain required for the Linux production launch, and
+remain the only tiers that may be reported as obtained there.
+
+**macOS is qualified for the filesystem grant.** The macOS child runs through
+the same managed-process owner and the same private helper, under Seatbelt,
+with the same three writable roots as clause 3. Seatbelt denies all writes and
+then re-allows exactly those roots, so a child that writes outside the grant
+fails closed with a permission error (the backend's `EPERM`), not the mount
+view's `EROFS`.
+
+**The launch selects the tier from the host.** A worktree launch asks for the
+Linux production tiers on Linux and for the filesystem tier on macOS. It never
+asks for a Linux-only tier on a platform that cannot enforce it; such a request
+is refused before the child starts.
+
+**Seatbelt reports the roots it obtained.** The launch's post-launch assertion
+reads the *obtained* writable roots. Seatbelt reports them in the same
+structured form the protected mount view uses, so the assertion is not skipped
+on macOS, and a backend that enforced a different set fails the launch.
+
+### What macOS does not obtain
+
+These are limits, not footnotes, and no macOS receipt may imply otherwise:
+
+- **No process/IPC scope.** The child can signal and observe other same-uid
+  processes. Landlock ABI 6's process scope has no Seatbelt equivalent.
+- **No network isolation.** The backend's existing evidence records loopback as
+  reachable and reports the network as unrestricted
+  (`seatbelt_loopback_is_reachable_and_reported_as_unrestricted`). A hostile
+  smudge filter is write-confined but not offline.
+- **No read confinement.** Seatbelt's policy allows reads by default; the child
+  can read the host files the OS permissions admit. Containment lands on
+  writes.
+- **No `no_new_privs` equivalent.** A setuid binary inside an allowed read root
+  may regain privilege.
+- **No hiding of a nested `.git`.** The protected mount view hides a `.git`
+  entry that does not exist yet inside a writable root; Seatbelt cannot. The
+  checkout's own pointer is still verified after the fact, so a nested
+  repository is a failure rather than a success.
+
+### What does not change
+
+* The operation, its two steps and the branch ownership (clauses 1 and 2).
+* The writable set (clause 3): the checkout, the daemon scratch, and the shared
+  administration root. Narrowing it is still a new ADR, and so is any widening.
+* The hooks-path pin (clause 5) and the sanitized environment.
+* Fail-closed behaviour (clause 6): an unsupported platform, a missing backend,
+  or a launch that did not obtain the grant is a typed refusal.
+* The Linux claim. This amendment does not weaken, reword or condition the
+  Linux production tier's evidence.
+
+### What must prove it
+
+- A behavioural macOS containment test: a child under the worktree grant writes
+  inside a granted root and is refused outside it, with the enforcement frame
+  naming Seatbelt and the obtained roots.
+- A live launch creating a managed checkout on macOS, recorded as a receipt.
+- The existing static guards continue to pass unchanged; the grant's single
+  named path is still clause 3's.
+
+### Consequences
+
+Managed checkout creation becomes available on macOS with a weaker containment
+posture than Linux. That is a real difference and it is reported, not smoothed
+over: a macOS launch obtains filesystem write confinement and reports the
+process, network and read dimensions as absent. The Linux production route
+keeps its stricter claim.

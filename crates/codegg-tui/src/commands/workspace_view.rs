@@ -867,6 +867,12 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
                         dashboard.view.mode = WorkspaceMode::Insert;
                     }
                 }
+                KeyCode::Char('L') if key.modifiers == KeyModifiers::SHIFT => {
+                    crate::commands::workspace_dashboard::focus_workspace_chat(app);
+                }
+                KeyCode::Char('H') if key.modifiers == KeyModifiers::SHIFT => {
+                    crate::commands::workspace_dashboard::focus_workspace_composer(app);
+                }
                 KeyCode::Char('j') | KeyCode::Down if key.modifiers.is_empty() => {
                     move_selection(app, 1);
                 }

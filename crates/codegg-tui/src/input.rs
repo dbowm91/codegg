@@ -1997,7 +1997,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+F",
-            action: "Open project picker; /projects also works mid-prompt",
+            action: "Open project picker (Shift+F; Ctrl+\\ also works mid-prompt)",
             condition: None,
         },
         HelpEntry {

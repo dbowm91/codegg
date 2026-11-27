@@ -837,6 +837,11 @@ impl App {
             TuiMsg::CycleModelForward => self.cycle_model_forward(),
             TuiMsg::CycleModelBackward => self.cycle_model_backward(),
             TuiMsg::ClearSession => self.clear_session(),
+            TuiMsg::ToggleSessionScope => self.toggle_session_scope(),
+            TuiMsg::ToggleSessionShowEmpty => self.toggle_session_show_empty(),
+            TuiMsg::CleanupEmptySessions => {
+                crate::commands::sessions::start_empty_cleanup(self);
+            }
             TuiMsg::NewSession => self.new_session(),
             TuiMsg::CloseSession => self.close_session(),
             TuiMsg::CharInput(c) => self.on_char(c),

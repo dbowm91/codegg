@@ -22,7 +22,7 @@ The default TUI connects to or starts the local daemon. `--standalone` runs the 
 
 ## Projects and sessions
 
-Use `/projects` or `Shift+F` in Normal mode to open the project picker. `Ctrl+Alt+N` and `Ctrl+Alt+B` move between project tabs. A project tab supplies the workspace for its session.
+Use `Shift+F` in Normal mode to open the project picker (`Ctrl+\\` also works mid-prompt). `Ctrl+Alt+N` and `Ctrl+Alt+B` move between project tabs. A project tab supplies the workspace for its session.
 
 The TUI uses the daemon's project catalog. For the separate project-local legacy store used by CLI session commands, see [docs/cli.md](cli.md). For the daemon, see [docs/daemon.md](daemon.md).
 
@@ -33,7 +33,7 @@ Type `/` to open the command palette. Press `?` or `Space` for in-app help and t
 | Command | Purpose |
 |---|---|
 | `/help` | Show help |
-| `/projects` | Choose a project |
+| `Shift+F` | Choose a project (picker, not a slash command) |
 | `/sessions` | Browse sessions |
 | `/agent <name>` | Select an agent |
 | `/connect`, `/connections` | Configure or select a provider connection |

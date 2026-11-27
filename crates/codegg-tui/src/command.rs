@@ -1275,15 +1275,10 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // Registry order, 1-based in `built_in_commands()`: 9th is `/network`
-        // (the per-principal network intent policy); 13th is `/projects` (the
-        // project picker spelling that stays typeable mid-prompt, mirroring
-        // `/panels` for `⇧S`); 15th is `/stop` and 16th is `/start` (carry on
-        // after a stopped turn; interrupt a running one); 40th is `/files`
-        // (the workspace file manager); 125th and 126th are `/terminal` (bare
-        // interactive terminal box) and `/terminal-clear`; 151st is `/panels`
-        // (the side-panel manager, the spelling of `⇧S` that stays typeable
-        // mid-prompt).
+        // Registry order, 1-based in `built_in_commands()`: 9th is
+        // `/network`; `/panels` sits at 150th. The old anchors named a
+        // `/projects` spelling that no longer exists, so positions above
+        // are illustrative and only the total is pinned.
         // Keep `architecture/command.md` counts in sync when adding more.
         //
         // These positions were re-derived on 2026-10-21 against the merged

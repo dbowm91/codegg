@@ -130,6 +130,10 @@ pub(crate) fn open_workspace_dashboard(app: &mut App) {
     // user's afterwards: `Shift+S` can switch away and back without
     // re-entering the view.
     crate::commands::panels::select_panel(app, crate::panels::SidePanelId::Chat);
+    // Select for display, not for the keyboard. The view is a viewer (D11):
+    // a panel left focused here swallows `i`, `n`, `d` and `Space` before
+    // the route sees them. `Shift+L` is the deliberate step that focuses it.
+    crate::commands::panels::blur_panel(app);
     app.messages_state
         .toasts
         .info("Workspace — j/k move, l open, n new session, d detail, i filter, Shift+X leaves");
@@ -1110,6 +1114,69 @@ mod tests {
             .has_dialog(crate::components::component::DialogType::WorkspaceDashboard));
         // Ordinary composer stays editable (prompt not stolen).
         assert_eq!(app.workspace_focus, WorkspaceFocus::Composer);
+    }
+
+    /// `n` on a workspace row opens the launch sheet.
+    ///
+    /// The tree's actions resolve through `selected_row`, so this also pins
+    /// that the painted row is the row the keys see.
+    #[tokio::test(flavor = "current_thread")]
+    async fn n_opens_the_launch_sheet_for_the_selected_workspace() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        {
+            let dashboard = app
+                .dialog_state
+                .workspace_dashboard
+                .as_mut()
+                .expect("dashboard opens");
+            dashboard.view.expanded.insert("project-1".to_string());
+            dashboard.view.workspaces.insert(
+                "project-1".to_string(),
+                vec![codegg::protocol::dto::ProjectWorkspaceSummaryDto {
+                    workspace_id: "ws-1".to_string(),
+                    display_name: "Alpha".to_string(),
+                    canonical_root: Some("/tmp/alpha".to_string()),
+                }],
+            );
+        }
+        // Move with `j`, as the live path does. The move also runs the
+        // selection sync, so a resolver that disagrees with the painted row
+        // would only surface after it.
+        let moved = crate::commands::workspace_view::handle_workspace_view_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('j'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        assert!(moved);
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .expect("dashboard opens")
+                .view
+                .selected,
+            1,
+            "j must move the selection onto the workspace row"
+        );
+        let handled = crate::commands::workspace_view::handle_workspace_view_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('n'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        assert!(handled, "the Workspace route owns every key");
+        let launch = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .and_then(|dashboard| dashboard.view.launch.as_ref())
+            .expect("n must open the launch sheet on a workspace row");
+        assert_eq!(launch.workspace_id, "ws-1");
+        assert_eq!(launch.project_id, "project-1");
     }
 
     #[tokio::test(flavor = "current_thread")]

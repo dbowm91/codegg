@@ -3243,6 +3243,36 @@ mod tests {
         );
     }
 
+    /// The toggles must reach the painted clone, not just the App-owned copy.
+    #[test]
+    fn scope_and_empty_toggles_reach_the_painted_dialog() {
+        use crate::components::component::DialogType;
+        use crate::components::dialogs::session::{SessionDialog, SessionScope};
+
+        let mut app = crate::app::App::new_for_testing("/tmp".to_string());
+        app.open_dialog(crate::Dialog::Session);
+
+        app.process_msg(crate::app::TuiMsg::ToggleSessionScope);
+        app.process_msg(crate::app::TuiMsg::ToggleSessionShowEmpty);
+
+        assert_eq!(
+            app.dialog_state.session_dialog.scope,
+            SessionScope::Project,
+            "the App-owned dialog carries the new scope"
+        );
+        let painted = app
+            .focus_manager
+            .with_dialog::<SessionDialog, _>(DialogType::Session, |dialog| {
+                (dialog.scope, dialog.show_empty)
+            })
+            .expect("session dialog is on the focus stack");
+        assert_eq!(
+            painted,
+            (SessionScope::Project, true),
+            "the painted clone must carry both toggles"
+        );
+    }
+
     /// Reopening must not leave the previous rows visible under the
     /// "loading" placeholder, and a second reload must replace rather than
     /// accumulate.

@@ -151,7 +151,7 @@ fn apply_seatbelt(spec: &SandboxLaunchSpec) -> Result<codegg_sandbox::BackendEnf
         };
         return Err(reason);
     }
-    Ok(codegg_sandbox::seatbelt::enforcement())
+    Ok(codegg_sandbox::seatbelt::enforcement_for(spec))
 }
 
 #[cfg(unix)]

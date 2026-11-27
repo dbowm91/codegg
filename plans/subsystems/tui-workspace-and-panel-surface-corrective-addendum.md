@@ -1242,6 +1242,12 @@ The addendum is complete when all twelve milestones have closure records and:
 | M011 | Workspace worktree tree and session launch | capability | landed — `ProjectGet`/`ManagedWorktreeList` tree, `GitRead(Branches)` base, `SessionLaunch` with both placements, one idempotency key; receipt outstanding |
 | M012 | Shared chat scope across worktrees | capability / invariant | landed (lineage reading) — a session in a managed checkout groups under the workspace that launched it; a projection, no row rewritten |
 
+> **Live-evidence note (2026-11-26, post-implementation review):** this table records
+> implementation, not live acceptance. The `tui-test` pass found M003's Diff surface and
+> M011's new-checkout launch failing, and M002/M004/M008/M010 only partially demonstrated.
+> `plans/closure/tui-workspace-and-panel-surface-corrective/remaining-work-review.md`
+> carries the evidence and supersedes any "landed" row it contradicts.
+
 ## 13. Handoff note
 
 This is a **draft corrective plan**, not a handoff-ready implementation plan. Per
@@ -1364,6 +1370,27 @@ once the panel column owns the keyboard, this session's scripted keystrokes land
 in the panel rather than the composer, so the `/sessions` and `/workspace` frames
 show the panel instead of the surface under test. Driving focus back to the
 composer needs another iteration.
+
+**Fourth pass (M011 macOS backend, owner decision 2026-11-27):** the owner
+chose to qualify a macOS containment backend rather than ship M011 as
+Linux-only. The worktree launch now selects its tiers from the host:
+`WorktreeLaunchTiers::for_host()` returns the Linux production pair on Linux
+and the filesystem grant elsewhere, `build_worktree_grant` requests the
+protected mount view only on Linux, and `assert_grant` refuses a Linux-only
+flag in a filesystem-only launch. Seatbelt reports the **obtained** writable
+roots in the same structured form as the mount view, so the post-launch
+assertion is not skipped. ADR-0048's 2026-11-27 amendment records what macOS
+does **not** obtain: process/IPC scope, network isolation, read confinement and
+hiding of a nested `.git`. Evidence: the grant tests now run on macOS, and
+`seatbelt_confines_the_worktree_grant_to_its_three_roots` drives the real
+helper and observes a write inside the grant succeed and one outside it
+refused, and `a_managed_checkout_is_created_under_seatbelt` proves the
+production creator produces a linked worktree on the recorded branch. The
+live path is verified end to end — sheet, checkout and session — and
+`m011-launch-sheet-macos.svg` / `m011-checkout-macos.svg` are its receipts. The
+only remaining M011 limiter is repository identity for a local-only repository,
+recorded with the evidence in
+`plans/closure/tui-workspace-and-panel-surface-corrective/m011-macos-backend.md`.
 
 **Outstanding evidence:** no `tui-test` receipt has been captured on this head, no
 `plans/implementation/tui-workspace-and-panel-surface-corrective/NNN-*` work package

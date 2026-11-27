@@ -224,6 +224,33 @@ pub fn enforcement() -> BackendEnforcement {
     BackendEnforcement::new(None, SEATBELT_GUARANTEES, SEATBELT_LIMITS)
 }
 
+/// The static guarantees plus the **obtained** writable roots, in the same
+/// structured form the protected mount view reports, so a post-launch grant
+/// assertion reads one format on every backend.
+pub fn enforcement_for(spec: &SandboxLaunchSpec) -> BackendEnforcement {
+    let mut enforcement = enforcement();
+    // Device nodes are writable everywhere and hold no persistent state, so
+    // they are not part of the grant.
+    let devices = crate::policy::device_write_allowances()
+        .into_iter()
+        .filter(|path| path.exists())
+        .filter_map(|path| path.canonicalize().ok())
+        .collect::<Vec<_>>();
+    let roots = spec
+        .write_paths
+        .iter()
+        .filter(|path| !devices.contains(path))
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !roots.is_empty() {
+        enforcement
+            .guarantees
+            .push(format!("writable grant roots: {roots}"));
+    }
+    enforcement
+}
+
 /// Paths a generated profile must never contain empty.
 #[cfg(test)]
 fn malformed_subpaths(profile: &str) -> Vec<String> {
@@ -307,6 +334,37 @@ mod tests {
                 canonical.display()
             )),
             "the workspace must be re-allowed: {profile}"
+        );
+    }
+
+    #[test]
+    fn enforcement_for_reports_the_obtained_writable_roots() {
+        let spec = SandboxLaunchSpec {
+            env: Vec::new(),
+            linux_protected_mount_view: false,
+            linux_process_isolation: false,
+            linux_offline_network: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
+            expected_created_git_pointers: Vec::new(),
+            target: PathBuf::from("/bin/sh"),
+            args: Vec::new(),
+            read_paths: Vec::new(),
+            write_paths: vec![PathBuf::from("/checkout"), PathBuf::from("/scratch")],
+            deny_paths: Vec::new(),
+        };
+        let enforcement = enforcement_for(&spec);
+        assert!(
+            enforcement
+                .guarantees
+                .iter()
+                .any(|entry| entry == "writable grant roots: /checkout, /scratch"),
+            "the obtained roots must use the shared form: {:?}",
+            enforcement.guarantees
+        );
+        assert!(
+            enforcement.guarantees.len() > SEATBELT_GUARANTEES.len(),
+            "the roots are additive to the static guarantees"
         );
     }
 

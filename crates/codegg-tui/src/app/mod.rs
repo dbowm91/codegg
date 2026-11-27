@@ -4220,6 +4220,20 @@ impl App {
         {
             return;
         }
+        // M007: the Workspace whole view owns every key on its route, ahead of
+        // the focused panel. The view paints no panel column and its chat pane
+        // is a viewer (D11), so a panel left focused must not swallow the
+        // tree's `i`, `n`, `d` or `Space`. `Shift+L`/ `Shift+H` are the
+        // deliberate steps that move between the tree and the pane.
+        let workspace_active = matches!(
+            self.ui_state.routes.current(),
+            crate::route::Route::Workspace
+        ) && self.dialog_state.workspace_dashboard.is_some();
+        if workspace_active
+            && crate::commands::workspace_dashboard::handle_workspace_view_key(self, key)
+        {
+            return;
+        }
         // A focused side panel owns every key it is shown, and is consulted
         // before the non-modal primary views. Ordering matters: those views
         // also claim printable keys, and a chat panel in Compose mode needs
@@ -4234,19 +4248,6 @@ impl App {
                     InputMode::Normal,
                 ),
             )
-        {
-            return;
-        }
-        // M005: non-modal Workspace view owns navigation/filter/chat-focus
-        // before generic prompt handling. The composer stays editable:
-        // only consumed keys return early; Enter-with-text and Tab fall
-        // through to normal SubmitPrompt/ToggleComposerMode.
-        let workspace_active = matches!(
-            self.ui_state.routes.current(),
-            crate::route::Route::Workspace
-        ) && self.dialog_state.workspace_dashboard.is_some();
-        if workspace_active
-            && crate::commands::workspace_dashboard::handle_workspace_view_key(self, key)
         {
             return;
         }
@@ -7815,15 +7816,46 @@ impl App {
         self.load_sessions_dialog();
     }
 
-    /// M005: the list's scope, kept in step between the App-owned state and
-    /// the painted focus-manager clone.
+    /// M005: toggle the scope on the painted dialog and mirror it back; the
+    /// App-owned field alone repaints nothing.
     fn toggle_session_scope(&mut self) {
-        self.dialog_state.session_dialog.toggle_scope();
+        let scope = match self
+            .focus_manager
+            .with_dialog_mut::<crate::components::dialogs::session::SessionDialog, _>(
+                crate::components::component::DialogType::Session,
+                |dialog| {
+                    dialog.toggle_scope();
+                    dialog.scope
+                },
+            ) {
+            Some(scope) => scope,
+            None => {
+                self.dialog_state.session_dialog.toggle_scope();
+                self.dialog_state.session_dialog.scope
+            }
+        };
+        self.dialog_state.session_dialog.scope = scope;
         self.load_sessions_dialog();
     }
 
+    /// The empty-row filter, kept in step with the painted dialog.
     fn toggle_session_show_empty(&mut self) {
-        self.dialog_state.session_dialog.toggle_show_empty();
+        let show_empty = match self
+            .focus_manager
+            .with_dialog_mut::<crate::components::dialogs::session::SessionDialog, _>(
+                crate::components::component::DialogType::Session,
+                |dialog| {
+                    dialog.toggle_show_empty();
+                    dialog.show_empty
+                },
+            ) {
+            Some(show_empty) => show_empty,
+            None => {
+                self.dialog_state.session_dialog.toggle_show_empty();
+                self.dialog_state.session_dialog.show_empty
+            }
+        };
+        self.dialog_state.session_dialog.show_empty = show_empty;
         self.load_sessions_dialog();
     }
 
@@ -10628,7 +10660,7 @@ impl App {
     ///
     /// This is the public entry point for the catalog client
     /// (Multi-Project TUI milestone 1). Callers (e.g. the `Ctrl+\`
-    /// picker, startup, or a `/projects` slash command)
+    /// picker or startup — the picker has no slash spelling)
     /// dispatch this through the normal event loop so the result
     /// lands back on the loop as a `TuiCommand::ProjectCatalogRefreshed`
     /// completion. The method itself never blocks.
@@ -10646,8 +10678,8 @@ impl App {
     }
 
     /// Apply a `ProjectCatalogRefreshed` completion to the local
-    /// catalog state. Public so tests and the eventual `/projects`
-    /// command dispatcher can route completions through this method
+    /// catalog state. Public so tests and dispatchers
+    /// can route completions through this method
     /// without exposing the private command module.
     pub fn apply_project_catalog_refreshed(
         &mut self,

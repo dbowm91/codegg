@@ -3948,12 +3948,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("workspace");
         let mut app = pull_test_app(dir.path(), marker_shell()).await;
 
-        drain_tui_commands(&mut app).await;
-        let handle = app
-            .dialog_state
-            .terminal_detail_handle
-            .clone()
-            .expect("the box is showing a terminal");
+        // Create and attach are two round trips; one drain can return between
+        // them and leave the box with no surface, so wait for both.
+        let handle = await_terminal_create(&mut app).await;
+        await_live_attachment(&mut app, &handle).await;
         assert!(
             app.interactive_terminals.is_focused(&handle),
             "the box opens in insert, so this is a surface with live input"

@@ -271,6 +271,12 @@ pub enum TuiMsg {
         panel: crate::panels::SidePanelId,
         placement: crate::panels::PanelPlacement,
     },
+    /// Toggle the `/sessions` list between the active workspace and the whole project.
+    ToggleSessionScope,
+    /// Show or hide empty session rows in `/sessions`.
+    ToggleSessionShowEmpty,
+    /// Start or confirm the counted cleanup of empty sessions.
+    CleanupEmptySessions,
     /// Open the unified tasks overlay: todos, subagents, jobs.
     ToggleTasksList,
     ToggleFullscreen,
