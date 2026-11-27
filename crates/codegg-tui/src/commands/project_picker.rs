@@ -743,7 +743,16 @@ pub(crate) fn begin_lifecycle_from(
     }
     // Recreating an open picker would drop the filter the caller is looking at.
     if app.dialog_state.project_picker.is_none() {
-        app.open_project_picker();
+        if crate::commands::workspace_dashboard::is_workspace_view_active(app) {
+            let transport_local = matches!(app.ui_state.mode, crate::app::state::AppMode::Embedded);
+            let catalog_generation = app.project_catalog.list_request.request_id();
+            let mut picker =
+                crate::app::state::ProjectPickerState::new(transport_local, catalog_generation);
+            picker.workspace_inline = true;
+            app.dialog_state.project_picker = Some(picker);
+        } else {
+            app.open_project_picker();
+        }
     }
     let Some(picker) = app.dialog_state.project_picker.as_mut() else {
         return false;

@@ -18,6 +18,7 @@
 
 use crate::app::state::async_request::AsyncUiRequestState;
 use crate::app::state::project_tabs::ProjectTabId;
+use crate::input::InputMode;
 use codegg::protocol::work_order::{ProjectActivitySummaryDto, WorkOrderDto};
 
 /// Maximum dashboard rows cached frontend-side (matches the daemon
@@ -96,6 +97,7 @@ pub struct WorkspaceDashboardState {
     /// The project tab that was active when the dashboard opened.
     /// Retained for diagnostics; `Route` history owns return navigation.
     pub return_tab: Option<ProjectTabId>,
+    pub return_composer_mode: InputMode,
     /// Event-hint dirty flag: set without stealing focus; cleared by a
     /// bounded refresh.
     pub dirty: bool,
@@ -126,6 +128,7 @@ impl WorkspaceDashboardState {
             generation: 0,
             reconnect_epoch,
             return_tab,
+            return_composer_mode: InputMode::Normal,
             dirty: false,
             loading: true,
             error: None,

@@ -65,7 +65,7 @@ pub(crate) fn dispatch_team_command(app: &mut App, args: &str) {
                 );
                 return;
             }
-            start_membership_add(app, project_id, principal, role);
+            start_membership_add(app, project_id, principal, role, false);
         }
         "role" => {
             let principal = tokens.next().unwrap_or("").to_string();
@@ -300,17 +300,38 @@ fn channel_flag(rest: &[&str]) -> Option<String> {
 /// the active project, then render the FocusManager-backed `/team`
 /// administration dialog. `/collaborators` stays the presence surface.
 pub(crate) fn start_show_team(app: &mut App, project_id: String) {
+    let workspace_view = crate::commands::workspace_dashboard::is_workspace_view_active(app);
+    if workspace_view {
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            dashboard.view.team_project_id = Some(project_id.clone());
+            dashboard.view.team_memberships = None;
+            dashboard.view.team_loading = true;
+            dashboard.view.team_error = None;
+            dashboard.view.team_notice = None;
+        }
+    }
     if app.core_client.is_none() {
-        app.open_info_dialog(
-            crate::components::dialogs::info::InfoType::Team,
-            vec![
-                "Team administration unavailable — no daemon connection.".to_string(),
-                "Check daemon status with /doctor.".to_string(),
-            ],
-        );
+        if workspace_view {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.view.team_loading = false;
+                dashboard.view.team_error =
+                    Some("Team administration unavailable — no daemon connection.".to_string());
+            }
+        } else {
+            app.open_info_dialog(
+                crate::components::dialogs::info::InfoType::Team,
+                vec![
+                    "Team administration unavailable — no daemon connection.".to_string(),
+                    "Check daemon status with /doctor.".to_string(),
+                ],
+            );
+        }
         return;
     }
     let request_id = app.dialog_state.team_request.begin();
+    if workspace_view {
+        app.dialog_state.workspace_team_request_id = Some(request_id);
+    }
     let reconnect_epoch = epoch_of(app);
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -457,6 +478,38 @@ pub(crate) fn apply_team_membership_loaded(
     if !app.dialog_state.team_request.finish(request_id) {
         return;
     }
+    let workspace_origin = app.dialog_state.workspace_team_request_id.take() == Some(request_id);
+    let workspace_active = crate::commands::workspace_dashboard::is_workspace_view_active(app);
+    if workspace_origin && !workspace_active {
+        return;
+    }
+    if workspace_active {
+        let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
+            return;
+        };
+        if dashboard.view.team_project_id.as_deref() != Some(project_id.as_str()) {
+            return;
+        }
+        dashboard.view.team_loading = false;
+        if unsupported {
+            dashboard.view.team_error = Some(
+                "Team administration unavailable on this daemon (team.v1 required).".to_string(),
+            );
+        } else if let Some(error) = error {
+            dashboard.view.team_error = Some(if unauthorized {
+                "Membership details are unavailable for this project (Owner access required)."
+                    .to_string()
+            } else {
+                error
+            });
+        } else if let Some(memberships) = memberships {
+            dashboard.view.team_memberships = Some(memberships);
+            dashboard.view.team_error = None;
+        } else {
+            dashboard.view.team_error = Some("Team list returned no membership data".to_string());
+        }
+        return;
+    }
     // The view can ask about a project that has no tab, so the tab test alone
     // would load a membership list and then discard it.
     let view_scope = crate::commands::workspace_view::selected_project_id(app);
@@ -565,8 +618,26 @@ fn membership_lines(
 
 // ── Membership mutations ───────────────────────────────────────────────────
 
-fn start_membership_add(app: &mut App, project_id: String, principal_id: String, role: String) {
+pub(crate) fn start_workspace_member_add(
+    app: &mut App,
+    project_id: String,
+    principal_id: String,
+    role: String,
+) {
+    start_membership_add(app, project_id, principal_id, role, true);
+}
+
+fn start_membership_add(
+    app: &mut App,
+    project_id: String,
+    principal_id: String,
+    role: String,
+    workspace_origin: bool,
+) {
     let request_id = app.dialog_state.team_request.begin();
+    if workspace_origin {
+        app.dialog_state.workspace_team_request_id = Some(request_id);
+    }
     let reconnect_epoch = epoch_of(app);
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -579,7 +650,7 @@ fn start_membership_add(app: &mut App, project_id: String, principal_id: String,
             let Some(core_client) = core_client else {
                 return Some(failed_mutation(
                     request_id,
-                    None,
+                    Some(project_id),
                     "Core unavailable",
                     false,
                     reconnect_epoch,
@@ -825,6 +896,40 @@ pub(crate) fn apply_team_mutation_finished(
         return;
     }
     if !app.dialog_state.team_request.finish(request_id) {
+        return;
+    }
+    let workspace_origin = app.dialog_state.workspace_team_request_id.take() == Some(request_id);
+    let route_project = project_id
+        .as_ref()
+        .filter(|project_id| {
+            crate::commands::workspace_dashboard::is_workspace_view_active(app)
+                && app
+                    .dialog_state
+                    .workspace_dashboard
+                    .as_ref()
+                    .is_some_and(|dashboard| {
+                        dashboard.view.team_project_id.as_deref() == Some(project_id.as_str())
+                    })
+        })
+        .cloned();
+    let succeeded = error.is_none();
+    if workspace_origin && route_project.is_none() {
+        return;
+    }
+    if let Some(project_id) = route_project {
+        let notice = match error {
+            Some(_) if unauthorized => {
+                Some("Member change denied (project Owner access required).".to_string())
+            }
+            Some(error) => Some(error),
+            None => message,
+        };
+        if succeeded {
+            start_show_team(app, project_id);
+        }
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            dashboard.view.team_notice = notice;
+        }
         return;
     }
     if let Some(error) = error {
@@ -1768,5 +1873,70 @@ mod tests {
         assert!(unauthorized_of("authorization_denied"));
         assert!(unauthorized_of("authorization_scope_required"));
         assert!(!unauthorized_of("team_revision_conflict"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn late_workspace_membership_completion_does_not_open_team_dialog() {
+        let mut app = crate::app::App::new_for_testing("/tmp".to_string());
+        let mut tab = crate::app::state::ProjectTabState::empty(
+            crate::app::state::ProjectTabId::new(),
+            "Alpha".to_string(),
+        );
+        tab.project_id = Some("project-1".to_string());
+        app.project_tabs.add_and_activate(tab);
+        crate::commands::workspace_dashboard::open_workspace_dashboard(&mut app);
+        let reconnect_epoch = epoch_of(&app);
+        let request_id = app.dialog_state.team_request.begin();
+        app.dialog_state.workspace_team_request_id = Some(request_id);
+        app.dialog_state
+            .workspace_dashboard
+            .as_mut()
+            .unwrap()
+            .view
+            .team_project_id = Some("project-1".to_string());
+
+        crate::commands::workspace_dashboard::leave_workspace_view(&mut app);
+        apply_team_membership_loaded(
+            &mut app,
+            request_id,
+            "project-1".to_string(),
+            Some(vec![member("alice", "viewer", "active", 1)]),
+            None,
+            false,
+            None,
+            false,
+            false,
+            reconnect_epoch,
+        );
+
+        assert!(!app
+            .focus_manager
+            .has_dialog(crate::components::component::DialogType::Team));
+        assert!(app.dialog_state.workspace_dashboard.is_none());
+
+        crate::commands::workspace_dashboard::open_workspace_dashboard(&mut app);
+        let request_id = app.dialog_state.team_request.begin();
+        app.dialog_state.workspace_team_request_id = Some(request_id);
+        app.dialog_state
+            .workspace_dashboard
+            .as_mut()
+            .unwrap()
+            .view
+            .team_project_id = Some("project-1".to_string());
+        crate::commands::workspace_dashboard::leave_workspace_view(&mut app);
+        apply_team_mutation_finished(
+            &mut app,
+            request_id,
+            Some("project-1".to_string()),
+            Some("Member added".to_string()),
+            None,
+            false,
+            reconnect_epoch,
+        );
+
+        assert!(!app
+            .focus_manager
+            .has_dialog(crate::components::component::DialogType::Team));
+        assert!(app.dialog_state.workspace_dashboard.is_none());
     }
 }

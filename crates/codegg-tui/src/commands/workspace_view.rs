@@ -197,6 +197,21 @@ fn move_selection(app: &mut App, delta: isize) {
         dashboard.view.selected = next as usize;
     }
     sync_selected_project(app);
+    // Keep the dashboard cursor on the same project (project rows map 1:1).
+    let project_id = selected_row(app).map(|row| row.project_id);
+    if let Some(project_id) = project_id {
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            let indices = dashboard.filtered_indices();
+            if let Some(pos) = indices.iter().position(|&i| {
+                dashboard
+                    .rows
+                    .get(i)
+                    .is_some_and(|row| row.summary.project_id == project_id)
+            }) {
+                dashboard.selected_row = pos;
+            }
+        }
+    }
 }
 
 fn select_edge(app: &mut App, last: bool) {
@@ -638,6 +653,133 @@ fn submit_launch(app: &mut App) {
     );
 }
 
+fn reveal_workspace(app: &mut App, row: &TreeRow) {
+    let workspace_id = match row.kind {
+        TreeKind::Workspace => row.workspace_id.clone(),
+        TreeKind::Worktree => row.workspace_id.clone(),
+        TreeKind::Project => None,
+    };
+    let Some(workspace_id) = workspace_id else {
+        return;
+    };
+    let project_id = row.project_id.clone();
+    let worktrees_loaded = {
+        let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
+            return;
+        };
+        dashboard.view.reveal_workspace_id = Some(workspace_id.clone());
+        dashboard.view.team_project_id = Some(project_id.clone());
+        dashboard.view.team_memberships = None;
+        dashboard.view.team_loading = false;
+        dashboard.view.team_error = None;
+        dashboard.view.team_notice = None;
+        dashboard.view.member_form = false;
+        dashboard.view.mode = WorkspaceMode::Normal;
+        dashboard.view.input_focus = crate::app::state::workspace_view::WorkspaceInputFocus::Tree;
+        dashboard.view.expanded.insert(workspace_id.clone());
+        dashboard.view.worktrees.contains_key(&workspace_id)
+    };
+    if !worktrees_loaded {
+        fetch_worktrees(app, workspace_id);
+    }
+    crate::commands::team::start_show_team(app, project_id);
+}
+
+fn open_inline_team(app: &mut App, row: &TreeRow) {
+    if row.kind != TreeKind::Project {
+        reveal_workspace(app, row);
+        return;
+    }
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.view.reveal_workspace_id = None;
+        dashboard.view.team_project_id = Some(row.project_id.clone());
+        dashboard.view.team_memberships = None;
+        dashboard.view.team_loading = false;
+        dashboard.view.team_error = None;
+        dashboard.view.team_notice = None;
+    }
+    crate::commands::team::start_show_team(app, row.project_id.clone());
+}
+
+fn begin_member_form(app: &mut App) {
+    let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
+        return;
+    };
+    if dashboard.view.team_project_id.is_none() {
+        dashboard.view.notice =
+            Some("Reveal a workspace or open its team section first".to_string());
+        return;
+    }
+    dashboard.view.member_form = true;
+    dashboard.view.member_principal.clear();
+    dashboard.view.member_role = "contributor".to_string();
+    dashboard.view.mode = WorkspaceMode::Insert;
+    dashboard.view.input_focus = crate::app::state::workspace_view::WorkspaceInputFocus::MemberForm;
+    dashboard.view.team_notice = None;
+}
+
+fn handle_member_form_key(app: &mut App, key: KeyEvent) -> bool {
+    use crate::app::state::workspace_view::WorkspaceInputFocus;
+    match key.code {
+        KeyCode::Esc => {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.view.member_form = false;
+                dashboard.view.member_principal.clear();
+                dashboard.view.mode = WorkspaceMode::Normal;
+                dashboard.view.input_focus = WorkspaceInputFocus::Tree;
+            }
+        }
+        KeyCode::Backspace if key.modifiers.is_empty() => {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.view.member_principal.pop();
+            }
+        }
+        KeyCode::Tab => {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.view.member_role = match dashboard.view.member_role.as_str() {
+                    "viewer" => "contributor".to_string(),
+                    "contributor" => "maintainer".to_string(),
+                    _ => "viewer".to_string(),
+                };
+            }
+        }
+        KeyCode::Enter => {
+            let (project_id, principal, role) = app
+                .dialog_state
+                .workspace_dashboard
+                .as_mut()
+                .map(|dashboard| {
+                    dashboard.view.member_form = false;
+                    dashboard.view.mode = WorkspaceMode::Normal;
+                    dashboard.view.input_focus = WorkspaceInputFocus::Tree;
+                    (
+                        dashboard.view.team_project_id.clone(),
+                        dashboard.view.member_principal.trim().to_string(),
+                        dashboard.view.member_role.clone(),
+                    )
+                })
+                .unwrap_or_default();
+            if principal.is_empty() {
+                if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                    dashboard.view.team_notice =
+                        Some("Enter a principal id before adding a member".to_string());
+                }
+            } else if let Some(project_id) = project_id {
+                crate::commands::team::start_workspace_member_add(app, project_id, principal, role);
+            }
+        }
+        KeyCode::Char(ch) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                if dashboard.view.member_principal.chars().count() < 256 {
+                    dashboard.view.member_principal.push(ch);
+                }
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 // -- Launch sheet keys ------------------------------------------------
 
 fn begin_launch(app: &mut App, row: &TreeRow) {
@@ -792,25 +934,90 @@ fn handle_launch_key(app: &mut App, key: KeyEvent) -> bool {
 
 // -- Key routing ------------------------------------------------------
 
-/// Route one key for the whole view. Always returns true while the route is
-/// active: the composer is not on screen here, so no key may reach it.
 pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
     let Some(dashboard) = app.dialog_state.workspace_dashboard.as_ref() else {
         return false;
     };
-    if dashboard.view.launch.is_some() {
-        return handle_launch_key(app, key);
-    }
+    let focus = dashboard.view.input_focus;
     let mode = dashboard.view.mode;
     let detail_open = dashboard.view.detail.is_some();
-    match mode {
-        WorkspaceMode::Insert => match key.code {
+    let member_form_open = dashboard.view.member_form;
+
+    use crate::app::state::workspace_view::WorkspaceInputFocus;
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('X'), KeyModifiers::SHIFT) => {
+            crate::commands::workspace_dashboard::leave_workspace_view(app);
+            return true;
+        }
+        (KeyCode::Char('H'), KeyModifiers::SHIFT) => {
+            crate::commands::workspace_dashboard::focus_workspace_composer(app);
+            return true;
+        }
+        (KeyCode::Char('L'), KeyModifiers::SHIFT) => {
+            crate::commands::workspace_dashboard::focus_workspace_chat(app);
+            return true;
+        }
+        // Global Project Picker hotkeys stay reachable from Workspace.
+        (KeyCode::Char('F'), KeyModifiers::SHIFT)
+        | (KeyCode::Char('\\'), KeyModifiers::CONTROL) => return false,
+        _ => {}
+    }
+
+    if focus == WorkspaceInputFocus::Tree
+        && mode == WorkspaceMode::Normal
+        && crate::input::handle_key_with_bindings(
+            key,
+            Some(&app.ui_state.bindings),
+            crate::input::InputMode::Normal,
+        ) == Some(crate::input::InputAction::OpenPanelManager)
+    {
+        return false;
+    }
+
+    if app
+        .dialog_state
+        .project_picker
+        .as_ref()
+        .is_some_and(|picker| {
+            picker.workspace_inline && picker.phase != crate::app::state::PickerPhase::Catalog
+        })
+    {
+        app.handle_workspace_picker_key(key);
+        return true;
+    }
+    if member_form_open || focus == WorkspaceInputFocus::MemberForm {
+        return handle_member_form_key(app, key);
+    }
+    if app
+        .dialog_state
+        .workspace_dashboard
+        .as_ref()
+        .is_some_and(|dashboard| dashboard.view.launch.is_some())
+    {
+        return handle_launch_key(app, key);
+    }
+
+    if focus == WorkspaceInputFocus::Panel || focus == WorkspaceInputFocus::Composer {
+        if key.code == KeyCode::Esc {
+            if focus == WorkspaceInputFocus::Panel {
+                crate::commands::workspace_dashboard::focus_workspace_composer(app);
+            } else {
+                crate::commands::workspace_dashboard::leave_workspace_view(app);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    if mode == WorkspaceMode::Insert {
+        match key.code {
             KeyCode::Esc => {
                 if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
                     dashboard.view.mode = WorkspaceMode::Normal;
+                    dashboard.view.input_focus = WorkspaceInputFocus::Tree;
                 }
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if key.modifiers.is_empty() => {
                 if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
                     dashboard.view.pop_filter();
                 }
@@ -828,120 +1035,153 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
                 let len = visible_rows(app).len();
                 clamp_selection(app, len);
             }
+            _ if !key.modifiers.is_empty() => return false,
             _ => {}
-        },
-        WorkspaceMode::Normal => {
-            // Archive/restore is armed by its first press, so any other key
-            // disarms it: a confirmation must not outlive the intent.
-            let archive_key = key.code == KeyCode::Char('s') && key.modifiers.is_empty();
-            if !archive_key {
+        }
+        return true;
+    }
+
+    if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+        app.process_msg(crate::app::TuiMsg::WorkspaceDashboardRefresh);
+        return true;
+    }
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return false;
+    }
+    let archive_key = key.code == KeyCode::Char('s') && key.modifiers.is_empty();
+    if !archive_key {
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            dashboard.view.lifecycle_arm = None;
+        }
+    }
+    match key.code {
+        KeyCode::Esc => {
+            let filtered = app
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .is_some_and(|dashboard| !dashboard.view.filter.is_empty());
+            let revealed = app
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .is_some_and(|dashboard| {
+                    dashboard.view.reveal_workspace_id.is_some()
+                        || dashboard.view.team_project_id.is_some()
+                });
+            if detail_open {
                 if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
-                    dashboard.view.lifecycle_arm = None;
+                    dashboard.view.detail = None;
                 }
-            }
-            match key.code {
-                KeyCode::Esc => {
-                    let filtered = app
-                        .dialog_state
-                        .workspace_dashboard
-                        .as_ref()
-                        .is_some_and(|dashboard| !dashboard.view.filter.is_empty());
-                    if detail_open {
-                        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
-                            dashboard.view.detail = None;
-                        }
-                    } else if filtered {
-                        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
-                            dashboard.view.filter.clear();
-                            dashboard.view.selected = 0;
-                        }
-                    } else {
-                        crate::commands::workspace_dashboard::leave_workspace_view(app);
-                    }
+            } else if revealed {
+                if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                    dashboard.view.reveal_workspace_id = None;
+                    dashboard.view.team_project_id = None;
+                    dashboard.view.team_memberships = None;
+                    dashboard.view.team_error = None;
+                    dashboard.view.team_notice = None;
+                    dashboard.view.member_form = false;
                 }
-                KeyCode::Char('X') if key.modifiers == KeyModifiers::SHIFT => {
-                    crate::commands::workspace_dashboard::leave_workspace_view(app);
+            } else if filtered {
+                if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                    dashboard.view.filter.clear();
+                    dashboard.view.selected = 0;
                 }
-                KeyCode::Char('i') if key.modifiers.is_empty() => {
-                    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
-                        dashboard.view.mode = WorkspaceMode::Insert;
-                    }
-                }
-                KeyCode::Char('L') if key.modifiers == KeyModifiers::SHIFT => {
-                    crate::commands::workspace_dashboard::focus_workspace_chat(app);
-                }
-                KeyCode::Char('H') if key.modifiers == KeyModifiers::SHIFT => {
-                    crate::commands::workspace_dashboard::focus_workspace_composer(app);
-                }
-                KeyCode::Char('j') | KeyCode::Down if key.modifiers.is_empty() => {
-                    move_selection(app, 1);
-                }
-                KeyCode::Char('k') | KeyCode::Up if key.modifiers.is_empty() => {
-                    move_selection(app, -1);
-                }
-                KeyCode::PageDown => move_selection(app, 10),
-                KeyCode::PageUp => move_selection(app, -10),
-                KeyCode::Char('g') | KeyCode::Home => select_edge(app, false),
-                KeyCode::Char('G') | KeyCode::End => select_edge(app, true),
-                KeyCode::Char(' ') if key.modifiers.is_empty() => {
-                    if let Some(row) = selected_row(app) {
-                        toggle_expand(app, &row);
-                    }
-                }
-                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
-                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-                {
-                    if let Some(row) = selected_row(app) {
-                        match row.kind {
-                            TreeKind::Project => open_project(app, &row.project_id),
-                            TreeKind::Workspace | TreeKind::Worktree => toggle_expand(app, &row),
-                        }
-                    }
-                }
-                KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-                    if let Some(row) = selected_row(app) {
-                        collapse_selected(app, &row);
-                    }
-                }
-                KeyCode::Char('n') if key.modifiers.is_empty() => {
-                    if let Some(row) = selected_row(app) {
-                        begin_launch(app, &row);
-                    }
-                }
-                KeyCode::Char('d') if key.modifiers.is_empty() => {
-                    if let Some(row) = selected_row(app) {
-                        open_detail(app, &row);
-                    }
-                }
-                KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
-                    app.process_msg(crate::app::TuiMsg::WorkspaceDashboardRefresh);
-                }
-                KeyCode::Char('a') if key.modifiers.is_empty() => {
-                    begin_lifecycle(app, ProjectLifecycleEntry::Register, None);
-                }
-                KeyCode::Char('e') if key.modifiers.is_empty() => {
-                    if let Some(row) = selected_row(app) {
-                        begin_lifecycle(app, ProjectLifecycleEntry::Edit, Some(row.project_id));
-                    }
-                }
-                KeyCode::Char('s') if key.modifiers.is_empty() => {
-                    if let Some(row) = selected_row(app) {
-                        arm_or_run_archive(app, &row);
-                    }
-                }
-                KeyCode::Char('x') if key.modifiers.is_empty() => {
-                    if let Some(row) = selected_row(app) {
-                        begin_lifecycle(app, ProjectLifecycleEntry::Destroy, Some(row.project_id));
-                    }
-                }
-                KeyCode::Char('t') if key.modifiers.is_empty() => {
-                    if let Some(row) = selected_row(app) {
-                        crate::commands::team::start_show_team(app, row.project_id);
-                    }
-                }
-                _ => {}
+            } else {
+                crate::commands::workspace_dashboard::leave_workspace_view(app);
             }
         }
+        KeyCode::Char('i') if key.modifiers.is_empty() => {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.view.mode = WorkspaceMode::Insert;
+                dashboard.view.input_focus = WorkspaceInputFocus::Filter;
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Down if key.modifiers.is_empty() => move_selection(app, 1),
+        KeyCode::Char('k') | KeyCode::Up if key.modifiers.is_empty() => move_selection(app, -1),
+        KeyCode::PageDown => move_selection(app, 10),
+        KeyCode::PageUp => move_selection(app, -10),
+        KeyCode::Char('g') | KeyCode::Home if key.modifiers.is_empty() => select_edge(app, false),
+        KeyCode::Char('G') | KeyCode::End if key.modifiers.is_empty() => select_edge(app, true),
+        KeyCode::Char(' ') if key.modifiers.is_empty() => {
+            if let Some(row) = selected_row(app) {
+                toggle_expand(app, &row);
+            }
+        }
+        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
+            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+        {
+            if let Some(row) = selected_row(app) {
+                match row.kind {
+                    TreeKind::Project => open_project(app, &row.project_id),
+                    TreeKind::Workspace | TreeKind::Worktree => {
+                        if row.workspace_id.is_some() {
+                            reveal_workspace(app, &row);
+                        } else {
+                            toggle_expand(app, &row);
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+            if let Some(row) = selected_row(app) {
+                collapse_selected(app, &row);
+            }
+        }
+        KeyCode::Char('n') if key.modifiers.is_empty() => {
+            if let Some(row) = selected_row(app) {
+                begin_launch(app, &row);
+            }
+        }
+        KeyCode::Char('d') if key.modifiers.is_empty() => {
+            if let Some(row) = selected_row(app) {
+                open_detail(app, &row);
+            }
+        }
+        KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
+            app.process_msg(crate::app::TuiMsg::WorkspaceDashboardRefresh);
+        }
+        KeyCode::Char('a') if key.modifiers.is_empty() => {
+            let revealed = app
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .is_some_and(|dashboard| {
+                    dashboard.view.reveal_workspace_id.is_some()
+                        || dashboard.view.team_project_id.is_some()
+                });
+            if revealed {
+                begin_member_form(app);
+            } else {
+                begin_lifecycle(app, ProjectLifecycleEntry::Register, None);
+            }
+        }
+        KeyCode::Char('e') if key.modifiers.is_empty() => {
+            if let Some(row) = selected_row(app) {
+                begin_lifecycle(app, ProjectLifecycleEntry::Edit, Some(row.project_id));
+            }
+        }
+        KeyCode::Char('s') if key.modifiers.is_empty() => {
+            if let Some(row) = selected_row(app) {
+                arm_or_run_archive(app, &row);
+            }
+        }
+        KeyCode::Char('x') if key.modifiers.is_empty() => {
+            if let Some(row) = selected_row(app) {
+                begin_lifecycle(app, ProjectLifecycleEntry::Destroy, Some(row.project_id));
+            }
+        }
+        KeyCode::Char('t') if key.modifiers.is_empty() => {
+            if let Some(row) = selected_row(app) {
+                open_inline_team(app, &row);
+            }
+        }
+        _ if !key.modifiers.is_empty() => return false,
+        _ => {}
     }
     true
 }
@@ -1003,6 +1243,235 @@ fn arm_or_run_archive(app: &mut App, row: &TreeRow) {
     }
 }
 
+/// Bounded exact-match `/worktree` selector lookup.
+pub(crate) fn begin_selector(app: &mut App, selector: &str) {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return;
+    }
+    if selector.chars().count() > 256 {
+        finish_selector(
+            app,
+            Some("/worktree selector is limited to 256 characters".to_string()),
+        );
+        return;
+    }
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.view.pending_selector = Some(selector.to_string());
+        dashboard.view.selector_project_index = 0;
+        dashboard.view.selector_worktree_probes = 0;
+        dashboard.view.notice = Some(format!("Looking for workspace or worktree {selector}…"));
+    }
+    resolve_pending_selector(app);
+}
+
+fn finish_selector(app: &mut App, notice: Option<String>) {
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.view.pending_selector = None;
+        dashboard.view.selector_project_index = 0;
+        dashboard.view.selector_worktree_probes = 0;
+        dashboard.view.notice = notice;
+    }
+}
+
+fn selector_matches(selector: &str, value: &str) -> bool {
+    selector.eq_ignore_ascii_case(value.trim())
+}
+
+fn select_workspace_target(
+    app: &mut App,
+    project_id: &str,
+    workspace_id: &str,
+    worktree_id: Option<&str>,
+) {
+    let workspace = app
+        .dialog_state
+        .workspace_dashboard
+        .as_ref()
+        .and_then(|dashboard| dashboard.view.workspaces.get(project_id))
+        .and_then(|workspaces| {
+            workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+        })
+        .cloned();
+    let Some(workspace) = workspace else {
+        return;
+    };
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.view.expanded.insert(project_id.to_string());
+        dashboard.view.expanded.insert(workspace_id.to_string());
+    }
+    finish_selector(app, None);
+    let row = TreeRow {
+        kind: TreeKind::Workspace,
+        id: workspace.workspace_id.clone(),
+        project_id: project_id.to_string(),
+        workspace_id: Some(workspace.workspace_id.clone()),
+        depth: 1,
+        label: workspace.display_name,
+        note: workspace.canonical_root.unwrap_or_default(),
+        expandable: true,
+        expanded: true,
+    };
+    reveal_workspace(app, &row);
+    let rows = visible_rows(app);
+    let target = rows.iter().position(|row| {
+        if let Some(worktree_id) = worktree_id {
+            row.kind == TreeKind::Worktree && row.id == worktree_id
+        } else {
+            row.kind == TreeKind::Workspace && row.id == workspace_id
+        }
+    });
+    if let Some(index) = target {
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            dashboard.view.selected = index;
+        }
+        sync_selected_project(app);
+    }
+}
+
+/// Resolve the pending `/worktree` selector against cached projections.
+pub(crate) fn resolve_pending_selector(app: &mut App) {
+    let Some((selector, mut project_index, project_ids, loading, truncated)) = app
+        .dialog_state
+        .workspace_dashboard
+        .as_ref()
+        .and_then(|dashboard| {
+            dashboard.view.pending_selector.as_ref().map(|selector| {
+                (
+                    selector.clone(),
+                    dashboard.view.selector_project_index,
+                    dashboard
+                        .rows
+                        .iter()
+                        .take(crate::app::state::workspace_dashboard::MAX_DASHBOARD_ROWS)
+                        .map(|row| row.summary.project_id.clone())
+                        .collect::<Vec<_>>(),
+                    dashboard.loading,
+                    dashboard.truncated,
+                )
+            })
+        })
+    else {
+        return;
+    };
+    if project_ids.is_empty() {
+        if loading {
+            return;
+        }
+        finish_selector(
+            app,
+            Some(format!(
+                "No projects are available to resolve /worktree {selector}"
+            )),
+        );
+        return;
+    }
+
+    while project_index < project_ids.len() {
+        let project_id = project_ids[project_index].clone();
+        let workspaces = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .and_then(|dashboard| dashboard.view.workspaces.get(&project_id).cloned());
+        let Some(workspaces) = workspaces else {
+            let loading = app
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .is_some_and(|dashboard| dashboard.view.workspaces_loading.contains(&project_id));
+            if !loading {
+                if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                    dashboard.view.selector_project_index = project_index;
+                }
+                fetch_project_workspaces(app, project_id);
+            }
+            return;
+        };
+
+        if let Some(workspace) = workspaces.iter().find(|workspace| {
+            selector_matches(&selector, &workspace.workspace_id)
+                || selector_matches(&selector, &workspace.display_name)
+        }) {
+            let workspace_id = workspace.workspace_id.clone();
+            select_workspace_target(app, &project_id, &workspace_id, None);
+            return;
+        }
+
+        for workspace in workspaces.iter().take(MAX_TREE_ROWS) {
+            let worktrees = app
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .and_then(|dashboard| {
+                    dashboard
+                        .view
+                        .worktrees
+                        .get(&workspace.workspace_id)
+                        .cloned()
+                });
+            let Some(worktrees) = worktrees else {
+                let loading =
+                    app.dialog_state
+                        .workspace_dashboard
+                        .as_ref()
+                        .is_some_and(|dashboard| {
+                            dashboard
+                                .view
+                                .worktrees_loading
+                                .contains(&workspace.workspace_id)
+                        });
+                if loading {
+                    return;
+                }
+                let probes = app
+                    .dialog_state
+                    .workspace_dashboard
+                    .as_ref()
+                    .map(|dashboard| dashboard.view.selector_worktree_probes)
+                    .unwrap_or(MAX_TREE_ROWS);
+                if probes >= MAX_TREE_ROWS {
+                    finish_selector(app, Some(format!(
+                        "Could not resolve /worktree {selector}: search reached the {MAX_TREE_ROWS}-workspace limit"
+                    )));
+                    return;
+                }
+                if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                    dashboard.view.selector_project_index = project_index;
+                    dashboard.view.selector_worktree_probes += 1;
+                }
+                fetch_worktrees(app, workspace.workspace_id.clone());
+                return;
+            };
+            if let Some(worktree) = worktrees.iter().find(|worktree| {
+                selector_matches(&selector, &worktree.worktree_id)
+                    || worktree
+                        .branch
+                        .as_deref()
+                        .is_some_and(|branch| selector_matches(&selector, branch))
+            }) {
+                let workspace_id = workspace.workspace_id.clone();
+                let worktree_id = worktree.worktree_id.clone();
+                select_workspace_target(app, &project_id, &workspace_id, Some(&worktree_id));
+                return;
+            }
+        }
+        project_index += 1;
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            dashboard.view.selector_project_index = project_index;
+        }
+    }
+
+    let note = if truncated {
+        format!("No match for /worktree {selector} in the loaded project page (more projects are available)")
+    } else {
+        format!("No workspace or worktree matched /worktree {selector}")
+    };
+    finish_selector(app, Some(note));
+}
+
 // -- Completion appliers ----------------------------------------------
 
 pub(crate) fn apply_project_loaded(
@@ -1011,29 +1480,46 @@ pub(crate) fn apply_project_loaded(
     project: Option<Box<codegg::protocol::dto::ProjectDetailsDto>>,
     error: Option<String>,
 ) {
-    let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
-        return;
-    };
-    dashboard.view.workspaces_loading.remove(&project_id);
-    match project {
-        Some(project) => {
-            dashboard
-                .view
-                .workspaces
-                .insert(project_id.clone(), project.workspaces.clone());
-            if dashboard.view.detail.as_deref() == Some(project_id.as_str()) {
-                dashboard.view.detail_data = Some(*project);
-                dashboard.view.detail_loading = false;
-                dashboard.view.detail_error = None;
+    let failed = project.is_none();
+    let error = error.unwrap_or_else(|| "project lookup returned no data".to_string());
+    {
+        let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
+            return;
+        };
+        dashboard.view.workspaces_loading.remove(&project_id);
+        match project {
+            Some(project) => {
+                dashboard
+                    .view
+                    .workspaces
+                    .insert(project_id.clone(), project.workspaces.clone());
+                if dashboard.view.detail.as_deref() == Some(project_id.as_str()) {
+                    dashboard.view.detail_data = Some(*project);
+                    dashboard.view.detail_loading = false;
+                    dashboard.view.detail_error = None;
+                }
+            }
+            None => {
+                if dashboard.view.detail.as_deref() == Some(project_id.as_str()) {
+                    dashboard.view.detail_loading = false;
+                    dashboard.view.detail_error = Some(error.clone());
+                }
+                dashboard.view.notice = Some(error.clone());
             }
         }
-        None => {
-            if dashboard.view.detail.as_deref() == Some(project_id.as_str()) {
-                dashboard.view.detail_loading = false;
-                dashboard.view.detail_error = error.clone();
-            }
-            dashboard.view.notice = error;
+    }
+    if failed {
+        let selector_error = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .and_then(|dashboard| dashboard.view.pending_selector.as_ref())
+            .map(|selector| format!("Could not resolve /worktree {selector}: {error}"));
+        if let Some(notice) = selector_error {
+            finish_selector(app, Some(notice));
         }
+    } else {
+        resolve_pending_selector(app);
     }
 }
 
@@ -1043,21 +1529,49 @@ pub(crate) fn apply_worktrees_loaded(
     worktrees: Vec<codegg::protocol::dto::ManagedWorktreeDto>,
     error: Option<String>,
 ) {
-    let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
-        return;
-    };
-    dashboard.view.worktrees_loading.remove(&workspace_id);
-    if let Some(error) = error {
-        dashboard.view.notice = Some(error);
-        return;
-    }
-    if let Some(launch) = dashboard.view.launch.as_mut() {
-        if launch.workspace_id == workspace_id {
-            launch.worktrees = worktrees.clone();
-            launch.worktrees_loading = false;
+    let failure = error.clone();
+    {
+        let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
+            return;
+        };
+        dashboard.view.worktrees_loading.remove(&workspace_id);
+        if let Some(launch) = dashboard.view.launch.as_mut() {
+            if launch.workspace_id == workspace_id {
+                launch.worktrees_loading = false;
+            }
+        }
+        if let Some(error) = error {
+            dashboard.view.notice = Some(error);
+        } else {
+            if let Some(launch) = dashboard.view.launch.as_mut() {
+                if launch.workspace_id == workspace_id {
+                    launch.worktrees = worktrees.clone();
+                }
+            }
+            dashboard.view.worktrees.insert(workspace_id, worktrees);
         }
     }
-    dashboard.view.worktrees.insert(workspace_id, worktrees);
+    if let Some(error) = failure {
+        if app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .is_some_and(|dashboard| dashboard.view.pending_selector.is_some())
+        {
+            let selector = app
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .and_then(|dashboard| dashboard.view.pending_selector.as_deref())
+                .unwrap_or_default();
+            finish_selector(
+                app,
+                Some(format!("Could not resolve /worktree {selector}: {error}")),
+            );
+        }
+    } else {
+        resolve_pending_selector(app);
+    }
 }
 
 pub(crate) fn apply_branches_loaded(app: &mut App, branches: Vec<String>, error: Option<String>) {

@@ -3282,22 +3282,27 @@ keeps its labelled empty state (`" no output — press i to type"`) and the box
 ### The Workspace whole view (M007-M011)
 
 `/workspace` is a **route-owned whole view**, not a viewport inside the session
-frame. While the route is active the ordinary frame is not painted at all: no left
-sidebar, no bottom composer, no composer hint row, no todo/tasks strip and no
-model/agent badge row. The frame is a one-row title (mode, filter, exit hint), a
-left region and a right region; leaving the route restores the previous session and
-its composer intact.
+frame. While the route is active the ordinary transcript frame is not painted; the
+Workspace frame has a title row, a left main-panel region, the existing Chat panel on
+the right, a route footer, and the shared bottom composer. Entry docks Chat Right and
+binds it to the selected project. The composer badge names its destination; `Shift+H`
+focuses it and `Shift+L` focuses Chat. Leaving restores the previous session and
+composer mode without creating another buffer.
 
 **Mode.** The view has its own NOR/INS mode (`WorkspaceMode`), independent of the
-composer's. `i` enters INS to filter; `Esc` returns to NOR and clears the filter
-before it leaves the route. `Shift+X` exits only in NOR; in INS it is the capital
-letter `X` typed into the filter (D1).
+composer's. `i` enters INS to filter; `Esc` returns to NOR, and a later `Esc`
+clears the filter or closes the current inline section before route exit. `Shift+X`
+leaves the route from any Workspace focus; composition keys otherwise fall through
+to the selected input rather than also invoking a tree action.
 
-**Tree.** Project -> workspace -> managed worktree. A project's workspaces come from
-one bounded `ProjectGet`; a workspace's worktrees from one bounded
-`ManagedWorktreeList { workspace_id }`. Both are cached per identity, so expanding a
-node is one request and re-expanding it is none. The tree never resolves a path and
-never spawns `git`.
+**Tree and reveal.** Project -> workspace -> managed worktree. A project's workspaces
+come from one bounded `ProjectGet`; a workspace's worktrees from one bounded
+`ManagedWorktreeList { workspace_id }`. Both are cached per identity. `Space`
+expands/collapses tree nodes; `Enter` on a project opens its tab, while `Enter` on
+a workspace or worktree reveals its worktrees and row-project membership in the main
+panel. Membership fetches and add-member requests carry that row's project ID; denied
+reads and writes render an explicit in-panel refusal. The tree never resolves a path
+and never spawns `git`.
 
 **Launch.** `n` opens the new-session sheet for the selected workspace or worktree.
 An existing worktree launches with `SessionLaunch { ExistingManagedWorktree }`; a new
@@ -3307,39 +3312,40 @@ or a user-typed name. One idempotency key per submit is reused on a transport re
 and replaced after a refusal. The view adopts only the identities the response
 returns (`session_id`, `workspace_id`, `branch`) and opens that session.
 
-**Detail.** `d` replaces the tree with the project detail (identity, lifecycle,
-workspaces, worktree counts, session count and the dashboard's task counts) in the same
-window; `h` returns. It is not a modal, and a principal the daemon withheld counts
-from reads `withheld` rather than `0`.
+**Detail.** `d` replaces the tree with project identity, lifecycle, workspaces,
+worktree/session counts, task counts, and the membership summary in the main panel;
+`h` returns. It is not a modal, and a principal the daemon withheld counts from
+reads `withheld` rather than `0`.
 
-**Lifecycle and membership (M008).** The view acts on the selected project, not on
+**Lifecycle and membership.** The view acts on the selected row's project, not on
 the project that happens to hold the active tab:
 
 | Key | Action |
 |-----|--------|
-| `a` | Register a local project (the picker's raw-path draft) |
+| `a` | Register a local project in the tree; add a member from a revealed team/workspace section |
 | `e` | Edit display name and bound root (`ProjectUpdate` with `expected_updated_at`) |
-| `s` | Archive an active project, restore an archived one |
-| `x` | Destroy, through the counted confirmation |
-| `t` | Team membership |
+| `s` | Arm then archive an active project or restore an archived one |
+| `x` | Destroy through the counted confirmation |
+| `t` | Fetch membership for the selected row's project, in-panel |
 
-Every one of these opens the **project picker** at the phase the picker's own catalog
-keys use; `commands::project_picker::begin_lifecycle_from` is the single place that
-resolves the phase, the pinned project and the request id, so the two surfaces cannot
-disagree about which request a completion belongs to. The view mints no request of
-its own and adds no second project model.
+The route reuses the picker's lifecycle request/state machine but paints its body in
+the main-panel region rather than mounting the centered Project Picker dialog. The
+global picker hotkeys remain unchanged outside the route. Archive arms on the first
+`s` and performs on the second; any other key disarms. Destroy's confirmation names
+the session count. The `DeviceSecretDialog` remains the dedicated one-time token
+surface and its plaintext never enters the panel.
 
-Archive is reversible, so it **arms** on the first `s` and performs on the second; any
-other key disarms, because a confirmation must not outlive the selection it was given
-for. Destroy is irreversible and does not arm in place: it opens the picker's
-`DestroyLoading` phase, and the confirmation it lands in names the session count that
-the deletion would take with it.
+Membership is a role on the membership: contributors write, viewers are read-only,
+and there is no project-scoped sandbox, approval or network policy row. A success
+refreshes the inline member list; an owner-gated denial renders as a refusal, never as
+another project's rows.
 
-Membership is a role on the membership (D6): contributors write, viewers are
-read-only, and there is no project-scoped sandbox, approval or network policy row. The
-listing is adopted when its project is the active tab **or** the view's own selection,
-so a project with no tab still shows its team; an owner-gated denial renders as a
-denial ("Requires project Owner (member.manage)"), never as an empty member list.
+**Worktree navigation.** `/worktree [selector]` opens this route instead of issuing
+the legacy toast/dialog list. The optional exact, case-insensitive selector matches a
+workspace ID/name or a worktree ID/branch. Resolution walks the bounded dashboard
+project page sequentially, loading `ProjectGet` and `ManagedWorktreeList` only as
+needed; the worktree-read search is capped at 512 workspace lists. A match expands the
+lineage and selects the target; a miss or read error stays as an in-panel notice.
 
 ### The session list: scoped, counted and grouped (M005, M012)
 

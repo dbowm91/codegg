@@ -1094,22 +1094,26 @@ impl App {
 
     /// M007: paint the Workspace whole view.
     ///
-    /// Two regions and one title row: the tree (or the inline detail) on the
-    /// left, the project chat viewer on the right. Deliberately no composer,
-    /// no sidebar, no badge row and no hint row — the route's own footer is
-    /// the whole vocabulary, and the ordinary composer is restored unchanged
-    /// when the route is left (D11).
+    /// Paint the Workspace route's title, main body, route hints, and the
+    /// existing shared composer. Chat remains the destination; no second
+    /// chat buffer is introduced.
     fn render_workspace_frame(&mut self, frame: &mut Frame) {
-        use crate::app::state::workspace_view::{LaunchStep, TreeKind, WorkspaceMode};
+        use crate::app::state::workspace_view::{
+            LaunchStep, TreeKind, WorkspaceInputFocus, WorkspaceMode,
+        };
         let area = frame.area();
         let theme = Arc::clone(&self.ui_state.theme);
         frame.render_widget(
             ratatui::widgets::Block::default().style(Style::default().bg(theme.background)),
             area,
         );
-        if area.height < 4 || area.width < 40 {
+        if area.height < 7 || area.width < 40 {
             return;
         }
+        let composer_rows = self
+            .prompt_state
+            .prompt
+            .needed_height(area.height.saturating_sub(4), area.width);
         // One immutable snapshot, then paint. Holding the dashboard borrow
         // across a panel render would borrow the app twice.
         let snapshot = {
@@ -1124,6 +1128,13 @@ impl App {
             let mode_label = match dashboard.view.mode {
                 WorkspaceMode::Normal => "NOR",
                 WorkspaceMode::Insert => "INS",
+            };
+            let focus_label = match dashboard.view.input_focus {
+                WorkspaceInputFocus::Tree => "tree",
+                WorkspaceInputFocus::Composer => "composer",
+                WorkspaceInputFocus::Panel => "chat panel",
+                WorkspaceInputFocus::Filter => "filter",
+                WorkspaceInputFocus::MemberForm => "add member",
             };
             let filter = if dashboard.view.filter.is_empty() {
                 String::new()
@@ -1225,43 +1236,12 @@ impl App {
             }
             let mut footer: Vec<String> = Vec::new();
             if let Some(launch) = dashboard.view.launch.as_ref() {
-                let placement = if launch.selected == 0 {
-                    "new checkout".to_string()
-                } else {
-                    launch
-                        .ready_worktrees()
-                        .nth(launch.selected.saturating_sub(1))
-                        .map(|worktree| {
-                            worktree
-                                .branch
-                                .clone()
-                                .unwrap_or_else(|| worktree.worktree_id.clone())
-                        })
-                        .unwrap_or_else(|| "worktree".to_string())
-                };
                 let step = match launch.step {
                     LaunchStep::Placement => "placement",
                     LaunchStep::Base => "base branch",
-                    LaunchStep::Branch => "branch",
+                    LaunchStep::Branch => "branch name",
                 };
-                let branch = launch
-                    .branches
-                    .get(launch.base_selected)
-                    .cloned()
-                    .unwrap_or_else(|| "auto".to_string());
-                let typed = if launch.branch_input.is_empty() {
-                    "automatic".to_string()
-                } else {
-                    launch.branch_input.clone()
-                };
-                let error = launch
-                    .error
-                    .as_ref()
-                    .map(|error| format!(" · {error}"))
-                    .unwrap_or_default();
-                footer.push(format!(
-                    "new session · {step}: {placement} · base:{branch} · branch:{typed}{error} · Enter start · Esc back"
-                ));
+                footer.push(format!("new session · {step} · Enter continue · Esc back"));
             } else if let Some(notice) = dashboard.view.notice.as_ref() {
                 footer.push(notice.clone());
             } else if let Some(error) = dashboard.error.as_ref() {
@@ -1270,12 +1250,13 @@ impl App {
                 footer.push("loading projects…".to_string());
             } else {
                 footer.push(
-                    "a add · e edit · s archive/restore · x destroy · t team · n new session · X exit"
+                    "a add · e edit · s archive/restore · x destroy · t team · n new session · i filter · Shift+H input · Shift+L chat · Shift+X exit"
                         .to_string(),
                 );
             }
             (
                 mode_label.to_string(),
+                focus_label.to_string(),
                 filter,
                 dashboard.view.selected,
                 rows,
@@ -1283,7 +1264,125 @@ impl App {
                 footer.join("  |  "),
             )
         };
-        let (mode_label, filter, selected, rows, detail_lines, footer_text) = snapshot;
+        let (mode_label, focus_label, filter, selected, rows, mut detail_lines, footer_text) =
+            snapshot;
+        let reveal_snapshot =
+            self.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .and_then(|dashboard| {
+                    let workspace_id = dashboard.view.reveal_workspace_id.as_deref();
+                    let project_id = dashboard.view.team_project_id.as_deref();
+                    (workspace_id.is_some() || project_id.is_some()).then(|| {
+                        let mut lines = Vec::new();
+                        if let Some(workspace_id) = workspace_id {
+                            let workspace = dashboard
+                                .view
+                                .workspaces
+                                .values()
+                                .flatten()
+                                .find(|workspace| workspace.workspace_id == workspace_id);
+                            lines.push(Line::from(Span::styled(
+                                format!(
+                                    " Workspace: {} ({workspace_id})",
+                                    workspace
+                                        .map(|row| row.display_name.as_str())
+                                        .unwrap_or("workspace")
+                                ),
+                                Style::default()
+                                    .fg(theme.primary)
+                                    .add_modifier(Modifier::BOLD),
+                            )));
+                            lines.push(Line::from(Span::styled(
+                                " worktrees",
+                                Style::default().fg(theme.secondary),
+                            )));
+                            if dashboard.view.worktrees_loading.contains(workspace_id) {
+                                lines.push(Line::from("  loading worktrees…"));
+                            } else if let Some(worktrees) =
+                                dashboard.view.worktrees.get(workspace_id)
+                            {
+                                if worktrees.is_empty() {
+                                    lines.push(Line::from("  no managed worktrees"));
+                                }
+                                for worktree in worktrees {
+                                    lines.push(Line::from(format!(
+                                        "  {} · {} · {}",
+                                        worktree.branch.as_deref().unwrap_or("detached"),
+                                        worktree.state,
+                                        worktree.health
+                                    )));
+                                }
+                            } else {
+                                lines.push(Line::from("  worktrees not loaded"));
+                            }
+                        }
+                        if let Some(project_id) = project_id {
+                            lines.push(Line::from(Span::styled(
+                                format!(" membership · {project_id}"),
+                                Style::default().fg(theme.secondary),
+                            )));
+                            if dashboard.view.team_loading {
+                                lines.push(Line::from("  loading members…"));
+                            } else if let Some(error) = dashboard.view.team_error.as_deref() {
+                                lines.push(Line::from(Span::styled(
+                                    format!("  {error}"),
+                                    Style::default().fg(theme.error),
+                                )));
+                            } else if let Some(memberships) =
+                                dashboard.view.team_memberships.as_ref()
+                            {
+                                if memberships.is_empty() {
+                                    lines.push(Line::from("  no memberships recorded"));
+                                }
+                                for member in memberships {
+                                    lines.push(Line::from(format!(
+                                        "  {} · {} · {}",
+                                        member.principal_id, member.role, member.state
+                                    )));
+                                }
+                            }
+                            if dashboard.view.member_form {
+                                lines.push(Line::from(Span::styled(
+                                    " Add member",
+                                    Style::default()
+                                        .fg(theme.primary)
+                                        .add_modifier(Modifier::BOLD),
+                                )));
+                                lines.push(Line::from(format!(
+                                    "  principal: {}_",
+                                    dashboard.view.member_principal
+                                )));
+                                lines.push(Line::from(format!(
+                                    "  role: {} (Tab to cycle)",
+                                    dashboard.view.member_role
+                                )));
+                                lines.push(Line::from(Span::styled(
+                                    "  Enter add · Esc cancel",
+                                    Style::default().fg(theme.muted),
+                                )));
+                            }
+                            if let Some(notice) = dashboard.view.team_notice.as_deref() {
+                                lines.push(Line::from(Span::styled(
+                                    format!("  {notice}"),
+                                    Style::default().fg(theme.muted),
+                                )));
+                            }
+                        }
+                        if let Some(notice) = dashboard.view.notice.as_deref() {
+                            lines.push(Line::from(Span::styled(
+                                format!(" {notice}"),
+                                Style::default().fg(theme.muted),
+                            )));
+                        }
+                        lines
+                    })
+                });
+        if detail_lines.is_empty() {
+            if let Some(lines) = reveal_snapshot {
+                detail_lines = lines;
+            }
+        }
         let title = Line::from(vec![
             Span::styled(
                 " WORKSPACE ",
@@ -1292,11 +1391,11 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {mode_label}{filter}  "),
+                format!(" {mode_label} · {focus_label}{filter}  "),
                 Style::default().fg(theme.foreground),
             ),
             Span::styled(
-                "i filter · l open · n new · d detail · Shift+X exit",
+                "j/k move · Enter reveal · i filter · Shift+H input · Shift+L chat · Shift+X exit",
                 Style::default().fg(theme.muted),
             ),
         ]);
@@ -1310,7 +1409,7 @@ impl App {
             area.x,
             area.y + 1,
             area.width,
-            area.height.saturating_sub(1 + footer_rows),
+            area.height.saturating_sub(1 + footer_rows + composer_rows),
         );
         let list_width = (area.width as u32 * 11 / 20) as u16;
         let tree_area = Rect::new(body.x, body.y, list_width, body.height);
@@ -1321,10 +1420,131 @@ impl App {
             body.height,
         );
 
-        if !detail_lines.is_empty() {
-            let detail_area = Rect::new(body.x, body.y, body.width, body.height);
+        let inline_picker = self.dialog_state.project_picker.as_ref().filter(|picker| {
+            picker.workspace_inline && picker.phase != crate::app::state::PickerPhase::Catalog
+        });
+        let launch_open = self
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .is_some_and(|dashboard| dashboard.view.launch.is_some());
+        if let Some(picker) = inline_picker {
+            let filtered = picker.filtered_indices(&self.project_catalog.entries);
+            crate::components::dialogs::project_picker::render_picker_body(
+                frame,
+                picker,
+                &filtered,
+                &self.project_catalog.entries,
+                self.project_catalog.capability_supported,
+                tree_area,
+                &theme,
+            );
+        } else if launch_open {
+            let launch = self
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .and_then(|dashboard| dashboard.view.launch.as_ref())
+                .expect("launch_open checked");
+            let mut lines = vec![Line::from(Span::styled(
+                format!(" {} · workspace {}", launch.project_id, launch.workspace_id),
+                Style::default().fg(theme.muted),
+            ))];
+            match launch.step {
+                LaunchStep::Placement => {
+                    lines.push(Line::from(Span::styled(
+                        " Placement",
+                        Style::default().fg(theme.secondary),
+                    )));
+                    lines.push(Line::from(format!(
+                        "{} New managed checkout",
+                        if launch.selected == 0 { ">" } else { " " }
+                    )));
+                    for (index, worktree) in launch.ready_worktrees().enumerate() {
+                        let row = index + 1;
+                        lines.push(Line::from(format!(
+                            "{} {} · {}",
+                            if launch.selected == row { ">" } else { " " },
+                            worktree.branch.as_deref().unwrap_or("detached"),
+                            worktree.state
+                        )));
+                    }
+                    if launch.worktrees_loading {
+                        lines.push(Line::from(" loading worktrees…"));
+                    }
+                }
+                LaunchStep::Base => {
+                    lines.push(Line::from(Span::styled(
+                        " Base branch",
+                        Style::default().fg(theme.secondary),
+                    )));
+                    for (index, branch) in launch.branches.iter().enumerate() {
+                        lines.push(Line::from(format!(
+                            "{} {}",
+                            if index == launch.base_selected {
+                                ">"
+                            } else {
+                                " "
+                            },
+                            branch
+                        )));
+                    }
+                    if launch.branches_loading {
+                        lines.push(Line::from(" loading branches…"));
+                    }
+                }
+                LaunchStep::Branch => {
+                    lines.push(Line::from(Span::styled(
+                        " Branch name",
+                        Style::default().fg(theme.secondary),
+                    )));
+                    lines.push(Line::from(format!(
+                        " {}_",
+                        if launch.branch_input.is_empty() {
+                            "automatic"
+                        } else {
+                            &launch.branch_input
+                        }
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "Leave automatic to use the daemon's deterministic name.",
+                        Style::default().fg(theme.muted),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "Type a name · Backspace edits · Enter launches",
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+            }
+            if launch.submitting {
+                lines.push(Line::from(Span::styled(
+                    format!(" {}…", launch.stage),
+                    Style::default().fg(theme.primary),
+                )));
+            }
+            if let Some(error) = launch.error.as_deref() {
+                lines.push(Line::from(Span::styled(
+                    format!(" {error}"),
+                    Style::default().fg(theme.error),
+                )));
+            }
             frame.render_widget(
-                Paragraph::new(detail_lines).style(Style::default().bg(theme.background)),
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: true })
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" New Session Launch "),
+                    )
+                    .style(Style::default().fg(theme.foreground).bg(theme.background)),
+                tree_area,
+            );
+        } else if !detail_lines.is_empty() {
+            let detail_area = Rect::new(tree_area.x, tree_area.y, tree_area.width, body.height);
+            frame.render_widget(
+                Paragraph::new(detail_lines)
+                    .wrap(Wrap { trim: true })
+                    .style(Style::default().bg(theme.background)),
                 detail_area,
             );
         } else {
@@ -1383,30 +1603,33 @@ impl App {
             }
         }
 
-        // The chat pane is a viewer: the project chat the dashboard already
-        // bound, painted through its own panel so a docked chat cannot
-        // disagree with what this pane shows.
-        if self
-            .panel_host
-            .is_visible_at(crate::panels::PanelPlacement::Right)
-        {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.render_panel_at(frame, crate::panels::PanelPlacement::Right, chat_area);
-            }));
-        } else {
-            frame.render_widget(
-                Paragraph::new("Chat pane unavailable — Shift+S to dock the Chat panel")
-                    .style(Style::default().fg(theme.muted)),
-                chat_area,
-            );
-        }
+        // Workspace always paints the existing Chat panel in its Right
+        // column. Entry docks that panel if its edge was previously closed;
+        // there is no unavailable-pane fallback on this route.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.render_panel_at(frame, crate::panels::PanelPlacement::Right, chat_area);
+        }));
 
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 crate::wrap::ellipsize_to_width(&footer_text, area.width as usize),
                 Style::default().fg(theme.muted),
             ))),
-            Rect::new(area.x, area.y + area.height - 1, area.width, 1),
+            Rect::new(
+                area.x,
+                area.y + area.height - composer_rows - 1,
+                area.width,
+                1,
+            ),
+        );
+        self.render_prompt(
+            frame,
+            Rect::new(
+                area.x,
+                area.y + area.height - composer_rows,
+                area.width,
+                composer_rows,
+            ),
         );
     }
 

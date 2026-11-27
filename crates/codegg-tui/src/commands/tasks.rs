@@ -923,33 +923,6 @@ pub(crate) fn handle_file_diff_stats_ready(
     app.sidebar.set_file_changes(changes);
 }
 
-pub(crate) fn dispatch_worktree(app: &mut App) {
-    if let Some(ref tx) = app.tui_cmd_tx {
-        let _ = send_tui(tx, TuiCommand::WorktreeList);
-    } else {
-        let git_root = app.active_workspace_root().unwrap_or_default();
-        let trees = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                match codegg::worktree::find_git_root(&git_root) {
-                    Some(root) => codegg::worktree::list_worktrees(&root)
-                        .await
-                        .unwrap_or_default(),
-                    None => Vec::new(),
-                }
-            })
-        });
-        if trees.is_empty() {
-            app.messages_state.toasts.info("No worktrees found");
-        } else {
-            let names: Vec<String> = trees
-                .iter()
-                .map(|t| format!("{} ({})", t.path, t.branch))
-                .collect();
-            app.messages_state.toasts.info(&names.join(", "));
-        }
-    }
-}
-
 pub(crate) fn dispatch_loop(app: &mut App, argument: &str) {
     // The argument is `<interval> "<message>"`; the command
     // spelling was already removed by the extraction point.

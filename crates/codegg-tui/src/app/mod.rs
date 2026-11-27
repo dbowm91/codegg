@@ -1169,6 +1169,7 @@ impl App {
                 trigger_secret: None,
                 team_token_secret: None,
                 team_request: crate::app::state::AsyncUiRequestState::new(),
+                workspace_team_request_id: None,
                 control_request: crate::app::state::AsyncUiRequestState::new(),
                 control_last: None,
                 trigger_create_request: crate::app::state::AsyncUiRequestState::new(),
@@ -1767,6 +1768,7 @@ impl App {
                 trigger_secret: None,
                 team_token_secret: None,
                 team_request: crate::app::state::AsyncUiRequestState::new(),
+                workspace_team_request_id: None,
                 control_request: crate::app::state::AsyncUiRequestState::new(),
                 control_last: None,
                 trigger_create_request: crate::app::state::AsyncUiRequestState::new(),
@@ -4229,6 +4231,18 @@ impl App {
             self.ui_state.routes.current(),
             crate::route::Route::Workspace
         ) && self.dialog_state.workspace_dashboard.is_some();
+        let workspace_tree_owns_keys = workspace_active
+            && self
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .is_some_and(|dashboard| {
+                    matches!(
+                        dashboard.view.input_focus,
+                        crate::app::state::workspace_view::WorkspaceInputFocus::Tree
+                            | crate::app::state::workspace_view::WorkspaceInputFocus::Filter
+                    )
+                });
         if workspace_active
             && crate::commands::workspace_dashboard::handle_workspace_view_key(self, key)
         {
@@ -4336,37 +4350,6 @@ impl App {
             self.ui_state.input_mode,
         );
         debug_log!("action from bindings: {:?}", action);
-        // M005: Normal-mode filter text for the Workspace view. Only
-        // unbound keys reach the dashboard query; Insert-mode text stays
-        // in the composer and bound keys (j/k/Space/etc.) were already
-        // consumed above.
-        if workspace_active
-            && self.workspace_focus == crate::app::state::WorkspaceFocus::Composer
-            && self.ui_state.input_mode == InputMode::Normal
-            && action.is_none()
-        {
-            use crossterm::event::{KeyCode, KeyModifiers};
-            match key.code {
-                KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
-                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
-                        dashboard.pop_filter();
-                    }
-                    crate::commands::workspace_dashboard::sync_workspace_chat_panel(self);
-                    return;
-                }
-                KeyCode::Char(ch)
-                    if key.modifiers == KeyModifiers::NONE
-                        || key.modifiers == KeyModifiers::SHIFT =>
-                {
-                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
-                        dashboard.push_filter(ch);
-                    }
-                    crate::commands::workspace_dashboard::sync_workspace_chat_panel(self);
-                    return;
-                }
-                _ => {}
-            }
-        }
         match action {
             Some(InputAction::Send) => self.process_msg(TuiMsg::SubmitPrompt),
             Some(InputAction::Newline) => self.prompt_state.prompt.insert_newline(),
@@ -4392,7 +4375,7 @@ impl App {
                 }
             }
             Some(InputAction::NavigateUp) => {
-                if workspace_active {
+                if workspace_tree_owns_keys {
                     crate::commands::workspace_dashboard::move_dashboard_selection(self, -1);
                 } else if self.ui_state.input_mode == InputMode::Normal {
                     self.scroll_viewport_up();
@@ -4401,7 +4384,7 @@ impl App {
                 }
             }
             Some(InputAction::NavigateDown) => {
-                if workspace_active {
+                if workspace_tree_owns_keys {
                     crate::commands::workspace_dashboard::move_dashboard_selection(self, 1);
                 } else if self.ui_state.input_mode == InputMode::Normal {
                     self.scroll_viewport_down();
@@ -4556,7 +4539,7 @@ impl App {
             Some(InputAction::Home) => self.process_msg(TuiMsg::CursorHome),
             Some(InputAction::End) => self.process_msg(TuiMsg::CursorEnd),
             Some(InputAction::PageUp) => {
-                if workspace_active {
+                if workspace_tree_owns_keys {
                     crate::commands::workspace_dashboard::move_dashboard_selection(self, -10);
                 } else if self.prompt_state.prompt.is_multiline() {
                     // The innermost surface first: the composer's content spans
@@ -4569,7 +4552,7 @@ impl App {
                 }
             }
             Some(InputAction::PageDown) => {
-                if workspace_active {
+                if workspace_tree_owns_keys {
                     crate::commands::workspace_dashboard::move_dashboard_selection(self, 10);
                 } else if self.prompt_state.prompt.is_multiline() {
                     self.prompt_state.prompt.page_down();
@@ -4578,7 +4561,7 @@ impl App {
                 }
             }
             Some(InputAction::GoToTop) => {
-                if workspace_active {
+                if workspace_tree_owns_keys {
                     if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
                         dashboard.go_top();
                     }
@@ -4588,7 +4571,7 @@ impl App {
                 }
             }
             Some(InputAction::GoToBottom) => {
-                if workspace_active {
+                if workspace_tree_owns_keys {
                     if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
                         dashboard.go_bottom();
                     }
@@ -5886,7 +5869,7 @@ impl App {
             B::ModelsRefresh => session_selection::dispatch_models_refresh(self),
             B::Variants => session_selection::dispatch_variants(self),
             B::Fork => sessions::dispatch_fork(self),
-            B::Worktree => tasks::dispatch_worktree(self),
+            B::Worktree => workspace_dashboard::dispatch_worktree(self, argument),
             B::Editor => editor::dispatch_editor(self),
             B::OpenDocument => editor::dispatch_open_document(self, argument),
             B::Loop => tasks::dispatch_loop(self, argument),
@@ -7238,7 +7221,12 @@ impl App {
         }
         // Project picker teardown: clear the picker state so stale
         // completions are dropped at apply time.
-        if self.dialog_state.project_picker.is_some() {
+        if self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .is_some_and(|picker| !picker.workspace_inline)
+        {
             self.dialog_state.project_picker = None;
         }
         // The unmounted component is handed back so a caller that is *moving*
@@ -7253,6 +7241,10 @@ impl App {
     /// machine. Commit actions (open, focus, register) go through the
     /// normal `TuiCommand` path; navigation is local to the picker
     /// state.
+    pub(crate) fn handle_workspace_picker_key(&mut self, key: KeyEvent) {
+        self.handle_project_picker_key(key);
+    }
+
     fn handle_project_picker_key(&mut self, key: KeyEvent) {
         use crate::app::state::PickerPhase;
 

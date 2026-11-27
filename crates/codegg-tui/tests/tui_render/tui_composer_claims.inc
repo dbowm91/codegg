@@ -833,6 +833,7 @@ fn the_workspace_views_filter_still_accepts_a_claimed_letter() {
     app.ui_state.routes.navigate_to(Route::Workspace);
     normal_mode(&mut app);
 
+    press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
     press(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
 
     assert_eq!(
@@ -840,7 +841,8 @@ fn the_workspace_views_filter_still_accepts_a_claimed_letter() {
             .workspace_dashboard
             .as_ref()
             .expect("the dashboard is open")
-            .query,
+            .view
+            .filter,
         "d",
         "the Workspace view's filter must still accept a claimed letter"
     );

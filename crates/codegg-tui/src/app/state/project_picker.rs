@@ -147,6 +147,7 @@ pub struct ProjectPickerState {
     pub registration_input: String,
     /// Whether the transport supports local path registration.
     pub transport_local: bool,
+    pub workspace_inline: bool,
     /// Async request state for picker operations.
     pub picker_request: AsyncUiRequestState,
 }
@@ -185,6 +186,7 @@ impl ProjectPickerState {
             registration: RegistrationDraft::default(),
             registration_input: String::new(),
             transport_local,
+            workspace_inline: false,
             picker_request: AsyncUiRequestState::new(),
         }
     }

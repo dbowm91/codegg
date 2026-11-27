@@ -126,25 +126,32 @@ The project picker and panel manager have their own key hints. Press `?` or `Spa
 
 ## Workspace view
 
-`/workspace` is a whole view: the project -> workspace -> worktree tree on the left
-and the project chat viewer on the right. No sidebar, no composer and no badge row
-are painted; leaving restores the session exactly as it was.
+`/workspace` is the central full-frame project → workspace → worktree surface.
+It keeps the existing Chat panel docked on the right and paints the shared composer
+at the bottom; the composer badge names its destination before typing. `Shift+H`
+focuses that composer, `Shift+L` focuses Chat, and `Shift+X` leaves the route and
+restores the session composer. The route does not create a second chat buffer.
 
-- `j`/`k` move, `g`/`G` jump, `l`/`Enter` expands a project or workspace,
-  `h` collapses or returns to the parent.
-- `i` filters (INS); `Esc` returns to NOR and clears the filter before leaving.
-- `n` opens the new-session sheet for the selected workspace or worktree: an
-  existing managed worktree, or a new checkout with a base branch and either the
-  automatic `codegg/worktree/<id>` branch or a name you type.
-- `d` opens the project detail in the same window (workspaces, worktree and
-  session counts, task counts, membership); `h` returns.
-- `a` registers a local project, `e` edits the selected one, `t` opens its team
-  membership. `s` archives an active project or restores an archived one and needs a
-  second `s`, with any other key disarming. `x` destroys the project through a
-  confirmation that names how many sessions go with it.
-- Actions apply to the selected row, so they work on a project you have not opened a
-  tab for.
-- `Shift+X` leaves in NOR; in INS it types `X`.
+- `j`/`k` move, `g`/`G` jump, `Space` expands/collapses a project or workspace,
+  and `h` collapses or returns to the parent.
+- `Enter` on a project opens its project tab. `Enter` on a workspace or worktree
+  reveals its worktrees and project membership in the main panel.
+- `i` filters in INS; `Esc` returns to NOR, then clears the filter or closes the
+  current inline section before it leaves the route.
+- `n` opens the full-height new-session flow for the selected workspace or worktree:
+  an existing managed worktree, or a new checkout with a base branch and either the
+  daemon's automatic `codegg/worktree/<id>` branch or a name you type.
+- `d` opens project detail in the main panel. `a` registers a local project in
+  the tree; in a revealed workspace/team section it opens add-member. `t` loads
+  membership for the selected row's project, and the add-member form keeps that same
+  project identity.
+- `e` edits the selected project, `s` arms then archives/restores it, and `x`
+  opens the counted destroy confirmation. These lifecycle forms remain in the main
+  panel; the global Project Picker hotkeys (`Shift+F` / `Ctrl+\\`) still work.
+- `/worktree [selector]` opens this route. An exact, case-insensitive workspace ID,
+  workspace name, worktree ID, or branch selects the matching row. Lookup is lazy and
+  bounded to the loaded project page and 512 workspace worktree reads; misses and
+  lookup errors appear in the panel, not a toast or centered list.
 
 The **Workspace** panel (`/panels`) lists the project catalog for a quick switch
 without opening the whole view.

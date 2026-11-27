@@ -17,11 +17,21 @@ use codegg::protocol::dto::{ManagedWorktreeDto, ProjectWorkspaceSummaryDto};
 /// Maximum tree rows the view will paint or navigate.
 pub const MAX_TREE_ROWS: usize = 512;
 
-/// The view's own input mode.
-///
-/// Deliberately separate from the composer's: entering the Workspace route
-/// must not leave a capital letter un-typeable, and leaving it must restore
-/// the composer's mode untouched.
+/// The route's keyboard owner. The shared prompt is the only text buffer;
+/// this value only decides whether keys navigate the tree, reach that prompt,
+/// drive a panel, or edit the explicit tree filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceInputFocus {
+    #[default]
+    Tree,
+    Composer,
+    Panel,
+    Filter,
+    MemberForm,
+}
+
+/// The tree filter's own input mode. It is deliberately separate from the
+/// shared session/chat composer's mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkspaceMode {
     #[default]
@@ -126,6 +136,7 @@ pub struct LifecycleArm {
 #[derive(Debug, Default)]
 pub struct WorkspaceViewState {
     pub mode: WorkspaceMode,
+    pub input_focus: WorkspaceInputFocus,
     /// Selected position within the visible tree rows.
     pub selected: usize,
     /// Filter text. The view's own; never the composer's.
@@ -150,6 +161,18 @@ pub struct WorkspaceViewState {
     pub launch: Option<LaunchSheet>,
     /// An archive/restore awaiting its second keypress.
     pub lifecycle_arm: Option<LifecycleArm>,
+    pub reveal_workspace_id: Option<String>,
+    pub team_project_id: Option<String>,
+    pub team_memberships: Option<Vec<codegg::protocol::core::TeamMembershipDto>>,
+    pub team_loading: bool,
+    pub team_error: Option<String>,
+    pub team_notice: Option<String>,
+    pub member_form: bool,
+    pub member_principal: String,
+    pub member_role: String,
+    pub pending_selector: Option<String>,
+    pub selector_project_index: usize,
+    pub selector_worktree_probes: usize,
     /// A transient line the view owns (a refusal, a launch stage).
     pub notice: Option<String>,
 }
@@ -158,11 +181,23 @@ impl WorkspaceViewState {
     /// Enter Normal and clear the view-owned filter.
     pub fn reset_modes(&mut self) {
         self.mode = WorkspaceMode::Normal;
+        self.input_focus = WorkspaceInputFocus::Tree;
         self.filter.clear();
         self.selected = 0;
         self.detail = None;
         self.launch = None;
         self.lifecycle_arm = None;
+        self.reveal_workspace_id = None;
+        self.team_project_id = None;
+        self.team_memberships = None;
+        self.team_loading = false;
+        self.team_error = None;
+        self.team_notice = None;
+        self.member_form = false;
+        self.member_principal.clear();
+        self.pending_selector = None;
+        self.selector_project_index = 0;
+        self.selector_worktree_probes = 0;
         self.notice = None;
     }
 

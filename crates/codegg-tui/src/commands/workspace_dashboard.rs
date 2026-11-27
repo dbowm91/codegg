@@ -33,7 +33,13 @@ pub(crate) fn is_workspace_view_active(app: &App) -> bool {
 
 /// M005: canonical selected-project locator for composer/chat routing.
 /// `None` when the view is closed or no row is selected.
+/// Prefers the whole-view tree cursor over the legacy dashboard cursor.
 pub(crate) fn workspace_selected_project_id(app: &App) -> Option<String> {
+    if app.dialog_state.workspace_dashboard.is_some() {
+        if let Some(row_project) = crate::commands::workspace_view::selected_project_id(app) {
+            return Some(row_project);
+        }
+    }
     app.dialog_state
         .workspace_dashboard
         .as_ref()
@@ -111,12 +117,20 @@ pub(crate) fn composer_project_id(app: &App) -> Option<String> {
 /// FocusManager modal is pushed for normal navigation; other modal
 /// dialogs may still open above this route.
 pub(crate) fn open_workspace_dashboard(app: &mut App) {
+    open_workspace_dashboard_inner(app, true);
+}
+
+fn open_workspace_dashboard_inner(app: &mut App, announce: bool) {
     let return_tab = app.project_tabs.active_tab_id().cloned();
+    let return_composer_mode = app
+        .composer_mode_before_panel_focus
+        .unwrap_or(app.ui_state.input_mode);
     let reconnect_epoch = app.routing_registry.reconnect_epoch;
     // Explicit opens always start fresh (bounded aggregate reload);
     // modal dialogs above the view (TaskView, confirmations) never call
     // open and therefore preserve selection via `leave`/`close` paths.
     let mut dashboard = WorkspaceDashboardState::new(return_tab, reconnect_epoch);
+    dashboard.return_composer_mode = return_composer_mode;
     dashboard.view.reset_modes();
     app.dialog_state.workspace_dashboard = Some(dashboard);
     app.workspace_focus = crate::app::state::WorkspaceFocus::default();
@@ -125,18 +139,22 @@ pub(crate) fn open_workspace_dashboard(app: &mut App) {
     }
     start_dashboard_refresh(app);
     sync_workspace_chat_panel(app);
-    // Entering Workspace still auto-selects the chat panel, as it did when
-    // the render path hard-coded it for this route. The choice stays the
-    // user's afterwards: `Shift+S` can switch away and back without
-    // re-entering the view.
-    crate::commands::panels::select_panel(app, crate::panels::SidePanelId::Chat);
-    // Select for display, not for the keyboard. The view is a viewer (D11):
-    // a panel left focused here swallows `i`, `n`, `d` and `Space` before
-    // the route sees them. `Shift+L` is the deliberate step that focuses it.
+    // M002: Workspace owns a visible Chat edge (no second chat view).
+    app.panel_host.dock(
+        crate::panels::SidePanelId::Chat,
+        crate::panels::PanelPlacement::Right,
+    );
+    app.ui_state.sidebar_visible = app.panel_host.any_visible();
     crate::commands::panels::blur_panel(app);
-    app.messages_state
-        .toasts
-        .info("Workspace — j/k move, l open, n new session, d detail, i filter, Shift+X leaves");
+    app.park_composer_at_normal();
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.view.input_focus = crate::app::state::workspace_view::WorkspaceInputFocus::Tree;
+    }
+    if announce {
+        app.messages_state
+            .toasts
+            .info("Workspace — j/k move, Enter reveal, n new session, i filter, Shift+X leaves");
+    }
 }
 
 /// Leave the Workspace primary view. Cancels/invalidates only frontend
@@ -146,6 +164,11 @@ pub(crate) fn open_workspace_dashboard(app: &mut App) {
 /// `Route` history without touching the active tab/session binding.
 pub(crate) fn leave_workspace_view(app: &mut App) {
     app.task_registry.cancel_kind(TuiTaskKind::Workspace);
+    let return_composer_mode = app
+        .dialog_state
+        .workspace_dashboard
+        .as_ref()
+        .map(|dashboard| dashboard.return_composer_mode);
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         dashboard.generation = dashboard.generation.wrapping_add(1);
         dashboard.loading = false;
@@ -153,16 +176,17 @@ pub(crate) fn leave_workspace_view(app: &mut App) {
     }
     app.dialog_state.workspace_dashboard = None;
     app.workspace_focus = WorkspaceFocus::Composer;
-    // The route's own mode and filter do not outlive it: the composer's mode
-    // is restored by the ordinary frame, and a stale INS here would make the
-    // next entry type into the filter when the user expected navigation.
-    app.park_composer_at_normal();
+    // Drop the route-owned say-seed so the session composer is unchanged.
+    app.prompt_state.chat_seed = None;
     // Clear the Workspace-driven chat panel binding; per-project drafts
     // stay in `ChatState` and are not deleted. The panel is unbound too —
     // leaving the view must not leave keys aimed at a project locator that
     // no longer has a dashboard selection behind it.
     app.chat_panel_project = None;
     crate::commands::panels::blur_panel(app);
+    if let Some(mode) = return_composer_mode {
+        app.ui_state.input_mode = mode;
+    }
     crate::commands::panels::sync_chat_panel_project(app);
     if !app.ui_state.routes.back() {
         app.ui_state.routes.navigate_to(Route::Home);
@@ -333,6 +357,7 @@ pub(crate) fn apply_dashboard_loaded(
     }
     dashboard.apply_loaded(generation, rows, truncated, next_cursor);
     sync_workspace_chat_panel(app);
+    crate::commands::workspace_view::resolve_pending_selector(app);
 }
 
 // ── Selection / expand / descend ─────────────────────────────────────
@@ -346,6 +371,19 @@ pub(crate) fn move_dashboard_selection(app: &mut App, delta: isize) {
         return;
     };
     dashboard.move_selection(delta);
+    // Keep the tree cursor on the same project the dashboard cursor moved to.
+    let target = dashboard.selected_project_id();
+    if let Some(project_id) = target {
+        let rows = crate::commands::workspace_view::visible_rows(app);
+        if let Some(index) = rows.iter().position(|row| {
+            row.project_id == project_id
+                && row.kind == crate::app::state::workspace_view::TreeKind::Project
+        }) {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.view.selected = index;
+            }
+        }
+    }
     sync_workspace_chat_panel(app);
 }
 
@@ -695,12 +733,38 @@ pub(crate) fn focus_workspace_chat(app: &mut App) {
         app.messages_state
             .toasts
             .info("Chat panel cannot take focus for this project");
+        return;
+    }
+    app.workspace_focus = WorkspaceFocus::Chat;
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.view.mode = crate::app::state::workspace_view::WorkspaceMode::Normal;
+        dashboard.view.input_focus = crate::app::state::workspace_view::WorkspaceInputFocus::Panel;
     }
 }
 
-/// Return focus to the ordinary Session/Task composer.
+/// Return focus to the route's shared composer, arming a plain say-seed
+/// so Enter delivers to chat (`input_target()` is Chat only with a seed
+/// armed or the panel focused). Fails visibly when no project is bound.
 pub(crate) fn focus_workspace_composer(app: &mut App) {
+    if app.dialog_state.workspace_dashboard.is_none() {
+        return;
+    }
+    if workspace_selected_project_id(app).is_none() {
+        app.messages_state
+            .toasts
+            .info("No project selected — select a project before chatting");
+        return;
+    }
     crate::commands::panels::blur_panel(app);
+    app.workspace_focus = WorkspaceFocus::Composer;
+    // Chat-composition surface: arm the shared prompt; leave restores mode.
+    app.ui_state.input_mode = crate::input::InputMode::Insert;
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.view.mode = crate::app::state::workspace_view::WorkspaceMode::Normal;
+        dashboard.view.input_focus =
+            crate::app::state::workspace_view::WorkspaceInputFocus::Composer;
+    }
+    app.arm_chat_composer(crate::chat_browser::ChatComposeSeed::say());
 }
 
 // ── Key handling ─────────────────────────────────────────────────────
@@ -922,7 +986,12 @@ fn legacy_workspace_view_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
 }
 
 pub(crate) fn dispatch_workspace(app: &mut App) {
-    crate::commands::workspace_dashboard::open_workspace_dashboard(app);
+    open_workspace_dashboard(app);
+}
+
+pub(crate) fn dispatch_worktree(app: &mut App, selector: &str) {
+    open_workspace_dashboard_inner(app, false);
+    crate::commands::workspace_view::begin_selector(app, selector);
 }
 
 #[cfg(test)]
@@ -1120,6 +1189,113 @@ mod tests {
     ///
     /// The tree's actions resolve through `selected_row`, so this also pins
     /// that the painted row is the row the keys see.
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_focus_routes_composition_once_and_restores_the_session_mode() {
+        use crate::app::state::workspace_view::WorkspaceInputFocus;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _client) = test_app();
+        let mode_before = app.ui_state.input_mode;
+        open_test_dashboard(&mut app);
+        assert!(app
+            .panel_host
+            .is_visible_at(crate::panels::PanelPlacement::Right));
+        assert_eq!(app.input_target(), crate::panels::InputTarget::Build);
+        assert_eq!(
+            app.composer_destination_title(),
+            crate::panels::MAIN_BUFFER_TITLE
+        );
+
+        focus_workspace_chat(&mut app);
+        assert_eq!(app.input_target(), crate::panels::InputTarget::Chat);
+        assert_eq!(
+            app.composer_destination_title(),
+            crate::panels::SidePanelId::Chat.title()
+        );
+        focus_workspace_composer(&mut app);
+        // Route composer arms a plain say-seed, so Enter delivers to chat.
+        assert_eq!(app.input_target(), crate::panels::InputTarget::Chat);
+        assert_eq!(
+            app.composer_destination_title(),
+            crate::panels::SidePanelId::Chat.title()
+        );
+        assert!(app.prompt_state.chat_seed.is_some());
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .input_focus,
+            WorkspaceInputFocus::Composer
+        );
+        assert_eq!(app.ui_state.input_mode, crate::input::InputMode::Insert);
+        let handled = crate::commands::workspace_view::handle_workspace_view_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert!(
+            !handled,
+            "a chat character must fall through instead of opening a launch sheet"
+        );
+        assert!(app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .launch
+            .is_none());
+
+        leave_workspace_view(&mut app);
+        assert_eq!(app.ui_state.input_mode, mode_before);
+        // The route-owned seed leaves with the route.
+        assert!(app.prompt_state.chat_seed.is_none());
+        assert_eq!(app.input_target(), crate::panels::InputTarget::Build);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn filter_mode_is_separate_from_composer_and_tree_verbs() {
+        use crate::app::state::workspace_view::WorkspaceInputFocus;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        let press = |app: &mut App, code| {
+            crate::commands::workspace_view::handle_workspace_view_key(
+                app,
+                KeyEvent::new(code, KeyModifiers::NONE),
+            )
+        };
+        assert!(press(&mut app, KeyCode::Char('i')));
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .input_focus,
+            WorkspaceInputFocus::Filter
+        );
+        assert!(press(&mut app, KeyCode::Char('n')));
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.filter, "n");
+        assert!(
+            view.launch.is_none(),
+            "filter text must not also run the n verb"
+        );
+        assert!(press(&mut app, KeyCode::Esc));
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .input_focus,
+            WorkspaceInputFocus::Tree
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn n_opens_the_launch_sheet_for_the_selected_workspace() {
         let (mut app, _client) = test_app();
@@ -1509,16 +1685,159 @@ mod tests {
         open_test_dashboard(&mut app);
         app.core_client = None;
         press_view_key(&mut app, 't');
-        let lines = app
+        let dashboard = app.dialog_state.workspace_dashboard.as_ref().unwrap();
+        assert!(dashboard
+            .view
+            .team_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Team administration unavailable")));
+        assert!(!app
             .focus_manager
-            .dialog_mut_any::<crate::components::dialogs::info::InfoDialog>()
-            .map(|dialog| dialog.content_lines().to_vec())
-            .expect("an info dialog explains the refusal");
-        assert!(
-            lines
-                .first()
-                .is_some_and(|line| line.contains("Team administration unavailable")),
-            "the refusal is stated plainly: {lines:?}"
+            .has_dialog(crate::components::component::DialogType::Team));
+    }
+
+    fn cache_workspace(
+        app: &mut App,
+        project_id: &str,
+        workspace_id: &str,
+        display_name: &str,
+        worktrees: Vec<codegg::protocol::dto::ManagedWorktreeDto>,
+    ) {
+        let dashboard = app.dialog_state.workspace_dashboard.as_mut().unwrap();
+        dashboard.view.workspaces.insert(
+            project_id.to_string(),
+            vec![codegg::protocol::dto::ProjectWorkspaceSummaryDto {
+                workspace_id: workspace_id.to_string(),
+                display_name: display_name.to_string(),
+                canonical_root: None,
+            }],
         );
+        dashboard
+            .view
+            .worktrees
+            .insert(workspace_id.to_string(), worktrees);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worktree_selector_matches_workspace_name_without_case() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        cache_workspace(
+            &mut app,
+            "project-1",
+            "workspace-1",
+            "Alpha Workspace",
+            vec![],
+        );
+
+        crate::commands::workspace_view::begin_selector(&mut app, "alpha workspace");
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.pending_selector, None);
+        assert_eq!(view.reveal_workspace_id.as_deref(), Some("workspace-1"));
+        assert_eq!(view.selected, 1);
+        assert!(view.notice.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worktree_selector_matches_cached_branch_and_selects_its_row() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        cache_workspace(
+            &mut app,
+            "project-1",
+            "workspace-1",
+            "Alpha Workspace",
+            vec![codegg::protocol::dto::ManagedWorktreeDto {
+                worktree_id: "worktree-1".to_string(),
+                project_id: "project-1".to_string(),
+                repository_id: "repository-1".to_string(),
+                workspace_id: "workspace-1".to_string(),
+                node_id: None,
+                repository_root: "/tmp".to_string(),
+                path: "/tmp/checkout".to_string(),
+                branch: Some("Feature/ABC".to_string()),
+                base_commit: "commit".to_string(),
+                managed: true,
+                state: "ready".to_string(),
+                health: "healthy".to_string(),
+                lease_generation: 1,
+                owner_run_id: None,
+                created_at: 1,
+                updated_at: 1,
+            }],
+        );
+
+        crate::commands::workspace_view::begin_selector(&mut app, "feature/abc");
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.pending_selector, None);
+        assert_eq!(view.reveal_workspace_id.as_deref(), Some("workspace-1"));
+        assert_eq!(view.selected, 2);
+        assert!(view.notice.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unknown_worktree_selector_stays_as_an_in_panel_notice() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        cache_workspace(
+            &mut app,
+            "project-1",
+            "workspace-1",
+            "Alpha Workspace",
+            vec![],
+        );
+        cache_workspace(
+            &mut app,
+            "project-2",
+            "workspace-2",
+            "Beta Workspace",
+            vec![],
+        );
+
+        crate::commands::workspace_view::begin_selector(&mut app, "not-here");
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.pending_selector, None);
+        assert!(view.notice.as_deref().is_some_and(
+            |notice| notice.contains("No workspace or worktree matched /worktree not-here")
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn successful_inline_membership_add_refreshes_and_keeps_its_notice() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        {
+            let view = &mut app.dialog_state.workspace_dashboard.as_mut().unwrap().view;
+            view.team_project_id = Some("project-1".to_string());
+            view.team_memberships = Some(vec![]);
+        }
+        let reconnect_epoch = app.routing_registry.reconnect_epoch;
+        let request_id = app.dialog_state.team_request.begin();
+        app.dialog_state.workspace_team_request_id = Some(request_id);
+
+        crate::commands::team::apply_team_mutation_finished(
+            &mut app,
+            request_id,
+            Some("project-1".to_string()),
+            Some("Member added".to_string()),
+            None,
+            false,
+            reconnect_epoch,
+        );
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert!(
+            view.team_loading,
+            "a successful write starts a fresh member read"
+        );
+        assert!(
+            view.team_memberships.is_none(),
+            "old rows are not shown as fresh"
+        );
+        assert_eq!(view.team_notice.as_deref(), Some("Member added"));
+        assert_ne!(app.dialog_state.workspace_team_request_id, Some(request_id));
     }
 }

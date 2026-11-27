@@ -114,6 +114,7 @@ pub struct DialogState {
     /// completions (newer request, tab switch, reconnect) are dropped at
     /// apply time.
     pub team_request: crate::app::state::AsyncUiRequestState,
+    pub workspace_team_request_id: Option<u64>,
     /// M004: `SessionControl*` continuations for the `/control` shared-
     /// session surface. Stale completions are dropped at apply time.
     pub control_request: crate::app::state::AsyncUiRequestState,
