@@ -435,11 +435,6 @@ pub fn dialogs() -> Vec<DialogFixture> {
             make: |theme| info_dialog(theme, InfoType::TaskList),
         },
         DialogFixture {
-            surface: "WorktreeList",
-            dialog_type: DialogType::WorktreeList,
-            make: |theme| info_dialog(theme, InfoType::WorktreeList),
-        },
-        DialogFixture {
             surface: "GoalShow",
             dialog_type: DialogType::GoalShow,
             make: |theme| info_dialog(theme, InfoType::GoalShow),
@@ -532,7 +527,6 @@ pub const PARKED_SURFACES: &[&str] = &[
     "ShellShow",
     "Terminal",
     "TaskList",
-    "WorktreeList",
     "GoalShow",
     "MemoryResults",
     "DoctorReport",

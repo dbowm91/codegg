@@ -149,8 +149,6 @@ pub struct DialogState {
     /// Project Work Orders M003: cached project Task view projection.
     /// Daemon-owned truth; this is a bounded display cache only.
     pub task_view: crate::app::state::TaskViewState,
-    /// Async request state for worktree list operations.
-    pub worktree_list_request: crate::app::state::AsyncUiRequestState,
     /// Async request state for template creation operations.
     pub template_create_request: crate::app::state::AsyncUiRequestState,
     /// Async request state for user-initiated new-session creation (Ctrl+N,

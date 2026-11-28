@@ -358,7 +358,6 @@ const RECORDED: &[(&str, &str)] = &[
     ("ShellShow", "j/k scroll"),
     ("Terminal", "j/k scroll"),
     ("TaskList", "j/k scroll"),
-    ("WorktreeList", "j/k scroll"),
     ("GoalShow", "j/k scroll"),
     ("MemoryResults", "j/k scroll"),
     ("DoctorReport", "j/k scroll"),
@@ -377,7 +376,7 @@ fn every_surface_hint_uses_the_one_vocabulary() {
     // still pass, which is the failure mode this check exists to prevent. Add
     // a surface and this number goes up with it.
     assert!(
-        dialogs.len() + panels.len() >= 32,
+        dialogs.len() + panels.len() >= 31,
         "the scan must enumerate the surfaces that advertise keys, found {} \
          ({} dialog(s) + {} panel/row(s))",
         dialogs.len() + panels.len(),

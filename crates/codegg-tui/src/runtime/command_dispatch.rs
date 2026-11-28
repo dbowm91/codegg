@@ -73,9 +73,9 @@ use super::super::commands::shell::{
 #[allow(unused_imports)]
 use super::super::commands::tasks::{
     apply_notification_sent, apply_subagent_spawn_finished, apply_task_operation_finished,
-    apply_tasks_listed, apply_worktree_listed, handle_file_diff_stats_ready,
-    handle_open_diff_dialog, handle_spawn_subagent, start_delete_task, start_list_tasks,
-    start_send_notification, start_task_schedule, start_worktree_list,
+    apply_tasks_listed, handle_file_diff_stats_ready, handle_open_diff_dialog,
+    handle_spawn_subagent, start_delete_task, start_list_tasks, start_send_notification,
+    start_task_schedule,
 };
 #[allow(unused_imports)]
 use super::super::commands::test::{apply_test_run_finished, start_test_run};
@@ -810,9 +810,6 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             message,
         } => {
             start_task_schedule(app, interval_secs, message);
-        }
-        TuiCommand::WorktreeList => {
-            start_worktree_list(app);
         }
         TuiCommand::MemorySummary { command_id } => {
             start_memory_summary(app, command_id);
@@ -1579,13 +1576,6 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             apply_task_operation_finished(app, request_id, op, task_id, error);
         }
-        TuiCommand::WorktreeListed {
-            request_id,
-            worktrees,
-            error,
-        } => {
-            apply_worktree_listed(app, request_id, worktrees, error);
-        }
         TuiCommand::TemplateSessionCreated {
             request_id,
             session,
@@ -2145,23 +2135,26 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             );
         }
         TuiCommand::WorkspaceBranchesLoaded {
-            request_id: _,
+            request_id,
             branches,
             error,
         } => {
-            super::super::commands::workspace_view::apply_branches_loaded(app, branches, error);
+            super::super::commands::workspace_view::apply_branches_loaded(
+                app, request_id, branches, error,
+            );
         }
         TuiCommand::WorkspaceLaunchFinished {
-            request_id: _,
+            request_id,
             session_id,
             workspace_id: _,
             branch,
             stage,
             converged,
+            outcome,
             error,
         } => {
             super::super::commands::workspace_view::apply_launch_finished(
-                app, session_id, branch, stage, converged, error,
+                app, request_id, outcome, session_id, branch, stage, converged, error,
             );
         }
         TuiCommand::WorkspaceDashboardLoaded {
@@ -2531,10 +2524,6 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             }
             if app.dialog_state.task_list_request.is_loading() {
                 summary.push_str("\n  Task list: loading");
-                has_activity = true;
-            }
-            if app.dialog_state.worktree_list_request.is_loading() {
-                summary.push_str("\n  Worktree list: loading");
                 has_activity = true;
             }
             if app.dialog_state.template_create_request.is_loading() {

@@ -1136,6 +1136,18 @@ impl App {
                 WorkspaceInputFocus::Filter => "filter",
                 WorkspaceInputFocus::MemberForm => "add member",
             };
+            let key_hints = match (dashboard.view.mode, dashboard.view.input_focus) {
+                (WorkspaceMode::Normal, WorkspaceInputFocus::Tree) => {
+                    "j/k move · Enter reveal · i filter · Shift+H input · Shift+L chat · Shift+X exit"
+                }
+                (WorkspaceMode::Insert, WorkspaceInputFocus::Filter) => {
+                    "type to filter · Enter reveal · Esc back"
+                }
+                (WorkspaceMode::Insert, WorkspaceInputFocus::MemberForm) => {
+                    "type principal · Tab role · Enter add · Esc cancel"
+                }
+                _ => "",
+            };
             let filter = if dashboard.view.filter.is_empty() {
                 String::new()
             } else {
@@ -1257,6 +1269,7 @@ impl App {
             (
                 mode_label.to_string(),
                 focus_label.to_string(),
+                key_hints.to_string(),
                 filter,
                 dashboard.view.selected,
                 rows,
@@ -1264,8 +1277,16 @@ impl App {
                 footer.join("  |  "),
             )
         };
-        let (mode_label, focus_label, filter, selected, rows, mut detail_lines, footer_text) =
-            snapshot;
+        let (
+            mode_label,
+            focus_label,
+            key_hints,
+            filter,
+            selected,
+            rows,
+            mut detail_lines,
+            footer_text,
+        ) = snapshot;
         let reveal_snapshot =
             self.dialog_state
                 .workspace_dashboard
@@ -1394,10 +1415,7 @@ impl App {
                 format!(" {mode_label} · {focus_label}{filter}  "),
                 Style::default().fg(theme.foreground),
             ),
-            Span::styled(
-                "j/k move · Enter reveal · i filter · Shift+H input · Shift+L chat · Shift+X exit",
-                Style::default().fg(theme.muted),
-            ),
+            Span::styled(key_hints, Style::default().fg(theme.muted)),
         ]);
         frame.render_widget(
             Paragraph::new(title).style(Style::default().bg(theme.background)),
@@ -3203,10 +3221,6 @@ impl App {
 
         if self.dialog_state.task_list_request.is_loading() {
             activity.push("tasks".to_string());
-        }
-
-        if self.dialog_state.worktree_list_request.is_loading() {
-            activity.push("worktrees".to_string());
         }
 
         if self.dialog_state.template_create_request.is_loading() {

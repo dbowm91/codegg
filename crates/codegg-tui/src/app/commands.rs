@@ -48,6 +48,15 @@ impl TerminalResumeRequest {
     }
 }
 
+/// How a workspace launch attempt ended. A refusal is definitive; an unknown
+/// result may have reached the daemon and must retain its idempotency key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceLaunchOutcome {
+    Succeeded,
+    Refused,
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub enum TuiCommand {
     DeleteSession {
@@ -271,7 +280,6 @@ pub enum TuiCommand {
         interval_secs: u64,
         message: String,
     },
-    WorktreeList,
     MemorySummary {
         /// The catalog identity the user named.
         ///
@@ -967,12 +975,6 @@ pub enum TuiCommand {
         request_id: u64,
         op: String,
         task_id: Option<String>,
-        error: Option<String>,
-    },
-    /// Completion: worktree list has been fetched from core.
-    WorktreeListed {
-        request_id: u64,
-        worktrees: Vec<String>,
         error: Option<String>,
     },
     /// Completion: a session has been created from a template.
@@ -1774,8 +1776,10 @@ pub enum TuiCommand {
         branches: Vec<String>,
         error: Option<String>,
     },
-    /// M011: the launch answered. `session_id` is the concrete session the
-    /// daemon created (or converged on); the view opens it.
+    /// M011/M009: the launch answered. `session_id` is the concrete session the
+    /// daemon created (or converged on); the view opens it. `outcome` keeps the
+    /// refusal/transport distinction, so a retry reuses its idempotency key
+    /// unless the daemon definitively refused.
     WorkspaceLaunchFinished {
         request_id: u64,
         session_id: Option<String>,
@@ -1783,6 +1787,7 @@ pub enum TuiCommand {
         branch: Option<String>,
         stage: String,
         converged: bool,
+        outcome: WorkspaceLaunchOutcome,
         error: Option<String>,
     },
     /// C001: `WorkOrderTriggerCreate` completion. `secret` carries the

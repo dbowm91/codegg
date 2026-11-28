@@ -1,4 +1,4 @@
-//! Task, worktree, template, notification, and miscellaneous command handlers.
+//! Task, template, notification, and miscellaneous command handlers.
 
 use crate::app::send_tui;
 use crate::app::App;
@@ -230,24 +230,6 @@ async fn request_schedule_detail(
     match core_client.request(request).await {
         Ok(CoreResponse::ScheduleGet { schedule }) => Some(schedule),
         _ => None,
-    }
-}
-
-fn worktree_label(tree: &serde_json::Value) -> Option<String> {
-    let path = tree.get("path").and_then(|v| v.as_str())?.trim();
-    if path.is_empty() {
-        return None;
-    }
-
-    let branch = tree
-        .get("branch")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .trim();
-    if branch.is_empty() {
-        Some(path.to_string())
-    } else {
-        Some(format!("{} ({})", path, branch))
     }
 }
 
@@ -553,100 +535,6 @@ pub(crate) fn start_task_schedule(app: &mut App, interval_secs: u64, message: St
             }
         },
     );
-}
-
-pub(crate) fn start_worktree_list(app: &mut App) {
-    let request_id = app.dialog_state.worktree_list_request.begin();
-    let core_client = app.core_client.clone();
-    let project_dir = app
-        .active_workspace_root()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    let tx = app.tui_cmd_tx.clone();
-
-    spawn_registered_tui_task(
-        tx,
-        &mut app.task_registry,
-        TuiTaskKind::Command,
-        "worktree_list",
-        async move {
-            let Some(core_client) = core_client else {
-                return Some(TuiCommand::WorktreeListed {
-                    request_id,
-                    worktrees: Vec::new(),
-                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
-                });
-            };
-            let request = codegg::core::new_request(
-                format!("worktree-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::WorktreeList { project_dir },
-            );
-            match core_client.request(request).await {
-                Ok(CoreResponse::Json { data }) => {
-                    let trees = data
-                        .get("worktrees")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    let names: Vec<String> = trees.iter().filter_map(worktree_label).collect();
-                    Some(TuiCommand::WorktreeListed {
-                        request_id,
-                        worktrees: names,
-                        error: None,
-                    })
-                }
-                Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::WorktreeListed {
-                    request_id,
-                    worktrees: Vec::new(),
-                    error: Some(format!("Failed to list worktrees: {}", message)),
-                }),
-                Ok(_other) => Some(TuiCommand::WorktreeListed {
-                    request_id,
-                    worktrees: Vec::new(),
-                    error: Some("Unexpected worktree response".to_string()),
-                }),
-                Err(e) => Some(TuiCommand::WorktreeListed {
-                    request_id,
-                    worktrees: Vec::new(),
-                    error: Some(format!("Failed to list worktrees: {}", e)),
-                }),
-            }
-        },
-    );
-}
-
-pub(crate) fn apply_worktree_listed(
-    app: &mut App,
-    request_id: u64,
-    worktrees: Vec<String>,
-    error: Option<String>,
-) {
-    if let Some(err) = error {
-        if !app
-            .dialog_state
-            .worktree_list_request
-            .fail(request_id, err.clone())
-        {
-            return;
-        }
-        app.messages_state.toasts.warning(&err);
-        return;
-    }
-    if !app.dialog_state.worktree_list_request.finish(request_id) {
-        return;
-    }
-    if worktrees.is_empty() {
-        app.messages_state.toasts.info("No worktrees found");
-    } else if worktrees.len() > 5 {
-        let lines: Vec<String> = worktrees.into_iter().map(|w| format!("  {}", w)).collect();
-        app.open_info_dialog(
-            crate::components::dialogs::info::InfoType::WorktreeList,
-            lines,
-        );
-    } else {
-        app.messages_state.toasts.info(&worktrees.join(", "));
-    }
 }
 
 pub(crate) fn start_send_notification(
@@ -979,7 +867,7 @@ mod tests {
     use super::{
         durable_schedule_spec, durable_schedule_task_line, durable_schedule_task_value,
         durable_schedule_task_value_with_label, resolve_schedule_id, schedule_display_id,
-        schedule_label, worktree_label, ScheduleIdResolutionError, SCHEDULE_DISPLAY_ID_LEN,
+        schedule_label, ScheduleIdResolutionError, SCHEDULE_DISPLAY_ID_LEN,
     };
     use serde_json::json;
 
@@ -1193,37 +1081,5 @@ mod tests {
             durable_schedule_task_line(&task),
             "schedule: abcdefghijklmnopqrstuvwxyz1234 (60s, active)"
         );
-    }
-
-    #[test]
-    fn worktree_label_uses_path_and_branch() {
-        let tree = json!({
-            "path": "/repo/wt",
-            "branch": "feature/release-polish"
-        });
-
-        assert_eq!(
-            worktree_label(&tree).as_deref(),
-            Some("/repo/wt (feature/release-polish)")
-        );
-    }
-
-    #[test]
-    fn worktree_label_omits_empty_branch() {
-        let tree = json!({
-            "path": "/repo/detached",
-            "branch": ""
-        });
-
-        assert_eq!(worktree_label(&tree).as_deref(), Some("/repo/detached"));
-    }
-
-    #[test]
-    fn worktree_label_skips_missing_path() {
-        let tree = json!({
-            "branch": "main"
-        });
-
-        assert_eq!(worktree_label(&tree), None);
     }
 }

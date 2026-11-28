@@ -1,0 +1,24 @@
+# M010 — /worktree cutover completion and legacy retirement: closed
+
+Status: closed, with a correction to the plan's acceptance claim. Implementation branch `feat/auto-20261126-cae46b00`.
+
+## Requirement-to-evidence matrix
+
+- **One surface, one command.** `/worktree [selector]` reaches `dispatch_worktree` → `open_workspace_dashboard_inner` + `begin_selector` and never toasts and never opens a dialog. The dead second surface is gone: `TuiCommand::WorktreeList`/`WorktreeListed`, `start_worktree_list`, `apply_worktree_listed`, `worktree_label` and its three tests, `Dialog::WorktreeList`, `DialogType::WorktreeList`, `InfoType::WorktreeList` (plus its title and `dialog_type` arms), `DialogState::worktree_list_request`, the activity row in both the dispatch summary and `app/render.rs`, and the two `async_cmd_tests` that only exercised the deleted apply path.
+- **Descriptions are one edit.** `crates/codegg-core/src/command_catalog.rs` and `crates/codegg-tui/src/command.rs` now both read `Open a workspace or worktree in the workspace view (/worktree)`; `check_command_catalog_ownership.py` compares the two texts exactly, so they cannot drift.
+- **Docs follow the code.** `architecture/command.md` (representative built-ins row), `architecture/worktree.md` (the `/worktree` row now names `dispatch_worktree` and the deleted `start_worktree_list` row is gone), `docs/tui.md` (`/worktree` paragraph, including "no toast or dialog").
+- **Invariant bookkeeping is exactly one per deleted surface**, and the stop condition holds: `baseline.rs` `declaring` 28 → 27, `vocabulary.rs` `RECORDED` row and `>= 32` → `>= 31`, the `dialogs()` fixture and `PARKED_SURFACES` entry in `fixtures.rs`, the two `Dialog::WorktreeList` lists in `tui_render.inc`, and `tui_info_dialog_panel_chrome.inc` renaming `the_three_unreachable_info_types_are_still_unreachable` → `the_two_unreachable_info_types_are_still_unreachable` with its third arm removed. Nothing else in the measurement moved.
+- **Untouched by design**, and verified by grep: `CoreRequest::WorktreeList` (`crates/codegg-protocol/src/core.rs`), `GitOperation::WorktreeList` (`crates/codegg-git`), `src/command_intent/plan.rs`, `src/git_service.rs`, `src/core/daemon_projects.rs`. The daemon-side request and the git-tool subcommand are a different surface from the retired TUI list.
+
+## The plan's acceptance claim is wrong, stated plainly
+
+Plan §7's work package A sets the bar: the rewritten test must "fail on `256b215ac` for the right reason (a navigation assertion, not a panic)". It does not, and §3.1's measurement is a different claim. Plan §3.1 says the old test `worktree_command_completes_inside_the_event_loop_runtime` "fails on `256b215ac` for a navigation assertion". It does not. `dispatch_worktree` and `begin_selector` both exist at `256b215ac` (`commands/workspace_dashboard.rs:992` and `commands/workspace_view.rs:1247` at that commit), so `/worktree <selector>` already navigated before M010. The old test was red for one reason only: it typed bare `/worktree` and asserted the removed `No worktrees found` toast, which the selector path had already stopped producing.
+
+The rewritten test is `worktree_command_routes_without_waiting_on_a_runtime_handle`. It asserts what the contract actually is — the route is `Workspace`, the dashboard is mounted, the selector either reveals a target or names its miss in-panel, no toast fires, no picker or dialog is mounted, and command mode is exited. Because the navigation was already correct, this test also passes before M010; it pins the contract forward rather than reproducing a red. That is recorded here rather than presented as a red/green proof it is not.
+
+## Commands run
+
+- `cargo test -p codegg-tui --lib workspace_dashboard` — 59 passed.
+- `cargo test -p codegg-tui --test tui_render` (unfiltered) — **1248 passed / 8 failed**, and the eight are exactly the recorded pre-existing failures: `invariants::baseline::the_recorded_i4_baseline_is_exactly_what_the_harness_measures`, `invariants::vocabulary::the_recorded_hint_of_every_surface_is_what_it_renders`, four `tui_panel_docking` members, `tui_panel_host_chrome::task_view_advertises_only_the_verbs_a_column_can_deliver`, `tui_side_panels::walking_the_panel_list_loads_the_panel_it_lands_on`.
+- `python3 scripts/check_command_catalog_ownership.py`, `check_frontend_action_set.py`, `check_tui_transport_authority.py` — clean.
+- Live receipt: `/worktree no-such-target` answers `No workspace or worktree matched /worktree no-such-target`, and `/worktree feat-auto-20261126-cae46b00` lands on `Workspace: feat-auto-20261126-cae46b00 (77fe16a7-…)` over a `worktrees` section — the route, not a toast or a dialog — `plans/closure/tui-workspace-central-surface-corrective/live-receipt-006-010.md`, frames `receipts/m010-selector-unknown.png` and `receipts/m010-selector-resolved.png`.

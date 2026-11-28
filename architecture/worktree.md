@@ -230,9 +230,8 @@ pub use egggit::process::{
 | Location | How Used |
 |----------|----------|
 | `src/core/daemon_projects.rs:71` (`handle_projects_request`) | `find_git_root` + `list_worktrees` for workspace/project discovery |
-| `crates/codegg-tui/src/app/mod.rs:6612` | `/worktree` command handler (`B::Worktree`) |
+| `crates/codegg-tui/src/commands/workspace_dashboard.rs:993` | `/worktree [selector]` navigates into the workspace dashboard |
 | `crates/codegg-tui/src/commands/git_sidebar.rs:143` | Git sidebar worktree listing |
-| `crates/codegg-tui/src/commands/tasks.rs:550` | `start_worktree_list` async task |
 | `src/git_service.rs:1124` (`execute_worktrees`) | Git tool `worktree` subcommand (read-only dispatch; rendered at `src/tool/git_read.rs:336`) |
 | `src/agent/turn_runtime.rs:1272` | `egggit::worktree::find_git_root` for workspace root resolution |
 

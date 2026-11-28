@@ -1476,8 +1476,8 @@ fn the_i4_measurement_takes_every_declared_key_from_the_declaration() {
         }
     }
     assert_eq!(
-        declaring, 28,
-        "the declaration path must cover every surface that has one; the measured \n         count is 28"
+        declaring, 27,
+        "the declaration path must cover every surface that has one; the measured \n         count is 27"
     );
 }
 

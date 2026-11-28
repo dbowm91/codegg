@@ -219,15 +219,13 @@ fn every_reachable_hosted_info_type_leaves_the_host_alone() {
     // restated: an `InfoType` is reachable when its `DialogType` resolves to a
     // non-bespoke panel that `App::dock_target` actually maps.
     //
-    // The three that are *not* here are the finding, not an oversight:
+    // The two that are *not* here are the finding, not an oversight:
     //
     //   `TerminalShow` → `DialogType::Terminal`, a bespoke panel that owns its
     //     own `SidePanel` impl and never renders through `render_hosted`.
     //   `Agents`      → `DialogType::Agent`, bespoke *and* the one panel
     //     `discards_a_docked_box()` names: it shows the management list, not
     //     the editor box, so docking would throw the component away.
-    //   `WorktreeList`→ `DialogType::WorktreeList`, which `dock_target` omits
-    //     entirely, so `Shift+L` refuses and nothing is ever hosted.
     //
     // `ProjectInit` is listed and shares `DialogType::Team` with `Team` — two
     // content types, one panel, and the reason the keymap tests below key on
@@ -664,10 +662,9 @@ fn the_hint_does_not_describe_a_caller_supplied_modal_footer() {
 // ── Reachability of the widget itself ────────────────────────────────
 
 #[test]
-fn the_three_unreachable_info_types_are_still_unreachable() {
-    // M001's guards own these two, and `dock_target` owns the third. This
-    // milestone must not disturb any of them, and a test that only checked the
-    // fourteen reachable cases would not notice it had.
+fn the_two_unreachable_info_types_are_still_unreachable() {
+    // M001's guards own these two. This milestone must not disturb either,
+    // and a test that only checked the reachable cases would not notice it.
     let terminal = dialog(InfoType::TerminalShow, &["$ htop"]);
     assert_eq!(
         terminal.dialog_type(),
@@ -687,15 +684,6 @@ fn the_three_unreachable_info_types_are_still_unreachable() {
         SidePanelId::Agents.discards_a_docked_box(),
         "Agents must keep refusing a docked box"
     );
-
-    // `WorktreeList` resolves to no panel at all, so the gesture refuses and
-    // nothing is ever hosted. Recorded here as the third exclusion; the
-    // registry sweep in `tui_panel_manager_reachability.rs` covers the map.
-    let worktrees = dialog(InfoType::WorktreeList, &["main"]);
-    assert_eq!(
-        worktrees.dialog_type(),
-        codegg_tui::components::component::DialogType::WorktreeList,
-    );
 }
 
 fn all_info_types() -> Vec<InfoType> {
@@ -707,7 +695,6 @@ fn all_info_types() -> Vec<InfoType> {
         InfoType::TerminalShow,
         InfoType::Stats,
         InfoType::TaskList,
-        InfoType::WorktreeList,
         InfoType::GoalShow,
         InfoType::MemoryResults,
         InfoType::DoctorReport,

@@ -821,9 +821,9 @@ fn with_a_dialog_open_a_claimed_letter_reaches_the_dialog() {
 /// The Workspace view is a different surface with its own composer, so the
 /// claim table does not apply there.
 ///
-/// Its dashboard filter is the observable: in Normal mode an unbound letter
-/// is filter text, and a claimed letter must stay filter text here rather
-/// than being swallowed by the composer's claim.
+/// Its dashboard filter is the observable: `i` enters INS, and in INS a letter
+/// is filter text even when the composer's claim table would claim it in
+/// Normal mode.
 #[test]
 fn the_workspace_views_filter_still_accepts_a_claimed_letter() {
     let mut app = test_app();

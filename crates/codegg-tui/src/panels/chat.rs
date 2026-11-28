@@ -301,17 +301,41 @@ impl SidePanel for ChatPanel {
         // told it is unbound must not render an armed `CHAT` destination —
         // the two are set in lockstep by `sync_chat_panel_project`, so
         // either one alone would be a second source of truth.
-        if !self.bound || self.entry(ctx).is_none() {
-            let message = if !self.bound || ctx.chat_project.is_none() {
-                "No project bound"
-            } else {
-                "Chat unavailable"
-            };
+        if !self.bound || ctx.chat_project.is_none() {
             Paragraph::new(Line::from(Span::styled(
-                format!(" {message}"),
+                " No project bound",
                 Style::default().fg(theme.muted),
             )))
             .render(rows[1], buf);
+            return;
+        }
+        if self.entry(ctx).is_none() {
+            let snapshot = ctx
+                .chat
+                .snapshot(ctx.chat_project.expect("checked above"), ctx.now_ms);
+            let (message, style) = match snapshot.status {
+                crate::app::state::chat::ChatStatus::Unknown
+                | crate::app::state::chat::ChatStatus::Loading => (
+                    "Loading chat…".to_string(),
+                    Style::default().fg(theme.muted),
+                ),
+                crate::app::state::chat::ChatStatus::Unavailable => (
+                    "Chat unavailable".to_string(),
+                    Style::default().fg(theme.muted),
+                ),
+                crate::app::state::chat::ChatStatus::Error => (
+                    snapshot
+                        .last_error
+                        .unwrap_or_else(|| "Chat history failed".to_string()),
+                    Style::default().fg(theme.error),
+                ),
+                crate::app::state::chat::ChatStatus::Ready => (
+                    "No chat messages".to_string(),
+                    Style::default().fg(theme.muted),
+                ),
+            };
+            Paragraph::new(Line::from(Span::styled(format!(" {message}"), style)))
+                .render(rows[1], buf);
             return;
         }
 

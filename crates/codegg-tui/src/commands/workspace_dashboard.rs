@@ -172,6 +172,7 @@ pub(crate) fn leave_workspace_view(app: &mut App) {
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         dashboard.generation = dashboard.generation.wrapping_add(1);
         dashboard.loading = false;
+        dashboard.view.team_loading = false;
         dashboard.request.cancel();
     }
     app.dialog_state.workspace_dashboard = None;
@@ -1001,14 +1002,30 @@ mod tests {
     use codegg::core::CoreClient;
     use codegg::protocol::core::{CoreEvent, EventEnvelope, RequestEnvelope};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct CapturedLaunchRequest {
+        request_id: String,
+        project_id: String,
+        placement: codegg::protocol::core::SessionLaunchPlacementDto,
+        idempotency_key: String,
+    }
 
     /// Fake daemon serving one bounded dashboard page plus per-project
     /// task detail. Counts requests to prove the no-N+1 contract.
     struct FakeDashboardClient {
         dashboard_requests: AtomicUsize,
         detail_requests: AtomicUsize,
+        chat_ensure_projects: Mutex<Vec<String>>,
+        chat_history_channels: Mutex<Vec<String>>,
+        team_scopes: Mutex<Vec<codegg::protocol::core::CommandCatalogScopeDto>>,
+        project_gets: Mutex<Vec<String>>,
+        project_deletes: AtomicUsize,
+        launch_requests: Mutex<Vec<CapturedLaunchRequest>>,
+        branch_requests: Mutex<Vec<String>>,
+        launch_transport_failure: AtomicUsize,
     }
 
     impl FakeDashboardClient {
@@ -1028,6 +1045,34 @@ mod tests {
                 coarse_status_code: "permission".to_string(),
                 counts_visible: true,
             }
+        }
+
+        fn ensure_projects(&self) -> Vec<String> {
+            self.chat_ensure_projects
+                .lock()
+                .expect("chat ensure request lock")
+                .clone()
+        }
+
+        fn history_channels(&self) -> Vec<String> {
+            self.chat_history_channels
+                .lock()
+                .expect("chat history request lock")
+                .clone()
+        }
+
+        fn team_scopes(&self) -> Vec<codegg::protocol::core::CommandCatalogScopeDto> {
+            self.team_scopes
+                .lock()
+                .expect("team scope request lock")
+                .clone()
+        }
+
+        fn launch_requests(&self) -> Vec<CapturedLaunchRequest> {
+            self.launch_requests
+                .lock()
+                .expect("workspace launch request lock")
+                .clone()
         }
 
         fn task(id: &str) -> WorkOrderDto {
@@ -1068,8 +1113,15 @@ mod tests {
             // request from the scope and the argument, and the fake
             // resolves it with the daemon's own builder — so the request it
             // answers is the daemon's request, not a copy of it.
+            let request_id = request.request_id.clone();
             let (payload, execute) = match request.payload {
                 CoreRequest::CommandExecute { request: execute } => {
+                    if execute.command_id == "team" {
+                        self.team_scopes
+                            .lock()
+                            .expect("team scope request lock")
+                            .push(execute.scope.clone());
+                    }
                     match crate::command_route::inner_request_for_test(&execute) {
                         Some(inner) => (inner, Some(execute)),
                         None => {
@@ -1082,7 +1134,61 @@ mod tests {
                 }
                 payload => (payload, None),
             };
+            match &payload {
+                CoreRequest::ProjectGet { project_id } => self
+                    .project_gets
+                    .lock()
+                    .expect("project get capture lock")
+                    .push(project_id.clone()),
+                CoreRequest::ProjectDelete { .. } => {
+                    self.project_deletes.fetch_add(1, Ordering::SeqCst);
+                }
+                CoreRequest::SessionLaunch {
+                    project_id,
+                    placement,
+                    idempotency_key,
+                    ..
+                } => self
+                    .launch_requests
+                    .lock()
+                    .expect("workspace launch request lock")
+                    .push(CapturedLaunchRequest {
+                        request_id: request_id.clone(),
+                        project_id: project_id.clone(),
+                        placement: placement.clone(),
+                        idempotency_key: idempotency_key.clone(),
+                    }),
+                CoreRequest::GitRead { request } => self
+                    .branch_requests
+                    .lock()
+                    .expect("branch request capture lock")
+                    .push(request.project_id.clone()),
+                _ => {}
+            }
+            if matches!(&payload, CoreRequest::SessionLaunch { .. })
+                && self.launch_transport_failure.load(Ordering::SeqCst) != 0
+            {
+                return Err(codegg::error::AppError::Other(anyhow::anyhow!(
+                    "daemon socket closed"
+                )));
+            }
             let response = match payload {
+                CoreRequest::ProjectGet { .. } => CoreResponse::Error {
+                    code: "project_get_unavailable_in_test".to_string(),
+                    message: "project detail is not scripted".to_string(),
+                },
+                CoreRequest::ProjectDelete { .. } => CoreResponse::Error {
+                    code: "project_delete_unavailable_in_test".to_string(),
+                    message: "project deletion is not scripted".to_string(),
+                },
+                CoreRequest::SessionLaunch { .. } => CoreResponse::Error {
+                    code: "launch_refused_in_test".to_string(),
+                    message: "scripted launch refusal".to_string(),
+                },
+                CoreRequest::GitRead { .. } => CoreResponse::Error {
+                    code: "branches_unavailable_in_test".to_string(),
+                    message: "branch response is not scripted".to_string(),
+                },
                 CoreRequest::WorkspaceDashboard { .. } => {
                     self.dashboard_requests.fetch_add(1, Ordering::SeqCst);
                     CoreResponse::WorkspaceDashboard {
@@ -1100,6 +1206,61 @@ mod tests {
                         work_orders: vec![Self::task("wo-1"), Self::task("wo-2")],
                         next_cursor: None,
                         truncated: false,
+                    }
+                }
+                CoreRequest::TeamCapabilities => CoreResponse::TeamCapabilities {
+                    capabilities: codegg::protocol::core::TeamCapabilitiesDto {
+                        supported: true,
+                        protocol_version: 1,
+                        max_list_limit: 200,
+                    },
+                },
+                CoreRequest::TeamMembershipList { .. } => CoreResponse::TeamMembershipList {
+                    memberships: Vec::new(),
+                    truncated: false,
+                },
+                CoreRequest::ChatCapabilities => CoreResponse::ChatCapabilities {
+                    capabilities: codegg::protocol::core::ChatCapabilitiesDto {
+                        supported: true,
+                        protocol_version: 1,
+                        max_body_bytes: 64 * 1024,
+                        max_page_limit: 100,
+                        max_mentions: 16,
+                        max_references: 16,
+                        composing_ttl_secs: 30,
+                        retention_max_messages: 1000,
+                        actions_supported: false,
+                        max_action_title_bytes: 0,
+                        max_action_prompt_bytes: 0,
+                        backward_paging: false,
+                    },
+                },
+                CoreRequest::ChatChannelEnsure { project_id, .. } => {
+                    self.chat_ensure_projects
+                        .lock()
+                        .expect("chat ensure request lock")
+                        .push(project_id.clone());
+                    CoreResponse::ChatChannel {
+                        channel: codegg::protocol::core::ChatChannelDto {
+                            channel_id: format!("{project_id}-general"),
+                            project_id,
+                            name: "general".to_string(),
+                            created_by: "local-owner".to_string(),
+                            created_at_ms: 1,
+                        },
+                    }
+                }
+                CoreRequest::ChatHistory { channel_id, .. } => {
+                    self.chat_history_channels
+                        .lock()
+                        .expect("chat history request lock")
+                        .push(channel_id.clone());
+                    CoreResponse::ChatHistory {
+                        channel_id,
+                        messages: Vec::new(),
+                        next_cursor: 0,
+                        truncated: false,
+                        retention_floor_seq: 0,
                     }
                 }
                 _ => CoreResponse::Error {
@@ -1126,6 +1287,14 @@ mod tests {
         let client = Arc::new(FakeDashboardClient {
             dashboard_requests: AtomicUsize::new(0),
             detail_requests: AtomicUsize::new(0),
+            chat_ensure_projects: Mutex::new(Vec::new()),
+            chat_history_channels: Mutex::new(Vec::new()),
+            team_scopes: Mutex::new(Vec::new()),
+            project_gets: Mutex::new(Vec::new()),
+            project_deletes: AtomicUsize::new(0),
+            launch_requests: Mutex::new(Vec::new()),
+            branch_requests: Mutex::new(Vec::new()),
+            launch_transport_failure: AtomicUsize::new(0),
         });
         app.set_core_client(client.clone());
         let (tx, _rx) = mpsc::channel(32);
@@ -1155,6 +1324,429 @@ mod tests {
             None,
             None,
         );
+    }
+
+    async fn wait_for_chat_requests(client: &FakeDashboardClient, expected_projects: usize) {
+        for _ in 0..32 {
+            if client.ensure_projects().len() >= expected_projects
+                && client.history_channels().len() >= expected_projects
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn workspace_key(app: &mut App, code: crossterm::event::KeyCode) -> bool {
+        crate::commands::workspace_view::handle_workspace_view_key(
+            app,
+            crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+        )
+    }
+
+    fn workspace_frame_text(app: &mut App) -> String {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.render(frame))
+            .expect("Workspace frame draws");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_team_request_names_the_selected_rows_workspace() {
+        let (mut app, client) = test_app();
+        open_test_dashboard(&mut app);
+        assert!(
+            app.session_state.session.is_none(),
+            "test starts without a session"
+        );
+        {
+            let view = &mut app.dialog_state.workspace_dashboard.as_mut().unwrap().view;
+            view.expanded.insert("project-1".to_string());
+            view.workspaces.insert(
+                "project-1".to_string(),
+                vec![codegg::protocol::dto::ProjectWorkspaceSummaryDto {
+                    workspace_id: "workspace-row".to_string(),
+                    display_name: "Alpha workspace".to_string(),
+                    canonical_root: Some("/tmp/alpha".to_string()),
+                }],
+            );
+            view.selected = 1;
+        }
+
+        crate::commands::team::start_show_team(&mut app, "project-1".to_string());
+        for _ in 0..32 {
+            if !client.team_scopes().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let scopes = client.team_scopes();
+        assert_eq!(scopes.len(), 1, "one team catalogue request is recorded");
+        assert_eq!(scopes[0].project_id, "project-1");
+        assert_eq!(scopes[0].workspace_id, "workspace-row");
+        assert_eq!(scopes[0].session_id, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn t_replaces_an_open_detail() {
+        use crossterm::event::KeyCode;
+
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        assert!(workspace_key(&mut app, KeyCode::Char('d')));
+        assert!(app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .detail
+            .is_some());
+
+        assert!(workspace_key(&mut app, KeyCode::Char('t')));
+        let dashboard = app.dialog_state.workspace_dashboard.as_ref().unwrap();
+        assert!(dashboard.view.detail.is_none());
+        assert_eq!(dashboard.view.team_project_id.as_deref(), Some("project-1"));
+        let frame = workspace_frame_text(&mut app);
+        assert!(frame.contains("membership · project-1"), "frame: {frame}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn j_does_not_move_a_hidden_selection() {
+        use crossterm::event::KeyCode;
+
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        let before = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .selected;
+        app.dialog_state
+            .workspace_dashboard
+            .as_mut()
+            .unwrap()
+            .view
+            .team_project_id = Some("project-1".to_string());
+
+        // One press at a time. Pressing `j` and then `k` cancels out even
+        // without the guard, which is how this assertion could look green
+        // while the cursor moved under an unpainted tree.
+        assert!(workspace_key(&mut app, KeyCode::Char('j')));
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .selected,
+            before,
+            "j cannot move the tree cursor while the tree is hidden"
+        );
+        assert!(workspace_key(&mut app, KeyCode::Char('G')));
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .selected,
+            before,
+            "G cannot move the tree cursor while the tree is hidden"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_team_load_clears_loading() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        let request_id = app.dialog_state.team_request.begin();
+        app.dialog_state.workspace_team_request_id = Some(request_id);
+        {
+            let view = &mut app.dialog_state.workspace_dashboard.as_mut().unwrap().view;
+            view.team_project_id = Some("project-1".to_string());
+            view.team_loading = true;
+        }
+        let epoch = app.presence.reconnect_epoch;
+
+        crate::commands::team::apply_team_membership_loaded(
+            &mut app,
+            request_id,
+            "project-1".to_string(),
+            None,
+            None,
+            false,
+            Some("Team list failed: transport closed".to_string()),
+            false,
+            false,
+            epoch,
+        );
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert!(!view.team_loading);
+        assert_eq!(
+            view.team_error.as_deref(),
+            Some("Team list failed: transport closed")
+        );
+    }
+
+    /// Leaving drops the view, so `team_loading` is unobservable afterwards;
+    /// the clear in `leave_workspace_view` is by construction. What this pins
+    /// is the consequence a user can see: a late completion cannot resurrect
+    /// the route or paint into a view that no longer exists.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_late_team_completion_after_leaving_the_route_changes_nothing() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        let request_id = app.dialog_state.team_request.begin();
+        app.dialog_state.workspace_team_request_id = Some(request_id);
+        app.dialog_state
+            .workspace_dashboard
+            .as_mut()
+            .unwrap()
+            .view
+            .team_loading = true;
+        let epoch = app.presence.reconnect_epoch;
+
+        leave_workspace_view(&mut app);
+        assert!(app.dialog_state.workspace_dashboard.is_none());
+        assert!(!matches!(
+            app.ui_state.routes.current(),
+            crate::route::Route::Workspace
+        ));
+
+        crate::commands::team::apply_team_membership_loaded(
+            &mut app,
+            request_id,
+            "project-1".to_string(),
+            None,
+            None,
+            false,
+            Some("late transport error".to_string()),
+            false,
+            false,
+            epoch,
+        );
+        assert!(app.dialog_state.workspace_dashboard.is_none());
+    }
+
+    fn chat_panel_text(
+        panel: &mut crate::panels::chat::ChatPanel,
+        chat: &mut crate::app::state::ChatState,
+    ) -> String {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let area = Rect::new(0, 0, 40, 8);
+        let theme = std::sync::Arc::new(crate::theme::Theme::default());
+        let mut session =
+            crate::components::sidebar::SidebarWidget::new(std::sync::Arc::clone(&theme));
+        let mut terminal = crate::interactive_terminal::InteractiveTerminalController::new();
+        let mut ctx = crate::panels::PanelCtx {
+            theme,
+            now_ms: 0,
+            session: &mut session,
+            chat,
+            terminal: &mut terminal,
+            vim_mode: false,
+            chat_project: Some("project-1"),
+            area,
+            focused: false,
+            input_mode: crate::input::InputMode::Normal,
+            caret_blink_on: true,
+        };
+        let mut buffer = Buffer::empty(area);
+        crate::panels::SidePanel::render(panel, &mut ctx, &mut buffer, area);
+        buffer.content.iter().map(|cell| cell.symbol()).collect()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn moving_to_an_uncached_project_asks_for_its_history() {
+        use crossterm::event::KeyCode;
+
+        let (mut app, client) = test_app();
+        open_test_dashboard(&mut app);
+        assert!(workspace_key(&mut app, KeyCode::Char('j')));
+        assert_eq!(app.chat_panel_project.as_deref(), Some("project-2"));
+        assert_eq!(
+            app.chat.get("project-2").map(|entry| entry.status),
+            Some(crate::app::state::chat::ChatStatus::Loading)
+        );
+        // Return to project 1 and then revisit project 2 before either
+        // completion is applied; Loading must suppress a duplicate request.
+        assert!(workspace_key(&mut app, KeyCode::Char('k')));
+        assert!(workspace_key(&mut app, KeyCode::Char('j')));
+        wait_for_chat_requests(&client, 2).await;
+
+        let mut projects = client.ensure_projects();
+        projects.sort();
+        assert_eq!(projects, vec!["project-1", "project-2"]);
+        let mut channels = client.history_channels();
+        channels.sort();
+        assert_eq!(channels, vec!["project-1-general", "project-2-general"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn filtering_to_another_project_rebinds_the_chat() {
+        use crossterm::event::KeyCode;
+
+        let (mut app, client) = test_app();
+        open_test_dashboard(&mut app);
+        assert!(workspace_key(&mut app, KeyCode::Char('i')));
+        for ch in "Beta".chars() {
+            assert!(workspace_key(&mut app, KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .filter,
+            "Beta"
+        );
+        assert_eq!(app.chat_panel_project.as_deref(), Some("project-2"));
+        wait_for_chat_requests(&client, 2).await;
+
+        let mut projects = client.ensure_projects();
+        projects.sort();
+        assert_eq!(projects, vec!["project-1", "project-2"]);
+        let mut channels = client.history_channels();
+        channels.sort();
+        assert_eq!(channels, vec!["project-1-general", "project-2-general"]);
+    }
+
+    #[test]
+    fn a_bound_project_without_an_entry_paints_loading_not_unavailable() {
+        let mut panel = crate::panels::chat::ChatPanel::default();
+        panel.set_bound(true);
+        let mut chat = crate::app::state::ChatState::default();
+
+        let loading = chat_panel_text(&mut panel, &mut chat);
+        assert!(loading.contains("Loading chat"), "pane text: {loading}");
+        assert!(
+            !loading.contains("Chat unavailable"),
+            "pane text: {loading}"
+        );
+
+        chat.set_capability(false);
+        let refused = chat_panel_text(&mut panel, &mut chat);
+        assert!(refused.contains("Chat unavailable"), "pane text: {refused}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn enter_in_filter_mode_reveals_the_selected_row() {
+        use crossterm::event::KeyCode;
+
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        {
+            let view = &mut app
+                .dialog_state
+                .workspace_dashboard
+                .as_mut()
+                .expect("dashboard opens")
+                .view;
+            view.expanded.insert("project-1".to_string());
+            view.workspaces.insert(
+                "project-1".to_string(),
+                vec![codegg::protocol::dto::ProjectWorkspaceSummaryDto {
+                    workspace_id: "ws-1".to_string(),
+                    display_name: "Alpha Workspace".to_string(),
+                    canonical_root: Some("/tmp/alpha".to_string()),
+                }],
+            );
+        }
+        assert!(workspace_key(&mut app, KeyCode::Char('i')));
+        for ch in "Alpha".chars() {
+            assert!(workspace_key(&mut app, KeyCode::Char(ch)));
+        }
+        assert!(workspace_key(&mut app, KeyCode::Down));
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .filter,
+            "Alpha"
+        );
+        assert!(workspace_key(&mut app, KeyCode::Enter));
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.reveal_workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(view.filter, "Alpha");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tab_in_filter_mode_is_not_consumed() {
+        use crossterm::event::KeyCode;
+
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        assert!(workspace_key(&mut app, KeyCode::Char('i')));
+        let before = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .filter
+            .clone();
+        assert!(!workspace_key(&mut app, KeyCode::Tab));
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .filter,
+            before
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_filter_title_advertises_only_insert_mode_keys() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        assert!(workspace_key(
+            &mut app,
+            crossterm::event::KeyCode::Char('i')
+        ));
+
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.render(frame))
+            .expect("Workspace frame draws");
+        let buffer = terminal.backend().buffer();
+        let title = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .find(|row| row.contains(" WORKSPACE "))
+            .expect("Workspace title row is rendered");
+        assert!(
+            title.contains("type to filter · Enter reveal · Esc back"),
+            "filter title: {title}"
+        );
+        assert!(!title.contains("i filter"), "filter title: {title}");
+        assert!(!title.contains("Shift+X exit"), "filter title: {title}");
     }
 
     /// Opening the dashboard is non-modal and side-effect free: it changes the
@@ -1252,6 +1844,101 @@ mod tests {
         // The route-owned seed leaves with the route.
         assert!(app.prompt_state.chat_seed.is_none());
         assert_eq!(app.input_target(), crate::panels::InputTarget::Build);
+    }
+
+    /// ADR-0042: a claimed key belongs to the surface that owns the keyboard.
+    /// The route composer is a text surface, so every shifted letter is text —
+    /// none of them may leave the route or move focus behind the caret.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_route_composer_owns_shifted_letters() {
+        use crate::app::state::workspace_view::{WorkspaceInputFocus, WorkspaceMode};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        focus_workspace_composer(&mut app);
+
+        for code in [
+            KeyCode::Char('X'),
+            KeyCode::Char('H'),
+            KeyCode::Char('L'),
+            KeyCode::Char('F'),
+        ] {
+            app.on_key(KeyEvent::new(code, KeyModifiers::SHIFT));
+        }
+
+        assert_eq!(
+            app.prompt_state.prompt.get_text(),
+            "XHLF",
+            "every shifted letter is text while the route composer owns the keyboard"
+        );
+        let dashboard = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .expect("the route must still be open");
+        assert_eq!(dashboard.view.input_focus, WorkspaceInputFocus::Composer);
+        assert_eq!(dashboard.view.mode, WorkspaceMode::Normal);
+        assert!(matches!(
+            app.ui_state.routes.current(),
+            crate::route::Route::Workspace
+        ));
+    }
+
+    /// The three capitals are tree claims: they keep their meaning from Normal
+    /// tree focus and lose it the moment a text surface owns the keyboard.
+    #[tokio::test(flavor = "current_thread")]
+    async fn shift_x_leaves_only_from_the_normal_tree() {
+        use crate::app::state::workspace_view::{WorkspaceInputFocus, WorkspaceMode};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        {
+            let dashboard = app
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .expect("the dashboard opens on the tree");
+            assert_eq!(dashboard.view.input_focus, WorkspaceInputFocus::Tree);
+            assert_eq!(dashboard.view.mode, WorkspaceMode::Normal);
+        }
+        // Vacuity: a tree key reaches this handler (detail opens).
+        app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .expect("the route stays open")
+                .view
+                .detail
+                .is_some(),
+            "the tree's own keys must still reach the route handler"
+        );
+        app.on_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT));
+        assert!(
+            app.dialog_state.workspace_dashboard.is_none(),
+            "Shift+X leaves from the Normal tree"
+        );
+        assert!(!matches!(
+            app.ui_state.routes.current(),
+            crate::route::Route::Workspace
+        ));
+
+        // Composer half: the same key is text, not an exit.
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        focus_workspace_composer(&mut app);
+        app.on_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT));
+        assert!(
+            app.dialog_state.workspace_dashboard.is_some(),
+            "Shift+X must not leave while the composer owns the keyboard"
+        );
+        assert!(matches!(
+            app.ui_state.routes.current(),
+            crate::route::Route::Workspace
+        ));
+        assert_eq!(app.prompt_state.prompt.get_text(), "X");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1647,34 +2334,303 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn moving_the_selection_disarms_archive() {
+    async fn any_other_key_disarms_and_clears_the_notice() {
         let (mut app, _client) = test_app();
         open_test_dashboard(&mut app);
         press_view_key(&mut app, 's');
         press_view_key(&mut app, 'j');
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
         assert!(
-            app.dialog_state
-                .workspace_dashboard
-                .as_ref()
-                .is_some_and(|dashboard| dashboard.view.lifecycle_arm.is_none()),
+            view.lifecycle_arm.is_none(),
             "a confirmation must not outlive the selection it was given for"
+        );
+        assert!(
+            view.notice.is_none(),
+            "the disarmed hint must be cleared too"
         );
     }
 
-    /// Destroy is irreversible, so the view does not arm it: it opens the
-    /// picker's own confirmation, which names the session count first.
+    /// The route lists active projects only, so destroy must name the
+    /// archive-first action locally instead of starting the picker loader.
+    /// The notice must not name this route's own "x", which is refused for
+    /// every row and would send the reader back to the same refusal.
     #[tokio::test]
-    async fn destroy_from_the_view_opens_the_counted_confirmation() {
-        let (mut app, _client) = test_app();
+    async fn x_on_an_active_project_explains_archive_first() {
+        let (mut app, client) = test_app();
         open_test_dashboard(&mut app);
         press_view_key(&mut app, 'x');
-        let picker = app
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        let dashboard = app
             .dialog_state
-            .project_picker
+            .workspace_dashboard
             .as_ref()
-            .expect("destroy opens the confirmation");
-        assert_eq!(picker.phase, crate::app::state::PickerPhase::DestroyLoading);
-        assert_eq!(picker.pinned_project_id.as_deref(), Some("project-1"));
+            .expect("view remains open");
+        assert!(
+            dashboard.view.notice.as_deref().is_some_and(|notice| {
+                notice.contains("press s to archive Alpha")
+                    && notice.contains("project picker")
+                    && !notice.contains("then x")
+            }),
+            "the refusal must name the archive step and the surface that can destroy: {:?}",
+            dashboard.view.notice
+        );
+        assert!(
+            app.dialog_state.project_picker.is_none(),
+            "x must not start the lifecycle loader"
+        );
+        assert!(
+            client
+                .project_gets
+                .lock()
+                .expect("project get capture lock")
+                .is_empty(),
+            "x must not issue the destroy-confirmation ProjectGet"
+        );
+        assert_eq!(
+            client.project_deletes.load(Ordering::SeqCst),
+            0,
+            "x must not issue ProjectDelete"
+        );
+    }
+
+    async fn submit_launch_and_apply(
+        app: &mut App,
+        client: &FakeDashboardClient,
+        transport_failure: bool,
+    ) -> (CapturedLaunchRequest, String, u64) {
+        client
+            .launch_transport_failure
+            .store(if transport_failure { 1 } else { 0 }, Ordering::SeqCst);
+        let (tx, mut rx) = mpsc::channel(8);
+        app.tui_cmd_tx = Some(tx);
+        let mut launch = crate::app::state::workspace_view::LaunchSheet::new(
+            "project-1".to_string(),
+            "workspace-1".to_string(),
+        );
+        launch.step = crate::app::state::workspace_view::LaunchStep::Branch;
+        launch.branches = vec!["main".to_string()];
+        launch.idempotency_key = "m009-retry-key".to_string();
+        let original_key = launch.idempotency_key.clone();
+        app.dialog_state
+            .workspace_dashboard
+            .as_mut()
+            .unwrap()
+            .view
+            .launch = Some(launch);
+
+        crate::commands::workspace_view::handle_workspace_view_key(
+            app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        let request_id = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .next_request;
+        let mut completed = false;
+        for _ in 0..64 {
+            if let Ok(command) = rx.try_recv() {
+                crate::runtime::command_dispatch::dispatch_tui_command(app, command).await;
+                let launch = app
+                    .dialog_state
+                    .workspace_dashboard
+                    .as_ref()
+                    .and_then(|dashboard| dashboard.view.launch.as_ref());
+                if launch.is_some_and(|launch| !launch.submitting && launch.error.is_some()) {
+                    completed = true;
+                    break;
+                }
+            } else {
+                tokio::task::yield_now().await;
+            }
+        }
+        assert!(completed, "the fake launch result should reach the sheet");
+        let request = client
+            .launch_requests()
+            .into_iter()
+            .last()
+            .expect("SessionLaunch was captured");
+        (request, original_key, request_id)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_transport_failure_keeps_the_idempotency_key() {
+        let (mut app, client) = test_app();
+        open_test_dashboard(&mut app);
+        let (request, original_key, request_id) =
+            submit_launch_and_apply(&mut app, &client, true).await;
+        assert_eq!(request.project_id, "project-1");
+        assert_eq!(request.request_id, format!("workspace-launch-{request_id}"));
+        assert!(matches!(
+            request.placement,
+            codegg::protocol::core::SessionLaunchPlacementDto::NewManagedCheckout { .. }
+        ));
+        assert_eq!(request.idempotency_key, original_key);
+        assert_eq!(
+            app.dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .launch
+                .as_ref()
+                .unwrap()
+                .idempotency_key,
+            original_key,
+            "an uncertain transport result must retain the retry key"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_definitive_refusal_rotates_the_idempotency_key() {
+        let (mut app, client) = test_app();
+        open_test_dashboard(&mut app);
+        let (request, original_key, request_id) =
+            submit_launch_and_apply(&mut app, &client, false).await;
+        assert_eq!(request.project_id, "project-1");
+        assert_eq!(request.request_id, format!("workspace-launch-{request_id}"));
+        assert!(matches!(
+            request.placement,
+            codegg::protocol::core::SessionLaunchPlacementDto::NewManagedCheckout { .. }
+        ));
+        assert_eq!(request.idempotency_key, original_key);
+        let current_key = &app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .launch
+            .as_ref()
+            .unwrap()
+            .idempotency_key;
+        assert_ne!(current_key, &original_key);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_stale_launch_completion_does_not_touch_a_new_sheet() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        let (tx, _rx) = mpsc::channel(8);
+        app.tui_cmd_tx = Some(tx);
+        let mut launch = crate::app::state::workspace_view::LaunchSheet::new(
+            "project-1".to_string(),
+            "workspace-1".to_string(),
+        );
+        launch.step = crate::app::state::workspace_view::LaunchStep::Branch;
+        launch.branches = vec!["main".to_string()];
+        app.dialog_state
+            .workspace_dashboard
+            .as_mut()
+            .unwrap()
+            .view
+            .launch = Some(launch);
+        crate::commands::workspace_view::handle_workspace_view_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        let current_request_id = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .next_request;
+        crate::runtime::command_dispatch::dispatch_tui_command(
+            &mut app,
+            crate::app::TuiCommand::WorkspaceLaunchFinished {
+                request_id: current_request_id.wrapping_sub(1),
+                session_id: Some("stale-session".to_string()),
+                workspace_id: Some("stale-workspace".to_string()),
+                branch: Some("stale-branch".to_string()),
+                stage: "accepted".to_string(),
+                converged: false,
+                outcome: crate::app::WorkspaceLaunchOutcome::Unknown,
+                error: None,
+            },
+        )
+        .await;
+        let launch = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .launch
+            .as_ref()
+            .expect("stale completion must leave the current sheet open");
+        assert!(
+            launch.submitting,
+            "stale completion must not finish the new request"
+        );
+        assert!(launch.error.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_stale_branches_loaded_does_not_replace_a_new_sheet() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        let mut launch = crate::app::state::workspace_view::LaunchSheet::new(
+            "project-1".to_string(),
+            "workspace-1".to_string(),
+        );
+        launch.step = crate::app::state::workspace_view::LaunchStep::Placement;
+        app.dialog_state
+            .workspace_dashboard
+            .as_mut()
+            .unwrap()
+            .view
+            .launch = Some(launch);
+        crate::commands::workspace_view::handle_workspace_view_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        let current_request_id = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .next_request;
+        crate::runtime::command_dispatch::dispatch_tui_command(
+            &mut app,
+            crate::app::TuiCommand::WorkspaceBranchesLoaded {
+                request_id: current_request_id.wrapping_sub(1),
+                branches: vec!["stale-branch".to_string()],
+                error: None,
+            },
+        )
+        .await;
+        let launch = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .unwrap()
+            .view
+            .launch
+            .as_ref()
+            .expect("stale branches must leave the launch sheet open");
+        assert!(
+            launch.branches.is_empty(),
+            "stale branches must not replace the list"
+        );
+        assert!(
+            launch.branches_loading,
+            "stale result must not finish the current read"
+        );
     }
 
     /// D6: membership is a team role, not a project policy row. A daemon that
@@ -1716,6 +2672,71 @@ mod tests {
             .view
             .worktrees
             .insert(workspace_id.to_string(), worktrees);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blank_worktree_selector_is_a_noop() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        let dashboard = app.dialog_state.workspace_dashboard.as_mut().unwrap();
+        dashboard.view.notice = Some("keep this notice".to_string());
+        let selected = dashboard.view.selected;
+
+        crate::commands::workspace_view::begin_selector(&mut app, " \t ");
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.pending_selector, None);
+        assert_eq!(view.notice.as_deref(), Some("keep this notice"));
+        assert_eq!(view.selected, selected);
+        assert_eq!(view.reveal_workspace_id, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worktree_selector_matches_workspace_id() {
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        cache_workspace(
+            &mut app,
+            "project-1",
+            "workspace-1",
+            "Alpha Workspace",
+            vec![],
+        );
+
+        crate::commands::workspace_view::begin_selector(&mut app, "workspace-1");
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.pending_selector, None);
+        assert_eq!(view.reveal_workspace_id.as_deref(), Some("workspace-1"));
+        assert_eq!(view.selected, 1);
+        assert!(view.notice.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worktree_selector_accepts_256_but_rejects_257_characters() {
+        let accepted = "x".repeat(256);
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+
+        crate::commands::workspace_view::begin_selector(&mut app, &accepted);
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.pending_selector.as_deref(), Some(accepted.as_str()));
+        assert!(!view
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice == "/worktree selector is limited to 256 characters"));
+
+        let (mut app, _client) = test_app();
+        open_test_dashboard(&mut app);
+        crate::commands::workspace_view::begin_selector(&mut app, &"x".repeat(257));
+
+        let view = &app.dialog_state.workspace_dashboard.as_ref().unwrap().view;
+        assert_eq!(view.pending_selector, None);
+        assert_eq!(
+            view.notice.as_deref(),
+            Some("/worktree selector is limited to 256 characters")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -93,12 +93,16 @@ pub struct LaunchSheet {
     /// Local branches offered as `base_ref`.
     pub branches: Vec<String>,
     pub branches_loading: bool,
+    /// Request whose branch result may populate this sheet.
+    pub branches_request_id: Option<u64>,
     pub base_selected: usize,
     /// The typed branch name. Empty means the deterministic auto name.
     pub branch_input: String,
     /// One key per submit: reused on retry, replaced after a refusal.
     pub idempotency_key: String,
     pub submitting: bool,
+    /// Request whose launch result may complete this sheet.
+    pub launch_request_id: Option<u64>,
     pub stage: String,
     pub error: Option<String>,
 }

@@ -28,6 +28,7 @@ mod types;
 pub(crate) use commands::send_tui;
 pub use commands::{
     SessionMutationOp, ShellPromotionStageResult, TerminalResumeRequest, TuiCommand,
+    WorkspaceLaunchOutcome,
 };
 
 pub use types::{
@@ -1179,7 +1180,6 @@ impl App {
                 trigger_setup_pending: std::collections::HashSet::new(),
                 task_schedule_draft: None,
                 task_view: crate::app::state::TaskViewState::default(),
-                worktree_list_request: crate::app::state::AsyncUiRequestState::new(),
                 template_create_request: crate::app::state::AsyncUiRequestState::new(),
                 new_session_request: crate::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::app::state::AsyncUiRequestState::new(),
@@ -1778,7 +1778,6 @@ impl App {
                 trigger_setup_pending: std::collections::HashSet::new(),
                 task_schedule_draft: None,
                 task_view: crate::app::state::TaskViewState::default(),
-                worktree_list_request: crate::app::state::AsyncUiRequestState::new(),
                 template_create_request: crate::app::state::AsyncUiRequestState::new(),
                 new_session_request: crate::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::app::state::AsyncUiRequestState::new(),
@@ -7076,7 +7075,6 @@ impl App {
                 self.dialog_state.session_mutation_request.cancel();
                 self.dialog_state.task_list_request.cancel();
                 self.dialog_state.task_delete_request.cancel();
-                self.dialog_state.worktree_list_request.cancel();
                 self.dialog_state.template_create_request.cancel();
             }
             Dialog::Connect => {

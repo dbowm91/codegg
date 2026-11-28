@@ -390,7 +390,7 @@ Representative built-ins:
 | `/tool-contracts` | | Show tool contract diagnostics |
 | `/logs` | | Show recent daemon log lines and past toast notifications |
 | `/nodes` | | Eggwork M002: show the configured remote nodes' host telemetry |
-| `/worktree` | | List worktrees for the active workspace |
+| `/worktree` | | Open a workspace or worktree in the workspace view |
 | `/pr` | | GitHub pull requests |
 | `/issue` | `bugs`, `features` | GitHub issues |
 | `/lsp-servers` | `/lsp-detail` | List active LSP servers |

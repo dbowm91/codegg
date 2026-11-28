@@ -1081,9 +1081,7 @@ mod async_cmd_tests {
         apply_new_session_created, apply_session_messages_loaded, apply_session_mutation_finished,
         apply_sessions_reloaded, apply_template_session_created,
     };
-    use crate::commands::tasks::{
-        apply_task_operation_finished, apply_tasks_listed, apply_worktree_listed,
-    };
+    use crate::commands::tasks::{apply_task_operation_finished, apply_tasks_listed};
     use codegg::protocol::core::CoreEvent;
     use std::collections::HashMap;
 
@@ -1804,55 +1802,6 @@ mod async_cmd_tests {
             None,
         );
         assert!(!app.dialog_state.task_delete_request.is_loading());
-    }
-
-    #[test]
-    fn apply_worktree_listed_stale_is_ignored() {
-        let mut app = make_test_app();
-        let id_a = app.dialog_state.worktree_list_request.begin();
-        let id_b = app.dialog_state.worktree_list_request.begin();
-
-        // Stale success with id_a should NOT show a toast.
-        apply_worktree_listed(&mut app, id_a, vec!["wt-a".into()], None);
-        let toasts: Vec<String> = app
-            .messages_state
-            .toasts
-            .iter()
-            .map(|t| t.message.clone())
-            .collect();
-        assert!(
-            toasts.is_empty(),
-            "stale worktree list should not surface, got {toasts:?}"
-        );
-        assert!(app.dialog_state.worktree_list_request.is_loading());
-
-        // Current success with id_b.
-        apply_worktree_listed(&mut app, id_b, vec!["wt-b".into()], None);
-        assert!(!app.dialog_state.worktree_list_request.is_loading());
-    }
-
-    #[test]
-    fn apply_worktree_listed_stale_error_is_ignored() {
-        let mut app = make_test_app();
-        let id_a = app.dialog_state.worktree_list_request.begin();
-        let id_b = app.dialog_state.worktree_list_request.begin();
-
-        // Stale error with id_a should NOT show a toast.
-        apply_worktree_listed(&mut app, id_a, Vec::new(), Some("stale err".into()));
-        let toasts: Vec<String> = app
-            .messages_state
-            .toasts
-            .iter()
-            .map(|t| t.message.clone())
-            .collect();
-        assert!(
-            !toasts.iter().any(|t| t.contains("stale err")),
-            "stale worktree error should not surface, got {toasts:?}"
-        );
-
-        // Current success with id_b.
-        apply_worktree_listed(&mut app, id_b, Vec::new(), None);
-        assert!(!app.dialog_state.worktree_list_request.is_loading());
     }
 
     #[test]

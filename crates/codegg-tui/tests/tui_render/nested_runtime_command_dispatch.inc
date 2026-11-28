@@ -116,28 +116,47 @@ fn lsp_doctor_command_with_an_argument_completes_inside_the_event_loop_runtime()
     });
 }
 
-/// `/worktree` is the other command that waited on a runtime handle. Its
-/// result depends on the workspace, so the assertion is on the surface: the
-/// command reports a message and the session is still usable afterwards.
+/// `/worktree` routes without blocking when invoked from the event-loop runtime.
 #[test]
-fn worktree_command_completes_inside_the_event_loop_runtime() {
+fn worktree_command_routes_without_waiting_on_a_runtime_handle() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let workspace = std::env::temp_dir().join("codegg-c001-worktree-probe");
         let mut app = App::new_for_testing(workspace.to_string_lossy().to_string());
+        let selector = "no-such-worktree";
 
-        type_text(&mut app, "/worktree");
+        type_text(&mut app, &format!("/worktree {selector}"));
         press_enter(&mut app);
 
-        let messages = toast_messages(&app);
         assert!(
-            messages.iter().any(|m| m == "No worktrees found"),
-            "/worktree must report the string it always reported for a workspace outside a repository, got: {messages:?}"
+            matches!(
+                app.ui_state.routes.current(),
+                codegg_tui::route::Route::Workspace
+            ),
+            "/worktree must open the Workspace dashboard"
         );
+        let dashboard = app
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .expect("Workspace dashboard must be mounted");
         assert!(
-            !app.ui_state.command_mode,
-            "the command must leave command mode, got: {messages:?}"
+            dashboard.view.reveal_workspace_id.is_some()
+                || dashboard
+                    .view
+                    .notice
+                    .as_deref()
+                    .is_some_and(|notice| notice.contains(selector)),
+            "the selector must reveal a target or name its miss; view: {:?}",
+            dashboard.view.notice
         );
+        assert!(toast_messages(&app).is_empty(), "/worktree must not toast");
+        assert_eq!(
+            app.focus_manager.active_dialog_type(),
+            codegg_tui::components::component::DialogType::None,
+            "/worktree must not mount a picker or dialog"
+        );
+        assert!(!app.ui_state.command_mode, "command mode must be exited");
     });
 }
 

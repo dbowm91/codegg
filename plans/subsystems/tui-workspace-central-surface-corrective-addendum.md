@@ -1,6 +1,6 @@
 # TUI Workspace Central Surface Corrective Addendum
 
-Status: proposed
+Status: closed — M001–M005 are implemented, post-closure verification on 2026-11-27 found defects F1–F5, and corrective M006–M010 are implemented and closed (§13; closures `006`–`010`)
 
 Repository baseline: `eefbfa0fa3b135fc1af3fb2ed9c1d94d1f8cf643` (branch `feat/auto-20261126-cae46b00`, worktree clean at plan time).
 
@@ -272,10 +272,135 @@ The addendum is complete when all five milestones have closure records and:
 
 ## 12. Milestone status
 
-| Milestone | Status | Implementation plan | Closure record | Blockers |
+All five milestones landed and each has a closure record. Post-closure verification on 2026-11-27 found defects in four of the five, so they are recorded here as **implemented, not verified**. §13 holds the measurements, the findings F1–F5, and the corrective milestones that close them.
+
+§11 is **not** edited, and M001–M005 do not satisfy it on their own: an entry whose Right edge is closed still paints "Chat unavailable" once the selection rebinds, and `/worktree`'s own runtime test is red. The corrective milestones are what make §11 true; no milestone is re-opened and no closure record is rewritten.
+
+| Milestone | Status | Implementation plan | Closure record | Verification result (2026-11-27) |
 |---|---|---|---|---|
-| M001 | not started | `plans/implementation/tui-workspace-central-surface-corrective/001-route-composer-and-key-fallthrough.md` | — | none |
-| M002 | not started | `plans/implementation/tui-workspace-central-surface-corrective/002-force-chat-docked-right.md` | — | M001 |
-| M003 | not started | `plans/implementation/tui-workspace-central-surface-corrective/003-workspace-reveal-team-inline.md` | — | M002 |
-| M004 | not started | `plans/implementation/tui-workspace-central-surface-corrective/004-lifecycle-and-launch-in-panel.md` | — | M003 |
-| M005 | not started | `plans/implementation/tui-workspace-central-surface-corrective/005-worktree-navigates-to-workspace.md` | — | M004 |
+| M001 | **implemented — finding F1** | `plans/implementation/tui-workspace-central-surface-corrective/001-route-composer-and-key-fallthrough.md` | `plans/closure/tui-workspace-central-surface-corrective/001-status.md` | **FAIL.** The capital arms run ahead of the route's own Panel/Composer branch, so `Shift+H`, `Shift+L` and `Shift+X` are taken from the focused composer and `Shift+X` never reaches the route. Corrected by **M006**. |
+| M002 | **implemented — finding F2** | `plans/implementation/tui-workspace-central-surface-corrective/002-force-chat-docked-right.md` | `plans/closure/tui-workspace-central-surface-corrective/002-status.md` | **FAIL on the selection path.** The forced dock and the aggregate reveal hold; a rebind or a filter clamp binds the Chat without fetching, so it paints "Chat unavailable". Corrected by **M007**. |
+| M003 | **implemented — findings F2, F3** | `plans/implementation/tui-workspace-central-surface-corrective/003-workspace-reveal-team-inline.md` | `plans/closure/tui-workspace-central-surface-corrective/003-status.md` | **PASS WITH FINDINGS.** `run_store_unavailable` on a route with no session, the selection hidden after reveal, and `t` a no-op under an open detail. Corrected by **M008** (scope) and **M009** (detail). |
+| M004 | **implemented — finding F4** | `plans/implementation/tui-workspace-central-surface-corrective/004-lifecycle-and-launch-in-panel.md` | `plans/closure/tui-workspace-central-surface-corrective/004-status.md` | **FAIL.** Archive-first plus an active-only route list makes destroy unreachable for every listed row, and launch discards the request identity it was given. Corrected by **M009**. |
+| M005 | **implemented — finding F5** | `plans/implementation/tui-workspace-central-surface-corrective/005-worktree-navigates-to-workspace.md` | `plans/closure/tui-workspace-central-surface-corrective/005-status.md` | **PASS WITH FINDINGS.** One new red test in the runtime family, three descriptions still advertising the old behaviour, and an unreachable TUI `WorktreeList` surface. Corrected by **M010**. |
+
+## 13. Post-closure verification and corrective milestones
+
+This section is the record of the verification that produced §12's results, and of the corrective line it registered. It adds no code, no protocol, and no daemon authority: it names defects that the five closures missed, says why the closures could not see them, and points at the five plans that close them.
+
+### 13.1 What was measured, and why the filtered run could not see the defects
+
+Verification ran **read-only** against `256b215ac` on `feat/auto-20261126-cae46b00` (tree clean; the plan baseline is `eefbfa0fa`). The unfiltered family was the instrument, because a filtered run is exactly what let the closures claim more than the code held:
+
+| Run | Command | Result |
+|---|---|---|
+| HEAD `256b215ac` | `cargo test -p codegg-tui --test tui_render` | **1247 passed / 9 failed** (1256 total) |
+| Baseline `eefbfa0fa` | the same command in a `git archive` export sharing one `CARGO_TARGET_DIR` | **1246 passed / 10 failed** (1256 total) |
+| Closure 001's own claim | `cargo test -p codegg-tui --test tui_render -- workspace` | **19 passed / 1237 filtered out**, reproducing as recorded |
+
+The arithmetic is the finding: of the baseline's ten failures, **two were fixed** and **eight are shared with the baseline**, so they are pre-existing and out of scope for this line; against those eight the head adds **one new failing test**, M005's own runtime-family constraint. Every corrective plan therefore requires the *unfiltered* command, names the same eight pre-existing failures, and forbids claiming a green family on a filtered run.
+
+Closure 001's filtered command is the concrete reason F1 was invisible. `-- workspace` selects the route's own test members, which call the route handler directly; none of them presses a capital through the shared key-dispatch path, which is the only path a user has. A filter that selects the code under test while skipping the path a keystroke takes is a filter that can only confirm what the author already believed.
+
+### 13.2 The live receipt
+
+The findings below were observed in a live `tui-test` session driving the built binary, not inferred from source alone. The recipe, recorded so a corrective milestone reproduces the evidence instead of trusting this prose:
+
+- An **isolated identity**: a fresh temp directory for `HOME` and for `CODEGG_DATA_HOME`, so the session cannot read, write, or be confused by the operator's real catalog, sessions, or credentials. No receipt from a real `HOME` is evidence (D6 in §10).
+- A **remote-backed** repository, because a local-only repository has no repository identity — that is the unchanged open decision named in D6, not something this verification fixed.
+- Keys driven through the terminal test API (text and style locators plus snapshots), with the pane captured at the moment of the claim rather than summarized afterwards.
+
+No frame, log, or session artifact was stored in the repository by this verification, so for the findings below a later reader has the recipe and the source citations, not a stored screenshot; where a frame was not capturable, the finding rests on the source path plus a test, and that distinction is stated per finding. The receipt for the **corrective** line is a separate record with its own stored frames: §13.6 and `plans/closure/tui-workspace-central-surface-corrective/live-receipt-006-010.md`.
+
+### 13.3 Findings
+
+**F1 — the route's capital keys belong to the route, not to the focused input.** `Shift+H`, `Shift+L` and `Shift+X` are consumed by the route's capital arms before its Panel/Composer branch is reached, so a user typing a capital into the route's own composer gets a panel verb (or, for `Shift+X`, nothing, because the key is claimed before the branch that would have handled it). The governing rule is **ADR-0042**: in Insert, a printable key is text, and a claimed key must not fall into an unrelated verb. `plans/000-long-term-specification.md` §25 does **not** settle key ownership, and `architecture/tui.md` states both that `Shift+X` "leaves the route from any Workspace focus" and that composition keys fall through — the first sentence is the document error M006 corrects. The existing sweep for shifted letters in Insert sweeps **keymaps, not routes**, which is why a green sweep and a broken route coexisted. → **M006**.
+
+**F2 — the Chat dock follows the entry, not the selection.** `sync_workspace_chat_panel` already binds *and* starts history when the chat is stale; the selection and filter paths only bind. Painting an unbound or unfetched chat yields "Chat unavailable", so the correct-looking path (enter the route, see Chat bound) and the defective path (move the selection, or clamp it by filtering) diverge without a visible cause. The M002 test seeds both chats and drives the message path only, so the bind-without-fetch path had no test to fail. `catch_unwind` around the render keeps a paint-time panic from taking the session down; it also turns one into a blank frame, which is a **watch item** for a later evidence-backed decision, not a change in this line (§13.5). → **M007**.
+
+**F3 — a workspace row is a workspace only when a session happens to exist.** `scope_for` fills the command scope from the session alone, so a route with no session sends an empty project identity; the daemon refuses and the route paints `run_store_unavailable`. The team path already carries the row's project explicitly — the same shape the scope needs. Independently, detail and team are separate fields, so `t` under an open detail is a no-op, and the reveal leaves the selection hidden behind it. → scope half **M008**; detail half **M009**.
+
+**F4 — the lifecycle is unreachable and the launch does not know its request.** `ProjectCatalog::delete_project` archives first, and the route lists active projects only, so the destroy action is unreachable for precisely the rows the route can show: the closure recorded destroy "reachable through the counted confirmation" while the confirmation could not be reached from any listed row. Separately, the launch carries a `request_id` that the dispatch site discards, so a duplicate or retried launch cannot be recognized as the same request. → **M009**.
+
+**F5 — the cutover is described, not finished.** M005's own runtime-family test is red; three descriptions still say "List worktrees for the active workspace (/worktree)" in the two code catalogs and in `architecture/command.md`; and no sender of `TuiCommand::WorktreeList` remains — only the dispatch arm, which is therefore unreachable. The catalog-ownership guard compares description text **exactly**, so the two code sites must change in one edit or the guard fails. → **M010**.
+
+### 13.4 Corrective milestones
+
+Five milestones, no reconciliation milestone. The registry rows and this section are *registration*, not work, so nothing here needs a milestone of its own.
+
+| Milestone | Plan | Findings closed | Files it edits | Handoff order | Status |
+|---|---|---|---|---|---|
+| **M006** route input owns the capitals | `plans/implementation/tui-workspace-central-surface-corrective/006-route-input-owns-the-capitals.md` | F1 | `commands/workspace_view.rs` (`handle_workspace_view_key` branch order), `tests/tui_render/tui_composer_claims.inc` | 1 | **closed** — `plans/closure/tui-workspace-central-surface-corrective/006-status.md` |
+| **M007** the Chat dock follows the selection, and filter mode keeps its promises | `plans/implementation/tui-workspace-central-surface-corrective/007-chat-dock-follows-selection-and-filter-keys.md` | F2 | `commands/workspace_dashboard.rs` (`sync_workspace_chat_panel` reused, filter paths), `commands/workspace_view.rs` (`sync_selected_project`, `activate_selected_row`), `panels/chat.rs`, `app/render.rs` | 2 | **closed** — `plans/closure/tui-workspace-central-surface-corrective/007-status.md` |
+| **M008** a workspace row is a workspace, with or without a session | `plans/implementation/tui-workspace-central-surface-corrective/008-workspace-scope-without-a-session.md` | F3 (scope) | `commands/team.rs` (`start_show_team` scope), `commands/workspace_view.rs` (`prepare_workspace_section`, selection guards) | 3 | **closed** — `plans/closure/tui-workspace-central-surface-corrective/008-status.md` |
+| **M009** archive-first lifecycle and launch completions that know their request | `plans/implementation/tui-workspace-central-surface-corrective/009-archive-first-lifecycle-and-launch-identity.md` | F3 (detail), F4 | `commands/workspace_view.rs` (lifecycle refusal, request ids), `app/commands.rs` (`WorkspaceLaunchOutcome`), `runtime/command_dispatch.rs` (apply arms), `app/state/workspace_view.rs` (two id fields). **D withdrawn** | 4 | **closed** — `plans/closure/tui-workspace-central-surface-corrective/009-status.md` |
+| **M010** finish the `/worktree` cutover and retire the unreachable list path | `plans/implementation/tui-workspace-central-surface-corrective/010-worktree-cutover-completion-and-legacy-retirement.md` | F5 | `runtime/command_dispatch.rs`, `commands/tasks.rs`, `app/types.rs`, `app/state/dialog.rs`, `components/component.rs`, `components/dialogs/info.rs`, `lib.rs`, `app/render.rs`, `command.rs` + `command_catalog.rs` (one edit), invariant fixtures, docs | 5 | **closed** — `plans/closure/tui-workspace-central-surface-corrective/010-status.md` |
+
+**What actually changed, where the table above was wrong, and how each milestone ended.** All five are closed; the closure records are the evidence and this paragraph is the correction to §13.4's original column. That column named `app/state/workspace_view.rs` for M006–M009, but the behaviour lived in `commands/workspace_view.rs`, `commands/workspace_dashboard.rs` and `commands/team.rs`; the state file gained only M009's two request-id fields, which is why the column looked plausible and was wrong. M008 named a `command_route.rs` that no milestone touched.
+
+Three results are worth carrying forward rather than burying in the closures. **M009's notice text departs from its plan**: the plan prescribed `press s to archive <name>, then x to destroy it`, but this route refuses its own `x` for **every** row and lists active projects only, so the second clause named a gesture that cannot succeed; the notice now names the picker's `d` on a `Tab`-revealed archived row, and the test asserts the notice does **not** say `then x`. **M009's D is withdrawn on evidence**: no cached DTO carries a repository identity and `core.rs` has no `ProjectContext` request, so the precondition needs a protocol change that §9 forbids. **M010's plan is wrong about its own red**: `/worktree <selector>` already navigated at `256b215ac` (`dispatch_worktree` and `begin_selector` both exist there), so the rewritten test passes before the change too — it pins the contract instead of reproducing a failure, and the closure says so rather than presenting a red/green proof it does not have.
+
+One repo-wide gate moved as a side effect: the five milestones' explanatory comments put the comment corpus 16 lines over `docs/comment-budget.toml`'s recorded ceiling, so the manifest was re-banked (`check_comment_budget.py --bank`) in the same change — the guard's documented way to spend lines, and a visible 34-line manifest diff.
+
+**The order is file-serialized, not semantic.** M006–M009 all edit `app/state/workspace_view.rs`, so they must not run concurrently; M010 edits a different file and has no dependency on any of them. No milestone requires another's *behaviour*, so a lone M010 handoff is safe, and so is M006 alone.
+
+Each plan is baselined at `256b215ac`, states §13's eight pre-existing failures as out of scope, and requires the unfiltered `tui_render` command. Earlier plans in the same directory are **not** amended: §5 and §10 of M001–M005 stay as the original intent, and the corrective plan is where the defect and its guard are recorded, per `plans/003-planning-process.md` §7.
+
+### 13.5 What the corrective line deliberately does not do
+
+- **The eight shared `tui_render` failures are not fixed here.** They fail identically at `eefbfa0fa` and `256b215ac`; a milestone that repaired them would be a different corrective with its own baseline.
+- `catch_unwind` **stays** in the render path. Removing it converts one malformed frame into a lost session, and no test yet proves the panic is unreachable. M007 records it as a watch item.
+- **No loading watchdog.** No test proves a future that never completes, so a watchdog would be a guessed timeout rather than a measured one.
+- **No archived-project toggle and no new key.** Route-level destroy is **withdrawn** from M009 pending an owner decision about whether the route lists archived projects; the archive-first rule is a catalog authority and is left intact.
+- `CoreRequest::WorktreeList` **and** `GitOperation::WorktreeList` **stay**. M010 deletes only the unreachable TUI surface.
+- **No daemon authority, protocol, or storage change** in any of the five. A change to the daemon's refusal behaviour or to §13.1's scope contract is a **stop condition**, not a local decision.
+- **No sixth milestone and no re-opened closure.** Closure records `001`–`005` are left exactly as written; §12 carries the correction beside them, so the record shows both what was claimed and what was true.
+
+### 13.6 The delivered build's live receipt
+
+§13.2 recorded findings in a live session and stored no frame. The corrective milestones needed the
+opposite: someone has to be able to press the keys and see what M006–M010 actually do. That receipt
+now exists, with stored screenshots, at
+`plans/closure/tui-workspace-central-surface-corrective/live-receipt-006-010.md` and
+`plans/closure/tui-workspace-central-surface-corrective/receipts/`.
+
+| Milestone | Frame | The terminal's own line |
+|---|---|---|
+| **M006** | `receipts/m006-route-surface.png` | `WORKSPACE  NOR · tree  j/k move · Enter reveal · i filter · Shift+H input · Shift+L chat · Shift+X exit`, with the footer naming `s archive/restore` and `x destroy` |
+| **M006** | `receipts/m006-composer-focus.png` | after `Shift+H`: `NOR · composer`, badge `[INS][CHAT]`, placeholder `Message the project chat…`; `Shift+X` typed there yields `HelloX` and the route stays open |
+| **M007** | `receipts/m007-filter.png` | `i` gives `INS · filter  type to filter · Enter reveal · Esc back` |
+| **M009** | `receipts/m009-archive-first-notice.png` | `x` on an active row: `press s to archive feat-auto-20261126-cae46b00 first; destroy it from the project picker (Tab shows archived)` — the corrected notice, verbatim, with no `then x` |
+| **M010** | `receipts/m010-selector-unknown.png` | `/worktree no-such-target`: `No workspace or worktree matched /worktree no-such-target` |
+| **M010** | `receipts/m010-selector-resolved.png` | `/worktree feat-auto-20261126-cae46b00`: `Workspace: feat-auto-20261126-cae46b00 (77fe16a7-…)` over a `worktrees` section — the route, not a toast and not a dialog |
+
+Four things the receipt records because they cost time, and because a later reader will otherwise
+assume they are defects. **The startup `ERROR` dialog** (`run_store_unavailable`) is the session
+view's run store refusing in an isolated data root — the same message already recorded at
+`plans/closure/tui-workspace-and-panel-surface-corrective/m009-m010-receipt.md:22`, on a path no
+milestone here touches; the route itself paints clean, which is M008's finding F3 fixed. **The
+`INFO` panel after leaving the route** is the leave-path toast at `commands/workspace_dashboard.rs:156`,
+not a dialog that outlived the route. **A route-composer draft surviving the exit** is the single
+shared composer being restored, which M001's contract test pins. And **`tui-test run <binary>` does
+not reproduce a frame here** — it stays a canonical-mode tty — while `tui-test open` plus
+`submit "exec <binary>"` does; a submitted `/command` also needs a second Return while its completion
+list is open. The recipe is in the receipt, not repeated here.
+
+**A pre-existing red this line found by running the whole workspace.** Widening to the workspace
+sweep (`cargo nextest run --workspace --locked --profile ci --no-fail-fast`) reported 17877 passed,
+12 failed, 11 skipped. Eight are §13.5's recorded `tui_render` failures. The other four are
+`codegg::core_daemon command_catalog_m007d::*` — `command_catalog_carries_the_reviewed_classification`
+(`the catalog holds 161 commands`, measured 159), `command_catalog_publishes_the_action_of_every_frontend_effect`
+(`42 forms are frontend effects`, measured 40), `command_catalog_publishes_the_daemons_serve_ability`,
+and `command_execute_refuses_a_frontend_effect`. They are **pre-existing and unrelated**: the only
+change to `crates/codegg-core/src/command_catalog.rs` in this line is one `description` string, and
+the file's `command_id`/`kind` line sequence is byte-identical to `HEAD` at 159 commands — a
+description cannot move a count or a serve-ability. Restoring that one file to `HEAD`'s content and
+re-running the family reproduces the same four failures (8 passed / 4 failed, the tree restored
+byte-identically), so they are properties of the catalog `HEAD` already ships;
+`command_execute_refuses_a_frontend_effect` even reports
+`unknown_command: no command named projects`, i.e. it drives a command the catalog no longer
+defines. What is new is the *exposure*: every earlier
+verification in this line ran the `tui_render` family and focused lib tests, and the scoped tier
+cancels on the first failure, so nothing had ever executed the root `core_daemon` family. A red that
+only a whole-workspace sweep can see is not a red `quick` will catch, and `verify.sh quick` runs no
+tests at all.

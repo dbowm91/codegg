@@ -42,7 +42,6 @@ pub enum Dialog {
     ShellShow,
     Terminal,
     TaskList,
-    WorktreeList,
     GoalShow,
     MemoryResults,
     DoctorReport,
@@ -132,7 +131,6 @@ impl Dialog {
                 | Self::ShellShow
                 | Self::Terminal
                 | Self::TaskList
-                | Self::WorktreeList
                 | Self::GoalShow
                 | Self::MemoryResults
                 | Self::DoctorReport

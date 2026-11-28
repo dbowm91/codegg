@@ -984,7 +984,7 @@ impl CommandRegistry {
                 CommandCategory::System,
                 CommandAction::Builtin(BuiltinSlashAction::Worktree),
             )
-            .with_description("List worktrees for the active workspace (/worktree)"),
+            .with_description("Open a workspace or worktree in the workspace view (/worktree)"),
         ]
     }
 

@@ -236,7 +236,7 @@ a stale or cancelled ID are silently ignored.
 `OpenTreeDialog`, `PreviewImport`, `ConfirmImport`, `ResearchListRuns`,
 `ResearchLoadRun`, `ResearchLoadSection`, `MemorySummary`, `MemorySearch`,
 `MemoryRemember`, `MemoryForget`, `RunDoctor`, all session mutations,
-goal operations, task operations, worktree list, template create,
+goal operations, task operations, template create,
 notification send, plugin commands, project-catalog refresh pair, test
 run, asset refresh, provider connection lifecycle, and session selection.
 
@@ -271,8 +271,7 @@ The event loop is awaited inside `#[tokio::main(flavor = "multi_thread")]`
 a nested entry panics with *"Cannot start a runtime from within a runtime"*.
 `App::on_key` is synchronous and the event loop's only `catch_unwind` wraps
 rendering rather than key handling, so that panic took the whole process
-down. The `/lsp-*` command arms and the `/worktree` arm in
-`crates/codegg-tui/src/app/mod.rs` all waited this way, and so did the `McpCommand::Debug`
+down. The `/lsp-*` command arms waited this way, and so did the `McpCommand::Debug`
 arm in `src/mcp/cli.rs` — the MCP CLI is reached from the same `main`.
 
 The wait therefore goes through `tokio::task::block_in_place`, which leaves
@@ -3291,9 +3290,11 @@ composer mode without creating another buffer.
 
 **Mode.** The view has its own NOR/INS mode (`WorkspaceMode`), independent of the
 composer's. `i` enters INS to filter; `Esc` returns to NOR, and a later `Esc`
-clears the filter or closes the current inline section before route exit. `Shift+X`
-leaves the route from any Workspace focus; composition keys otherwise fall through
-to the selected input rather than also invoking a tree action.
+clears the filter or closes the current inline section before route exit. The three
+route capitals are **tree claims**: from Normal tree focus `Shift+X` leaves,
+`Shift+H` focuses the composer and `Shift+L` focuses Chat; from anywhere else a
+shifted letter is composition input, because a claimed key belongs to the surface
+that owns the keyboard (ADR-0042).
 
 **Tree and reveal.** Project -> workspace -> managed worktree. A project's workspaces
 come from one bounded `ProjectGet`; a workspace's worktrees from one bounded
@@ -3301,21 +3302,32 @@ come from one bounded `ProjectGet`; a workspace's worktrees from one bounded
 expands/collapses tree nodes; `Enter` on a project opens its tab, while `Enter` on
 a workspace or worktree reveals its worktrees and row-project membership in the main
 panel. Membership fetches and add-member requests carry that row's project ID; denied
-reads and writes render an explicit in-panel refusal. The tree never resolves a path
-and never spawns `git`.
+reads and writes render an explicit in-panel refusal. A sessionless reveal names both
+the row's project ID and workspace ID (the revealed ID, or the selected row's ID); an
+unknown workspace remains empty so the daemon's typed refusal is preserved, never
+inferred from an attached session. The tree never resolves a path and never spawns
+`git`.
 
 **Launch.** `n` opens the new-session sheet for the selected workspace or worktree.
 An existing worktree launches with `SessionLaunch { ExistingManagedWorktree }`; a new
 checkout offers the repository's local branches (`GitRead(Branches)`) as its base and
 either the daemon's deterministic `codegg/worktree/<id>` branch (`target_branch: None`)
-or a user-typed name. One idempotency key per submit is reused on a transport retry
-and replaced after a refusal. The view adopts only the identities the response
-returns (`session_id`, `workspace_id`, `branch`) and opens that session.
+or a user-typed name. One idempotency key per submit is reused when the result
+is uncertain (including a transport failure) and replaced only after a definitive
+refusal. The launch sheet records its launch and branch-read request IDs; a late
+completion for an older request is dropped rather than applied to a newer sheet.
+Core responses do not echo these local IDs, so the task attaches its captured ID
+to each completion, including when talking to an older daemon. The view adopts
+only the identities the response returns (`session_id`, `workspace_id`, `branch`)
+and opens that session.
 
 **Detail.** `d` replaces the tree with project identity, lifecycle, workspaces,
 worktree/session counts, task counts, and the membership summary in the main panel;
 `h` returns. It is not a modal, and a principal the daemon withheld counts from
-reads `withheld` rather than `0`.
+reads `withheld` rather than `0`. Detail and reveal/team membership are mutually
+exclusive: each opener clears the competing section before setting its own, while the
+view keeps its two independent option fields. While any section replaces the tree,
+selection-navigation keys are no-ops; they never move a cursor the frame does not paint.
 
 **Lifecycle and membership.** The view acts on the selected row's project, not on
 the project that happens to hold the active tab:
@@ -3325,14 +3337,18 @@ the project that happens to hold the active tab:
 | `a` | Register a local project in the tree; add a member from a revealed team/workspace section |
 | `e` | Edit display name and bound root (`ProjectUpdate` with `expected_updated_at`) |
 | `s` | Arm then archive an active project or restore an archived one |
-| `x` | Destroy through the counted confirmation |
+| `x` | On an active row, explain archive-first; destroy is withdrawn from this route |
 | `t` | Fetch membership for the selected row's project, in-panel |
 
 The route reuses the picker's lifecycle request/state machine but paints its body in
 the main-panel region rather than mounting the centered Project Picker dialog. The
 global picker hotkeys remain unchanged outside the route. Archive arms on the first
-`s` and performs on the second; any other key disarms. Destroy's confirmation names
-the session count. The `DeviceSecretDialog` remains the dedicated one-time token
+`s` and performs on the second; any other key disarms and clears its hint. The
+route lists active projects only, so `x` says `press s to archive <project> first;
+destroy it from the project picker` without starting the destroy loader. Permanent
+destroy lives on the global picker, where `Tab` includes archived projects and `d`
+opens the counted confirmation; restoring route-level destroy needs an owner decision
+about archived-project listing. The `DeviceSecretDialog` remains the dedicated one-time token
 surface and its plaintext never enters the panel.
 
 Membership is a role on the membership: contributors write, viewers are read-only,
@@ -3340,8 +3356,8 @@ and there is no project-scoped sandbox, approval or network policy row. A succes
 refreshes the inline member list; an owner-gated denial renders as a refusal, never as
 another project's rows.
 
-**Worktree navigation.** `/worktree [selector]` opens this route instead of issuing
-the legacy toast/dialog list. The optional exact, case-insensitive selector matches a
+**Worktree navigation.** `/worktree [selector]` navigates directly to this route; it
+does not open a toast or dialog. The optional exact, case-insensitive selector matches a
 workspace ID/name or a worktree ID/branch. Resolution walks the bounded dashboard
 project page sequentially, loading `ProjectGet` and `ManagedWorktreeList` only as
 needed; the worktree-read search is capped at 512 workspace lists. A match expands the
@@ -5286,6 +5302,11 @@ seams, and both have the full verb set: `j`/`k` move, `g`/`G`/`Home`/`End`
 jump, PageUp/PageDown and `Ctrl+U`/`Ctrl+D` page, `r` reply, `e` edit, `X`
 redact, `m` mark-read, `u` load older, `R` refresh, `[`/`]` switch channel.
 
+In the Workspace route, the tree remains the single project-selection authority:
+movement and filter-clamped selection rebind this panel and request history through
+the existing chat seam. A bound project with no cached entry paints its typed status
+(loading, error, or unavailable) rather than treating absence as refusal.
+
 **The panel holds no composer buffer — and that is the only difference.**
 The bottom composer is the single input surface for both targets, and two live
 text buffers would put two cursors on screen with nothing to say which one
@@ -5622,15 +5643,15 @@ async request generations. Mounted modal components are owned by
 `FocusManager`; it is the only writable owner used for render and input.
 The command palette remains prompt-completion state rather than a modal.
 
-Async request states (all 22 `AsyncUiRequestState` fields):
+Async request states (all 21 `AsyncUiRequestState` fields):
 `import_request`, `research_request`, `session_reload_request`,
 `task_list_request`, `task_delete_request`, `task_sheet_request`,
 `work_order_create_request`, `work_order_list_request`,
 `work_order_reorder_request`, `work_order_mutation_request`,
 `work_order_occurrence_request`, `task_model_pref_request`,
 `team_request`, `control_request`, `trigger_create_request`,
-`trigger_manage_request`, `worktree_list_request`,
-`template_create_request`, `session_mutation_request`,
+`trigger_manage_request`, `template_create_request`,
+`session_mutation_request`,
 `session_messages_request`, `test_run_request`, `terminal_request`.
 
 `DialogState` also holds the M003 Task sheet draft
@@ -5665,14 +5686,14 @@ pub enum Dialog {
     Share, Import, Template, Connect, ConnectionSelection,
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
     Review, ResearchBrowser, SecurityReview, SourcePreview,
-    ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
+    ShellShow, Terminal, TaskList, GoalShow, MemoryResults,
     DoctorReport, Logs, Plugin, RunDetail, JobDetail, ProjectPicker, Collaborators, ProjectChat,
     Team, Control, TeamTokenSecret, TriggerSecret,
     TaskSchedule, TaskView, WorkspaceDashboard, PolicySelector, Queue,
 }
 ```
 
-53 variants.
+52 variants.
 
 The `Terminal` dialog renders one interactive terminal view (M003): an
 `InfoDialog` with `InfoType::TerminalShow` driven by the live
@@ -5691,7 +5712,7 @@ pub enum DialogType {
     Connect, ConnectionSelection, Keybind,
     Context, Cost, Usage, Stats, Goto, Plan, Review, Confirm,
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
-    TaskList, WorktreeList, GoalShow, MemoryResults,
+    TaskList, GoalShow, MemoryResults,
     DoctorReport, Logs, Plugin, RunDetail, JobDetail, Collaborators, ProjectChat,
     Team, Control, TeamTokenSecret, ProjectPicker, TaskSchedule, TaskView,
     TriggerSecret, WorkspaceDashboard, PolicySelector, Queue, None,
@@ -8352,12 +8373,11 @@ action.
   `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`,
   `TerminalShow`, etc. via `dialog_type_for_info_type()`. One widget, one
   file, and therefore one seam override covering every one of them — but not
-  all 17 `InfoType`s are reachable as a hosted panel. `TerminalShow` resolves
+  all 16 `InfoType`s are reachable as a hosted panel. `TerminalShow` resolves
   to `DialogType::Terminal`, a bespoke panel that owns its own `SidePanel`
   impl and never renders through `render_hosted`; `Agents` resolves to
   `DialogType::Agent`, bespoke *and* the one panel
-  `discards_a_docked_box()` names; and `WorktreeList` resolves to a
-  `DialogType` that `dock_target` omits entirely, so the gesture refuses.
+  `discards_a_docked_box()` names, so docking would throw the component away.
   Fourteen remain reachable-hosted, and `ProjectInit` shares `DialogType::Team`
   with `Team` — two content types, one panel, which is why `keymap_hint` is
   written per `InfoType` and no test here may key on `DialogType`.

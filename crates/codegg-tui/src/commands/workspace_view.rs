@@ -13,7 +13,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::state::workspace_view::{
     LaunchSheet, LaunchStep, LifecycleArm, TreeKind, TreeRow, WorkspaceMode, MAX_TREE_ROWS,
 };
-use crate::app::{App, TuiCommand};
+use crate::app::{App, TuiCommand, WorkspaceLaunchOutcome};
 use crate::async_cmd::spawn_registered_tui_task;
 use crate::commands::project_picker::ProjectLifecycleEntry;
 use crate::task_lifecycle::TuiTaskKind;
@@ -189,7 +189,54 @@ fn clamp_selection(app: &mut App, len: usize) {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum WorkspaceSectionKind {
+    Detail,
+    Team,
+}
+
+/// Clear the competing inline section before opening one. These remain two
+/// independent option fields in the view state; this seam keeps their openers
+/// mutually exclusive.
+pub(crate) fn prepare_workspace_section(app: &mut App, opening: WorkspaceSectionKind) {
+    let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
+        return;
+    };
+    match opening {
+        WorkspaceSectionKind::Detail => {
+            dashboard.view.reveal_workspace_id = None;
+            dashboard.view.team_project_id = None;
+            dashboard.view.team_memberships = None;
+            dashboard.view.team_loading = false;
+            dashboard.view.team_error = None;
+            dashboard.view.team_notice = None;
+            dashboard.view.member_form = false;
+            dashboard.view.detail_loading = false;
+            dashboard.view.detail_error = None;
+        }
+        WorkspaceSectionKind::Team => {
+            dashboard.view.detail = None;
+            dashboard.view.detail_loading = false;
+            dashboard.view.detail_error = None;
+        }
+    }
+}
+
+fn workspace_section_is_open(app: &App) -> bool {
+    app.dialog_state
+        .workspace_dashboard
+        .as_ref()
+        .is_some_and(|dashboard| {
+            dashboard.view.detail.is_some()
+                || dashboard.view.reveal_workspace_id.is_some()
+                || dashboard.view.team_project_id.is_some()
+        })
+}
+
 fn move_selection(app: &mut App, delta: isize) {
+    if workspace_section_is_open(app) {
+        return;
+    }
     let len = visible_rows(app).len();
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         let current = dashboard.view.selected as isize;
@@ -215,6 +262,9 @@ fn move_selection(app: &mut App, delta: isize) {
 }
 
 fn select_edge(app: &mut App, last: bool) {
+    if workspace_section_is_open(app) {
+        return;
+    }
     let len = visible_rows(app).len();
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         dashboard.view.selected = if last { len.saturating_sub(1) } else { 0 };
@@ -234,11 +284,7 @@ pub(crate) fn selected_project_id(app: &App) -> Option<String> {
 
 /// Point the chat pane at the selected row's project.
 fn sync_selected_project(app: &mut App) {
-    let Some(row) = selected_row(app) else {
-        return;
-    };
-    app.chat_panel_project = Some(row.project_id.clone());
-    crate::commands::panels::sync_chat_panel_project(app);
+    crate::commands::workspace_dashboard::sync_workspace_chat_panel(app);
 }
 
 // -- Expansion and detail ---------------------------------------------
@@ -323,6 +369,7 @@ fn collapse_selected(app: &mut App, row: &TreeRow) {
 }
 
 fn open_detail(app: &mut App, row: &TreeRow) {
+    prepare_workspace_section(app, WorkspaceSectionKind::Detail);
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         dashboard.view.detail = Some(row.project_id.clone());
         dashboard.view.detail_loading = true;
@@ -459,6 +506,7 @@ fn fetch_branches(app: &mut App, project_id: String) {
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         if let Some(launch) = dashboard.view.launch.as_mut() {
             launch.branches_loading = true;
+            launch.branches_request_id = Some(request_id);
             launch.error = None;
         }
     }
@@ -570,6 +618,7 @@ fn submit_launch(app: &mut App) {
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         if let Some(launch) = dashboard.view.launch.as_mut() {
             launch.submitting = true;
+            launch.launch_request_id = Some(request_id);
             launch.error = None;
         }
     }
@@ -589,6 +638,7 @@ fn submit_launch(app: &mut App) {
                     branch: None,
                     stage: "accepted".to_string(),
                     converged: false,
+                    outcome: WorkspaceLaunchOutcome::Unknown,
                     error: Some("no daemon connection".to_string()),
                 });
             };
@@ -602,6 +652,9 @@ fn submit_launch(app: &mut App) {
                     idempotency_key,
                 },
             );
+            // The CoreResponse does not echo this correlation id (including on
+            // older daemons), so this task attaches the captured local id to
+            // every completion instead of dropping an otherwise valid answer.
             match core_client.request(request).await {
                 Ok(CoreResponse::SessionLaunch {
                     session_id,
@@ -617,6 +670,7 @@ fn submit_launch(app: &mut App) {
                     branch,
                     stage,
                     converged,
+                    outcome: WorkspaceLaunchOutcome::Succeeded,
                     error: None,
                 }),
                 Ok(CoreResponse::Error { code, message }) => {
@@ -627,6 +681,7 @@ fn submit_launch(app: &mut App) {
                         branch: None,
                         stage: code,
                         converged: false,
+                        outcome: WorkspaceLaunchOutcome::Refused,
                         error: Some(message),
                     })
                 }
@@ -637,6 +692,7 @@ fn submit_launch(app: &mut App) {
                     branch: None,
                     stage: "error".to_string(),
                     converged: false,
+                    outcome: WorkspaceLaunchOutcome::Unknown,
                     error: Some(format!("unexpected response: {other:?}")),
                 }),
                 Err(error) => Some(TuiCommand::WorkspaceLaunchFinished {
@@ -646,6 +702,7 @@ fn submit_launch(app: &mut App) {
                     branch: None,
                     stage: "error".to_string(),
                     converged: false,
+                    outcome: WorkspaceLaunchOutcome::Unknown,
                     error: Some(error.to_string()),
                 }),
             }
@@ -663,6 +720,7 @@ fn reveal_workspace(app: &mut App, row: &TreeRow) {
         return;
     };
     let project_id = row.project_id.clone();
+    prepare_workspace_section(app, WorkspaceSectionKind::Team);
     let worktrees_loaded = {
         let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
             return;
@@ -690,6 +748,7 @@ fn open_inline_team(app: &mut App, row: &TreeRow) {
         reveal_workspace(app, row);
         return;
     }
+    prepare_workspace_section(app, WorkspaceSectionKind::Team);
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         dashboard.view.reveal_workspace_id = None;
         dashboard.view.team_project_id = Some(row.project_id.clone());
@@ -934,6 +993,22 @@ fn handle_launch_key(app: &mut App, key: KeyEvent) -> bool {
 
 // -- Key routing ------------------------------------------------------
 
+fn activate_selected_row(app: &mut App) {
+    let Some(row) = selected_row(app) else {
+        return;
+    };
+    match row.kind {
+        TreeKind::Project => open_project(app, &row.project_id),
+        TreeKind::Workspace | TreeKind::Worktree => {
+            if row.workspace_id.is_some() {
+                reveal_workspace(app, &row);
+            } else {
+                toggle_expand(app, &row);
+            }
+        }
+    }
+}
+
 pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
     let Some(dashboard) = app.dialog_state.workspace_dashboard.as_ref() else {
         return false;
@@ -945,18 +1020,6 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
 
     use crate::app::state::workspace_view::WorkspaceInputFocus;
     match (key.code, key.modifiers) {
-        (KeyCode::Char('X'), KeyModifiers::SHIFT) => {
-            crate::commands::workspace_dashboard::leave_workspace_view(app);
-            return true;
-        }
-        (KeyCode::Char('H'), KeyModifiers::SHIFT) => {
-            crate::commands::workspace_dashboard::focus_workspace_composer(app);
-            return true;
-        }
-        (KeyCode::Char('L'), KeyModifiers::SHIFT) => {
-            crate::commands::workspace_dashboard::focus_workspace_chat(app);
-            return true;
-        }
         // Global Project Picker hotkeys stay reachable from Workspace.
         (KeyCode::Char('F'), KeyModifiers::SHIFT)
         | (KeyCode::Char('\\'), KeyModifiers::CONTROL) => return false,
@@ -1009,6 +1072,30 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
+    // ADR-0042: in Insert a printable is text, in Normal a bare character is a
+    // claimable app action -- and a claim belongs to the surface that owns the
+    // keyboard. These three capitals are tree claims. They sit below every
+    // text-owning branch (inline picker, member form, launch sheet, composer,
+    // panel draft) so a shifted letter reaches the input the user is typing
+    // into instead of performing a route verb behind it.
+    if focus == WorkspaceInputFocus::Tree && mode == WorkspaceMode::Normal {
+        match key.code {
+            KeyCode::Char('X') if key.modifiers == KeyModifiers::SHIFT => {
+                crate::commands::workspace_dashboard::leave_workspace_view(app);
+                return true;
+            }
+            KeyCode::Char('H') if key.modifiers == KeyModifiers::SHIFT => {
+                crate::commands::workspace_dashboard::focus_workspace_composer(app);
+                return true;
+            }
+            KeyCode::Char('L') if key.modifiers == KeyModifiers::SHIFT => {
+                crate::commands::workspace_dashboard::focus_workspace_chat(app);
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     if mode == WorkspaceMode::Insert {
         match key.code {
             KeyCode::Esc => {
@@ -1023,7 +1110,9 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
                 }
                 let len = visible_rows(app).len();
                 clamp_selection(app, len);
+                sync_selected_project(app);
             }
+            KeyCode::Enter if key.modifiers.is_empty() => activate_selected_row(app),
             KeyCode::Up => move_selection(app, -1),
             KeyCode::Down => move_selection(app, 1),
             KeyCode::Char(ch)
@@ -1034,9 +1123,9 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
                 }
                 let len = visible_rows(app).len();
                 clamp_selection(app, len);
+                sync_selected_project(app);
             }
-            _ if !key.modifiers.is_empty() => return false,
-            _ => {}
+            _ => return false,
         }
         return true;
     }
@@ -1055,6 +1144,7 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
     if !archive_key {
         if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
             dashboard.view.lifecycle_arm = None;
+            dashboard.view.notice = None;
         }
     }
     match key.code {
@@ -1090,6 +1180,7 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
                     dashboard.view.filter.clear();
                     dashboard.view.selected = 0;
                 }
+                sync_selected_project(app);
             } else {
                 crate::commands::workspace_dashboard::leave_workspace_view(app);
             }
@@ -1114,18 +1205,7 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
             if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
         {
-            if let Some(row) = selected_row(app) {
-                match row.kind {
-                    TreeKind::Project => open_project(app, &row.project_id),
-                    TreeKind::Workspace | TreeKind::Worktree => {
-                        if row.workspace_id.is_some() {
-                            reveal_workspace(app, &row);
-                        } else {
-                            toggle_expand(app, &row);
-                        }
-                    }
-                }
-            }
+            activate_selected_row(app);
         }
         KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
             if let Some(row) = selected_row(app) {
@@ -1192,6 +1272,31 @@ fn begin_lifecycle(
     entry: ProjectLifecycleEntry,
     project_id: Option<String>,
 ) -> bool {
+    if entry == ProjectLifecycleEntry::Destroy {
+        if let Some(project_id) = project_id.as_deref() {
+            let project_name = app
+                .dialog_state
+                .workspace_dashboard
+                .as_ref()
+                .and_then(|dashboard| {
+                    dashboard
+                        .rows
+                        .iter()
+                        .find(|row| row.summary.project_id == project_id)
+                        .map(|row| row.summary.display_name.clone())
+                })
+                .unwrap_or_else(|| project_id.to_string());
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.view.notice = Some(format!(
+                    "press s to archive {project_name} first; destroy it from the project \
+                     picker (Tab shows archived)"
+                ));
+            }
+            // This route lists active projects only and refuses its own "x" for
+            // every row; destroy is the picker's "d" on an archived row.
+            return true;
+        }
+    }
     let started = crate::commands::project_picker::begin_lifecycle_from(app, entry, project_id);
     if !started {
         if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
@@ -1221,6 +1326,7 @@ fn arm_or_run_archive(app: &mut App, row: &TreeRow) {
     if already_armed {
         if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
             dashboard.view.lifecycle_arm = None;
+            dashboard.view.notice = None;
         }
         begin_lifecycle(
             app,
@@ -1574,13 +1680,27 @@ pub(crate) fn apply_worktrees_loaded(
     }
 }
 
-pub(crate) fn apply_branches_loaded(app: &mut App, branches: Vec<String>, error: Option<String>) {
+pub(crate) fn apply_branches_loaded(
+    app: &mut App,
+    request_id: u64,
+    branches: Vec<String>,
+    error: Option<String>,
+) {
     let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
         return;
     };
     let Some(launch) = dashboard.view.launch.as_mut() else {
         return;
     };
+    if launch.branches_request_id != Some(request_id) {
+        tracing::debug!(
+            request_id,
+            current_request_id = ?launch.branches_request_id,
+            "dropping stale workspace branch completion"
+        );
+        return;
+    }
+    launch.branches_request_id = None;
     launch.branches_loading = false;
     match error {
         Some(error) => launch.error = Some(error),
@@ -1596,6 +1716,8 @@ pub(crate) fn apply_branches_loaded(app: &mut App, branches: Vec<String>, error:
 
 pub(crate) fn apply_launch_finished(
     app: &mut App,
+    request_id: u64,
+    outcome: WorkspaceLaunchOutcome,
     session_id: Option<String>,
     branch: Option<String>,
     stage: String,
@@ -1609,12 +1731,23 @@ pub(crate) fn apply_launch_finished(
         let Some(launch) = dashboard.view.launch.as_mut() else {
             return;
         };
+        if launch.launch_request_id != Some(request_id) {
+            tracing::debug!(
+                request_id,
+                current_request_id = ?launch.launch_request_id,
+                "dropping stale workspace launch completion"
+            );
+            return;
+        }
+        launch.launch_request_id = None;
         launch.submitting = false;
         launch.stage = stage.clone();
         if let Some(error) = error {
-            // A refusal starts a new key: the same key would converge on the
-            // refused attempt instead of letting the user correct the name.
-            launch.idempotency_key = uuid::Uuid::new_v4().to_string();
+            if outcome == WorkspaceLaunchOutcome::Refused {
+                // A definitive refusal starts a new key; an uncertain result
+                // keeps the key so retry can converge on the same launch.
+                launch.idempotency_key = uuid::Uuid::new_v4().to_string();
+            }
             launch.error = Some(format!("{stage}: {error}"));
             return;
         }

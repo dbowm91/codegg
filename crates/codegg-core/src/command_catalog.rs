@@ -3128,7 +3128,7 @@ static THE_CATALOG: CommandCatalog = CommandCatalog {
             command_id: "worktree",
             name: "/worktree",
             aliases: &[],
-            description: "List worktrees for the active workspace (/worktree)",
+            description: "Open a workspace or worktree in the workspace view (/worktree)",
             category: CommandCategory::System,
             domain: CommandDomain::System,
             kind: CommandKind::FrontendEffect,

@@ -128,16 +128,21 @@ The project picker and panel manager have their own key hints. Press `?` or `Spa
 
 `/workspace` is the central full-frame project → workspace → worktree surface.
 It keeps the existing Chat panel docked on the right and paints the shared composer
-at the bottom; the composer badge names its destination before typing. `Shift+H`
-focuses that composer, `Shift+L` focuses Chat, and `Shift+X` leaves the route and
-restores the session composer. The route does not create a second chat buffer.
+at the bottom; the composer badge names its destination before typing. From the tree
+in NOR, `Shift+H` focuses that composer, `Shift+L` focuses Chat, and `Shift+X` leaves
+the route and restores the session composer. Those are tree keys: while a text
+surface has the keyboard — the route composer, a panel draft, the filter, the member
+form or a launch branch — a shifted letter is typed text and no route verb fires.
+The route does not create a second chat buffer.
 
 - `j`/`k` move, `g`/`G` jump, `Space` expands/collapses a project or workspace,
   and `h` collapses or returns to the parent.
 - `Enter` on a project opens its project tab. `Enter` on a workspace or worktree
   reveals its worktrees and project membership in the main panel.
 - `i` filters in INS; `Esc` returns to NOR, then clears the filter or closes the
-  current inline section before it leaves the route.
+  current inline section before it leaves the route. While filtering, `Enter`
+  activates the selected row; `Tab` and other unsupported keys pass through, and
+  the title hint is `type to filter · Enter reveal · Esc back`.
 - `n` opens the full-height new-session flow for the selected workspace or worktree:
   an existing managed worktree, or a new checkout with a base branch and either the
   daemon's automatic `codegg/worktree/<id>` branch or a name you type.
@@ -145,13 +150,16 @@ restores the session composer. The route does not create a second chat buffer.
   the tree; in a revealed workspace/team section it opens add-member. `t` loads
   membership for the selected row's project, and the add-member form keeps that same
   project identity.
-- `e` edits the selected project, `s` arms then archives/restores it, and `x`
-  opens the counted destroy confirmation. These lifecycle forms remain in the main
-  panel; the global Project Picker hotkeys (`Shift+F` / `Ctrl+\\`) still work.
-- `/worktree [selector]` opens this route. An exact, case-insensitive workspace ID,
+- `e` edits the selected project and `s` arms then archives/restores it. On an
+  active row, `x` explains that archive comes first and sends no request — it does
+  not open the confirmation and it never destroys from this surface. The destroy
+  step lives in the global Project Picker (`Shift+F` / `Ctrl+\\`): `Tab` includes
+  archived projects, then `d` opens the counted destroy confirmation. The route has
+  no archived-list mode of its own. These lifecycle forms remain in the main panel.
+- `/worktree [selector]` navigates to this route. An exact, case-insensitive workspace ID,
   workspace name, worktree ID, or branch selects the matching row. Lookup is lazy and
   bounded to the loaded project page and 512 workspace worktree reads; misses and
-  lookup errors appear in the panel, not a toast or centered list.
+  lookup errors stay as in-panel notices, with no toast or dialog.
 
 The **Workspace** panel (`/panels`) lists the project catalog for a quick switch
 without opening the whole view.

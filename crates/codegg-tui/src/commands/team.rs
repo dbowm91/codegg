@@ -297,15 +297,30 @@ fn channel_flag(rest: &[&str]) -> Option<String> {
 // ── Membership view (bare /team) ───────────────────────────────────────────
 
 /// Fetch the bounded member list plus the M002 chat-policy summary for
-/// the active project, then render the FocusManager-backed `/team`
+/// the requested project, then render the FocusManager-backed `/team`
 /// administration dialog. `/collaborators` stays the presence surface.
 pub(crate) fn start_show_team(app: &mut App, project_id: String) {
     let workspace_view = crate::commands::workspace_dashboard::is_workspace_view_active(app);
+    let workspace_id = if workspace_view {
+        app.dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .and_then(|dashboard| dashboard.view.reveal_workspace_id.clone())
+            .or_else(|| {
+                crate::commands::workspace_view::selected_row(app).and_then(|row| row.workspace_id)
+            })
+    } else {
+        None
+    };
     if workspace_view {
+        crate::commands::workspace_view::prepare_workspace_section(
+            app,
+            crate::commands::workspace_view::WorkspaceSectionKind::Team,
+        );
         if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
             dashboard.view.team_project_id = Some(project_id.clone());
             dashboard.view.team_memberships = None;
-            dashboard.view.team_loading = true;
+            dashboard.view.team_loading = false;
             dashboard.view.team_error = None;
             dashboard.view.team_notice = None;
         }
@@ -328,6 +343,11 @@ pub(crate) fn start_show_team(app: &mut App, project_id: String) {
         }
         return;
     }
+    if workspace_view {
+        if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+            dashboard.view.team_loading = true;
+        }
+    }
     let request_id = app.dialog_state.team_request.begin();
     if workspace_view {
         app.dialog_state.workspace_team_request_id = Some(request_id);
@@ -335,13 +355,21 @@ pub(crate) fn start_show_team(app: &mut App, project_id: String) {
     let reconnect_epoch = epoch_of(app);
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
-    // M007-D: the daemon owns the effect. The membership listing is the
-    // catalog's `team` command, and the scope names the project the
-    // listing is taken in — the one the caller resolved.
+    // M007-D: the daemon owns the effect. A Workspace-view reveal names the
+    // row's project/workspace pair even without a session; absent workspace
+    // identity stays empty so the daemon can return its typed refusal.
     let scope = crate::command_route::scope_for(app);
-    let scope = codegg::protocol::core::CommandCatalogScopeDto {
-        project_id: project_id.clone(),
-        ..scope
+    let scope = if workspace_view {
+        codegg::protocol::core::CommandCatalogScopeDto {
+            project_id: project_id.clone(),
+            workspace_id: workspace_id.unwrap_or_default(),
+            ..scope
+        }
+    } else {
+        codegg::protocol::core::CommandCatalogScopeDto {
+            project_id: project_id.clone(),
+            ..scope
+        }
     };
     spawn_registered_tui_task(
         tx,
